@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 from collections import defaultdict, deque
 from dataclasses import dataclass
-from typing import Dict, Iterable, List, Optional, Set, Tuple
+from typing import Dict, Iterable, List, Optional, Set, Tuple, TYPE_CHECKING
 from urllib import robotparser
 from urllib.parse import urljoin, urlparse, urlunparse
 
@@ -13,6 +13,9 @@ import requests
 from bs4 import BeautifulSoup
 
 from trusted_sources import ALL_TRUSTED_DOMAINS, ALL_TRUSTED_SEEDS
+
+if TYPE_CHECKING:
+    from storage import CrawlState
 
 DEFAULT_USER_AGENT = (
     "AcademicSearchBot/2.0 (+https://example.com/academic-search-bot-info)"
@@ -80,21 +83,41 @@ class AcademicCrawler:
         self._robots_cache: Dict[str, robotparser.RobotFileParser] = {}
 
     def crawl(
-        self, seeds: Iterable[str]
-    ) -> Tuple[Dict[str, Page], Dict[str, Set[str]]]:
-        queue: deque[Tuple[str, int]] = deque()
-        for seed in seeds:
-            normalized = normalize_url(seed)
-            if normalized:
-                queue.append((normalized, 0))
+        self, seeds: Iterable[str], state: Optional["CrawlState"] = None
+    ) -> "CrawlState":
+        if state is None:
+            from storage import CrawlState as _CrawlState  # Local import to avoid cycle
 
-        pages: Dict[str, Page] = {}
-        graph: Dict[str, Set[str]] = defaultdict(set)
-        visited: Set[str] = set()
+            state = _CrawlState.empty()
+
+        pages: Dict[str, Page] = dict(state.pages)
+        graph: Dict[str, Set[str]] = {
+            url: set(edges) for url, edges in state.graph.items()
+        }
+        visited: Set[str] = set(state.visited) | set(pages.keys())
+
+        queue: deque[Tuple[str, int]] = deque(state.frontier)
+        queued: Set[str] = {url for url, _ in queue}
+        if not queue:
+            for seed in seeds:
+                normalized = normalize_url(seed)
+                if (
+                    normalized
+                    and normalized not in visited
+                    and normalized not in queued
+                ):
+                    queue.append((normalized, 0))
+                    queued.add(normalized)
+
         domain_counts: Dict[str, int] = defaultdict(int)
+        for url in pages:
+            netloc = urlparse(url).netloc.lower()
+            if netloc:
+                domain_counts[netloc] += 1
 
         while queue and len(pages) < self.max_pages:
             current_url, depth = queue.popleft()
+            queued.discard(current_url)
             if current_url in visited or depth > self.max_depth:
                 continue
             if not is_trusted_domain(current_url, self.allowed_domains):
@@ -113,21 +136,30 @@ class AcademicCrawler:
             pages[current_url] = page
             graph.setdefault(current_url, set())
 
-            domain_counts[urlparse(current_url).netloc.lower()] += 1
+            netloc = urlparse(current_url).netloc.lower()
+            if netloc:
+                domain_counts[netloc] += 1
 
+            next_depth = depth + 1
             for link in page.links:
                 graph[current_url].add(link)
                 if (
                     link not in visited
-                    and depth + 1 <= self.max_depth
+                    and next_depth <= self.max_depth
                     and is_trusted_domain(link, self.allowed_domains)
+                    and link not in queued
                 ):
-                    queue.append((link, depth + 1))
+                    queue.append((link, next_depth))
+                    queued.add(link)
 
             if self.request_delay:
                 time.sleep(self.request_delay)
 
-        return pages, graph
+        state.pages = pages
+        state.graph = graph
+        state.visited = visited
+        state.frontier = list(queue)
+        return state
 
     def _fetch_page(self, url: str) -> Optional[Page]:
         try:

@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 import re
 from collections import Counter, defaultdict
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import Dict, List
 
 # Lightweight stop word list to avoid requiring NLTK datasets
@@ -207,3 +207,43 @@ class InvertedIndex:
                 self.index[term][url] = weight
                 norm_squared += weight * weight
             self.doc_norms[url] = math.sqrt(norm_squared)
+
+    def to_dict(self) -> Dict[str, object]:
+        return {
+            "documents": {
+                url: asdict(metadata) for url, metadata in self.documents.items()
+            },
+            "index": {
+                term: {url: weight for url, weight in postings.items()}
+                for term, postings in self.index.items()
+            },
+            "idf": self.idf,
+            "doc_norms": self.doc_norms,
+        }
+
+    @classmethod
+    def from_dict(cls, payload: Dict[str, object]) -> "InvertedIndex":
+        instance = cls()
+        documents = payload.get("documents", {})
+        if isinstance(documents, dict):
+            for url, metadata in documents.items():
+                if isinstance(metadata, dict):
+                    instance.documents[url] = DocumentMetadata(
+                        title=metadata.get("title", "Untitled"),
+                        snippet=metadata.get("snippet", ""),
+                        length=int(metadata.get("length", 0)),
+                    )
+        index_payload = payload.get("index", {})
+        if isinstance(index_payload, dict):
+            for term, postings in index_payload.items():
+                if isinstance(postings, dict):
+                    instance.index[term] = {
+                        url: float(weight) for url, weight in postings.items()
+                    }
+        idf_payload = payload.get("idf", {})
+        if isinstance(idf_payload, dict):
+            instance.idf = {term: float(value) for term, value in idf_payload.items()}
+        doc_norms = payload.get("doc_norms", {})
+        if isinstance(doc_norms, dict):
+            instance.doc_norms = {url: float(value) for url, value in doc_norms.items()}
+        return instance

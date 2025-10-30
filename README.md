@@ -7,6 +7,7 @@ An offline-first academic search engine that crawls a curated list of scholarly,
 - Respectful crawler with robots.txt compliance, MIME filtering, per-domain quotas, and configurable crawl depth/page limits.
 - Tokenisation, stop-word filtering, TF-IDF weighting (with title boosts), and cosine similarity scoring layered with PageRank.
 - CLI search interface (`Searching.py`) and AI-augmented assistant (`ai_search.py`) that produces citation-linked summaries via OpenAI or a local Ollama model, with extractive fallback when neural models are unavailable.
+- Persistent crawl state, index, and PageRank snapshots written to `data/`, enabling resumable crawls and offline querying.
 - Easily extensible source catalogue and summarisation workflow for custom research needs.
 
 ## Requirements
@@ -50,6 +51,9 @@ Without `--query`, the command enters an interactive loop (`Ask>` prompt). The o
 3. The underlying ranked documents.  
 
 If neither OpenAI nor Ollama are available, the tool falls back to extractive summaries that still reference the retrieved documents.
+
+### 3. Resumable crawls
+All crawl artifacts are stored under `data/`. Subsequent runs resume from the previously saved frontier, crawling only the pending URLs and updating the in-place index/PageRank snapshots. You can inspect or back up this directory, and it is ignored by Git by default.
 
 ## Customisation
 - **Trusted sources**: Edit `trusted_sources.py` to add or remove categories, seed URLs, or domain quotas. The crawler automatically derives the allowlist from this module.

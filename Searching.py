@@ -11,6 +11,7 @@ from typing import Dict, List, Optional, Sequence
 from Crawler import AcademicCrawler, Page, DEFAULT_SEEDS
 from Indexer import InvertedIndex, tokenize
 from Pagerank import compute_pagerank
+from storage import StorageManager, CrawlState
 
 
 @dataclass
@@ -41,15 +42,25 @@ class AcademicSearchEngine:
             max_depth=max_depth,
             request_delay=request_delay,
         )
-        self.index = InvertedIndex()
-        self.pagerank_scores: Dict[str, float] = {}
-        self.pages: Dict[str, Page] = {}
+        self.storage = StorageManager()
+        self.state: CrawlState = self.storage.load_crawl_state()
+        stored_index = self.storage.load_index()
+        self.index = stored_index if stored_index else InvertedIndex()
+        self.pagerank_scores: Dict[str, float] = self.storage.load_pagerank()
+        self.pages: Dict[str, Page] = dict(self.state.pages)
 
     def build(self) -> int:
         """Run the crawler, build the index, and compute PageRank."""
-        self.pages, link_graph = self.crawler.crawl(self.seeds)
+        self.state = self.crawler.crawl(self.seeds, self.state)
+        self.storage.save_crawl_state(self.state)
+        self.pages = self.state.pages
+
+        self.index = InvertedIndex()
         self.index.build(self.pages)
-        self.pagerank_scores = compute_pagerank(link_graph)
+        self.storage.save_index(self.index)
+
+        self.pagerank_scores = compute_pagerank(self.state.graph)
+        self.storage.save_pagerank(self.pagerank_scores)
         return len(self.pages)
 
     def search(self, query: str, limit: int = 10) -> List[SearchHit]:
