@@ -74,12 +74,23 @@ def parse_args() -> argparse.Namespace:
         "--model",
         type=str,
         default="gpt-4o-mini",
-        help="LLM model identifier (default: gpt-4o-mini)",
+        help="OpenAI model identifier (default: gpt-4o-mini)",
     )
     parser.add_argument(
         "--api-key",
         type=str,
         help="Override OPENAI_API_KEY environment variable.",
+    )
+    parser.add_argument(
+        "--ollama-model",
+        type=str,
+        default="qwen3:8b",
+        help="Ollama model to use when available (default: qwen3:8b).",
+    )
+    parser.add_argument(
+        "--ollama-host",
+        type=str,
+        help="Ollama host endpoint, e.g. http://localhost:11434 (defaults to OLLAMA_HOST).",
     )
     return parser.parse_args()
 
@@ -96,7 +107,12 @@ def main() -> None:
     total_pages = engine.build()
     print(f"Crawl complete. Indexed {total_pages} pages.\n")
 
-    agent = LLMAgent(model=args.model, api_key=args.api_key)
+    agent = LLMAgent(
+        model=args.model,
+        api_key=args.api_key,
+        ollama_model=args.ollama_model,
+        ollama_host=args.ollama_host,
+    )
 
     if args.query:
         run_query(engine, agent, args.query, args.results)
