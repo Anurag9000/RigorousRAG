@@ -1,73 +1,81 @@
-# Academic Search Engine & Agentic RAG
+# 🔬 RigorousRAG
+**The Agentic Research Orchestrator for High-Precision Academic Synthesis.**
 
-An advanced, agentic academic search platform that layers a modern RAG-style “search + internal knowledge + web” agent on top of an offline-first academic search engine.
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/release/python-3100/)
+[![Framework: Agentic RAG](https://img.shields.io/badge/Framework-Agentic_RAG-purple.svg)](#)
+
+RigorousRAG is a professional-grade research assistant designed for scientists and academic researchers. It layers a sophisticated multi-tool reasoning agent on top of a hybrid "Internal Index + Web + RAG" architecture, focusing on **groundedness, traceability, and rigorous evidence synthesis.**
+
+---
 
 ## 🚀 Key Features
 
-### 1. Agentic Orchestration
-- **Search Agent (`search_agent.py`)**: A multi-tool reasoning agent that chooses the best source (Internal Index, Handbook, Web, or Uploaded Docs) to answer complex queries.
-- **Interactive CLI (`search_agent_cli.py`)**: A dedicated terminal interface for chatting with the research agent.
-- **Service API (`server.py`)**: A FastAPI-based backend exposing the agent and document ingestion over HTTP.
+### 🧠 Agentic Orchestration
+*   **Multi-Tool Reasoning**: Automatically chooses between Internal Indices, Web Search, Handbook Policies, and Uploaded Documents.
+*   **Citation Auditor**: Cross-verifies every inline citation `[n]` against raw source snippets to prevent hallucinations.
+*   **Interactive CLI**: A purpose-built terminal interface (`search_agent_cli.py`) for complex research dialogues.
 
-### 2. Multimodal RAG & Ingestion
-- **Document Ingestion (`ingest_docs.py`)**: Support for PDF (PyMuPDF), Word (`python-docx`), and Markdown/Text files.
-- **Vector Database (`tools/rag.py`)**: Powered by ChromaDB and `all-MiniLM-L6-v2` embeddings for semantically aware retrieval of local documents.
+### 📑 Advanced RAG & Ingestion
+*   **Semantic Chunking**: Intelligent document splitting that preserves technical context and section integrity.
+*   **Multimodal Ingestion**: Native support for PDF, Word, and Markdown/Text.
+*   **Hierarchical Retrieval**: Parent/Child indexing for deep contextual awareness during search.
+*   **HyDe (Hypothetical Document Embeddings)**: Bridging semantic gaps by generating hypothetical answers for retrieval.
 
-### 3. Scientific Integrity Suite
-- **Visual Entailment**: Check if a paper's claims are supported by its figures (via Vision-LLM stubs).
-- **Protocol Extraction**: Automatically extract structured wet-lab protocols from methods sections.
-- **Adversarial Debate**: Run "Advocate vs. Skeptic" reasoning loops to stress-test claims.
+### 🛡️ Scientific Integrity Suite
+*   **Comparison Matrices**: Auto-generate Markdown tables comparing metrics (Methodology, Accuracy, etc.) across multiple papers.
+*   **Conflict Detector**: Hunts for contradictory claims inside the literature.
+*   **Limitation Extractor**: Automatically isolates structural weaknesses and disclaimers in research papers.
+*   **BibTeX Export**: One-click generation of bibliography entries for LaTeX.
 
-### 4. Legacy Academic Search
-- **Curated Crawling**: Focused on 100+ vetted academic and governmental domains.
-- **Hybrid Ranking**: Combines TF-IDF with PageRank.
-- **Offline Indexing**: Persistent state saved to disk for ultra-fast local search.
+---
 
-## 🛠️ Requirements & Setup
+## 🛠️ Architecture
 
-1. **Install Dependencies**:
-   ```bash
-   pip install -r requirements.txt
-   ```
+RigorousRAG is built as a modular system capable of running locally or as a service:
 
-2. **Configuration**:
-   - Set your OpenAI API key: `export OPENAI_API_KEY=sk-...`
-   - (Optional) Pull local models for Ollama: `ollama pull qwen3:8b`
+*   **Engine**: Custom hybrid TF-IDF + PageRank for offline academic search.
+*   **Vector DB**: ChromaDB for persistent document embeddings.
+*   **API Layer**: FastAPI for exposing agentic capabilities to web frontends.
+*   **Deployment**: Fully containerized via Docker and Docker Compose.
 
-## 📖 Usage
+---
 
-### Interactive Research Agent
-```bash
-python search_agent_cli.py
+## 📖 Quick Start
+
+### 1. Installation
+```powershell
+git clone https://github.com/Anurag9000/RigorousRAG
+cd RigorousRAG
+pip install -r requirements.txt
 ```
 
-### Batch Ingest Documents
-```bash
-python ingest_docs.py ./papers/*.pdf
+### 2. Basic Configuration
+```powershell
+$env:OPENAI_API_KEY="sk-..." # Required for agentic reasoning
 ```
 
-### Start API Server
-```bash
-python server.py
-```
-*API docs available at `http://localhost:8000/docs`*
+### 3. Usage Examples
+*   **Interactive Chat**: `python search_agent_cli.py`
+*   **Batch Ingestion**: `python ingest_docs.py ./my_papers/*.pdf`
+*   **Start Backend**: `python server.py`
+*   **Run via Docker**: `docker-compose up --build`
 
-### Run via Docker
-```bash
-docker-compose up --build
-```
+---
 
 ## 📂 Project Structure
-- `tools/`: Modular tool definitions (search, rag, ingestion, integrity).
-- `search_agent.py`: Core reasoning logic.
-- `ingest_docs.py`: Document processing CLI.
-- `server.py`: FastAPI implementation.
-- `Searching.py`: Legacy search engine CLI.
+*   `tools/`: Modular tool implementations (RAG, BibTeX, Integrity, etc.).
+*   `search_agent.py`: The core reasoning and orchestration logic.
+*   `ingest_docs.py`: High-performance ingestion CLI.
+*   `server.py`: REST API exposing the research suite.
 
-## ⚖️ Safety & Configuration
-- **Domain Allowlist**: Derivatives of `trusted_sources.py`.
-- **Handbook**: Reads from `handbook.md` for internal policy grounding.
-- **Agent Prompting**: Configured in `search_agent.py` to prioritize grounded citations `[n]`.
+---
 
-Happy researching! Feel free to adapt the pipeline to your own academic or enterprise knowledge bases.
+## ⚖️ Ethics & Privacy
+*   **Redaction Layer**: Automatically redacts emails and phone numbers from technical documents (Goal 16).
+*   **Owner Scoping**: Metadata-based ownership for multi-tenant environments.
 
+Happy researching!
+
+---
+*Created by [Anurag9000](https://github.com/Anurag9000)*
