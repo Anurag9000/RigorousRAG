@@ -4,6 +4,11 @@ import json
 from pathlib import Path
 from tools.ingestion import ingest_file
 
+try:
+    from tools.rag import get_rag_layer
+except ImportError:
+    get_rag_layer = None
+
 def main():
     parser = argparse.ArgumentParser(description="Ingest documents (PDF, Word, Text) into the system.")
     parser.add_argument("paths", nargs="+", help="Files or directories to ingest.")
@@ -27,13 +32,13 @@ def main():
     print(f"Found {len(files_to_process)} files to process.")
     
     # Initialize RAG layer
-    try:
-        from tools.rag import get_rag_layer
-        rag_layer = get_rag_layer()
-        print("RAG Layer initialized.")
-    except Exception as e:
-        print(f"Warning: RAG Layer could not be initialized. Indexing will be skipped. Error: {e}")
-        rag_layer = None
+    rag_layer = None
+    if get_rag_layer:
+        try:
+            rag_layer = get_rag_layer()
+            print("RAG Layer initialized.")
+        except Exception as e:
+            print(f"Warning: RAG Layer could not be initialized. Indexing will be skipped. Error: {e}")
 
     results = []
     success_count = 0
