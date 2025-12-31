@@ -1,7 +1,7 @@
 import os
 import mimetypes
 from pathlib import Path
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 import fitz  # PyMuPDF
 import docx
 from tools.ingestion_models import IngestedDocument, DocumentSection, IngestionResult

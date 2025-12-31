@@ -13,6 +13,7 @@ class Chunk(BaseModel):
     id: str
     text: str
     metadata: Dict[str, Any]
+    score: float = 0.0
 
 class RAGLayer:
     def __init__(self, persist_directory: str = CHROMA_PATH):
@@ -131,6 +132,7 @@ class RAGLayer:
             if results and results['documents']:
                 for i in range(len(results['documents'][0])):
                     all_results.append(Chunk(
+                        id=results['ids'][0][i],
                         text=results['documents'][0][i],
                         metadata=results['metadatas'][0][i],
                         score=results['distances'][0][i] if 'distances' in results else 0
