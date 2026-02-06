@@ -110,8 +110,7 @@ class SearchAgent:
                 model=self.model,
                 messages=messages,
                 tools=TOOLS_SCHEMA,
-                tool_choice="auto",
-                response_format={"type": "json_object"} if current_turn > 1 else None
+                tool_choice="auto"
             )
             
             msg = response.choices[0].message

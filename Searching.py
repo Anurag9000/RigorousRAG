@@ -131,7 +131,9 @@ class AcademicSearchEngine:
             page = self.pages.get(hit.url)
             if not page:
                 continue
-            excerpt = page.text[: max_chars // max(1, len(hits))]
+            # Safety: ensure we don't divide by zero if hits is empty
+            chunk_size = max_chars // max(1, len(hits)) if hits else max_chars
+            excerpt = page.text[:chunk_size]
             consumed += len(excerpt)
             context.append(
                 {

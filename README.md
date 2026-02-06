@@ -4,8 +4,20 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/release/python-3100/)
 [![Framework: Agentic RAG](https://img.shields.io/badge/Framework-Agentic_RAG-purple.svg)](#)
+[![Code Quality: Audited](https://img.shields.io/badge/Code_Quality-Audited-brightgreen.svg)](#)
 
 RigorousRAG is a professional-grade research assistant designed for scientists and academic researchers. It layers a sophisticated multi-tool reasoning agent on top of a hybrid "Internal Index + Web + RAG" architecture, focusing on **groundedness, traceability, and rigorous evidence synthesis.**
+
+---
+
+## 🎯 Code Quality Status
+
+> **Last Audit:** February 6, 2026  
+> **Status:** ✅ **Production Ready**  
+> **Bugs Fixed:** 3 (1 Critical, 1 Medium, 1 Low)  
+> **Files Audited:** 49 Python files  
+> 
+> See [AUDIT_SUMMARY.md](AUDIT_SUMMARY.md) for complete audit details.
 
 ---
 

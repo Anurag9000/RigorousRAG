@@ -147,20 +147,6 @@ class RAGLayer:
                 seen.add(c.text)
                 
         return unique_chunks[:n_results]
-        
-        chunks = []
-        if not results['ids']:
-            return chunks
-
-        # Chroma returns lists of lists
-        for i in range(len(results['ids'][0])):
-            chunks.append(Chunk(
-                id=results['ids'][0][i],
-                text=results['documents'][0][i],
-                metadata=results['metadatas'][0][i] or {}
-            ))
-            
-        return chunks
 
     def _chunk_text(self, text: str, size: int, overlap: int) -> List[str]:
         # Very simple sliding window chunker

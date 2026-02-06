@@ -1,3 +1,43 @@
+# Python
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Data and Runtime Files
 data/
+rag_storage/
+uploads/
+*.db
+*.sqlite3
+
+# Logs and Reports
+*.log
+usage_metrics.jsonl
+coverage.json
+ingested_docs.json
+
+# Environment
+.env
+.venv
+venv/
+ENV/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
