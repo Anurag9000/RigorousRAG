@@ -14,12 +14,14 @@ import re
 
 def redact_text(text: str) -> str:
     """
-    Basic redaction of sensitive fields (emails, phones) for Goal 16.
+    Redacts sensitive PII (emails, phone numbers, and common address patterns) for Goal 16.
     """
-    # Simple regex for emails
+    # Redact Emails
     text = re.sub(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', '[REDACTED_EMAIL]', text)
-    # Simple regex for phones
-    text = re.sub(r'\+?\d{1,4}?[-.\s]?\(?\d{1,3}?\)?[-.\s]?\d{1,4}[-.\s]?\d{1,4}[-.\s]?\d{1,9}', '[REDACTED_PHONE]', text)
+    # Redact Phone Numbers (US/International)
+    text = re.sub(r'(\+\d{1,2}\s)?\(?\d{3}\)?[\s.-]\d{3}[\s.-]\d{4}', '[REDACTED_PHONE]', text)
+    # Redact basic US Address Patterns (e.g., 123 Main St)
+    text = re.sub(r'\d{1,5}\s+[A-Z][a-z]+\s+(Street|St|Avenue|Ave|Road|Rd|Drive|Dr|Boulevard|Blvd)\.?', '[REDACTED_ADDRESS]', text)
     return text
 
 def extract_academic_metadata(text: str) -> Dict[str, Any]:

@@ -1,6 +1,7 @@
 import argparse
 import sys
 import json
+import os
 from pathlib import Path
 from tools.ingestion import ingest_file
 
@@ -50,9 +51,26 @@ def main():
             print("OK", end=" ")
             if rag_layer and result.document:
                 try:
-                    # Goal 19: Pre-generated short summary
-                    # Placeholder: in full implementation, call LLM to summarize
-                    summary = result.document.text[:500] + "..." 
+                    # Goal 19: Pre-generated short summary using LLM if available
+                    summary = ""
+                    if "OPENAI_API_KEY" in os.environ:
+                        try:
+                            # Use a lightweight gpt-4o-mini for summary
+                            from openai import OpenAI
+                            temp_client = OpenAI()
+                            sum_resp = temp_client.chat.completions.create(
+                                model="gpt-4o-mini",
+                                messages=[
+                                    {"role": "system", "content": "Generate a concise, 2-sentence technical summary of the following research document."},
+                                    {"role": "user", "content": result.document.text[:4000]}
+                                ],
+                                max_tokens=150
+                            )
+                            summary = sum_resp.choices[0].message.content or result.document.text[:500]
+                        except Exception:
+                            summary = result.document.text[:500]
+                    else:
+                        summary = result.document.text[:500]
                     
                     rag_layer.add_document(
                         doc_id=result.document.id,
@@ -63,12 +81,13 @@ def main():
                             "summary": summary
                         }
                     )
-                    print("(Indexed + Summary)", end=" ")
+                    print("(Indexed + LLM Summary)", end=" ")
                 except Exception as e:
                     print(f"(Index Failed: {e})", end=" ")
             print("")
             success_count += 1
-            results.append(result.document.model_dump())
+            if result.document:
+                results.append(result.document.model_dump())
         else:
             print(f"FAILED ({result.error})")
             

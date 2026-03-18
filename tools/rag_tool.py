@@ -1,7 +1,21 @@
-from typing import List, Optional
+import os
+from typing import List, Optional, Any
 from pydantic import BaseModel, Field
+
+try:
+    from openai import OpenAI
+except ImportError:
+    OpenAI = None # type: ignore
+
 from tools.rag import get_rag_layer
 from tools.models import Citation
+
+# Global client for HyDe
+_hyde_client = None
+if OpenAI is not None:
+    _api_key = os.getenv("OPENAI_API_KEY")
+    if _api_key:
+        _hyde_client = OpenAI(api_key=_api_key)
 
 class RagSearchInput(BaseModel):
     query: str = Field(..., description="Query to search in the uploaded documents.")
@@ -17,22 +31,36 @@ RAG_SEARCH_TOOL_DEF = {
 
 def search_uploaded_docs(query: str, use_hyde: bool = True) -> List[Citation]:
     rag = get_rag_layer()
-    
-    # In a real system, we'd pass the agent's client here for HyDe
-    # For now, let's assume get_rag_layer can access a default client or just use raw query
-    chunks = rag.query(query, n_results=5, use_multi_query=use_hyde)
-    
+
+    hyde_query = query
+    if use_hyde and _hyde_client:
+        try:
+            # Goal 19: HyDe (Hypothetical Document Embeddings)
+            resp = _hyde_client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": "Generate a short, technically accurate, hypothetical scientific snippet that would answer the user's query. This will be used for vector similarity search."},
+                    {"role": "user", "content": query}
+                ],
+                max_tokens=300
+            )
+            hyde_query = resp.choices[0].message.content or query
+        except Exception:
+            hyde_query = query
+
+    chunks = rag.query(hyde_query, n_results=5, use_multi_query=False)
+
     citations = []
     for idx, chunk in enumerate(chunks, start=1):
         # Goal 20: Provide rich parent context
         text = chunk.text
-        if "parent_text" in chunk.metadata:
+        if chunk.metadata and "parent_text" in chunk.metadata:
              text = f"... {chunk.metadata['parent_text']} ..."
-             
+
         citations.append(Citation(
             label=f"[doc-{idx}]",
-            title=chunk.metadata.get("filename", "Uploaded Doc"),
-            url=f"local://{chunk.metadata.get('doc_id')}",
+            title=chunk.metadata.get("filename", "Uploaded Doc") if chunk.metadata else "Uploaded Doc",
+            url=f"local://{chunk.metadata.get('doc_id')}" if chunk.metadata else "local://unknown",
             source_type="internal_index",
             snippet=text
         ))
