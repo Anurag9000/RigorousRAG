@@ -56,7 +56,8 @@ async def ingest_document(background_tasks: BackgroundTasks, file: UploadFile = 
     """
     Upload and ingest a document asynchronously.
     """
-    file_path = UPLOAD_DIR / file.filename
+    filename = file.filename or "unknown_file"
+    file_path = UPLOAD_DIR / filename
     
     # Save file
     with file_path.open("wb") as buffer:
@@ -67,7 +68,7 @@ async def ingest_document(background_tasks: BackgroundTasks, file: UploadFile = 
     # Background processing
     background_tasks.add_task(process_ingestion, str(file_path), job_id)
     
-    return JobStatus(job_id=job_id, status="processing", filename=file.filename)
+    return JobStatus(job_id=job_id, status="processing", filename=filename)
 
 def process_ingestion(file_path: str, job_id: str):
     """

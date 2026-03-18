@@ -110,7 +110,7 @@ def ingest_file(file_path: str, owner_id: str = "default_user") -> IngestionResu
             # Re-generate sections semantically (New)
             semantic_chunks = _chunk_text_semantically(result.document.text)
             result.document.sections = [
-                DocumentSection(title=f"Section {i+1}", content=chunk)
+                DocumentSection(title=f"Section {i+1}", content=chunk, page_number=1)
                 for i, chunk in enumerate(semantic_chunks)
             ]
             
@@ -162,12 +162,12 @@ def _ingest_pdf(path: Path) -> IngestionResult:
     )
 
 def _ingest_docx(path: Path) -> IngestionResult:
-    doc = docx.Document(path)
+    doc = docx.Document(str(path))
     full_text = []
     sections = []
     
     current_section_title = "Start"
-    current_section_content = []
+    current_section_content: list[str] = []
     
     properties = doc.core_properties
     title = properties.title or path.stem
@@ -178,12 +178,14 @@ def _ingest_docx(path: Path) -> IngestionResult:
             continue
             
         # Basic heuristic for headings
-        if para.style.name.startswith('Heading'):
+        style_name = para.style.name if para.style else ""
+        if style_name and style_name.startswith('Heading'):
             # Save previous section
             if current_section_content:
                 sections.append(DocumentSection(
                     title=current_section_title,
-                    content="\n".join(current_section_content)
+                    content="\n".join(current_section_content),
+                    page_number=1
                 ))
             current_section_title = text
             current_section_content = []
@@ -196,7 +198,8 @@ def _ingest_docx(path: Path) -> IngestionResult:
     if current_section_content:
         sections.append(DocumentSection(
             title=current_section_title,
-            content="\n".join(current_section_content)
+            content="\n".join(current_section_content),
+            page_number=1
         ))
 
     return IngestionResult(

@@ -7,7 +7,7 @@ from tools.ingestion import ingest_file
 try:
     from tools.rag import get_rag_layer
 except ImportError:
-    get_rag_layer = None
+    get_rag_layer = None # type: ignore[assignment]
 
 def main():
     parser = argparse.ArgumentParser(description="Ingest documents (PDF, Word, Text) into the system.")
@@ -33,7 +33,7 @@ def main():
     
     # Initialize RAG layer
     rag_layer = None
-    if get_rag_layer:
+    if get_rag_layer is not None:
         try:
             rag_layer = get_rag_layer()
             print("RAG Layer initialized.")

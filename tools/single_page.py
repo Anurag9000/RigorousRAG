@@ -45,8 +45,10 @@ def fetch_single_page(url: str, user_agent: str = DEFAULT_USER_AGENT) -> PageCon
         title = "Untitled"
         if soup.title and soup.title.string:
             title = soup.title.string.strip()
-        elif soup.find("h1"):
-            title = soup.find("h1").get_text(strip=True)
+        else:
+            h1 = soup.find("h1")
+            if h1:
+                title = h1.get_text(strip=True)
 
         # Extract text
         text = soup.get_text(separator=" ", strip=True)

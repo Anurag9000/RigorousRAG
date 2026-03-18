@@ -129,14 +129,22 @@ class RAGLayer:
                 where=where
             )
             # Process results...
-            if results and results['documents']:
-                for i in range(len(results['documents'][0])):
-                    all_results.append(Chunk(
-                        id=results['ids'][0][i],
-                        text=results['documents'][0][i],
-                        metadata=results['metadatas'][0][i],
-                        score=results['distances'][0][i] if 'distances' in results else 0
-                    ))
+            if results and results.get('documents'):
+                docs = results.get('documents')
+                ids = results.get('ids')
+                metas = results.get('metadatas')
+                dists = results.get('distances')
+
+                if docs and ids and metas:
+                    for i in range(len(docs[0])):
+                        meta = metas[0][i]
+                        meta_dict = dict(meta) if meta else {}
+                        all_results.append(Chunk(
+                            id=ids[0][i],
+                            text=docs[0][i],
+                            metadata=meta_dict,
+                            score=dists[0][i] if dists else 0
+                        ))
         
         # Deduplicate and sort by score (if distances present)
         seen = set()

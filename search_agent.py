@@ -7,7 +7,7 @@ try:
     from openai import OpenAI
     from openai.types.chat import ChatCompletionMessageToolCall
 except ImportError:
-    OpenAI = None # type: ignore
+    OpenAI = None # type: ignore[misc, assignment]
 
 from tools.models import AgentAnswer, Citation
 from tools.single_page import fetch_single_page
@@ -86,14 +86,14 @@ class SearchAgent:
         if not self.api_key:
              print("WARNING: OPENAI_API_KEY not found.")
         
-        self.client = OpenAI(api_key=self.api_key) if (OpenAI and self.api_key) else None
+        self.client = OpenAI(api_key=self.api_key) if (OpenAI is not None and self.api_key) else None
 
     def run(self, query: str) -> AgentAnswer:
         start_time = time.time()
         if not self.client:
             return AgentAnswer(answer="Error: OpenAI client not initialized.", citations=[])
 
-        messages = [
+        messages: List[Dict[str, Any]] = [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": query}
         ]
@@ -108,8 +108,8 @@ class SearchAgent:
             
             response = self.client.chat.completions.create(
                 model=self.model,
-                messages=messages,
-                tools=TOOLS_SCHEMA,
+                messages=messages, # type: ignore
+                tools=TOOLS_SCHEMA, # type: ignore
                 tool_choice="auto"
             )
             

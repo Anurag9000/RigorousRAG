@@ -20,7 +20,7 @@ def search_uploaded_docs(query: str, use_hyde: bool = True) -> List[Citation]:
     
     # In a real system, we'd pass the agent's client here for HyDe
     # For now, let's assume get_rag_layer can access a default client or just use raw query
-    chunks = rag.query(query, n_results=5, use_hyde=use_hyde)
+    chunks = rag.query(query, n_results=5, use_multi_query=use_hyde)
     
     citations = []
     for idx, chunk in enumerate(chunks, start=1):

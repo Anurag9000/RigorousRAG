@@ -8,6 +8,8 @@ from collections import Counter, defaultdict
 from dataclasses import asdict, dataclass
 from typing import Dict, List
 
+from Crawler import Page
+
 # Lightweight stop word list to avoid requiring NLTK datasets
 STOP_WORDS: set[str] = {
     "a",

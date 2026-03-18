@@ -11,7 +11,7 @@ from Searching import SearchHit
 try:
     from openai import OpenAI  # type: ignore
 except ImportError:
-    OpenAI = None  # type: ignore[assignment]
+    OpenAI = None  # type: ignore[assignment,misc]
 
 try:
     import ollama
@@ -65,7 +65,7 @@ class LLMAgent:
         self.ollama_host = ollama_host or os.getenv("OLLAMA_HOST")
 
         self.openai_client = None
-        if OpenAI and self.api_key:
+        if OpenAI is not None and self.api_key:
             try:
                 self.openai_client = OpenAI(api_key=self.api_key)
             except Exception:
