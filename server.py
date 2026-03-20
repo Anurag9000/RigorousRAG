@@ -1,5 +1,6 @@
 import os
 import shutil
+import argparse
 from typing import List, Optional
 from fastapi import FastAPI, UploadFile, File, BackgroundTasks, HTTPException
 from pydantic import BaseModel
@@ -11,15 +12,33 @@ from tools.models import AgentAnswer
 from tools.ingestion import ingest_file
 from tools.rag import get_rag_layer
 
+from fastapi.staticfiles import StaticFiles
+
 app = FastAPI(title="Academic Search Engine API", version="2.0.0")
 
 # --- Configuration ---
 UPLOAD_DIR = Path("uploads")
 UPLOAD_DIR.mkdir(exist_ok=True)
 
+# Parse command line args to check for --local
+parser = argparse.ArgumentParser(description="RigorousRAG API Server")
+parser.add_argument("--local", action="store_true", help="Run 100% locally via Ollama")
+try:
+    args, unknown = parser.parse_known_args()
+except Exception:
+    # Handle cases where uvicorn or tests pass unexpected args
+    class DummyArgs:
+        local = False
+    args = DummyArgs()
+
 # Global Agent Instance
-# Note: In production, consider per-request or pooled instances if stateful
-agent = SearchAgent()
+if args.local:
+    print("[INFO] Server starting in LOCAL mode (Ollama API)")
+    os.environ["OPENAI_API_KEY"] = "ollama"
+    os.environ["OPENAI_BASE_URL"] = "http://localhost:11434/v1"
+    agent = SearchAgent(model="llama3.1", api_key="ollama", base_url="http://localhost:11434/v1")
+else:
+    agent = SearchAgent()
 
 # --- Schemas ---
 
@@ -34,9 +53,10 @@ class JobStatus(BaseModel):
 
 # --- Endpoints ---
 
-@app.get("/")
-async def root():
-    return {"message": "Academic Search Engine API is running."}
+# Web Frontend replaces API root
+# @app.get("/")
+# async def root():
+#     return {"message": "Academic Search Engine API is running."}
 
 @app.post("/query", response_model=AgentAnswer)
 async def run_query(request: QueryRequest):
@@ -90,6 +110,8 @@ def process_ingestion(file_path: str, job_id: str):
         print(f"[{job_id}] Success and Indexed.")
     else:
         print(f"[{job_id}] Failed: {result.error}")
+
+app.mount("/", StaticFiles(directory="frontend", html=True), name="static")
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)

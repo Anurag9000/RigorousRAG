@@ -1,0 +1,29 @@
+# Core API and Data Validation
+fastapi>=0.110.0
+uvicorn>=0.29.0
+python-multipart>=0.0.9
+pydantic>=2.7.0
+pydantic-settings>=2.2.1
+
+# LLM Integrations
+openai>=1.20.0
+ollama>=0.1.8
+
+# Vector Database and Embeddings
+chromadb>=0.4.24
+sentence-transformers>=2.7.0
+
+# Document Ingestion (PDF, Word)
+pymupdf>=1.24.2
+python-docx>=1.1.0
+
+# Web Crawling and Networking
+beautifulsoup4>=4.12.3
+requests>=2.31.0
+
+# Testing and Type Checking (Optional but recommended for dev)
+pytest>=8.1.1
+mypy>=1.9.0
+flake8>=7.0.0
+types-requests>=2.31.0
+types-beautifulsoup4>=4.12.0

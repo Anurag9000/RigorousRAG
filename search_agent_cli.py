@@ -7,17 +7,29 @@ from tools.models import AgentAnswer
 def main():
     parser = argparse.ArgumentParser(description="Academic Agentic Search CLI")
     parser.add_argument("--query", "-q", type=str, help="Run a single query and exit.")
-    parser.add_argument("--model", type=str, default="gpt-4o", help="OpenAI model to use.")
+    parser.add_argument("--model", type=str, default="gpt-4o", help="OpenAI model to use (default: gpt-4o).")
+    parser.add_argument("--local", action="store_true", help="Run 100% locally using Ollama (default model: llama3.1).")
     
     args = parser.parse_args()
 
     api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        print("Error: OPENAI_API_KEY environment variable not set.")
-        print("Please set it before running the agent.")
-        sys.exit(1)
+    base_url = os.getenv("OPENAI_BASE_URL")
+    
+    if args.local:
+        # Override settings for local Ollama instance
+        print("[INFO] Running in LOCAL mode via Ollama...")
+        api_key = "ollama"
+        base_url = "http://localhost:11434/v1"
+        if args.model == "gpt-4o":
+            args.model = "llama3.1" # Override default model for local
+    else:
+        if not api_key and not base_url:
+            print("Error: OPENAI_API_KEY environment variable not set.")
+            print("Please set it before running the agent, or use the --local flag.")
+            sys.exit(1)
 
-    agent = SearchAgent(model=args.model, api_key=api_key)
+    print(f"[INFO] Initializing Agent with model: {args.model}")
+    agent = SearchAgent(model=args.model, api_key=api_key, base_url=base_url)
 
     if args.query:
         # One-shot mode
