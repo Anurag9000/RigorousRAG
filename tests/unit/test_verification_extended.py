@@ -24,11 +24,13 @@ class TestVerificationExtended:
     def test_audit_hallucination_verified(self):
         ans = AgentAnswer(
             answer="Correct [1]",
-            citations=[Citation(label="[1]", title="A", url="a", snippet="s", source_type="web_page")],
+            citations=[Citation(label="[1]", title="A", url="a", snippet="correct specific words here", source_type="web_page")],
             metadata={}
         )
         msg = audit_hallucination(ans)
-        assert "Verified" in msg
+        # New format uses emoji prefix; check for passed / audit keywords
+        assert "audit" in msg.lower() or "citation" in msg.lower()
+        assert "⚠️" not in msg  # no warning expected
 
     def test_audit_hallucination_warning(self):
         ans = AgentAnswer(
@@ -37,5 +39,6 @@ class TestVerificationExtended:
             metadata={}
         )
         msg = audit_hallucination(ans)
-        assert "Warning" in msg
+        # [2] is not in the citation list — should trigger an unmapped marker warning
+        assert "⚠️" in msg or "warning" in msg.lower()
         assert "[2]" in msg

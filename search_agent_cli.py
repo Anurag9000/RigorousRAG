@@ -9,19 +9,23 @@ def main():
     parser.add_argument("--query", "-q", type=str, help="Run a single query and exit.")
     parser.add_argument("--model", type=str, default="gpt-4o", help="OpenAI model to use (default: gpt-4o).")
     parser.add_argument("--local", action="store_true", help="Run 100% locally using Ollama (default model: llama3.1).")
+    parser.add_argument("--demo", action="store_true", help="Run ultra-fast demo mode with a tiny model (qwen2.5:1.5b).")
     
     args = parser.parse_args()
 
     api_key = os.getenv("OPENAI_API_KEY")
     base_url = os.getenv("OPENAI_BASE_URL")
     
-    if args.local:
+    if args.local or args.demo:
         # Override settings for local Ollama instance
-        print("[INFO] Running in LOCAL mode via Ollama...")
+        mode_name = "DEMO" if args.demo else "LOCAL"
+        print(f"[INFO] Running in {mode_name} mode via Ollama...")
         api_key = "ollama"
         base_url = "http://localhost:11434/v1"
-        if args.model == "gpt-4o":
-            args.model = "llama3.1" # Override default model for local
+        if args.demo:
+            args.model = "qwen2.5:0.5b"
+        elif args.model == "gpt-4o":
+            args.model = "llama3.1"
     else:
         if not api_key and not base_url:
             print("Error: OPENAI_API_KEY environment variable not set.")

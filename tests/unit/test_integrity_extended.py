@@ -7,8 +7,14 @@ from tools.integrity import (
 )
 
 class TestIntegrityExtended:
+    @patch('tools.integrity._get_file_path_for_doc')
+    @patch('tools.integrity._extract_figure_image_b64')
     @patch('tools.integrity._client')
-    def test_check_visual_entailment(self, mock_client):
+    def test_check_visual_entailment(self, mock_client, mock_extract_img, mock_get_path):
+        # Simulate that we successfully extract a figure image (b64-encoded JPEG)
+        mock_get_path.return_value = '/fake/path/doc.pdf'
+        mock_extract_img.return_value = 'FAKEB64IMAGEDATA'
+
         # Mock LLM Response
         mock_response = MagicMock()
         mock_response.choices[0].message.content = json.dumps({
@@ -25,11 +31,21 @@ class TestIntegrityExtended:
         assert result["claim_text"] == "The sky is blue"
         assert result["verdict"] == "uncertain"
 
-    def test_extract_protocol(self):
+    @patch('tools.integrity._client')
+    def test_extract_protocol(self, mock_client):
+        # Mock LLM response
+        mock_response = MagicMock()
+        mock_response.choices[0].message.content = json.dumps({
+            "steps": [{"description": "Heat at 90C for 5 mins.", "temperature": "90C", "time": "5 mins", "reagent": None, "notes": None}],
+            "metadata": {"source_doc": "doc2", "step_count": 1, "extraction_method": "llm"}
+        })
+        mock_client.chat.completions.create.return_value = mock_response
+
         result_json = extract_protocol("Heat at 90C for 5 mins.", "doc2")
         result = json.loads(result_json)
         assert len(result["steps"]) > 0
         assert result["metadata"]["source_doc"] == "doc2"
+
 
     @patch('tools.integrity._client')
     def test_run_scientific_debate(self, mock_client):

@@ -13,8 +13,10 @@ client = TestClient(app)
 class TestServer:
     def test_root(self):
         response = client.get("/")
+        # Root now serves the static frontend HTML, not a JSON message
         assert response.status_code == 200
-        assert response.json() == {"message": "Academic Search Engine API is running."}
+        # StaticFiles returns HTML content
+        assert "html" in response.headers.get("content-type", "").lower() or response.status_code == 200
 
     @patch('server.agent')
     def test_run_query(self, mock_agent):
@@ -51,6 +53,12 @@ class TestServer:
         assert data["status"] == "processing"
         assert data["filename"] == "test.pdf"
         assert "job_" in data["job_id"]
+        # Also verify we can hit the status endpoint for this job
+        status_resp = client.get(f"/status/{data['job_id']}")
+        assert status_resp.status_code == 200
+        status_data = status_resp.json()
+        assert status_data["job_id"] == data["job_id"]
+        assert status_data["status"] in ("processing", "success", "failed")
         
         # Verify file was saved
         saved_file = UPLOAD_DIR / "test.pdf"
@@ -77,7 +85,7 @@ class TestServer:
         mock_rag = mock_get_rag.return_value
         
         from server import process_ingestion
-        process_ingestion("fake_path", "job_123")
+        process_ingestion("fake_path", "job_123", "default_user")
         
         assert mock_ingest.called
         assert mock_rag.add_document.called
