@@ -3,41 +3,54 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>RigorousRAG | Enterprise Dashboard</title>
-    <meta name="description" content="RigorousRAG — Agentic academic research assistant with scientific integrity tools, RAG, and multi-source synthesis.">
-    <!-- Markdown parser for comparison matrices & debate formatting -->
+    <title>RigorousRAG | Research Platform</title>
+    <meta name="description" content="RigorousRAG — Agentic research assistant with full Scientific Integrity Suite, RAG, visual entailment, protocol extraction, and multi-source synthesis.">
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
-        /* ===== Design tokens ===== */
+        /* ===== Design Tokens ===== */
         :root {
-            --bg:           #0f172a;
-            --panel:        #1e293b;
+            --bg:           #0a0f1e;
+            --surface:      #111827;
+            --panel:        #1a2234;
+            --card:         #1e2d45;
             --text:         #e2e8f0;
+            --text-muted:   #64748b;
             --accent:       #3b82f6;
+            --accent-glow:  rgba(59,130,246,0.25);
             --accent-hover: #2563eb;
-            --border:       #334155;
             --success:      #10b981;
             --warning:      #f59e0b;
-            --sidebar-w:    380px;
+            --danger:       #ef4444;
+            --purple:       #a855f7;
+            --cyan:         #06b6d4;
+            --border:       #1e3a5f;
+            --sidebar-w:    360px;
+            --tools-w:      320px;
         }
-
-        /* ===== Reset & base ===== */
-        *, *::before, *::after { box-sizing: border-box; }
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
         body {
-            margin: 0;
-            font-family: system-ui, -apple-system, sans-serif;
-            background-color: var(--bg);
+            font-family: 'Inter', system-ui, sans-serif;
+            background: var(--bg);
             color: var(--text);
             display: flex;
             height: 100vh;
             overflow: hidden;
+            font-size: 14px;
         }
 
-        /* ===== Sidebar ===== */
-        .sidebar {
+        /* ===== Scrollbar ===== */
+        ::-webkit-scrollbar { width: 5px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 99px; }
+
+        /* ===== Left Sidebar ===== */
+        .left-panel {
             width: var(--sidebar-w);
             min-width: var(--sidebar-w);
-            background-color: var(--panel);
+            background: var(--surface);
             border-right: 1px solid var(--border);
             display: flex;
             flex-direction: column;
@@ -45,358 +58,520 @@
             z-index: 200;
         }
 
-        /* ===== Main panel ===== */
+        /* ===== Main ===== */
         .main {
             flex: 1;
             display: flex;
             flex-direction: column;
-            min-width: 0;   /* prevent flex overflow */
+            min-width: 0;
+            background: var(--bg);
         }
 
-        /* ===== Header ===== */
-        .header {
-            padding: 1rem;
-            border-bottom: 1px solid var(--border);
-            background-color: var(--panel);
-            font-weight: bold;
-            font-size: 1.2rem;
+        /* ===== Right Tools Panel ===== */
+        .right-panel {
+            width: var(--tools-w);
+            min-width: var(--tools-w);
+            background: var(--surface);
+            border-left: 1px solid var(--border);
             display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-        .status-badge {
-            font-size: 0.75rem;
-            background: var(--success);
-            color: white;
-            padding: 0.2rem 0.5rem;
-            border-radius: 999px;
+            flex-direction: column;
+            overflow: hidden;
         }
 
-        /* Hamburger (hidden on desktop) */
+        /* ===== Panel Headers ===== */
+        .panel-header {
+            padding: 0.9rem 1rem;
+            background: var(--panel);
+            border-bottom: 1px solid var(--border);
+            font-weight: 600;
+            font-size: 0.85rem;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 0.5rem;
+            flex-shrink: 0;
+        }
+        .panel-title { display: flex; align-items: center; gap: 0.4rem; }
+        .status-dot {
+            width: 7px; height: 7px;
+            border-radius: 50%;
+            background: var(--success);
+            box-shadow: 0 0 6px var(--success);
+            animation: pulse 2s infinite;
+        }
+        .status-dot.offline { background: var(--danger); box-shadow: 0 0 6px var(--danger); }
+        @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.5} }
+
+        /* ===== Top Bar ===== */
+        .top-bar {
+            padding: 0.6rem 1rem;
+            background: var(--surface);
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            flex-shrink: 0;
+        }
         #sidebar-toggle {
             display: none;
             background: none;
-            border: none;
+            border: 1px solid var(--border);
             color: var(--text);
-            font-size: 1.4rem;
+            font-size: 1rem;
             cursor: pointer;
-            padding: 0.2rem 0.5rem;
-            line-height: 1;
+            padding: 0.25rem 0.5rem;
+            border-radius: 0.25rem;
         }
+        .top-bar-title { font-weight: 600; font-size: 0.9rem; flex: 1; text-align: center; }
+        .model-select {
+            background: var(--panel);
+            border: 1px solid var(--border);
+            color: var(--text);
+            padding: 0.3rem 0.5rem;
+            border-radius: 0.25rem;
+            font-size: 0.75rem;
+            cursor: pointer;
+        }
+        .icon-btn {
+            background: none;
+            border: 1px solid var(--border);
+            color: var(--text-muted);
+            padding: 0.3rem 0.6rem;
+            border-radius: 0.25rem;
+            cursor: pointer;
+            font-size: 0.75rem;
+            transition: all 0.15s;
+        }
+        .icon-btn:hover { border-color: var(--accent); color: var(--accent); }
 
-        /* ===== Chat area ===== */
+        /* ===== Chat Area ===== */
         .chat-area {
             flex: 1;
-            padding: 1.5rem;
+            padding: 1.25rem 1.5rem;
             overflow-y: auto;
             display: flex;
             flex-direction: column;
-            gap: 1.5rem;
+            gap: 1rem;
             scroll-behavior: smooth;
         }
         .message {
-            padding: 1.2rem;
-            border-radius: 0.5rem;
-            max-width: 85%;
-            line-height: 1.6;
-            box-shadow: 0 4px 6px -1px rgba(0,0,0,0.15);
+            padding: 1rem 1.2rem;
+            border-radius: 0.75rem;
+            line-height: 1.65;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+            position: relative;
+            animation: fadeIn 0.2s ease;
         }
-        .user-msg  { background-color: var(--accent); align-self: flex-end; }
+        @keyframes fadeIn { from{opacity:0;transform:translateY(6px)} to{opacity:1;transform:translateY(0)} }
+        .user-msg {
+            background: linear-gradient(135deg, #1d4ed8, #3b82f6);
+            align-self: flex-end;
+            max-width: 75%;
+            border-bottom-right-radius: 0.2rem;
+        }
         .agent-msg {
-            background-color: var(--panel);
+            background: var(--panel);
             border: 1px solid var(--border);
             align-self: flex-start;
             width: 100%;
+            border-bottom-left-radius: 0.2rem;
         }
-        .agent-msg table  { width: 100%; border-collapse: collapse; margin: 1rem 0; }
-        .agent-msg th, .agent-msg td { border: 1px solid var(--border); padding: 0.75rem; text-align: left; }
-        .agent-msg th     { background-color: rgba(255,255,255,0.05); color: var(--accent); }
-        .agent-msg pre    { background: rgba(0,0,0,0.3); padding: 1rem; border-radius: 0.25rem; overflow-x: auto; }
+        .agent-msg table { width:100%; border-collapse:collapse; margin:0.75rem 0; }
+        .agent-msg th, .agent-msg td { border:1px solid var(--border); padding:0.5rem 0.75rem; text-align:left; }
+        .agent-msg th { background:rgba(59,130,246,0.1); color:var(--accent); font-size:0.8rem; }
+        .agent-msg pre { background:rgba(0,0,0,0.4); padding:0.75rem; border-radius:0.4rem; overflow-x:auto; font-size:0.8rem; margin:0.5rem 0; }
+        .agent-msg code { background:rgba(0,0,0,0.35); padding:0.1rem 0.35rem; border-radius:0.25rem; font-size:0.82em; }
+        .agent-msg h1,.agent-msg h2,.agent-msg h3 { color:var(--accent); margin:0.75rem 0 0.4rem; }
+        .agent-msg blockquote { border-left:3px solid var(--accent); padding-left:0.75rem; color:var(--text-muted); margin:0.5rem 0; }
+        .msg-label { font-size:0.65rem; text-transform:uppercase; letter-spacing:0.08em; color:var(--text-muted); margin-bottom:0.4rem; }
+        .typing-indicator { display:flex; gap:4px; padding:0.75rem; }
+        .typing-dot { width:7px;height:7px;background:var(--text-muted);border-radius:50%;animation:bounce 1s infinite; }
+        .typing-dot:nth-child(2){animation-delay:.15s} .typing-dot:nth-child(3){animation-delay:.3s}
+        @keyframes bounce{0%,80%,100%{transform:translateY(0)}40%{transform:translateY(-8px)}}
 
-        /* ===== Input bar ===== */
-        .input-area {
-            padding: 1rem 1.5rem 1.5rem;
-            background-color: var(--bg);
-            border-top: 1px solid var(--border);
-        }
-        .actions-grid { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 1rem; }
-        .action-btn {
+        /* ===== Action Buttons ===== */
+        .actions-bar { padding:0.6rem 1rem; border-top:1px solid var(--border); display:flex; flex-wrap:wrap; gap:0.4rem; background:var(--surface); flex-shrink:0; }
+        .action-chip {
             background: var(--panel);
             border: 1px solid var(--border);
             color: var(--text);
-            padding: 0.4rem 0.8rem;
-            border-radius: 0.25rem;
-            cursor: pointer;
-            font-size: 0.8rem;
-            transition: all 0.2s;
-        }
-        .action-btn:hover { background: var(--accent); border-color: var(--accent); }
-
-        /* Clear history button */
-        #clear-btn {
-            background: transparent;
-            border: 1px solid #475569;
-            color: #94a3b8;
-            padding: 0.4rem 0.8rem;
-            border-radius: 0.25rem;
-            cursor: pointer;
-            font-size: 0.8rem;
-            transition: all 0.2s;
-        }
-        #clear-btn:hover { border-color: #ef4444; color: #ef4444; }
-
-        .input-box { display: flex; gap: 0.5rem; align-items: center; }
-        input[type="text"] {
-            flex: 1;
-            padding: 0.9rem 1rem;
-            border-radius: 0.5rem;
-            border: 1px solid var(--border);
-            background: var(--panel);
-            color: var(--text);
-            font-size: 1rem;
-            outline: none;
-            min-width: 0;
-        }
-        input[type="text"]:focus { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(59,130,246,0.3); }
-
-        button.send {
-            padding: 0 1.25rem;
-            height: 2.8rem;
-            background-color: var(--accent);
-            color: white;
-            border: none;
-            border-radius: 0.5rem;
-            font-weight: bold;
-            cursor: pointer;
-            white-space: nowrap;
-            transition: background 0.2s;
-        }
-        button.send:hover { background-color: var(--accent-hover); }
-        button:disabled { opacity: 0.5; cursor: not-allowed; }
-
-        /* ===== Spinner ===== */
-        .loader {
-            display: none;
-            width: 20px;
-            height: 20px;
-            border: 3px solid var(--border);
-            border-bottom-color: var(--accent);
-            border-radius: 50%;
-            animation: spin 1s linear infinite;
-            flex-shrink: 0;
-        }
-        @keyframes spin { 100% { transform: rotate(360deg); } }
-
-        /* ===== Sidebar — upload zone ===== */
-        .upload-zone {
-            padding: 1.5rem;
-            border-bottom: 1px solid var(--border);
-            text-align: center;
-        }
-        .drop-area {
-            border: 2px dashed var(--border);
-            border-radius: 0.5rem;
-            padding: 1.5rem 1rem;
-            cursor: pointer;
-            transition: all 0.2s;
-            background: rgba(255,255,255,0.02);
-        }
-        .drop-area:hover, .drop-area.dragover {
-            border-color: var(--success);
-            background: rgba(16,185,129,0.05);
-        }
-        .privacy-note {
-            font-size: 0.75rem;
-            color: var(--success);
-            margin-top: 0.75rem;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            gap: 0.3rem;
-        }
-        #file-input { display: none; }
-        .upload-list {
-            margin-top: 1rem;
-            font-size: 0.8rem;
-            text-align: left;
-            max-height: 120px;
-            overflow-y: auto;
-        }
-        .upload-item {
-            display: flex;
-            justify-content: space-between;
-            padding: 0.4rem 0;
-            border-bottom: 1px solid rgba(255,255,255,0.05);
-        }
-
-        /* ===== Sidebar — citations ===== */
-        .citations-area {
-            flex: 1;
-            overflow-y: auto;
-            padding: 1rem;
-            background: rgba(0,0,0,0.1);
-        }
-        .citation-card {
-            background: var(--bg);
-            border: 1px solid var(--border);
-            border-left: 3px solid var(--accent);
-            border-radius: 0.25rem;
-            padding: 1rem;
-            margin-bottom: 1rem;
-            font-size: 0.85rem;
-        }
-        .citation-card[data-source="web_search"] { border-left-color: var(--warning); }
-        .citation-card[data-source="handbook"]   { border-left-color: #a855f7; }
-        .citation-header {
-            font-weight: bold;
-            margin-bottom: 0.5rem;
-            display: flex;
-            justify-content: space-between;
-            align-items: flex-start;
-            gap: 0.5rem;
-        }
-        .source-tag {
-            font-size: 0.65rem;
-            padding: 0.1rem 0.4rem;
+            padding: 0.3rem 0.65rem;
             border-radius: 999px;
-            background: rgba(255,255,255,0.1);
-            text-transform: uppercase;
+            cursor: pointer;
+            font-size: 0.72rem;
+            font-weight: 500;
+            transition: all 0.15s;
             white-space: nowrap;
         }
-        .citation-snippet {
-            color: #cbd5e1;
-            font-style: italic;
-            background: rgba(255,255,255,0.03);
-            padding: 0.5rem;
-            border-radius: 0.25rem;
-            margin-top: 0.5rem;
-            font-size: 0.8rem;
+        .action-chip:hover { background: var(--accent); border-color: var(--accent); box-shadow: 0 0 8px var(--accent-glow); }
+
+        /* ===== Input ===== */
+        .input-area { padding:0.75rem 1rem 1rem; background:var(--surface); border-top:1px solid var(--border); flex-shrink:0; }
+        .input-row { display:flex; gap:0.5rem; align-items:center; }
+        textarea#query-input {
+            flex:1;
+            padding:0.75rem 1rem;
+            border-radius:0.5rem;
+            border:1px solid var(--border);
+            background:var(--panel);
+            color:var(--text);
+            font-family:inherit;
+            font-size:0.88rem;
+            outline:none;
+            resize:none;
+            height:2.8rem;
+            min-height:2.8rem;
+            max-height:8rem;
+            overflow-y:auto;
+            line-height:1.4;
+            transition:border-color 0.15s, box-shadow 0.15s;
         }
-
-        /* ===== Overlay (mobile sidebar backdrop) ===== */
-        #sidebar-overlay {
-            display: none;
-            position: fixed;
-            inset: 0;
-            background: rgba(0,0,0,0.5);
-            z-index: 150;
+        textarea#query-input:focus { border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-glow); }
+        #send-btn {
+            height:2.8rem;
+            padding:0 1.25rem;
+            background:linear-gradient(135deg,#1d4ed8,#3b82f6);
+            color:#fff;
+            border:none;
+            border-radius:0.5rem;
+            font-weight:600;
+            font-size:0.85rem;
+            cursor:pointer;
+            white-space:nowrap;
+            transition:opacity 0.15s, box-shadow 0.15s;
+            box-shadow:0 0 12px var(--accent-glow);
         }
+        #send-btn:hover { opacity:0.9; box-shadow:0 0 20px var(--accent-glow); }
+        #send-btn:disabled { opacity:0.4; cursor:not-allowed; box-shadow:none; }
+        .loader { display:none; width:18px;height:18px;border:2.5px solid var(--border);border-bottom-color:var(--accent);border-radius:50%;animation:spin 0.7s linear infinite;flex-shrink:0; }
+        @keyframes spin{100%{transform:rotate(360deg)}}
 
-        /* ===================================================================
-           Responsive breakpoints
-        =================================================================== */
+        /* ===== Left Panel Sections ===== */
+        .left-tabs { display:flex; border-bottom:1px solid var(--border); flex-shrink:0; }
+        .left-tab {
+            flex:1; text-align:center; padding:0.6rem;
+            font-size:0.72rem; font-weight:600; text-transform:uppercase; letter-spacing:0.06em;
+            cursor:pointer; color:var(--text-muted); border-bottom:2px solid transparent;
+            transition:all 0.15s;
+        }
+        .left-tab.active { color:var(--accent); border-bottom-color:var(--accent); }
+        .left-tab-pane { display:none; flex:1; overflow-y:auto; }
+        .left-tab-pane.active { display:flex; flex-direction:column; }
 
-        /* Tablet: sidebar slides under a hamburger */
+        /* Upload zone */
+        .upload-zone { padding:1rem; flex-shrink:0; }
+        .drop-area {
+            border:2px dashed var(--border);
+            border-radius:0.5rem;
+            padding:1.25rem 1rem;
+            text-align:center;
+            cursor:pointer;
+            transition:all 0.2s;
+        }
+        .drop-area:hover, .drop-area.dragover { border-color:var(--success); background:rgba(16,185,129,0.05); }
+        .drop-area .icon { font-size:1.8rem; margin-bottom:0.4rem; }
+        .drop-area p { margin:0.25rem 0; font-size:0.8rem; }
+        .privacy-note { font-size:0.7rem; color:var(--success); margin-top:0.6rem; text-align:center; }
+        #file-input { display:none; }
+        .upload-list { padding:0 1rem 1rem; font-size:0.78rem; }
+        .upload-item { display:flex; justify-content:space-between; align-items:center; padding:0.4rem 0.5rem; border-radius:0.25rem; margin-bottom:0.25rem; background:var(--panel); }
+        .upload-item-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1; margin-right:0.5rem; }
+        .upload-item-status { font-size:0.7rem; white-space:nowrap; }
+
+        /* Document list */
+        .doc-list { padding:0.5rem 0.75rem; flex:1; overflow-y:auto; }
+        .doc-card { background:var(--card); border:1px solid var(--border); border-radius:0.4rem; padding:0.65rem 0.75rem; margin-bottom:0.5rem; cursor:pointer; transition:border-color 0.15s; }
+        .doc-card:hover { border-color:var(--accent); }
+        .doc-card-name { font-weight:600; font-size:0.8rem; margin-bottom:0.25rem; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+        .doc-card-meta { font-size:0.68rem; color:var(--text-muted); }
+        .doc-card-summary { font-size:0.72rem; color:#94a3b8; margin-top:0.3rem; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
+        .doc-id-badge { font-size:0.6rem; background:rgba(59,130,246,0.15); color:var(--accent); padding:0.1rem 0.3rem; border-radius:0.2rem; cursor:copy; }
+
+        /* Citations */
+        .citations-area { flex:1; overflow-y:auto; padding:0.75rem; }
+        .citation-card {
+            background:var(--card); border:1px solid var(--border);
+            border-left:3px solid var(--accent);
+            border-radius:0.35rem; padding:0.75rem; margin-bottom:0.6rem; font-size:0.78rem;
+        }
+        .citation-card[data-source="web_search"]  { border-left-color:var(--warning); }
+        .citation-card[data-source="handbook"]     { border-left-color:var(--purple); }
+        .citation-card[data-source="internal_index"] { border-left-color:var(--cyan); }
+        .citation-header { display:flex; justify-content:space-between; align-items:flex-start; gap:0.4rem; margin-bottom:0.35rem; }
+        .citation-title { font-weight:600; flex:1; }
+        .source-tag { font-size:0.6rem; padding:0.1rem 0.35rem; border-radius:999px; background:rgba(255,255,255,0.08); text-transform:uppercase; white-space:nowrap; flex-shrink:0; }
+        .citation-url { font-size:0.67rem; color:var(--text-muted); margin-bottom:0.35rem; word-break:break-all; }
+        .citation-url a { color:var(--accent); text-decoration:none; }
+        .citation-snippet { font-style:italic; color:#94a3b8; background:rgba(0,0,0,0.25); padding:0.4rem 0.5rem; border-radius:0.25rem; font-size:0.72rem; }
+
+        /* ===== Right Panel — Tools ===== */
+        .tool-tabs { display:flex; flex-wrap:wrap; border-bottom:1px solid var(--border); flex-shrink:0; }
+        .tool-tab {
+            flex:1; min-width:50%; text-align:center; padding:0.5rem 0.25rem;
+            font-size:0.7rem; font-weight:600; text-transform:uppercase; letter-spacing:0.05em;
+            cursor:pointer; color:var(--text-muted); border-bottom:2px solid transparent; transition:all 0.15s;
+        }
+        .tool-tab.active { color:var(--accent); border-bottom-color:var(--accent); }
+        .tool-pane { display:none; flex:1; overflow-y:auto; padding:0.75rem; flex-direction:column; gap:0.5rem; }
+        .tool-pane.active { display:flex; }
+        .tool-label { font-size:0.7rem; color:var(--text-muted); font-weight:500; margin-bottom:0.2rem; display:block; }
+        .tool-input {
+            width:100%; padding:0.45rem 0.6rem;
+            background:var(--panel); border:1px solid var(--border);
+            color:var(--text); border-radius:0.3rem; font-size:0.78rem; font-family:inherit;
+        }
+        .tool-input:focus { outline:none; border-color:var(--accent); }
+        .tool-btn {
+            width:100%; padding:0.5rem;
+            background:linear-gradient(135deg,#1d4ed8,#3b82f6);
+            border:none; color:#fff; border-radius:0.3rem;
+            font-weight:600; font-size:0.78rem; cursor:pointer; margin-top:0.25rem;
+            transition:opacity 0.15s;
+        }
+        .tool-btn:hover { opacity:0.88; }
+        .tool-btn.secondary { background:var(--panel); border:1px solid var(--border); color:var(--text); }
+        .tool-btn.secondary:hover { border-color:var(--accent); color:var(--accent); }
+        .tool-section { background:var(--panel); border-radius:0.4rem; padding:0.65rem; border:1px solid var(--border); }
+        .tool-section-title { font-size:0.7rem; color:var(--accent); font-weight:700; text-transform:uppercase; margin-bottom:0.5rem; display:flex; align-items:center; gap:0.3rem; }
+        .tool-result { background:rgba(0,0,0,0.3); border:1px solid var(--border); border-radius:0.3rem; padding:0.5rem; font-size:0.75rem; max-height:120px; overflow-y:auto; white-space:pre-wrap; color:var(--text-muted); }
+
+        /* ===== Utility ===== */
+        .empty-state { text-align:center; color:var(--text-muted); font-size:0.78rem; padding:2rem 1rem; }
+        .badge { font-size:0.6rem; padding:0.15rem 0.4rem; border-radius:999px; font-weight:600; }
+        .badge-success { background:rgba(16,185,129,0.15); color:var(--success); }
+        .badge-warning { background:rgba(245,158,11,0.15); color:var(--warning); }
+        .badge-danger  { background:rgba(239,68,68,0.15);  color:var(--danger); }
+        .section-divider { height:1px; background:var(--border); margin:0.5rem 0; }
+
+        /* ===== Responsive ===== */
+        @media (max-width: 1100px) { .right-panel { display:none; } }
         @media (max-width: 768px) {
-            body { position: relative; }
-
-            .sidebar {
-                position: fixed;
-                top: 0;
-                left: 0;
-                height: 100%;
-                transform: translateX(-100%);
-                box-shadow: 4px 0 20px rgba(0,0,0,0.4);
+            body { position:relative; }
+            .left-panel {
+                position:fixed; top:0; left:0; height:100%;
+                transform:translateX(-100%);
+                box-shadow:4px 0 24px rgba(0,0,0,0.5);
             }
-            .sidebar.sidebar-open {
-                transform: translateX(0);
-            }
-            .sidebar.sidebar-open ~ #sidebar-overlay { display: block; }
-
-            #sidebar-toggle { display: block; }
-
-            .main { width: 100%; }
-
-            .message { max-width: 95%; }
-
-            .actions-grid { gap: 0.4rem; }
-            .action-btn   { font-size: 0.75rem; padding: 0.35rem 0.6rem; }
+            .left-panel.open { transform:translateX(0); }
+            #sidebar-toggle { display:block; }
+            .main { width:100%; }
+            .user-msg { max-width:90%; }
         }
-
-        /* Mobile: stack input controls vertically */
-        @media (max-width: 480px) {
-            .header { font-size: 1rem; padding: 0.75rem; }
-
-            .chat-area  { padding: 1rem; gap: 1rem; }
-            .input-area { padding: 0.75rem 1rem 1rem; }
-
-            .input-box { flex-wrap: wrap; }
-            input[type="text"] { font-size: 0.9rem; }
-
-            button.send { width: 100%; margin-top: 0.5rem; }
-
-            .message { padding: 0.9rem; font-size: 0.9rem; }
+        @media (max-width:480px) {
+            .actions-bar { padding:0.5rem 0.75rem; }
+            .chat-area { padding:1rem; }
+            .input-area { padding:0.6rem 0.75rem 0.75rem; }
+            textarea#query-input { font-size:0.85rem; }
+            #send-btn { padding:0 0.9rem; font-size:0.8rem; }
         }
     </style>
 </head>
 <body>
 
-<!-- ===== Sidebar ===== -->
-<div class="sidebar" id="sidebar">
-    <div class="header">
-        <span>🔬 RigorousRAG</span>
-        <span class="status-badge">Local Offline</span>
+<!-- ===== Left Panel ===== -->
+<div class="left-panel" id="left-panel">
+    <div class="panel-header">
+        <div class="panel-title">
+            <span>🔬</span> RigorousRAG
+        </div>
+        <div style="display:flex;gap:0.4rem;align-items:center;">
+            <span id="server-status-dot" class="status-dot offline" title="Checking…"></span>
+            <span id="server-status-text" style="font-size:0.65rem;color:var(--text-muted)">Connecting…</span>
+        </div>
     </div>
 
-    <div class="upload-zone">
-        <div class="drop-area" id="drop-area" onclick="document.getElementById('file-input').click()">
-            <div style="font-size:2rem;margin-bottom:0.5rem;">📄</div>
-            <p style="margin:0;font-weight:bold;">Batch Ingest Documents</p>
-            <p style="margin:0.5rem 0 0;font-size:0.8rem;color:#94a3b8;">Drop PDF, Word, or TXT files here</p>
-            <input type="file" id="file-input" accept=".pdf,.txt,.docx,.md" multiple>
+    <!-- Tabs: Upload | Docs | Citations -->
+    <div class="left-tabs">
+        <div class="left-tab active" onclick="switchLeftTab('upload', this)">📤 Upload</div>
+        <div class="left-tab" onclick="switchLeftTab('docs', this)">📚 Docs</div>
+        <div class="left-tab" onclick="switchLeftTab('citations', this)">📎 Sources</div>
+    </div>
+
+    <!-- Upload Tab -->
+    <div class="left-tab-pane active" id="tab-upload">
+        <div class="upload-zone">
+            <div class="drop-area" id="drop-area" onclick="document.getElementById('file-input').click()">
+                <div class="icon">📄</div>
+                <p style="font-weight:600;">Batch Ingest Documents</p>
+                <p style="color:var(--text-muted);">PDF · Word · Markdown · TXT</p>
+                <input type="file" id="file-input" accept=".pdf,.txt,.docx,.md" multiple>
+            </div>
+            <div class="privacy-note">🔒 PII Auto-Redaction &amp; LLM Summarisation Active</div>
         </div>
-        <div class="privacy-note">🔒 Auto-Redaction &amp; Smart Summarization Active</div>
         <div class="upload-list" id="upload-list"></div>
     </div>
 
-    <div class="header" style="font-size:0.95rem;border-top:1px solid var(--border);border-bottom:none;">
-        Sources &amp; Grounding (Goal 20)
+    <!-- Docs Tab (indexed document list) -->
+    <div class="left-tab-pane" id="tab-docs">
+        <div style="padding:0.6rem 0.75rem;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:0.4rem;flex-shrink:0;">
+            <input id="doc-search" class="tool-input" style="flex:1;" placeholder="Filter documents…" oninput="filterDocs()">
+            <button class="icon-btn" onclick="loadDocList()" title="Refresh">↻</button>
+        </div>
+        <div class="doc-list" id="doc-list">
+            <div class="empty-state">Upload and ingest documents first.<br>They will appear here with summaries.</div>
+        </div>
     </div>
-    <div class="citations-area" id="citations-area">
-        <p style="text-align:center;color:#64748b;font-size:0.85rem;margin-top:2rem;">
-            When the agent orchestrates tools, exact citations and parent context will appear here.
-        </p>
+
+    <!-- Citations Tab -->
+    <div class="left-tab-pane" id="tab-citations">
+        <div class="panel-header" style="font-size:0.75rem;font-weight:500;border-bottom:1px solid var(--border);">
+            Sources &amp; Grounding (Goal 20)
+        </div>
+        <div class="citations-area" id="citations-area">
+            <div class="empty-state">Citations from the agent's last response will appear here, colour-coded by source type.</div>
+        </div>
     </div>
 </div>
 
-<!-- Overlay backdrop (mobile) -->
-<div id="sidebar-overlay" onclick="sidebar.classList.remove('sidebar-open')"></div>
+<!-- Mobile overlay -->
+<div id="sidebar-overlay" onclick="document.getElementById('left-panel').classList.remove('open')" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:150;"></div>
 
-<!-- ===== Main panel ===== -->
+<!-- ===== Main Chat Panel ===== -->
 <div class="main">
-    <div class="header">
-        <!-- Hamburger (visible on mobile only via CSS) -->
-        <button id="sidebar-toggle" aria-label="Toggle sources panel">☰</button>
-        <span style="flex:1;text-align:center;">Academic Research Agent</span>
-        <button id="clear-btn" onclick="clearHistory()" title="Clear conversation history">🗑 Clear</button>
+    <!-- Top bar -->
+    <div class="top-bar">
+        <button id="sidebar-toggle" aria-label="Toggle sidebar" onclick="toggleSidebar()">☰</button>
+        <span class="top-bar-title">Academic Research Agent</span>
+
+        <select id="model-select" class="model-select" title="Select LLM model">
+            <option value="gpt-4o">GPT-4o</option>
+            <option value="gpt-4o-mini">GPT-4o Mini</option>
+            <option value="gpt-4-turbo">GPT-4 Turbo</option>
+            <option value="llama3.1">Llama 3.1 (Local)</option>
+            <option value="qwen2.5:0.5b">Qwen 2.5 (Demo)</option>
+        </select>
+        <button class="icon-btn" onclick="clearHistory()" title="Clear conversation">🗑 Clear</button>
+        <div class="loader" id="loader"></div>
     </div>
 
+    <!-- Chat messages -->
     <div class="chat-area" id="chat-area">
         <div class="message agent-msg">
-            <strong>Engine Ready.</strong><br><br>
-            I am connected to the backend Agent.  I can orchestrate tools across your
-            Internal Index, the Web, and the Scientific Integrity Suite.<br><br>
-            <em>Try uploading some papers, then click the quick actions below!</em>
+            <div class="msg-label">RigorousRAG</div>
+            <strong>Research Platform Ready.</strong><br><br>
+            I can orchestrate across <strong>Internal Index</strong>, <strong>Web Search</strong>, <strong>Handbook</strong>, and all <strong>Scientific Integrity</strong> tools.<br><br>
+            Use the quick actions below, or describe a complex research task — I will select the right tools automatically. Upload papers in the <em>Upload</em> tab first for RAG queries.
         </div>
     </div>
 
+    <!-- Quick Action chips -->
+    <div class="actions-bar">
+        <button class="action-chip" onclick="setQuery('Run a rigorous scientific debate on the claim: ')">⚖️ Debate</button>
+        <button class="action-chip" onclick="setQuery('Generate a comparison matrix for papers: ')">📊 Matrix</button>
+        <button class="action-chip" onclick="setQuery('Compare these papers with a narrative synthesis: ')">🔍 Compare</button>
+        <button class="action-chip" onclick="setQuery('Identify contradictions and conflicts regarding: ')">⚔️ Conflicts</button>
+        <button class="action-chip" onclick="setQuery('Extract all limitations and scope constraints from the uploaded documents on: ')">🛡️ Limitations</button>
+        <button class="action-chip" onclick="setQuery('Extract the step-by-step wet-lab protocol for: ')">🧪 Protocol</button>
+        <button class="action-chip" onclick="setQuery('Search the web for the latest peer-reviewed information on: ')">🌐 Web Search</button>
+        <button class="action-chip" onclick="setQuery('Search the internal academic index for papers about: ')">🗄️ Index Search</button>
+        <button class="action-chip" onclick="setQuery('Search my uploaded documents for: ')">📄 My Docs</button>
+        <button class="action-chip" onclick="setQuery('Look up the internal handbook policy on: ')">📖 Handbook</button>
+        <button class="action-chip" onclick="setQuery('Export BibTeX citations for all sources about: ')">📑 BibTeX</button>
+        <button class="action-chip" onclick="openVisualEntailment()">👁️ Visual Entailment</button>
+    </div>
+
+    <!-- Input area -->
     <div class="input-area">
-        <div class="actions-grid">
-            <button class="action-btn" onclick="setQuery('Run a scientific debate on the claim: ')">⚖️ Debate Claim</button>
-            <button class="action-btn" onclick="setQuery('Generate a comparison matrix for the following metrics: ')">📊 Comparison Matrix</button>
-            <button class="action-btn" onclick="setQuery('Identify conflicts regarding: ')">⚔️ Find Conflicts</button>
-            <button class="action-btn" onclick="setQuery('Extract the limitations and disclaimers from the uploaded documents.')">🛡️ Extract Limitations</button>
-            <button class="action-btn" onclick="setQuery('Extract the step-by-step wet-lab protocol for: ')">🧪 Extract Protocol</button>
-            <button class="action-btn" onclick="setQuery('Search the web for the latest information on: ')">🌐 Web Search</button>
+        <div class="input-row">
+            <textarea id="query-input" placeholder="Ask a research question or command the agent… (Shift+Enter for newline)" onkeydown="handleKey(event)"></textarea>
+            <button id="send-btn" onclick="sendQuery()">▶ Execute</button>
         </div>
-        <div class="input-box">
-            <input type="text" id="query-input"
-                   placeholder="Ask a research question or command the agent…"
-                   onkeypress="handleEnter(event)">
-            <div style="display:flex;align-items:center;">
-                <div class="loader" id="loader"></div>
+    </div>
+</div>
+
+<!-- ===== Right Panel — Scientific Tools ===== -->
+<div class="right-panel">
+    <div class="panel-header">
+        <div class="panel-title">🔬 Scientific Integrity Suite</div>
+    </div>
+
+    <div class="tool-tabs">
+        <div class="tool-tab active" onclick="switchToolTab('entailment', this)">👁 Entailment</div>
+        <div class="tool-tab" onclick="switchToolTab('protocol', this)">🧪 Protocol</div>
+        <div class="tool-tab" onclick="switchToolTab('debate', this)">⚖️ Debate</div>
+        <div class="tool-tab" onclick="switchToolTab('bibtex', this)">📑 BibTeX</div>
+    </div>
+
+    <!-- Visual Entailment Tool -->
+    <div class="tool-pane active" id="tool-entailment">
+        <div class="tool-section">
+            <div class="tool-section-title">👁️ Visual Entailment Check</div>
+            <label class="tool-label">Claim Text</label>
+            <textarea class="tool-input" id="ve-claim" rows="2" placeholder="e.g. Fig 3 shows a dose-response curve…"></textarea>
+            <label class="tool-label" style="margin-top:0.4rem;">Figure ID</label>
+            <input class="tool-input" id="ve-figure" placeholder="e.g. Fig 3, Figure 2B">
+            <label class="tool-label" style="margin-top:0.4rem;">Document ID</label>
+            <input class="tool-input" id="ve-docid" placeholder="Paste doc id from Docs tab">
+            <button class="tool-btn" onclick="runVisualEntailment()">Verify Figure Claim</button>
+        </div>
+        <div class="tool-section" id="ve-result-section" style="display:none;">
+            <div class="tool-section-title">Result</div>
+            <div class="tool-result" id="ve-result"></div>
+        </div>
+        <div class="tool-section">
+            <div class="tool-section-title">ℹ️ How It Works</div>
+            <p style="font-size:0.7rem;color:var(--text-muted);line-height:1.5;">Extracts the actual figure image from the PDF using PyMuPDF (3 strategies: embedded image → region render → full page), then passes it to GPT-4o Vision. Returns SUPPORTS / CONTRADICTS / INSUFFICIENT / UNCERTAIN.</p>
+        </div>
+    </div>
+
+    <!-- Protocol Extraction Tool -->
+    <div class="tool-pane" id="tool-protocol">
+        <div class="tool-section">
+            <div class="tool-section-title">🧪 Protocol Extractor</div>
+            <label class="tool-label">Methods Section Text</label>
+            <textarea class="tool-input" id="proto-text" rows="5" placeholder="Paste the methods section text here…"></textarea>
+            <label class="tool-label" style="margin-top:0.4rem;">Document ID (optional)</label>
+            <input class="tool-input" id="proto-docid" placeholder="For traceability">
+            <button class="tool-btn" onclick="runProtocolExtraction()">Extract Protocol</button>
+        </div>
+        <div class="tool-section" id="proto-result-section" style="display:none;">
+            <div class="tool-section-title">Extracted Steps</div>
+            <div class="tool-result" id="proto-result"></div>
+        </div>
+        <div class="tool-section">
+            <div class="tool-section-title">ℹ️ How It Works</div>
+            <p style="font-size:0.7rem;color:var(--text-muted);line-height:1.5;">GPT-4o parses the methods text into a structured JSON: per-step description, temperature, time, reagents, and notes. Falls back to regex extraction when LLM is unavailable.</p>
+        </div>
+    </div>
+
+    <!-- Scientific Debate Tool -->
+    <div class="tool-pane" id="tool-debate">
+        <div class="tool-section">
+            <div class="tool-section-title">⚖️ Scientific Debate</div>
+            <label class="tool-label">Claim to Debate</label>
+            <textarea class="tool-input" id="debate-claim" rows="3" placeholder="e.g. CRISPR off-target effects are clinically insignificant"></textarea>
+            <label class="tool-label" style="margin-top:0.4rem;">Supporting Evidence (optional)</label>
+            <textarea class="tool-input" id="debate-evidence" rows="2" placeholder="Paste any context passages…"></textarea>
+            <button class="tool-btn" onclick="runDebate()">Run 3-Agent Debate</button>
+        </div>
+        <div class="tool-section">
+            <div class="tool-section-title">ℹ️ How It Works</div>
+            <p style="font-size:0.7rem;color:var(--text-muted);line-height:1.5;">Three sequential GPT-4o calls: <strong>Advocate</strong> (best case), <strong>Skeptic</strong> (rigorous critique), then <strong>Judge</strong> (final synthesis with verdict). Result appears in the main chat.</p>
+        </div>
+    </div>
+
+    <!-- BibTeX Export Tool -->
+    <div class="tool-pane" id="tool-bibtex">
+        <div class="tool-section">
+            <div class="tool-section-title">📑 BibTeX Export</div>
+            <label class="tool-label">Paper Title</label>
+            <input class="tool-input" id="bib-title" placeholder="Full paper title">
+            <label class="tool-label" style="margin-top:0.4rem;">Authors</label>
+            <input class="tool-input" id="bib-authors" placeholder="Author 1, Author 2…">
+            <label class="tool-label" style="margin-top:0.4rem;">Year</label>
+            <input class="tool-input" id="bib-year" placeholder="2024" type="number" min="1900" max="2030">
+            <label class="tool-label" style="margin-top:0.4rem;">DOI (optional)</label>
+            <input class="tool-input" id="bib-doi" placeholder="10.xxxx/xxxx">
+            <label class="tool-label" style="margin-top:0.4rem;">Journal (optional)</label>
+            <input class="tool-input" id="bib-journal" placeholder="Nature, Science…">
+            <button class="tool-btn" onclick="runBibTeX()">Generate BibTeX</button>
+        </div>
+        <div class="tool-section" id="bib-result-section" style="display:none;">
+            <div class="tool-section-title" style="justify-content:space-between;">
+                <span>Output</span>
+                <button onclick="copyBibTeX()" style="background:none;border:none;color:var(--accent);font-size:0.7rem;cursor:pointer;">Copy</button>
             </div>
-            <button class="send" id="send-btn" onclick="sendQuery()">Execute</button>
+            <div class="tool-result" id="bib-result"></div>
         </div>
     </div>
 </div>

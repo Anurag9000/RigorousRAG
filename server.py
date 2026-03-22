@@ -282,8 +282,106 @@ def process_ingestion(file_path: str, job_id: str, owner_id: str = "default_user
     print(f"[{job_id}] ✅ Indexed '{doc.filename}'.")
 
 
+
 # ---------------------------------------------------------------------------
-# Static frontend (must be mounted AFTER API routes)
+# Direct Tool Endpoints (bypass agent loop for UI panels)
+# ---------------------------------------------------------------------------
+
+class DocListItem(BaseModel):
+    doc_id: str
+    filename: str
+    owner_id: str
+    llm_summary: Optional[str] = None
+    mime_type: Optional[str] = None
+
+
+@app.get("/docs/list")
+async def list_documents(x_owner_id: str = Header(default="default_user")) -> list:
+    """Return all documents indexed in ChromaDB for a given owner (for the Docs tab)."""
+    try:
+        rag = get_rag_layer()
+        results = rag.collection.get(
+            where={"owner_id": {"$eq": x_owner_id}},
+            include=["metadatas"],
+            limit=1000,
+        )
+        seen: dict = {}
+        for meta in (results.get("metadatas") or []):
+            doc_id = meta.get("doc_id", "")
+            if doc_id and doc_id not in seen:
+                seen[doc_id] = {
+                    "doc_id": doc_id,
+                    "filename": meta.get("filename", doc_id),
+                    "owner_id": meta.get("owner_id", x_owner_id),
+                    "llm_summary": meta.get("llm_summary"),
+                    "mime_type": meta.get("mime_type"),
+                }
+        return list(seen.values())
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+class VisualEntailmentRequest(BaseModel):
+    claim_text: str
+    figure_id: str
+    doc_id: str
+
+
+@app.post("/tool/visual-entailment")
+async def direct_visual_entailment(req: VisualEntailmentRequest) -> dict:
+    """Direct visual entailment — bypasses agent loop; calls GPT-4o Vision."""
+    import json
+    from tools.integrity import check_visual_entailment
+    raw = check_visual_entailment(req.claim_text, req.figure_id, req.doc_id)
+    try:
+        return json.loads(raw)
+    except Exception:
+        return {"raw": raw}
+
+
+class ProtocolRequest(BaseModel):
+    text: str
+    doc_id: Optional[str] = ""
+
+
+@app.post("/tool/protocol")
+async def direct_extract_protocol(req: ProtocolRequest) -> dict:
+    """Direct protocol extraction — GPT-4o JSON schema parse + regex fallback."""
+    import json
+    from tools.integrity import extract_protocol
+    raw = extract_protocol(req.text, req.doc_id or "")
+    try:
+        return json.loads(raw)
+    except Exception:
+        return {"raw": raw}
+
+
+class BibTeXRequest(BaseModel):
+    title: str
+    authors: Optional[str] = ""
+    year: Optional[int] = None
+    doi: Optional[str] = ""
+    journal: Optional[str] = ""
+
+
+@app.post("/tool/bibtex")
+async def direct_bibtex(req: BibTeXRequest) -> dict:
+    """Generate a BibTeX entry directly for a given paper."""
+    from tools.bib import export_to_bibtex
+    bib = export_to_bibtex(citations=[{
+        "title":   req.title,
+        "authors": req.authors or "Unknown",
+        "year":    str(req.year) if req.year else "n.d.",
+        "doi":     req.doi or "",
+        "url":     f"https://doi.org/{req.doi}" if req.doi else "",
+        "journal": req.journal or "",
+    }])
+    return {"bibtex": bib}
+
+
+
+# ---------------------------------------------------------------------------
+# Static frontend (must be mounted AFTER all API routes)
 # ---------------------------------------------------------------------------
 
 app.mount("/", StaticFiles(directory="frontend", html=True), name="static")
