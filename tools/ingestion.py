@@ -363,6 +363,7 @@ def _ingest_pdf(path: Path) -> IngestionResult:
     Parse a PDF using PyMuPDF.
 
     - Extracts full text from all pages.
+    - Extracts academic metadata (Title, Authors) via PyMuPDF dict and font heuristics.
     - Detects sections using font-size and bold-flag analysis (two-pass).
     """
     try:
@@ -376,6 +377,40 @@ def _ingest_pdf(path: Path) -> IngestionResult:
         metadata = dict(doc.metadata)
         if metadata.get("title"):
             title = metadata["title"]
+
+    # --- Academic Metadata Font Heuristics (Gap B) ---
+    try:
+        page1 = doc[0]
+        blocks = page1.get_text("dict", flags=~fitz.TEXT_PRESERVE_IMAGES).get("blocks", [])
+        lines_info = []
+        for b in blocks:
+            if b.get("type") == 0:
+                for l in b.get("lines", []):
+                    for s in l.get("spans", []):
+                        txt = s.get("text", "").strip()
+                        sz = s.get("size", 0.0)
+                        if txt and sz > 0:
+                            lines_info.append((txt, sz))
+        if lines_info:
+            max_size = max(sz for txt, sz in lines_info)
+            # Title is usually the largest text on page 1
+            title_parts = [txt for txt, sz in lines_info if sz >= max_size * 0.95]
+            if title_parts and (not metadata.get("title") or metadata.get("title") == "Unnamed Document"):
+                title = " ".join(title_parts)
+                metadata["title"] = title
+            
+            # Authors are typically just below the title in size, before abstract
+            if not metadata.get("author") and not metadata.get("Author"):
+                author_parts = []
+                for txt, sz in lines_info:
+                    if max_size * 0.5 <= sz < max_size * 0.95 and len(txt) > 3:
+                        if "abstract" in txt.lower() or "introduction" in txt.lower():
+                            break
+                        author_parts.append(txt)
+                if author_parts:
+                    metadata["author"] = ", ".join(author_parts[:4])
+    except Exception:
+        pass
 
     full_text_parts: List[str] = []
     for page in doc:

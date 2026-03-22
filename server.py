@@ -5,6 +5,7 @@ New in this revision:
 - Job registry with GET /status/{job_id} endpoint.
 - LLM-powered 2-sentence summary generated during web-upload ingestion.
 - X-Owner-ID header threading for multi-tenant document isolation.
+- API key authentication via ALLOWED_API_KEYS env var (Gap A).
 """
 
 import argparse
@@ -16,14 +17,44 @@ from pathlib import Path
 from typing import Dict, Optional
 
 import uvicorn
-from fastapi import BackgroundTasks, FastAPI, File, Header, HTTPException, UploadFile
+from fastapi import BackgroundTasks, Depends, FastAPI, File, Header, HTTPException, UploadFile
 from fastapi.staticfiles import StaticFiles
+from fastapi.security import APIKeyHeader
 from pydantic import BaseModel
 
 from search_agent import SearchAgent
 from tools.ingestion import ingest_file
 from tools.models import AgentAnswer
 from tools.rag import get_rag_layer
+
+# ---------------------------------------------------------------------------
+# API Key Authentication (Gap A)
+# ---------------------------------------------------------------------------
+# Set ALLOWED_API_KEYS=key1,key2,key3 in your environment to enable auth.
+# When the variable is empty or unset, auth is DISABLED (dev/local mode).
+
+_API_KEY_HEADER = APIKeyHeader(name="X-API-Key", auto_error=False)
+_ALLOWED_KEYS: set[str] = {
+    k.strip() for k in os.getenv("ALLOWED_API_KEYS", "").split(",") if k.strip()
+}
+
+
+async def require_api_key(x_api_key: Optional[str] = Depends(_API_KEY_HEADER)) -> None:
+    """
+    Validates the X-API-Key header against ALLOWED_API_KEYS.
+
+    Behaviour:
+    - If ALLOWED_API_KEYS is unset/empty → auth is disabled (open access, dev mode).
+    - If ALLOWED_API_KEYS is set → key must be present and valid, else 401.
+    """
+    if not _ALLOWED_KEYS:          # dev / local mode — skip auth
+        return
+    if not x_api_key or x_api_key not in _ALLOWED_KEYS:
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid or missing API key. Provide a valid X-API-Key header.",
+        )
+
 
 # ---------------------------------------------------------------------------
 # Application setup
@@ -108,7 +139,7 @@ class JobStatus(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-@app.post("/query", response_model=AgentAnswer)
+@app.post("/query", response_model=AgentAnswer, dependencies=[Depends(require_api_key)])
 async def run_query(
     request: QueryRequest,
     x_owner_id: str = Header(default="default_user"),
@@ -129,7 +160,7 @@ async def run_query(
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
-@app.post("/ingest", response_model=JobStatus)
+@app.post("/ingest", response_model=JobStatus, dependencies=[Depends(require_api_key)])
 async def ingest_document(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
@@ -154,7 +185,7 @@ async def ingest_document(
     return JobStatus(job_id=job_id, status="processing", filename=filename)
 
 
-@app.get("/status/{job_id}", response_model=JobStatus)
+@app.get("/status/{job_id}", response_model=JobStatus, dependencies=[Depends(require_api_key)])
 async def get_job_status(job_id: str) -> JobStatus:
     """
     Retrieve the current status of an ingestion job.
@@ -295,7 +326,7 @@ class DocListItem(BaseModel):
     mime_type: Optional[str] = None
 
 
-@app.get("/docs/list")
+@app.get("/docs/list", dependencies=[Depends(require_api_key)])
 async def list_documents(x_owner_id: str = Header(default="default_user")) -> list:
     """Return all documents indexed in ChromaDB for a given owner (for the Docs tab)."""
     try:
@@ -327,7 +358,7 @@ class VisualEntailmentRequest(BaseModel):
     doc_id: str
 
 
-@app.post("/tool/visual-entailment")
+@app.post("/tool/visual-entailment", dependencies=[Depends(require_api_key)])
 async def direct_visual_entailment(req: VisualEntailmentRequest) -> dict:
     """Direct visual entailment — bypasses agent loop; calls GPT-4o Vision."""
     import json
@@ -344,7 +375,7 @@ class ProtocolRequest(BaseModel):
     doc_id: Optional[str] = ""
 
 
-@app.post("/tool/protocol")
+@app.post("/tool/protocol", dependencies=[Depends(require_api_key)])
 async def direct_extract_protocol(req: ProtocolRequest) -> dict:
     """Direct protocol extraction — GPT-4o JSON schema parse + regex fallback."""
     import json
@@ -364,7 +395,7 @@ class BibTeXRequest(BaseModel):
     journal: Optional[str] = ""
 
 
-@app.post("/tool/bibtex")
+@app.post("/tool/bibtex", dependencies=[Depends(require_api_key)])
 async def direct_bibtex(req: BibTeXRequest) -> dict:
     """Generate a BibTeX entry directly for a given paper."""
     from tools.bib import export_to_bibtex
