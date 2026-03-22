@@ -150,6 +150,21 @@ async def run_query(
     The `X-Owner-ID` header scopes uploaded-document retrieval to the
     requesting user's own documents (multi-tenant isolation).
     """
+    if getattr(_args, 'demo', False):
+        from tools.models import Citation
+        return AgentAnswer(
+            answer="**[DEMO MODE MOCK]** I have rigorously evaluated your request. The protocols and comparative data heavily indicate a `99.9%` success rate [1].\n\n### Summary of Evidence\n- **Precision:** High specificity was maintained throughout the assays.\n- **Conflicts:** No contradicting studies found in the internal index.\n\n*Note: This is a perfect JSON mock response to verify the frontend UI renders Markdown, citations, and structural agent outputs flawlessly regardless of the underlying local model capability.*",
+            citations=[
+                Citation(
+                    id="mock-doc-1",
+                    title="CRISPR Efficacy In Vivo (Demo)",
+                    url="https://doi.org/10.1126/demo",
+                    snippet="Clinical trials confirmed a 99.9% on-target editing rate.",
+                    source_type="internal_index",
+                    label="[1]"
+                )
+            ]
+        )
     try:
         if request.model:
             agent.model = request.model
@@ -361,6 +376,14 @@ class VisualEntailmentRequest(BaseModel):
 @app.post("/tool/visual-entailment", dependencies=[Depends(require_api_key)])
 async def direct_visual_entailment(req: VisualEntailmentRequest) -> dict:
     """Direct visual entailment — bypasses agent loop; calls GPT-4o Vision."""
+    if getattr(_args, 'demo', False):
+        return {
+            "claim_text": req.claim_text,
+            "figure_id": req.figure_id,
+            "verdict": "supports",
+            "rationale": "In Demo Mode, we simulate a perfect Vision-LLM extraction. The rendered image clearly displays a western blot correlating with the stated claim. The band intensity is consistent with the hypothesis.",
+            "confidence": 0.99
+        }
     import json
     from tools.integrity import check_visual_entailment
     raw = check_visual_entailment(req.claim_text, req.figure_id, req.doc_id)
@@ -378,6 +401,15 @@ class ProtocolRequest(BaseModel):
 @app.post("/tool/protocol", dependencies=[Depends(require_api_key)])
 async def direct_extract_protocol(req: ProtocolRequest) -> dict:
     """Direct protocol extraction — GPT-4o JSON schema parse + regex fallback."""
+    if getattr(_args, 'demo', False):
+        return {
+            "steps": [
+                {"description": "Harvest cells and wash twice with cold PBS.", "temperature": "4°C", "reagent": "PBS"},
+                {"description": "Lyse cells using RIPA buffer on ice.", "time": "30 mins", "reagent": "RIPA"},
+                {"description": "Centrifuge lysate to pellet debris.", "time": "15 mins", "temperature": "4°C", "notes": "14,000 x g"}
+            ],
+            "metadata": {"extraction_method": "Perfect JSON Mock"}
+        }
     import json
     from tools.integrity import extract_protocol
     raw = extract_protocol(req.text, req.doc_id or "")
@@ -398,6 +430,10 @@ class BibTeXRequest(BaseModel):
 @app.post("/tool/bibtex", dependencies=[Depends(require_api_key)])
 async def direct_bibtex(req: BibTeXRequest) -> dict:
     """Generate a BibTeX entry directly for a given paper."""
+    if getattr(_args, 'demo', False):
+        return {
+            "bibtex": f"@article{{demo{req.year or 2026},\n  title={{{req.title}}},\n  author={{{req.authors or 'Doe, John'}}},\n  journal={{{req.journal or 'Journal of Demo Mocking'}}},\n  year={{{req.year or 2026}}},\n  doi={{{req.doi or '10.0000/demo'}}}\n}}"
+        }
     from tools.bib import export_to_bibtex
     bib = export_to_bibtex(citations=[{
         "title":   req.title,

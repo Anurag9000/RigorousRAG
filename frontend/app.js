@@ -385,7 +385,7 @@ async function runVisualEntailment() {
         resultSection.style.display = "block";
 
         if (data.error) {
-            resultEl.textContent = `Error: ${data.error}`;
+            resultEl.innerHTML = `<span style="color:var(--danger)"><strong>Error:</strong> ${escapeHTML(data.error)}</span>`;
             return;
         }
 
@@ -430,6 +430,10 @@ async function runProtocolExtraction() {
         const data = await res.json();
         resultSection.style.display = "block";
 
+        if (data.error) {
+            resultEl.innerHTML = `<span style="color:var(--danger)"><strong>Error:</strong> ${escapeHTML(data.error)}</span>`;
+            return;
+        }
         if (!data.steps) {
             resultEl.textContent = JSON.stringify(data, null, 2);
             return;
@@ -497,6 +501,10 @@ async function runBibTeX() {
         });
         const data = await res.json();
         resultSection.style.display = "block";
+        if (data.error) {
+            resultEl.innerHTML = `<span style="color:var(--danger)"><strong>Error:</strong> ${escapeHTML(data.error)}</span>`;
+            return;
+        }
         resultEl.textContent = data.bibtex || JSON.stringify(data, null, 2);
     } catch (err) {
         resultSection.style.display = "block";
