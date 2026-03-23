@@ -8,6 +8,8 @@
 
 RigorousRAG is a professional-grade research assistant designed for scientists and academic researchers. It layers a sophisticated multi-tool reasoning agent on top of a hybrid "Internal Index + Web + RAG" architecture, focusing on **groundedness, traceability, and rigorous evidence synthesis.**
 
+![RigorousRAG Architecture Diagram](assets/architecture_diagram.png)
+
 ---
 
 ## 🎯 Code Quality Status
