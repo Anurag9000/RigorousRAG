@@ -26,22 +26,18 @@ class Chunk(BaseModel):
 
 
 def _metadata_scalar(value: Any) -> Optional[str | int | float | bool]:
-    if isinstance(value, (str, int, float, bool)):
-        return value
-    return None
+    return value if isinstance(value, (str, int, float, bool)) else None
 
 
 def _combine_filters(filters: Sequence[Optional[Dict[str, Any]]]) -> Optional[Dict[str, Any]]:
     usable = [item for item in filters if item]
     if not usable:
         return None
-    if len(usable) == 1:
-        return usable[0]
-    return {"$and": usable}
+    return usable[0] if len(usable) == 1 else {"$and": usable}
 
 
 class RAGLayer:
-    """Chroma wrapper with mandatory owner scoping and idempotent writes."""
+    """Chroma wrapper with mandatory owner scoping and retry-safe writes."""
 
     def __init__(
         self,
@@ -80,7 +76,12 @@ class RAGLayer:
         overlap: int = 120,
         replace: bool = True,
     ) -> int:
-        """Index semantic sections with deterministic, retry-safe IDs."""
+        """Index semantic sections with deterministic IDs.
+
+        New chunks are upserted before obsolete IDs are removed. A failed write
+        therefore leaves the previously indexed document available instead of
+        deleting it before replacement succeeds.
+        """
 
         if not doc_id or not doc_id.strip():
             raise ValueError("doc_id must be non-empty.")
@@ -92,7 +93,6 @@ class RAGLayer:
             self._owner_filter(owner_id),
             {"doc_id": {"$eq": doc_id}},
         ])
-
         source_sections: List[Dict[str, Any]] = []
         if sections:
             for index, section in enumerate(sections):
@@ -155,12 +155,17 @@ class RAGLayer:
                     ids.append(chunk_id)
                     documents.append(child_text)
                     metadatas.append(chunk_metadata)
-
         if not ids:
             raise ValueError("Document produced no vector chunks.")
+
         with self._write_lock:
+            existing_ids: set[str] = set()
             if replace:
-                self.collection.delete(where=document_filter)
+                existing = self.collection.get(
+                    where=document_filter,
+                    include=["metadatas"],
+                )
+                existing_ids = {str(value) for value in existing.get("ids") or []}
             for start in range(0, len(ids), 128):
                 stop = start + 128
                 self.collection.upsert(
@@ -168,6 +173,9 @@ class RAGLayer:
                     documents=documents[start:stop],
                     metadatas=metadatas[start:stop],
                 )
+            stale_ids = sorted(existing_ids - set(ids))
+            if stale_ids:
+                self.collection.delete(ids=stale_ids)
         return len(ids)
 
     def delete_document(self, *, owner_id: str, doc_id: str) -> None:
@@ -274,7 +282,9 @@ class RAGLayer:
         queries = [query_text]
         if use_multi_query:
             queries = self.generate_expanded_queries(
-                query_text, agent_client, model=expansion_model
+                query_text,
+                agent_client,
+                model=expansion_model,
             )
 
         candidates: Dict[str, Chunk] = {}
@@ -291,21 +301,21 @@ class RAGLayer:
             docs = (results.get("documents") or [[]])[0]
             ids = (results.get("ids") or [[]])[0]
             metas = (results.get("metadatas") or [[]])[0]
-            dists = (results.get("distances") or [[]])[0]
+            distances = (results.get("distances") or [[]])[0]
             for index, chunk_id in enumerate(ids):
                 text = docs[index] if index < len(docs) else ""
                 metadata = metas[index] if index < len(metas) and metas[index] else {}
-                distance = float(dists[index]) if index < len(dists) else 1.0
+                distance = float(distances[index]) if index < len(distances) else 1.0
                 candidate = Chunk(
-                    id=chunk_id,
-                    text=text,
+                    id=str(chunk_id),
+                    text=str(text),
                     metadata=dict(metadata),
                     distance=max(distance, 0.0),
                     score=1.0 / (1.0 + max(distance, 0.0)),
                 )
-                existing = candidates.get(chunk_id)
+                existing = candidates.get(candidate.id)
                 if existing is None or candidate.distance < existing.distance:
-                    candidates[chunk_id] = candidate
+                    candidates[candidate.id] = candidate
         return sorted(candidates.values(), key=lambda item: item.distance)[:n_results]
 
     def list_documents(self, *, owner_id: str, limit: int = 1000) -> List[Dict[str, Any]]:
