@@ -54,15 +54,22 @@ _FIELD_ORDER = [
     "title", "author", "year", "journal", "booktitle", "publisher",
     "institution", "school", "volume", "number", "pages", "doi", "url",
 ]
+_BIBTEX_ESCAPES = {
+    "\\": r"\textbackslash{}",
+    "{": r"\{",
+    "}": r"\}",
+    "%": r"\%",
+    "#": r"\#",
+    "&": r"\&",
+    "_": r"\_",
+}
 
 
 def _escape_bibtex(value: Any) -> str:
+    """Escape each original character once, avoiding cascading replacements."""
+
     text = " ".join(str(value or "").replace("\x00", "").split())
-    text = text.replace("\\", r"\textbackslash{}")
-    text = text.replace("{", r"\{").replace("}", r"\}")
-    for raw, escaped in (("%", r"\%"), ("#", r"\#"), ("&", r"\&"), ("_", r"\_")):
-        text = text.replace(raw, escaped)
-    return text
+    return "".join(_BIBTEX_ESCAPES.get(character, character) for character in text)
 
 
 def _slug(value: str, limit: int = 28) -> str:
@@ -75,7 +82,10 @@ def _citation_key(citation: Dict[str, Any], index: int) -> str:
     surname = first_author.strip().split()[-1] if first_author.strip() else "anon"
     year = re.sub(r"\D", "", str(citation.get("year") or "nd")) or "nd"
     title_slug = _slug(str(citation.get("title") or "untitled"), 18)
-    identity = "|".join(str(citation.get(field) or "") for field in ("title", "authors", "year", "doi", "url"))
+    identity = "|".join(
+        str(citation.get(field) or "")
+        for field in ("title", "authors", "year", "doi", "url")
+    )
     digest = hashlib.sha1(identity.encode("utf-8")).hexdigest()[:6]
     return f"{_slug(surname, 16)}{year}{title_slug}{digest}" or f"reference{index + 1}"
 
