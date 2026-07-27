@@ -1,4 +1,4 @@
-"""Index construction and text processing utilities."""
+"""Sparse scientific-text TF-IDF index."""
 
 from __future__ import annotations
 
@@ -10,148 +10,42 @@ from typing import Dict, List
 
 from Crawler import Page
 
-# Lightweight stop word list to avoid requiring NLTK datasets
 STOP_WORDS: set[str] = {
-    "a",
-    "about",
-    "above",
-    "after",
-    "again",
-    "against",
-    "all",
-    "also",
-    "am",
-    "an",
-    "and",
-    "any",
-    "are",
-    "as",
-    "at",
-    "be",
-    "because",
-    "been",
-    "before",
-    "being",
-    "below",
-    "between",
-    "both",
-    "but",
-    "by",
-    "can",
-    "could",
-    "did",
-    "do",
-    "does",
-    "doing",
-    "down",
-    "during",
-    "each",
-    "few",
-    "for",
-    "from",
-    "further",
-    "had",
-    "has",
-    "have",
-    "having",
-    "he",
-    "her",
-    "here",
-    "hers",
-    "herself",
-    "hi",
-    "him",
-    "himself",
-    "his",
-    "how",
-    "i",
-    "if",
-    "in",
-    "into",
-    "is",
-    "it",
-    "its",
-    "itself",
-    "just",
-    "me",
-    "more",
-    "most",
-    "my",
-    "myself",
-    "no",
-    "nor",
-    "not",
-    "now",
-    "of",
-    "off",
-    "on",
-    "once",
-    "only",
-    "or",
-    "other",
-    "our",
-    "ours",
-    "ourselves",
-    "out",
-    "over",
-    "own",
-    "same",
-    "she",
-    "should",
-    "so",
-    "some",
-    "such",
-    "than",
-    "that",
-    "the",
-    "their",
-    "theirs",
-    "them",
-    "themselves",
-    "then",
-    "there",
-    "these",
-    "they",
-    "this",
-    "those",
-    "through",
-    "to",
-    "too",
-    "under",
-    "until",
-    "up",
-    "very",
-    "was",
-    "we",
-    "were",
-    "what",
-    "when",
-    "where",
-    "which",
-    "while",
-    "who",
-    "whom",
-    "why",
-    "will",
-    "with",
-    "you",
-    "your",
-    "yours",
-    "yourself",
-    "yourselves",
+    "a", "about", "after", "all", "also", "an", "and", "any", "are", "as",
+    "at", "be", "because", "been", "before", "between", "both", "but", "by",
+    "can", "could", "did", "do", "does", "during", "each", "for", "from",
+    "further", "had", "has", "have", "having", "how", "if", "in", "into",
+    "is", "it", "its", "may", "more", "most", "no", "not", "of", "on",
+    "only", "or", "other", "our", "out", "over", "same", "should", "so",
+    "some", "such", "than", "that", "the", "their", "then", "there", "these",
+    "they", "this", "those", "through", "to", "under", "up", "very", "was",
+    "we", "were", "what", "when", "where", "which", "while", "who", "why",
+    "will", "with", "would", "you", "your",
 }
 
-TOKEN_PATTERN = re.compile(r"[a-zA-Z]{2,}")
+# Unicode word components, retaining numbers and scientific identifiers such as
+# IL-6, GPT-4o, H2O, p53, α-synuclein, 10.1038 and ResNet/50.
+TOKEN_PATTERN = re.compile(r"[^\W_]+(?:[-./][^\W_]+)*", flags=re.UNICODE)
 
 
 def tokenize(text: str) -> List[str]:
-    tokens = [match.group(0).lower() for match in TOKEN_PATTERN.finditer(text)]
-    return [token for token in tokens if token not in STOP_WORDS]
+    tokens: List[str] = []
+    for match in TOKEN_PATTERN.finditer(text or ""):
+        token = match.group(0).casefold().strip("-./")
+        if not token or token in STOP_WORDS:
+            continue
+        if len(token) == 1 and not token.isdigit() and token not in {"x", "y", "z", "r", "p", "q"}:
+            continue
+        tokens.append(token)
+    return tokens
 
 
 def build_snippet(text: str, max_words: int = 40) -> str:
-    words = text.split()
-    return " ".join(words[:max_words])
+    if max_words <= 0:
+        return ""
+    words = (text or "").split()
+    snippet = " ".join(words[:max_words])
+    return f"{snippet}…" if len(words) > max_words else snippet
 
 
 @dataclass
@@ -162,7 +56,9 @@ class DocumentMetadata:
 
 
 class InvertedIndex:
-    """Sparse TF-IDF index with cosine similarity support."""
+    """Sparse log-TF/IDF index with cosine-normalised document vectors."""
+
+    SCHEMA_VERSION = 2
 
     def __init__(self) -> None:
         self.documents: Dict[str, DocumentMetadata] = {}
@@ -170,82 +66,98 @@ class InvertedIndex:
         self.idf: Dict[str, float] = {}
         self.doc_norms: Dict[str, float] = {}
 
-    def build(self, pages: Dict[str, "Page"]) -> None:
+    def clear(self) -> None:
+        self.documents.clear()
+        self.index = defaultdict(dict)
+        self.idf.clear()
+        self.doc_norms.clear()
+
+    def build(self, pages: Dict[str, Page]) -> None:
+        """Rebuild from scratch; repeated calls never retain stale postings."""
+
+        self.clear()
         term_document_frequency: Counter[str] = Counter()
         document_term_frequency: Dict[str, Counter[str]] = {}
-
         for url, page in pages.items():
             body_tokens = tokenize(page.text)
             title_tokens = tokenize(page.title)
             if not body_tokens and not title_tokens:
                 continue
-
-            tf_counter = Counter(body_tokens)
+            frequencies = Counter(body_tokens)
             for token in title_tokens:
-                tf_counter[token] += 2  # Lightweight title boost
-
-            document_term_frequency[url] = tf_counter
-            term_document_frequency.update(tf_counter.keys())
-
-            snippet = build_snippet(page.text)
+                frequencies[token] += 2
+            document_term_frequency[url] = frequencies
+            term_document_frequency.update(frequencies.keys())
             self.documents[url] = DocumentMetadata(
-                title=page.title, snippet=snippet, length=len(body_tokens)
+                title=page.title or "Untitled",
+                snippet=build_snippet(page.text),
+                length=len(body_tokens),
             )
 
         total_documents = len(document_term_frequency)
         if total_documents == 0:
             return
-
-        for term, df in term_document_frequency.items():
-            self.idf[term] = math.log((1 + total_documents) / (1 + df)) + 1
-
-        for url, tf_counter in document_term_frequency.items():
+        self.idf = {
+            term: math.log((1 + total_documents) / (1 + frequency)) + 1.0
+            for term, frequency in term_document_frequency.items()
+        }
+        for url, frequencies in document_term_frequency.items():
             norm_squared = 0.0
-            for term, frequency in tf_counter.items():
-                idf = self.idf.get(term)
-                if idf is None:
-                    continue
-                weight = (1 + math.log(frequency)) * idf
+            for term, frequency in frequencies.items():
+                weight = (1.0 + math.log(frequency)) * self.idf[term]
                 self.index[term][url] = weight
                 norm_squared += weight * weight
             self.doc_norms[url] = math.sqrt(norm_squared)
 
     def to_dict(self) -> Dict[str, object]:
         return {
+            "schema_version": self.SCHEMA_VERSION,
             "documents": {
                 url: asdict(metadata) for url, metadata in self.documents.items()
             },
-            "index": {
-                term: {url: weight for url, weight in postings.items()}
-                for term, postings in self.index.items()
-            },
-            "idf": self.idf,
-            "doc_norms": self.doc_norms,
+            "index": {term: dict(postings) for term, postings in self.index.items()},
+            "idf": dict(self.idf),
+            "doc_norms": dict(self.doc_norms),
         }
 
     @classmethod
     def from_dict(cls, payload: Dict[str, object]) -> "InvertedIndex":
+        if not isinstance(payload, dict):
+            raise ValueError("Index payload must be an object.")
+        version = int(payload.get("schema_version", 1))
+        if version not in {1, cls.SCHEMA_VERSION}:
+            raise ValueError(f"Unsupported index schema version {version}.")
         instance = cls()
         documents = payload.get("documents", {})
         if isinstance(documents, dict):
             for url, metadata in documents.items():
-                if isinstance(metadata, dict):
-                    instance.documents[url] = DocumentMetadata(
-                        title=metadata.get("title", "Untitled"),
-                        snippet=metadata.get("snippet", ""),
-                        length=int(metadata.get("length", 0)),
-                    )
-        index_payload = payload.get("index", {})
-        if isinstance(index_payload, dict):
-            for term, postings in index_payload.items():
-                if isinstance(postings, dict):
-                    instance.index[term] = {
-                        url: float(weight) for url, weight in postings.items()
-                    }
+                if not isinstance(url, str) or not isinstance(metadata, dict):
+                    continue
+                instance.documents[url] = DocumentMetadata(
+                    title=str(metadata.get("title") or "Untitled"),
+                    snippet=str(metadata.get("snippet") or ""),
+                    length=max(int(metadata.get("length", 0)), 0),
+                )
+        postings_payload = payload.get("index", {})
+        if isinstance(postings_payload, dict):
+            for term, postings in postings_payload.items():
+                if not isinstance(term, str) or not isinstance(postings, dict):
+                    continue
+                instance.index[term] = {
+                    str(url): float(weight)
+                    for url, weight in postings.items()
+                    if str(url) in instance.documents
+                }
         idf_payload = payload.get("idf", {})
         if isinstance(idf_payload, dict):
-            instance.idf = {term: float(value) for term, value in idf_payload.items()}
-        doc_norms = payload.get("doc_norms", {})
-        if isinstance(doc_norms, dict):
-            instance.doc_norms = {url: float(value) for url, value in doc_norms.items()}
+            instance.idf = {
+                str(term): float(value) for term, value in idf_payload.items()
+            }
+        norms_payload = payload.get("doc_norms", {})
+        if isinstance(norms_payload, dict):
+            instance.doc_norms = {
+                str(url): max(float(value), 0.0)
+                for url, value in norms_payload.items()
+                if str(url) in instance.documents
+            }
         return instance
