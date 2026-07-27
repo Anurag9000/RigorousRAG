@@ -1,55 +1,67 @@
-import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
+
 from search_agent import SearchAgent
-from tools.models import AgentAnswer
+from tools.models import Citation
 
-class TestSearchAgent:
-    
-    @patch('search_agent.OpenAI')
-    def test_run_basic(self, mock_openai):
-        # Mock the chat completion response
-        mock_msg = MagicMock()
-        mock_msg.tool_calls = None
-        mock_msg.content = '{"answer": "Test Answer", "citations": []}'
-        
-        mock_response = MagicMock()
-        mock_response.choices = [MagicMock(message=mock_msg)]
-        
-        mock_openai.return_value.chat.completions.create.return_value = mock_response
-        
-        agent = SearchAgent(api_key="dummy")
-        result = agent.run("Questions?")
-        
-        assert result.answer == "Test Answer"
-        assert len(result.citations) == 0
 
-    @patch('search_agent.OpenAI')
-    @patch('search_agent.log_tool_call')
-    def test_tool_call_flow(self, mock_log, mock_openai):
-        # Setup a sequence: Tool Call -> Final Answer
-        
-        # 1. Tool Call Response
-        msg1 = MagicMock()
-        tool_call = MagicMock()
-        tool_call.function.name = "web_search"
-        tool_call.function.arguments = '{"query": "foo"}'
-        msg1.tool_calls = [tool_call]
-        msg1.content = None
-        
-        # 2. Final Answer Response
-        msg2 = MagicMock()
-        msg2.tool_calls = None
-        msg2.content = '{"answer": "Web Found", "citations": []}'
-        
-        mock_openai.return_value.chat.completions.create.side_effect = [
-            MagicMock(choices=[MagicMock(message=msg1)]), # Turn 1
-            MagicMock(choices=[MagicMock(message=msg2)])  # Turn 2
-        ]
-        
-        agent = SearchAgent(api_key="dummy")
-        # Mock the actual tool handler to avoid networking
-        with patch.object(agent, '_handle_tool_call') as mock_handle:
-            result = agent.run("Find foo")
-            
-            assert mock_handle.called
-            assert result.answer == "Web Found"
+def source(url="https://example.test/a", source_id="a"):
+    return Citation(
+        label="[temporary]",
+        title="Evidence",
+        url=url,
+        source_type="web_page",
+        snippet="supporting evidence",
+        source_id=source_id,
+    )
+
+
+def test_evidence_registry_relabels_and_deduplicates_server_side():
+    registry = []
+    seen = {}
+    selected = SearchAgent._register_citations([source()], registry, seen)
+    repeated = SearchAgent._register_citations([source()], registry, seen)
+    assert selected[0].label == "[1]"
+    assert repeated[0].label == "[1]"
+    assert len(registry) == 1
+
+
+def test_only_answer_referenced_sources_are_returned():
+    evidence = [source(source_id="a"), source("https://example.test/b", "b")]
+    evidence[0].label = "[1]"
+    evidence[1].label = "[2]"
+    selected = SearchAgent._citations_used_by_answer("Supported [2].", evidence)
+    assert [citation.label for citation in selected] == ["[2]"]
+
+
+def test_uploaded_document_dispatch_always_passes_request_owner(monkeypatch):
+    agent = SearchAgent(owner_id="alice")
+    captured = {}
+
+    def fake_search(**kwargs):
+        captured.update(kwargs)
+        return []
+
+    monkeypatch.setattr("search_agent.search_uploaded_docs", fake_search)
+    content, citations = agent._dispatch("search_uploaded_docs", {"query": "q"})
+    assert captured["owner_id"] == "alice"
+    assert citations == []
+    assert "retrieved" in content.lower()
+
+
+def test_no_provider_uses_retrieval_fallback(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    citation = source()
+    citation.label = "[1]"
+    with patch("search_agent.OpenAI", None), \
+         patch("search_agent.search_uploaded_docs", return_value=[citation]), \
+         patch("search_agent.search_internal", return_value=[]):
+        answer = SearchAgent(owner_id="alice").run("What is the evidence?")
+    assert answer.citations
+    assert answer.citations[0].label == "[1]"
+    assert "without generative synthesis" in answer.answer
+
+
+def test_final_json_parser_does_not_accept_model_supplied_citations():
+    content = '```json\n{"answer":"Supported [1]","citations":[{"url":"invented"}]}\n```'
+    assert SearchAgent._parse_final_text(content) == "Supported [1]"
