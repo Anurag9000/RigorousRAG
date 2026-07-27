@@ -1,4 +1,4 @@
-"""Simplified PageRank implementation for the crawled link graph."""
+"""Validated PageRank for the fetched-page link graph."""
 
 from __future__ import annotations
 
@@ -6,39 +6,48 @@ from typing import Dict, Iterable, Set
 
 
 def compute_pagerank(
-    graph: Dict[str, Set[str]],
+    graph: Dict[str, Iterable[str]],
     damping: float = 0.85,
-    iterations: int = 20,
+    iterations: int = 100,
+    tolerance: float = 1e-10,
 ) -> Dict[str, float]:
-    """Compute PageRank scores for the given link graph."""
-    nodes: Set[str] = set(graph.keys())
-    for targets in graph.values():
-        nodes.update(targets)
+    if not 0.0 <= damping < 1.0:
+        raise ValueError("damping must be in the interval [0, 1).")
+    if iterations <= 0:
+        raise ValueError("iterations must be positive.")
+    if tolerance < 0:
+        raise ValueError("tolerance cannot be negative.")
 
+    nodes: Set[str] = set(graph)
+    for targets in graph.values():
+        nodes.update(str(target) for target in targets)
     if not nodes:
         return {}
 
+    adjacency: Dict[str, Set[str]] = {
+        node: {str(target) for target in graph.get(node, ()) if str(target) in nodes}
+        for node in nodes
+    }
     total_nodes = len(nodes)
     rank = {node: 1.0 / total_nodes for node in nodes}
-
-    # Ensure every node has an outgoing set for simplified logic
-    adjacency = {node: set(graph.get(node, set())) for node in nodes}
+    teleport = (1.0 - damping) / total_nodes
 
     for _ in range(iterations):
-        new_rank = {node: (1.0 - damping) / total_nodes for node in nodes}
-        sink_share = sum(rank[node] for node, edges in adjacency.items() if not edges)
-        sink_distribution = damping * sink_share / total_nodes
-
-        for node, edges in adjacency.items():
-            if not edges:
+        sink_mass = sum(rank[node] for node, targets in adjacency.items() if not targets)
+        sink_share = damping * sink_mass / total_nodes
+        new_rank = {node: teleport + sink_share for node in nodes}
+        for source, targets in adjacency.items():
+            if not targets:
                 continue
-            share = damping * rank[node] / len(edges)
-            for target in edges:
+            share = damping * rank[source] / len(targets)
+            for target in targets:
                 new_rank[target] += share
-
-        for node in nodes:
-            new_rank[node] += sink_distribution
-
+        delta = sum(abs(new_rank[node] - rank[node]) for node in nodes)
         rank = new_rank
+        if delta <= tolerance:
+            break
 
-    return rank
+    total = sum(rank.values())
+    if total <= 0:
+        return {node: 1.0 / total_nodes for node in nodes}
+    return {node: value / total for node, value in rank.items()}
