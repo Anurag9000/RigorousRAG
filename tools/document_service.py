@@ -8,6 +8,7 @@ from typing import Any, Optional
 
 from tools.ingestion import ingest_file
 from tools.ingestion_models import IngestedDocument
+from tools.privacy import mask_metadata_text, sanitize_metadata_dict
 from tools.rag import RAGLayer, get_rag_layer
 
 
@@ -64,7 +65,7 @@ def summarize_document(
             max_tokens=220,
         )
         value = (response.choices[0].message.content or "").strip()
-        return value or document.text[:800].strip()
+        return mask_metadata_text(value) or document.text[:800].strip()
     except Exception:
         return document.text[:800].strip()
 
@@ -81,7 +82,10 @@ def index_document(
 ) -> IndexedDocument:
     rag = rag or get_rag_layer()
     summary = summarize_document(document, client=client, model=summary_model)
-    document.metadata["llm_summary"] = summary
+    document.metadata = sanitize_metadata_dict({
+        **document.metadata,
+        "llm_summary": summary,
+    })
     metadata = {
         "filename": document.filename,
         "mime_type": document.mime_type,
@@ -97,6 +101,7 @@ def index_document(
     if job_id:
         metadata["job_id"] = job_id
     if storage_path:
+        # This remains server-only metadata and is not returned by document listing.
         metadata["storage_path"] = storage_path
     chunk_count = rag.add_document(
         doc_id=document.id,
