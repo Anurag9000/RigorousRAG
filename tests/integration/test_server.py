@@ -1,98 +1,99 @@
-import pytest
-from unittest.mock import patch, MagicMock
-from fastapi.testclient import TestClient
-import os
+import importlib
 import io
+import json
+import sys
+from unittest.mock import MagicMock
 
-# Mocking before import to prevent expensive initialisations
-with patch('search_agent.SearchAgent'), patch('tools.rag.get_rag_layer'):
-    from server import app, UPLOAD_DIR
+import pytest
+from fastapi.testclient import TestClient
 
-client = TestClient(app)
+from tools.models import AgentAnswer
 
-class TestServer:
-    def test_root(self):
-        response = client.get("/")
-        # Root now serves the static frontend HTML, not a JSON message
-        assert response.status_code == 200
-        # StaticFiles returns HTML content
-        assert "html" in response.headers.get("content-type", "").lower() or response.status_code == 200
 
-    @patch('server.agent')
-    def test_run_query(self, mock_agent):
-        mock_agent.run.return_value = MagicMock(
-            answer="Test Answer",
-            citations=[],
-            metadata={}
-        )
-        # Use a fake dict that Pydantic can validate as AgentAnswer
-        mock_agent.run.return_value.model_dump.return_value = {
-            "answer": "Test Answer",
-            "citations": [],
-            "metadata": {}
-        }
-        
-        response = client.post("/query", json={"query": "test query", "model": "gpt-fake"})
-        assert response.status_code == 200
-        assert "Test Answer" in response.json()["answer"]
-        assert mock_agent.model == "gpt-fake"
+@pytest.fixture
+def server_module(monkeypatch, tmp_path):
+    monkeypatch.setenv("API_KEY_OWNERS_JSON", json.dumps({"alice-key": "alice", "bob-key": "bob"}))
+    monkeypatch.setenv("UPLOAD_DIR", str(tmp_path / "uploads"))
+    monkeypatch.setenv("ALLOWED_MODELS", "test-model")
+    monkeypatch.setenv("DEFAULT_MODEL", "test-model")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    sys.modules.pop("server", None)
+    module = importlib.import_module("server")
+    yield module
+    sys.modules.pop("server", None)
 
-    @patch('server.process_ingestion')
-    def test_ingest_document(self, mock_process):
-        # Create a dummy file
-        file_content = b"fake pdf content"
-        file = io.BytesIO(file_content)
-        
-        response = client.post(
-            "/ingest",
-            files={"file": ("test.pdf", file, "application/pdf")}
-        )
-        
-        assert response.status_code == 200
-        data = response.json()
-        assert data["status"] == "processing"
-        assert data["filename"] == "test.pdf"
-        assert "job_" in data["job_id"]
-        # Also verify we can hit the status endpoint for this job
-        status_resp = client.get(f"/status/{data['job_id']}")
-        assert status_resp.status_code == 200
-        status_data = status_resp.json()
-        assert status_data["job_id"] == data["job_id"]
-        assert status_data["status"] in ("processing", "success", "failed")
-        
-        # Verify file was saved
-        saved_file = UPLOAD_DIR / "test.pdf"
-        assert saved_file.exists()
-        assert saved_file.read_bytes() == file_content
-        
-        # Cleanup
-        saved_file.unlink()
 
-    @patch('server.ingest_file')
-    @patch('server.get_rag_layer')
-    def test_process_ingestion_worker(self, mock_get_rag, mock_ingest):
-        mock_doc = MagicMock()
-        mock_doc.id = "id1"
-        mock_doc.text = "text"
-        mock_doc.filename = "f.txt"
-        mock_doc.mime_type = "text/plain"
-        
-        mock_result = MagicMock()
-        mock_result.success = True
-        mock_result.document = mock_doc
-        mock_ingest.return_value = mock_result
-        
-        mock_rag = mock_get_rag.return_value
-        
-        from server import process_ingestion
-        process_ingestion("fake_path", "job_123", "default_user")
-        
-        assert mock_ingest.called
-        assert mock_rag.add_document.called
-        assert mock_rag.add_document.call_args[1]["doc_id"] == "id1"
+def test_health_and_config_are_public(server_module):
+    client = TestClient(server_module.app)
+    assert client.get("/health").json()["status"] == "ok"
+    config = client.get("/config").json()
+    assert config["auth_required"] is True
+    assert config["allowed_models"] == ["test-model"]
 
-    def test_run_query_error(self):
-        with patch('server.agent.run', side_effect=Exception("Agent crash")):
-            response = client.post("/query", json={"query": "fail"})
-            assert response.status_code == 500
-            assert "Agent crash" in response.json()["detail"]
+
+def test_api_key_selects_server_owned_tenant(server_module, monkeypatch):
+    captured = []
+
+    class FakeAgent:
+        def __init__(self, owner):
+            self.owner = owner
+
+        def run(self, query):
+            captured.append((self.owner, query))
+            return AgentAnswer(answer=f"owner={self.owner}")
+
+    monkeypatch.setattr(server_module, "_new_agent", lambda owner_id, model=None: FakeAgent(owner_id))
+    client = TestClient(server_module.app)
+    missing = client.post("/query", json={"query": "q"})
+    assert missing.status_code == 401
+    alice = client.post("/query", headers={"X-API-Key": "alice-key"}, json={"query": "q"})
+    bob = client.post("/query", headers={"X-API-Key": "bob-key"}, json={"query": "q"})
+    assert alice.json()["answer"] == "owner=alice"
+    assert bob.json()["answer"] == "owner=bob"
+    assert captured == [("alice", "q"), ("bob", "q")]
+
+
+def test_client_supplied_owner_header_is_ignored(server_module, monkeypatch):
+    monkeypatch.setattr(
+        server_module,
+        "_new_agent",
+        lambda owner_id, model=None: MagicMock(run=lambda _query: AgentAnswer(answer=owner_id)),
+    )
+    client = TestClient(server_module.app)
+    response = client.post(
+        "/query",
+        headers={"X-API-Key": "alice-key", "X-Owner-ID": "bob"},
+        json={"query": "q"},
+    )
+    assert response.json()["answer"] == "alice"
+
+
+def test_upload_uses_generated_storage_name_and_owner_scoped_job(server_module, monkeypatch):
+    monkeypatch.setattr(server_module, "process_ingestion", lambda *_args, **_kwargs: None)
+    client = TestClient(server_module.app)
+    response = client.post(
+        "/ingest",
+        headers={"X-API-Key": "alice-key"},
+        files={"file": ("../../paper.txt", io.BytesIO(b"evidence"), "text/plain")},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    stored = list((server_module.UPLOAD_DIR / "alice").iterdir())
+    assert len(stored) == 1
+    assert stored[0].name != "paper.txt"
+    assert stored[0].suffix == ".txt"
+    status = client.get(f"/status/{payload['job_id']}", headers={"X-API-Key": "alice-key"})
+    assert status.status_code == 200
+    hidden = client.get(f"/status/{payload['job_id']}", headers={"X-API-Key": "bob-key"})
+    assert hidden.status_code == 404
+
+
+def test_model_override_is_allowlisted(server_module):
+    client = TestClient(server_module.app)
+    response = client.post(
+        "/query",
+        headers={"X-API-Key": "alice-key"},
+        json={"query": "q", "model": "unapproved-model"},
+    )
+    assert response.status_code == 400
