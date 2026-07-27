@@ -1,13 +1,39 @@
-version: '3.8'
-
 services:
   api:
-    build: .
+    build:
+      context: .
+    init: true
     ports:
-      - "8000:8000"
-    volumes:
-      - ./uploads:/app/uploads
-      - ./rag_storage:/app/rag_storage
+      - "${RIGOROUSRAG_PORT:-8000}:8000"
     environment:
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
-    restart: always
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
+      DEFAULT_MODEL: ${DEFAULT_MODEL:-gpt-4o}
+      ALLOWED_MODELS: ${ALLOWED_MODELS:-gpt-4o}
+      SERPER_API_KEY: ${SERPER_API_KEY:-}
+      API_KEY_OWNERS_JSON: ${API_KEY_OWNERS_JSON:-}
+      SINGLE_USER_OWNER_ID: ${SINGLE_USER_OWNER_ID:-default_user}
+      RETAIN_UPLOADS: ${RETAIN_UPLOADS:-false}
+      MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-50000000}
+      CHROMA_PATH: /app/rag_storage
+      UPLOAD_DIR: /app/uploads
+    volumes:
+      - rigorousrag_uploads:/app/uploads
+      - rigorousrag_vectors:/app/rag_storage
+      - rigorousrag_crawl:/app/data
+      - rigorousrag_cache:/home/rigorousrag/.cache
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    restart: unless-stopped
+    stop_grace_period: 30s
+
+volumes:
+  rigorousrag_uploads:
+  rigorousrag_vectors:
+  rigorousrag_crawl:
+  rigorousrag_cache:
