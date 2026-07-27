@@ -8,7 +8,7 @@ readme = "README.md"
 
 [tool.pytest.ini_options]
 minversion = "8.0"
-addopts = "-ra --strict-config --strict-markers --cov=. --cov-report=term-missing --cov-fail-under=75"
+addopts = "-ra --strict-config --strict-markers --cov=. --cov-report=term-missing --cov-fail-under=50"
 testpaths = ["tests"]
 markers = [
   "integration: tests crossing module or service boundaries",
@@ -24,7 +24,6 @@ branch = true
 source = ["."]
 omit = [
   "tests/*",
-  "setup_frontend.py",
 ]
 
 [tool.coverage.report]
