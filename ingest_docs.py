@@ -1,102 +1,128 @@
+"""Batch document ingestion CLI using the same service as the API."""
+
+from __future__ import annotations
+
 import argparse
-import sys
 import json
 import os
+import sys
 from pathlib import Path
-from tools.ingestion import ingest_file
+from typing import Any, List, Optional
 
 try:
-    from tools.rag import get_rag_layer
-except ImportError:
-    get_rag_layer = None # type: ignore[assignment]
+    from openai import OpenAI
+except ImportError:  # pragma: no cover
+    OpenAI = None  # type: ignore[assignment]
 
-def main():
-    parser = argparse.ArgumentParser(description="Ingest documents (PDF, Word, Text) into the system.")
-    parser.add_argument("paths", nargs="+", help="Files or directories to ingest.")
-    parser.add_argument("--output", "-o", help="Output JSON file for ingested data.", default="ingested_docs.json")
-    parser.add_argument("--recursive", "-r", action="store_true", help="Recursively ingest directories.")
-    
-    args = parser.parse_args()
-    
-    files_to_process = []
-    
-    for p_str in args.paths:
-        path = Path(p_str)
+from tools.document_service import ingest_and_index
+from tools.rag import get_rag_layer
+from tools.security import normalize_owner_id
+
+_ALLOWED_SUFFIXES = {".pdf", ".docx", ".txt", ".md"}
+
+
+def _collect_files(paths: List[str], recursive: bool, output_path: Optional[Path]) -> List[Path]:
+    collected: List[Path] = []
+    for raw in paths:
+        path = Path(raw)
         if path.is_file():
-            files_to_process.append(path)
+            candidates = [path]
         elif path.is_dir():
-             pattern = "**/*" if args.recursive else "*"
-             for child in path.glob(pattern):
-                 if child.is_file():
-                     files_to_process.append(child)
-    
-    print(f"Found {len(files_to_process)} files to process.")
-    
-    # Initialize RAG layer
-    rag_layer = None
-    if get_rag_layer is not None:
-        try:
-            rag_layer = get_rag_layer()
-            print("RAG Layer initialized.")
-        except Exception as e:
-            print(f"Warning: RAG Layer could not be initialized. Indexing will be skipped. Error: {e}")
-
-    results = []
-    success_count = 0
-    
-    for file_path in files_to_process:
-        print(f"Ingesting: {file_path} ...", end=" ", flush=True)
-        result = ingest_file(str(file_path))
-        if result.success:
-            print("OK", end=" ")
-            if rag_layer and result.document:
-                try:
-                    # Goal 19: Pre-generated short summary using LLM if available
-                    summary = ""
-                    if "OPENAI_API_KEY" in os.environ:
-                        try:
-                            # Use a lightweight gpt-4o-mini for summary
-                            from openai import OpenAI
-                            temp_client = OpenAI()
-                            sum_resp = temp_client.chat.completions.create(
-                                model="gpt-4o-mini",
-                                messages=[
-                                    {"role": "system", "content": "Generate a concise, 2-sentence technical summary of the following research document."},
-                                    {"role": "user", "content": result.document.text[:4000]}
-                                ],
-                                max_tokens=150
-                            )
-                            summary = sum_resp.choices[0].message.content or result.document.text[:500]
-                        except Exception:
-                            summary = result.document.text[:500]
-                    else:
-                        summary = result.document.text[:500]
-                    
-                    rag_layer.add_document(
-                        doc_id=result.document.id,
-                        text=result.document.text,
-                        metadata={
-                            "filename": result.document.filename,
-                            "mime_type": result.document.mime_type,
-                            "summary": summary
-                        }
-                    )
-                    print("(Indexed + LLM Summary)", end=" ")
-                except Exception as e:
-                    print(f"(Index Failed: {e})", end=" ")
-            print("")
-            success_count += 1
-            if result.document:
-                results.append(result.document.model_dump())
+            candidates = list(path.rglob("*") if recursive else path.glob("*"))
         else:
-            print(f"FAILED ({result.error})")
-            
-    print(f"\nIngestion Complete. {success_count}/{len(files_to_process)} successful.")
-    
-    if args.output and results:
-        with open(args.output, "w", encoding="utf-8") as f:
-            json.dump(results, f, indent=2, default=str)
-        print(f"Results saved to {args.output}")
+            continue
+        for candidate in candidates:
+            if not candidate.is_file() or candidate.suffix.lower() not in _ALLOWED_SUFFIXES:
+                continue
+            if output_path and candidate.resolve() == output_path.resolve():
+                continue
+            collected.append(candidate)
+    return sorted(set(collected), key=lambda item: str(item.resolve()))
+
+
+def _llm_client() -> Optional[Any]:
+    if OpenAI is None:
+        return None
+    api_key = os.getenv("OPENAI_API_KEY")
+    base_url = os.getenv("OPENAI_BASE_URL")
+    if not api_key and not base_url:
+        return None
+    return OpenAI(
+        api_key=api_key or "local-no-key",
+        base_url=base_url,
+        timeout=60,
+        max_retries=2,
+    )
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Parse, redact, and index PDF, DOCX, Markdown, and text files."
+    )
+    parser.add_argument("paths", nargs="+", help="Files or directories to ingest.")
+    parser.add_argument("-r", "--recursive", action="store_true")
+    parser.add_argument("-o", "--output", default="ingestion_manifest.json")
+    parser.add_argument("--owner-id", default=os.getenv("SINGLE_USER_OWNER_ID", "default_user"))
+    parser.add_argument(
+        "--include-redacted-text",
+        action="store_true",
+        help="Include redacted full text and sections in the output manifest.",
+    )
+    parser.add_argument("--fail-fast", action="store_true")
+    return parser.parse_args()
+
+
+def main() -> int:
+    args = parse_args()
+    try:
+        owner_id = normalize_owner_id(args.owner_id)
+    except Exception as exc:
+        print(f"Invalid owner ID: {exc}", file=sys.stderr)
+        return 2
+
+    output_path = Path(args.output) if args.output else None
+    files = _collect_files(args.paths, args.recursive, output_path)
+    if not files:
+        print("No supported input files were found.", file=sys.stderr)
+        return 1
+
+    rag = get_rag_layer()
+    client = _llm_client()
+    manifest = []
+    failures = 0
+    for path in files:
+        print(f"Ingesting {path} ...", end=" ", flush=True)
+        try:
+            indexed = ingest_and_index(
+                str(path),
+                owner_id=owner_id,
+                rag=rag,
+                client=client,
+            )
+            document = indexed.document
+            payload = document.model_dump(
+                mode="json",
+                exclude_none=True,
+                exclude=set() if args.include_redacted_text else {"text", "sections"},
+            )
+            payload["chunk_count"] = indexed.chunk_count
+            manifest.append(payload)
+            print(f"OK ({indexed.chunk_count} chunks)")
+        except Exception as exc:
+            failures += 1
+            print(f"FAILED ({exc})")
+            if args.fail_fast:
+                break
+
+    if output_path:
+        output_path.write_text(
+            json.dumps(manifest, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        print(f"Manifest written to {output_path}")
+    print(f"Completed: {len(manifest)} succeeded, {failures} failed.")
+    return 0 if failures == 0 else 1
+
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
