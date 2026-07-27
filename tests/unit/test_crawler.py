@@ -1,71 +1,61 @@
-import pytest
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
-from Crawler import AcademicCrawler, is_trusted_domain, normalize_url
 
-class TestAcademicCrawler:
-    
-    @pytest.fixture
-    def crawler(self):
-        return AcademicCrawler(max_depth=1)
+from bs4 import BeautifulSoup
 
-    def test_init(self, crawler):
-        assert crawler.max_depth == 1
-        # Queue is not initialized until crawl() is called unless loading state.
-        # But we can check config
-        assert crawler.timeout > 0
+from Crawler import AcademicCrawler, Page, is_trusted_domain, normalize_url
+from storage import CrawlState
 
-    def test_is_trusted_true(self):
-        # Testing module level function
-        # Implementation checks trusted_sources.
-        # Assuming .edu is trusted or specific domains.
-        # Let's check a domain likely in the trusted list or trusted logic.
-        # If external list, maybe mock it?
-        # But let's try a known one if possible.
-        # If logic is obscure, we can check basic logic if we knew it.
-        # Let's mock ALL_TRUSTED_DOMAINS if possible or verify known behavior.
-        # For safety/speed, we'll assume "mit.edu" is trusted if the list is standard.
-        # If this fails, we'll inspect the list.
-        # Actually, let's patch ALL_TRUSTED_DOMAINS in Crawler.py context?
-        # But is_trusted_domain is imported.
-        
-        # Let's check strict equality
-        assert is_trusted_domain("https://www.nsf.gov/funding", ["nsf.gov"]) == True
 
-    def test_is_trusted_false(self):
-        assert is_trusted_domain("https://spam.com", ["nsf.gov"]) == False
+def test_url_normalization_removes_fragments_tracking_and_default_ports():
+    assert normalize_url("HTTPS://Example.COM:443/a/?utm_source=x&b=2&a=1#part") == "https://example.com/a?a=1&b=2"
+    assert normalize_url("javascript:alert(1)") == ""
+    assert normalize_url("http://") == ""
 
-    @patch('Crawler.requests.Session.get')
-    def test_fetch_page_success(self, mock_get, crawler):
-        # Crawler uses self.session.get, not requests.get
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.headers = {'Content-Type': 'text/html'}
-        # Make content larger than 512 bytes (MIN_CONTENT_LENGTH)
-        padding = "a" * 600
-        mock_response.text = f"<html><title>Test</title><body>Content {padding}</body></html>"
-        mock_get.return_value = mock_response
 
-        # _fetch_page is private. But we want to test it.
-        # It's better to test crawl() but that involves threading/loops.
-        # We can call _fetch_page directly if we accept internal testing.
-        # It seems my previous test failed on assertion None is not None or similar.
-        
-        # Check if _fetch_page exists
-        if hasattr(crawler, "_fetch_page"):
-            page = crawler._fetch_page("https://example.com/test")
-            assert page is not None
-            assert page.title == "Test"
-        else:
-            # Maybe it logic is inline?
-            pass
+def test_domain_allowlist_uses_hostname_boundaries():
+    assert is_trusted_domain("https://journals.example.edu/paper", ["example.edu"])
+    assert not is_trusted_domain("https://example.edu.attacker.test", ["example.edu"])
 
-    def test_normalize_url(self):
-        base = "https://example.com/dir/"
-        link = "foo"
-        # Testing module level normalize_url?
-        # But normalize_url takes one arg in Crawler.py: def normalize_url(url: str) -> str
-        # It seems it doesn't handle joining. `urljoin` is used before calling it probably.
-        
-        url = "https://example.com/dir/foo#frag"
-        norm = normalize_url(url)
-        assert "#frag" not in norm
+
+def test_crawl_adds_new_seeds_even_with_saved_frontier():
+    crawler = AcademicCrawler(
+        allowed_domains=["a.test", "b.test"],
+        max_pages=2,
+        max_depth=0,
+        request_delay=0,
+        robots_fail_open=True,
+    )
+    crawler._is_allowed_by_robots = MagicMock(return_value=True)
+    crawler._fetch_page = MagicMock(side_effect=lambda url: Page(url, url, "x" * 600, [], "text/html", 600))
+    state = CrawlState.empty()
+    state.frontier = [("https://a.test", 0)]
+    result = crawler.crawl(["https://b.test"], state)
+    assert set(result.pages) == {"https://a.test/", "https://b.test/"}
+
+
+def test_rejected_url_is_recorded_as_attempted():
+    crawler = AcademicCrawler(allowed_domains=["allowed.test"], request_delay=0)
+    state = crawler.crawl(["https://blocked.test"])
+    assert "https://blocked.test/" in state.visited
+    assert not state.pages
+
+
+def test_fetch_revalidates_final_redirect_host():
+    crawler = AcademicCrawler(allowed_domains=["allowed.test"], request_delay=0)
+    response = SimpleNamespace(
+        final_url="https://attacker.test/page",
+        headers={"Content-Type": "text/html; charset=utf-8"},
+        content=(b"<html><title>X</title><body>" + b"a" * 700 + b"</body></html>"),
+    )
+    with patch("Crawler.safe_download", return_value=response):
+        assert crawler._fetch_page("https://allowed.test/page") is None
+
+
+def test_link_extraction_is_deduplicated_and_trusted():
+    crawler = AcademicCrawler(allowed_domains=["example.test"])
+    soup = BeautifulSoup(
+        '<a href="/a?utm_source=x">A</a><a href="/a">A2</a><a href="https://evil.test">E</a>',
+        "html.parser",
+    )
+    assert crawler._extract_links("https://example.test/", soup) == ["https://example.test/a"]
