@@ -1,60 +1,67 @@
-import pytest
-from unittest.mock import MagicMock, patch
+import threading
+from unittest.mock import MagicMock
+
+from tools.ingestion_models import DocumentSection
 from tools.rag import RAGLayer
 
-class TestRAGLayer:
 
-    @patch('tools.rag.chromadb.PersistentClient')
-    @patch('tools.rag.embedding_functions.SentenceTransformerEmbeddingFunction')
-    def test_init_and_add(self, mock_emb_fn, mock_chroma):
-        # Setup mocks
-        mock_collection = MagicMock()
-        mock_chroma.return_value.get_or_create_collection.return_value = mock_collection
-        
-        # We don't skip client init because the class does it eagerly.
-        rag = RAGLayer(persist_directory="dummy")
-        
-        # Test add_document
-        rag.add_document("doc1", "This is a test document text.", {"owner": "me"})
-        
-        # Verify collection.add called
-        assert mock_collection.add.called
-        call_args = mock_collection.add.call_args[1]
-        assert "ids" in call_args
-        assert len(call_args["documents"]) > 0
+def make_rag():
+    rag = object.__new__(RAGLayer)
+    rag.collection = MagicMock()
+    rag._write_lock = threading.RLock()
+    return rag
 
-    @patch('tools.rag.chromadb.PersistentClient')
-    @patch('tools.rag.embedding_functions.SentenceTransformerEmbeddingFunction')
-    def test_query(self, mock_emb_fn, mock_chroma):
-        mock_collection = MagicMock()
-        mock_chroma.return_value.get_or_create_collection.return_value = mock_collection
-        
-        # Mock query result
-        mock_collection.query.return_value = {
-            "ids": [["1"]],
-            "documents": [["Doc Content"]],
-            "metadatas": [[{"foo": "bar"}]],
-            "distances": [[0.1]]
-        }
-        
-        rag = RAGLayer()
-        results = rag.query("test query")
-        assert len(results) == 1
-        assert results[0].text == "Doc Content"
 
-    def test_hyde_query_gen(self):
-        # We can test this without mocking RAG init if we are careful,
-        # OR we mock the init behavior via patch for the class.
-        # But generate_hyde_query is an instance method.
-        # Let's mock the whole class or just patch the client init in setUp?
-        
-        with patch('tools.rag.chromadb.PersistentClient'), \
-             patch('tools.rag.embedding_functions.SentenceTransformerEmbeddingFunction'):
-             
-            rag = RAGLayer(persist_directory="dummy")
-            
-            mock_client = MagicMock()
-            mock_client.chat.completions.create.return_value.choices[0].message.content = "Hypothetical Answer"
-            
-            hyde = rag.generate_hyde_query("question", mock_client)
-            assert "Hypothetical Answer" in hyde
+def test_add_document_is_owner_scoped_and_retry_safe():
+    rag = make_rag()
+    count = rag.add_document(
+        "doc-1",
+        None,
+        sections=[DocumentSection(title="Methods", content="alpha beta gamma " * 100)],
+        metadata={"owner_id": "alice", "filename": "paper.pdf"},
+        chunk_size=120,
+        overlap=20,
+    )
+    assert count > 0
+    delete_where = rag.collection.delete.call_args.kwargs["where"]
+    assert {"owner_id": {"$eq": "alice"}} in delete_where["$and"]
+    assert {"doc_id": {"$eq": "doc-1"}} in delete_where["$and"]
+    assert rag.collection.upsert.called
+    upsert = rag.collection.upsert.call_args.kwargs
+    assert all(meta["owner_id"] == "alice" for meta in upsert["metadatas"])
+    assert all(meta["section_title"] == "Methods" for meta in upsert["metadatas"])
+
+
+def test_query_always_combines_owner_and_document_filters():
+    rag = make_rag()
+    rag.collection.query.return_value = {
+        "ids": [["chunk-1"]],
+        "documents": [["evidence"]],
+        "metadatas": [[{"owner_id": "alice", "doc_id": "doc-1"}]],
+        "distances": [[0.25]],
+    }
+    chunks = rag.query("question", owner_id="alice", doc_id="doc-1", n_results=3)
+    assert len(chunks) == 1
+    assert chunks[0].distance == 0.25
+    assert chunks[0].score == 0.8
+    where = rag.collection.query.call_args.kwargs["where"]
+    assert {"owner_id": {"$eq": "alice"}} in where["$and"]
+    assert {"doc_id": {"$eq": "doc-1"}} in where["$and"]
+
+
+def test_empty_owner_is_rejected():
+    rag = make_rag()
+    try:
+        rag.query("question", owner_id="")
+    except ValueError as exc:
+        assert "owner_id" in str(exc)
+    else:
+        raise AssertionError("An empty owner must never become an unscoped query.")
+
+
+def test_delete_document_is_owner_scoped():
+    rag = make_rag()
+    rag.delete_document(owner_id="alice", doc_id="doc-1")
+    where = rag.collection.delete.call_args.kwargs["where"]
+    assert {"owner_id": {"$eq": "alice"}} in where["$and"]
+    assert {"doc_id": {"$eq": "doc-1"}} in where["$and"]
