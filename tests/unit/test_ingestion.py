@@ -1,31 +1,52 @@
-import pytest
-from tools.ingestion import extract_academic_metadata, _chunk_text_semantically
+from pathlib import Path
 
-class TestIngestion:
+from tools.ingestion import _chunk_text_semantically, ingest_file, redact_text
 
-    def test_metadata_extraction(self):
-        text = """
-        Title: Quantum Computing Advances
-        DOI: 10.1038/s41586-023-0000
-        Published: 2024
-        
-        Abstract...
-        """
-        meta = extract_academic_metadata(text)
-        assert meta["doi"] == "10.1038/s41586-023-0000"
-        assert meta["year"] == "2024"
-        assert "Quantum Computing" in meta["extracted_title"]
 
-    def test_semantic_chunking(self):
-        # Create text with clear paragraph breaks
-        text = "Para 1.\n\nPara 2.\n\nPara 3."
-        chunks = _chunk_text_semantically(text, max_chars=50) # Small limit
-        
-        # If max_chars allows it, chunks should respect newlines
-        # Logic says: if current + next < max, merge. else split.
-        # "Para 1.\n\n" is ~9 chars. 
-        # If we pass 50, all might fit in one if logic merges eagerly.
-        # Let's use a very small limit to force split.
-        
-        chunks_small = _chunk_text_semantically(text, max_chars=10)
-        assert len(chunks_small) >= 2
+def test_redaction_applies_to_full_text_and_sections(tmp_path):
+    path = tmp_path / "notes.txt"
+    path.write_text(
+        "Contact alice@example.com or +1 202-555-0114.\n\nMethods were recorded.",
+        encoding="utf-8",
+    )
+    result = ingest_file(str(path), owner_id="alice")
+    assert result.success and result.document is not None
+    document = result.document
+    assert "alice@example.com" not in document.text
+    assert "202-555-0114" not in document.text
+    assert "[REDACTED_EMAIL]" in document.text
+    assert all("alice@example.com" not in section.content for section in document.sections)
+    assert all("202-555-0114" not in section.content for section in document.sections)
+    assert "file_path" not in document.model_dump(mode="json")
+
+
+def test_document_id_is_content_and_owner_stable(tmp_path):
+    path = tmp_path / "paper.md"
+    path.write_text("# Stable paper\n\nA repeatable body.", encoding="utf-8")
+    first = ingest_file(str(path), owner_id="alice").document
+    second = ingest_file(str(path), owner_id="alice").document
+    other_owner = ingest_file(str(path), owner_id="bob").document
+    assert first and second and other_owner
+    assert first.id == second.id
+    assert first.id != other_owner.id
+    assert first.metadata["content_sha256"] == second.metadata["content_sha256"]
+
+
+def test_semantic_chunks_enforce_maximum_even_for_long_sentence():
+    text = "word " * 600
+    chunks = _chunk_text_semantically(text, max_chars=120)
+    assert chunks
+    assert max(map(len, chunks)) <= 120
+
+
+def test_binary_content_rejected_when_named_text(tmp_path):
+    path = tmp_path / "payload.txt"
+    path.write_bytes(b"hello\x00binary")
+    result = ingest_file(str(path))
+    assert not result.success
+    assert "binary" in (result.error or "").lower()
+
+
+def test_redaction_does_not_mask_arbitrary_non_luhn_number():
+    text = "Experiment identifier 1234 5678 9012 3456 is not a payment card."
+    assert "[REDACTED_PAYMENT_CARD]" not in redact_text(text)
