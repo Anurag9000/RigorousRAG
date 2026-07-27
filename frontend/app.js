@@ -1,553 +1,572 @@
-// ============================================================
-// RigorousRAG — app.js
-// Full frontend integration: chat, uploads, tool panels,
-// doc list, server health, model selector, session persistence.
-// ============================================================
+"use strict";
 
-// ===== DOM References =====
-const chatArea      = document.getElementById("chat-area");
-const queryInput    = document.getElementById("query-input");
-const sendBtn       = document.getElementById("send-btn");
-const loader        = document.getElementById("loader");
-const citationsArea = document.getElementById("citations-area");
-const fileInput     = document.getElementById("file-input");
-const uploadList    = document.getElementById("upload-list");
-const dropArea      = document.getElementById("drop-area");
-const modelSelect   = document.getElementById("model-select");
+const $ = (id) => document.getElementById(id);
+const chatArea = $("chat-area");
+const queryInput = $("query-input");
+const sendBtn = $("send-btn");
+const loader = $("loader");
+const citationsArea = $("citations-area");
+const fileInput = $("file-input");
+const uploadList = $("upload-list");
+const dropArea = $("drop-area");
+const modelSelect = $("model-select");
+const apiKeyInput = $("api-key-input");
+const HISTORY_KEY = "rigorousrag_session_history_v4";
+const API_KEY_KEY = "rigorousrag_session_api_key";
+let appConfig = { auth_required: false, allowed_models: [], default_model: "", retain_uploads: false };
+let allDocs = [];
 
-// ===== Markdown =====
-marked.setOptions({ breaks: true, gfm: true });
-
-// ============================================================
-// Session Persistence (localStorage)
-// ============================================================
-const STORAGE_KEY = "rigorousrag_v2_history";
-
-function restoreSession() {
-    try {
-        const raw = localStorage.getItem(STORAGE_KEY);
-        if (!raw) return;
-        const history = JSON.parse(raw);
-        history.forEach(({ text, isUser }) => appendMessage(text, isUser, false));
-    } catch { localStorage.removeItem(STORAGE_KEY); }
+function apiKey() {
+  return sessionStorage.getItem(API_KEY_KEY) || "";
 }
 
-function persistMessage(text, isUser) {
-    try {
-        const raw = localStorage.getItem(STORAGE_KEY);
-        const history = raw ? JSON.parse(raw) : [];
-        history.push({ text, isUser });
-        if (history.length > 200) history.splice(0, history.length - 200);
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(history));
-    } catch { /* quota exceeded — silently degrade */ }
+function apiHeaders(extra = {}) {
+  const headers = { ...extra };
+  const key = apiKey();
+  if (key) headers["X-API-Key"] = key;
+  return headers;
 }
 
-function clearHistory() {
-    localStorage.removeItem(STORAGE_KEY);
-    chatArea.innerHTML = "";
-    appendMessage("**History cleared.** Ask a new research question.", false, false);
-    citationsArea.innerHTML = `<div class="empty-state">Citations will appear after the next query.</div>`;
+async function fetchApi(path, options = {}) {
+  const request = { ...options, headers: apiHeaders(options.headers || {}) };
+  const response = await fetch(path, request);
+  let payload = null;
+  const contentType = response.headers.get("content-type") || "";
+  if (contentType.includes("application/json")) {
+    try { payload = await response.json(); } catch { payload = null; }
+  } else {
+    payload = await response.text();
+  }
+  if (!response.ok) {
+    const message = payload && typeof payload === "object" ? payload.detail : payload;
+    const error = new Error(message || `Request failed with status ${response.status}.`);
+    error.status = response.status;
+    throw error;
+  }
+  return payload;
 }
 
-// ============================================================
-// Server Health Indicator
-// ============================================================
-const statusDot  = document.getElementById("server-status-dot");
-const statusText = document.getElementById("server-status-text");
+function clearNode(node) {
+  while (node.firstChild) node.removeChild(node.firstChild);
+}
 
-async function checkServerHealth() {
-    try {
-        // /docs/list returns quickly even with an empty DB
-        const r = await fetch("/docs/list", { method: "GET", signal: AbortSignal.timeout(4000) });
-        if (r.ok || r.status === 200) {
-            statusDot.classList.remove("offline");
-            statusText.textContent = "Online";
-        } else {
-            throw new Error(r.status);
-        }
-    } catch {
-        statusDot.classList.add("offline");
-        statusText.textContent = "Offline";
+function textElement(tag, text, className = "") {
+  const element = document.createElement(tag);
+  if (className) element.className = className;
+  element.textContent = text == null ? "" : String(text);
+  return element;
+}
+
+function safeExternalUrl(raw) {
+  try {
+    const url = new URL(String(raw || ""), window.location.origin);
+    if (url.protocol === "http:" || url.protocol === "https:") return url.href;
+  } catch { /* invalid URL */ }
+  return null;
+}
+
+function appendInlineMarkdown(parent, rawText) {
+  const text = String(rawText || "");
+  const pattern = /(`[^`\n]+`|\*\*[^*\n]+\*\*|\[[^\]\n]+\]\(https?:\/\/[^)\s]+\))/g;
+  let cursor = 0;
+  for (const match of text.matchAll(pattern)) {
+    if (match.index > cursor) parent.appendChild(document.createTextNode(text.slice(cursor, match.index)));
+    const token = match[0];
+    if (token.startsWith("`")) {
+      parent.appendChild(textElement("code", token.slice(1, -1)));
+    } else if (token.startsWith("**")) {
+      parent.appendChild(textElement("strong", token.slice(2, -2)));
+    } else {
+      const parts = /^\[([^\]]+)\]\((https?:\/\/[^)]+)\)$/.exec(token);
+      const href = parts ? safeExternalUrl(parts[2]) : null;
+      if (parts && href) {
+        const link = textElement("a", parts[1]);
+        link.href = href;
+        link.target = "_blank";
+        link.rel = "noopener noreferrer";
+        parent.appendChild(link);
+      } else {
+        parent.appendChild(document.createTextNode(token));
+      }
     }
+    cursor = match.index + token.length;
+  }
+  if (cursor < text.length) parent.appendChild(document.createTextNode(text.slice(cursor)));
 }
-checkServerHealth();
-setInterval(checkServerHealth, 30_000);   // re-check every 30 s
 
-// ============================================================
-// Chat Helpers
-// ============================================================
+function isTableSeparator(line) {
+  return /^\s*\|?(?:\s*:?-{3,}:?\s*\|)+\s*:?-{3,}:?\s*\|?\s*$/.test(line);
+}
+
+function tableCells(line) {
+  return line.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map((cell) => cell.trim());
+}
+
+function renderMarkdown(container, markdown) {
+  clearNode(container);
+  const lines = String(markdown || "").replace(/\r\n?/g, "\n").split("\n");
+  let index = 0;
+  while (index < lines.length) {
+    const line = lines[index];
+    if (line.startsWith("```")) {
+      const language = line.slice(3).trim();
+      const codeLines = [];
+      index += 1;
+      while (index < lines.length && !lines[index].startsWith("```")) {
+        codeLines.push(lines[index]);
+        index += 1;
+      }
+      const pre = document.createElement("pre");
+      const code = textElement("code", codeLines.join("\n"));
+      if (language) code.dataset.language = language;
+      pre.appendChild(code);
+      container.appendChild(pre);
+      index += 1;
+      continue;
+    }
+    if (line.includes("|") && index + 1 < lines.length && isTableSeparator(lines[index + 1])) {
+      const table = document.createElement("table");
+      const head = document.createElement("thead");
+      const headerRow = document.createElement("tr");
+      for (const cell of tableCells(line)) {
+        const th = document.createElement("th");
+        appendInlineMarkdown(th, cell);
+        headerRow.appendChild(th);
+      }
+      head.appendChild(headerRow);
+      table.appendChild(head);
+      const body = document.createElement("tbody");
+      index += 2;
+      while (index < lines.length && lines[index].includes("|") && lines[index].trim()) {
+        const row = document.createElement("tr");
+        for (const cell of tableCells(lines[index])) {
+          const td = document.createElement("td");
+          appendInlineMarkdown(td, cell);
+          row.appendChild(td);
+        }
+        body.appendChild(row);
+        index += 1;
+      }
+      table.appendChild(body);
+      container.appendChild(table);
+      continue;
+    }
+    const heading = /^(#{1,3})\s+(.+)$/.exec(line);
+    if (heading) {
+      const node = document.createElement(`h${heading[1].length}`);
+      appendInlineMarkdown(node, heading[2]);
+      container.appendChild(node);
+      index += 1;
+      continue;
+    }
+    if (/^\s*[-*]\s+/.test(line)) {
+      const list = document.createElement("ul");
+      while (index < lines.length && /^\s*[-*]\s+/.test(lines[index])) {
+        const item = document.createElement("li");
+        appendInlineMarkdown(item, lines[index].replace(/^\s*[-*]\s+/, ""));
+        list.appendChild(item);
+        index += 1;
+      }
+      container.appendChild(list);
+      continue;
+    }
+    if (/^\s*\d+\.\s+/.test(line)) {
+      const list = document.createElement("ol");
+      while (index < lines.length && /^\s*\d+\.\s+/.test(lines[index])) {
+        const item = document.createElement("li");
+        appendInlineMarkdown(item, lines[index].replace(/^\s*\d+\.\s+/, ""));
+        list.appendChild(item);
+        index += 1;
+      }
+      container.appendChild(list);
+      continue;
+    }
+    if (line.startsWith(">")) {
+      const quote = document.createElement("blockquote");
+      appendInlineMarkdown(quote, line.replace(/^>\s?/, ""));
+      container.appendChild(quote);
+      index += 1;
+      continue;
+    }
+    if (!line.trim()) {
+      index += 1;
+      continue;
+    }
+    const paragraphLines = [line];
+    index += 1;
+    while (
+      index < lines.length && lines[index].trim() &&
+      !lines[index].startsWith("```") &&
+      !/^(#{1,3})\s+/.test(lines[index]) &&
+      !/^\s*[-*]\s+/.test(lines[index]) &&
+      !/^\s*\d+\.\s+/.test(lines[index]) &&
+      !lines[index].startsWith(">")
+    ) {
+      paragraphLines.push(lines[index]);
+      index += 1;
+    }
+    const paragraph = document.createElement("p");
+    appendInlineMarkdown(paragraph, paragraphLines.join("\n"));
+    container.appendChild(paragraph);
+  }
+}
+
+function appendMessage(text, isUser, warnings = [], persist = true) {
+  const article = document.createElement("article");
+  article.className = `message ${isUser ? "user" : "agent"}`;
+  if (!isUser) article.appendChild(textElement("div", "RigorousRAG", "message-label"));
+  const body = document.createElement("div");
+  if (isUser) body.textContent = text;
+  else renderMarkdown(body, text);
+  article.appendChild(body);
+  if (!isUser && Array.isArray(warnings) && warnings.length) {
+    const warningBox = document.createElement("div");
+    warningBox.className = "warnings";
+    for (const warning of warnings) warningBox.appendChild(textElement("div", warning));
+    article.appendChild(warningBox);
+  }
+  chatArea.appendChild(article);
+  chatArea.scrollTop = chatArea.scrollHeight;
+  if (persist) persistMessage(text, isUser, warnings);
+}
+
+function persistMessage(text, isUser, warnings = []) {
+  try {
+    const history = JSON.parse(sessionStorage.getItem(HISTORY_KEY) || "[]");
+    history.push({ text: String(text), isUser: Boolean(isUser), warnings: warnings.slice(0, 10) });
+    sessionStorage.setItem(HISTORY_KEY, JSON.stringify(history.slice(-100)));
+  } catch { sessionStorage.removeItem(HISTORY_KEY); }
+}
+
+function restoreHistory() {
+  try {
+    const history = JSON.parse(sessionStorage.getItem(HISTORY_KEY) || "[]");
+    if (!Array.isArray(history) || !history.length) return;
+    clearNode(chatArea);
+    for (const item of history) appendMessage(item.text || "", Boolean(item.isUser), item.warnings || [], false);
+  } catch { sessionStorage.removeItem(HISTORY_KEY); }
+}
+
+function updateCitations(citations) {
+  clearNode(citationsArea);
+  if (!Array.isArray(citations) || !citations.length) {
+    citationsArea.appendChild(textElement("div", "No cited evidence in this answer.", "empty"));
+    return;
+  }
+  switchTab("left", "citations");
+  for (const citation of citations) {
+    const card = document.createElement("article");
+    card.className = "citation-card";
+    const head = document.createElement("div");
+    head.className = "citation-head";
+    head.appendChild(textElement("div", `${citation.label || ""} ${citation.title || "Untitled"}`, "citation-title"));
+    head.appendChild(textElement("span", String(citation.source_type || "unknown").replaceAll("_", " "), "meta"));
+    card.appendChild(head);
+    const href = safeExternalUrl(citation.url);
+    if (href) {
+      const link = textElement("a", citation.url);
+      link.href = href;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      card.appendChild(link);
+    } else {
+      card.appendChild(textElement("div", citation.url || "Local evidence", "meta"));
+    }
+    const location = [];
+    if (citation.page_number) location.push(`page ${citation.page_number}`);
+    if (citation.chunk_id) location.push(`chunk ${citation.chunk_id}`);
+    if (location.length) card.appendChild(textElement("div", location.join(" · "), "meta"));
+    const snippet = citation.quote || citation.snippet;
+    if (snippet) card.appendChild(textElement("div", snippet, "citation-snippet"));
+    citationsArea.appendChild(card);
+  }
+}
+
+function setBusy(busy) {
+  sendBtn.disabled = busy;
+  loader.style.display = busy ? "block" : "none";
+}
+
+async function sendQuery() {
+  const query = queryInput.value.trim();
+  if (!query || sendBtn.disabled) return;
+  appendMessage(query, true);
+  queryInput.value = "";
+  setBusy(true);
+  try {
+    const payload = await fetchApi("/query", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query, model: modelSelect.value || null }),
+    });
+    appendMessage(payload.answer || "No answer was returned.", false, payload.warnings || []);
+    updateCitations(payload.citations || []);
+  } catch (error) {
+    appendMessage(`Request failed: ${error.message}`, false, error.status === 401 ? ["Enter a valid API key in the top bar."] : []);
+  } finally {
+    setBusy(false);
+    queryInput.focus();
+  }
+}
 
 function setQuery(text) {
-    queryInput.value = text;
-    queryInput.focus();
-    queryInput.style.height = "auto";
-    queryInput.style.height = Math.min(queryInput.scrollHeight, 120) + "px";
+  queryInput.value = text;
+  queryInput.focus();
 }
 
-function handleKey(e) {
-    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendQuery(); }
-}
-
-queryInput.addEventListener("input", () => {
-    queryInput.style.height = "auto";
-    queryInput.style.height = Math.min(queryInput.scrollHeight, 120) + "px";
-});
-
-function appendMessage(text, isUser, persist = true) {
-    const msgDiv = document.createElement("div");
-    msgDiv.className = `message ${isUser ? "user-msg" : "agent-msg"}`;
-    if (!isUser) {
-        const lbl = document.createElement("div");
-        lbl.className = "msg-label";
-        lbl.textContent = "RigorousRAG";
-        msgDiv.appendChild(lbl);
-    }
-    const body = document.createElement("div");
-    body.innerHTML = isUser ? escapeHTML(text) : marked.parse(text);
-    msgDiv.appendChild(body);
-    chatArea.appendChild(msgDiv);
-    chatArea.scrollTop = chatArea.scrollHeight;
-    if (persist) persistMessage(text, isUser);
-}
-
-function escapeHTML(str) {
-    return str.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
-}
-
-function showTyping() {
-    const el = document.createElement("div");
-    el.className = "message agent-msg";
-    el.id = "typing-indicator";
-    el.innerHTML = `<div class="typing-indicator"><div class="typing-dot"></div><div class="typing-dot"></div><div class="typing-dot"></div></div>`;
-    chatArea.appendChild(el);
-    chatArea.scrollTop = chatArea.scrollHeight;
-}
-
-function removeTyping() {
-    document.getElementById("typing-indicator")?.remove();
-}
-
-// ============================================================
-// updateCitations — switches to Sources tab automatically
-// ============================================================
-function updateCitations(citations) {
-    citationsArea.innerHTML = "";
-    if (!citations || citations.length === 0) {
-        citationsArea.innerHTML = `<div class="empty-state">No citations for this response.</div>`;
-        return;
-    }
-    // Auto-switch to citations tab
-    switchLeftTab("citations", document.querySelectorAll(".left-tab")[2]);
-
-    citations.forEach(c => {
-        const card = document.createElement("div");
-        card.className = "citation-card";
-        card.setAttribute("data-source", c.source_type);
-
-        const displayUrl = c.url.startsWith("local://") ? "Internal Index" : c.url;
-        card.innerHTML = `
-            <div class="citation-header">
-                <span class="citation-title">${c.label} ${escapeHTML(c.title.substring(0, 40))}${c.title.length > 40 ? "…" : ""}</span>
-                <span class="source-tag">${c.source_type.replace(/_/g, " ")}</span>
-            </div>
-            <div class="citation-url">
-                <a href="${c.url.startsWith("http") ? c.url : "#"}" target="_blank" rel="noopener">${escapeHTML(displayUrl.substring(0, 60))}</a>
-            </div>
-            <div class="citation-snippet">"${escapeHTML(c.snippet.substring(0, 200))}${c.snippet.length > 200 ? "…" : ""}"</div>
-        `;
-        citationsArea.appendChild(card);
-    });
-}
-
-// ============================================================
-// Main Query Submission
-// ============================================================
-async function sendQuery() {
-    const query = queryInput.value.trim();
-    if (!query || sendBtn.disabled) return;
-
-    appendMessage(query, true);
-    queryInput.value = "";
-    queryInput.style.height = "2.8rem";
-    sendBtn.disabled = true;
-    loader.style.display = "block";
-    showTyping();
-
+async function pollJob(jobId, item, filename) {
+  for (let attempt = 0; attempt < 120; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 2500));
     try {
-        const model = modelSelect.value;
-        const res = await fetch("/query", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ query, model }),
-        });
-        const data = await res.json();
-        removeTyping();
-
-        if (res.ok) {
-            appendMessage(data.answer, false);
-            updateCitations(data.citations);
-        } else {
-            appendMessage(`**Backend Error (${res.status}):**\n\`\`\`\n${data.detail || "Unknown error"}\n\`\`\``, false);
-        }
-    } catch (err) {
-        removeTyping();
-        appendMessage(`**Network Error:** Could not reach the backend.\nMake sure the server is running (\`python server.py\`).`, false);
-    } finally {
-        sendBtn.disabled = false;
-        loader.style.display = "none";
-        queryInput.focus();
+      const status = await fetchApi(`/status/${encodeURIComponent(jobId)}`);
+      item.lastChild.textContent = status.status === "processing" ? "Processing" : status.status;
+      if (status.status === "success") {
+        item.lastChild.style.color = "var(--success)";
+        if (status.doc_id) item.title = `Document ID: ${status.doc_id}`;
+        await loadDocList();
+        return;
+      }
+      if (status.status === "failed") {
+        item.lastChild.style.color = "var(--danger)";
+        item.title = status.message || "Ingestion failed";
+        return;
+      }
+    } catch (error) {
+      if (error.status === 401 || error.status === 404) {
+        item.lastChild.textContent = "Status unavailable";
+        item.lastChild.style.color = "var(--danger)";
+        return;
+      }
     }
-}
-
-// ============================================================
-// Visual Entailment shortcut (from action chip)
-// ============================================================
-function openVisualEntailment() {
-    switchToolTab("entailment", document.querySelectorAll(".tool-tab")[0]);
-    // Scroll right panel into view on mobile
-    document.querySelector(".right-panel")?.scrollIntoView({ behavior: "smooth" });
-    document.getElementById("ve-claim").focus();
-}
-
-// ============================================================
-// Ingestion with Job-Status Polling
-// ============================================================
-async function pollJobStatus(jobId, listItem, filename) {
-    const MAX = 40;   // 40 × 3 s = 2 min
-    for (let i = 0; i < MAX; i++) {
-        await new Promise(r => setTimeout(r, 3000));
-        try {
-            const res = await fetch(`/status/${jobId}`);
-            if (!res.ok) continue;
-            const data = await res.json();
-            if (data.status === "success") {
-                setUploadItemStatus(listItem, filename, "Indexed ✓", "var(--success)");
-                // Refresh doc list if on docs tab
-                if (document.getElementById("tab-docs").classList.contains("active")) loadDocList();
-                return;
-            }
-            if (data.status === "failed") {
-                setUploadItemStatus(listItem, filename, `Failed: ${data.message || ""}`, "var(--danger)");
-                return;
-            }
-        } catch { /* network hiccup — keep polling */ }
-    }
-    setUploadItemStatus(listItem, filename, "Timed out", "var(--warning)");
-}
-
-function setUploadItemStatus(listItem, filename, statusText, color) {
-    listItem.innerHTML = `
-        <span class="upload-item-name" title="${escapeHTML(filename)}">${escapeHTML(filename.substring(0, 28))}${filename.length > 28 ? "…" : ""}</span>
-        <span class="upload-item-status" style="color:${color};">${statusText}</span>
-    `;
+  }
+  item.lastChild.textContent = "Still processing; refresh Docs later";
+  item.lastChild.style.color = "var(--warning)";
 }
 
 async function handleFiles(files) {
-    if (!files.length) return;
-    // Switch to upload tab
-    switchLeftTab("upload", document.querySelectorAll(".left-tab")[0]);
-
-    for (const file of Array.from(files)) {
-        const listItem = document.createElement("div");
-        listItem.className = "upload-item";
-        setUploadItemStatus(listItem, file.name, "Uploading…", "var(--warning)");
-        uploadList.insertBefore(listItem, uploadList.firstChild);
-
-        const formData = new FormData();
-        formData.append("file", file);
-
-        try {
-            const res = await fetch("/ingest", { method: "POST", body: formData });
-            const data = await res.json();
-            if (res.ok && data.job_id) {
-                setUploadItemStatus(listItem, file.name, "Ingesting…", "var(--warning)");
-                pollJobStatus(data.job_id, listItem, file.name);
-            } else {
-                setUploadItemStatus(listItem, file.name, "Failed", "var(--danger)");
-            }
-        } catch {
-            setUploadItemStatus(listItem, file.name, "Network Error", "var(--danger)");
-        }
+  const values = Array.from(files || []);
+  if (!values.length) return;
+  switchTab("left", "upload");
+  for (const file of values) {
+    const item = document.createElement("div");
+    item.className = "upload-item";
+    item.appendChild(textElement("span", file.name));
+    const status = textElement("span", "Uploading", "meta");
+    item.appendChild(status);
+    uploadList.prepend(item);
+    const form = new FormData();
+    form.append("file", file, file.name);
+    try {
+      const response = await fetchApi("/ingest", { method: "POST", body: form });
+      status.textContent = "Processing";
+      status.style.color = "var(--warning)";
+      pollJob(response.job_id, item, file.name);
+    } catch (error) {
+      status.textContent = "Failed";
+      status.style.color = "var(--danger)";
+      item.title = error.message;
     }
+  }
+  fileInput.value = "";
 }
 
-// ============================================================
-// Document Library (Docs Tab)
-// ============================================================
-let _allDocs = [];
+function renderDocList(documents) {
+  const list = $("doc-list");
+  clearNode(list);
+  if (!documents.length) {
+    list.appendChild(textElement("div", "No indexed documents for this account.", "empty"));
+    return;
+  }
+  for (const doc of documents) {
+    const card = document.createElement("article");
+    card.className = "doc-card";
+    const head = document.createElement("div");
+    head.className = "doc-card-head";
+    const name = textElement("div", doc.filename || doc.doc_id, "doc-title");
+    head.appendChild(name);
+    const deleteButton = textElement("button", "Delete", "btn small danger");
+    deleteButton.type = "button";
+    deleteButton.addEventListener("click", async (event) => {
+      event.stopPropagation();
+      if (!window.confirm(`Delete ${doc.filename || doc.doc_id}?`)) return;
+      try {
+        await fetchApi(`/docs/${encodeURIComponent(doc.doc_id)}`, { method: "DELETE" });
+        await loadDocList();
+      } catch (error) { window.alert(error.message); }
+    });
+    head.appendChild(deleteButton);
+    card.appendChild(head);
+    card.appendChild(textElement("div", `ID: ${doc.doc_id}`, "meta"));
+    if (doc.mime_type) card.appendChild(textElement("div", doc.mime_type, "meta"));
+    if (doc.llm_summary) card.appendChild(textElement("div", doc.llm_summary, "summary"));
+    card.addEventListener("click", () => setQuery(`Search uploaded document ID ${doc.doc_id} for: `));
+    list.appendChild(card);
+  }
+}
 
 async function loadDocList() {
-    const docList = document.getElementById("doc-list");
-    docList.innerHTML = `<div class="empty-state">Loading…</div>`;
-    try {
-        const res = await fetch("/docs/list");
-        if (!res.ok) throw new Error(res.status);
-        _allDocs = await res.json();
-        renderDocList(_allDocs);
-    } catch (err) {
-        docList.innerHTML = `<div class="empty-state">Could not load documents.<br><small>${err}</small></div>`;
-    }
-}
-
-function renderDocList(docs) {
-    const docList = document.getElementById("doc-list");
-    if (!docs.length) {
-        docList.innerHTML = `<div class="empty-state">No documents indexed yet.<br>Upload files in the Upload tab.</div>`;
-        return;
-    }
-    docList.innerHTML = "";
-    docs.forEach(doc => {
-        const card = document.createElement("div");
-        card.className = "doc-card";
-        card.title = `Click to pre-fill doc ID: ${doc.doc_id}`;
-        const ext = doc.mime_type ? doc.mime_type.split("/").pop().toUpperCase() : "DOC";
-        const summary = doc.llm_summary || "(No summary available)";
-        card.innerHTML = `
-            <div class="doc-card-name">📄 ${escapeHTML(doc.filename)}</div>
-            <div class="doc-card-meta">
-                <span class="badge badge-success">${ext}</span> &nbsp;
-                <span class="doc-id-badge" title="Click to copy" onclick="copyDocId('${doc.doc_id}', event)">${doc.doc_id}</span>
-            </div>
-            <div class="doc-card-summary">${escapeHTML(summary)}</div>
-        `;
-        // Click card → pre-fill query with this doc
-        card.addEventListener("click", () => {
-            setQuery(`Search my uploaded documents for (doc: ${doc.doc_id}): `);
-        });
-        docList.appendChild(card);
-    });
+  const list = $("doc-list");
+  clearNode(list);
+  list.appendChild(textElement("div", "Loading documents…", "empty"));
+  try {
+    allDocs = await fetchApi("/docs/list");
+    filterDocs();
+  } catch (error) {
+    clearNode(list);
+    list.appendChild(textElement("div", `Could not load documents: ${error.message}`, "empty"));
+  }
 }
 
 function filterDocs() {
-    const q = document.getElementById("doc-search").value.toLowerCase();
-    renderDocList(_allDocs.filter(d =>
-        d.filename.toLowerCase().includes(q) || (d.llm_summary || "").toLowerCase().includes(q)
-    ));
+  const query = $("doc-search").value.trim().toLowerCase();
+  renderDocList(allDocs.filter((doc) => {
+    const haystack = `${doc.filename || ""} ${doc.llm_summary || ""} ${doc.doc_id || ""}`.toLowerCase();
+    return haystack.includes(query);
+  }));
 }
 
-function copyDocId(id, e) {
-    e.stopPropagation();
-    navigator.clipboard.writeText(id).then(() => {
-        const badge = e.target;
-        const orig = badge.textContent;
-        badge.textContent = "Copied!";
-        setTimeout(() => { badge.textContent = orig; }, 1200);
+function switchTab(group, name) {
+  document.querySelectorAll(`[data-tab-group="${group}"]`).forEach((button) => {
+    button.setAttribute("aria-selected", button.dataset.tab === name ? "true" : "false");
+  });
+  const prefix = group === "left" ? "tab-" : "tool-";
+  document.querySelectorAll(group === "left" ? ".left-panel .tab-pane" : ".right-panel .tool-pane").forEach((pane) => pane.classList.remove("active"));
+  const target = $(`${prefix}${name}`);
+  if (target) target.classList.add("active");
+  if (group === "left" && name === "docs") loadDocList();
+}
+
+function togglePanel(panelId, open) {
+  const panel = $(panelId);
+  panel.classList.toggle("open", open);
+  const anyOpen = $("left-panel").classList.contains("open") || $("right-panel").classList.contains("open");
+  $("sidebar-overlay").classList.toggle("open", anyOpen);
+}
+
+function showToolResult(id, value) {
+  const element = $(id);
+  element.hidden = false;
+  element.textContent = typeof value === "string" ? value : JSON.stringify(value, null, 2);
+}
+
+async function runEntailment() {
+  const payload = {
+    claim_text: $("ve-claim").value.trim(),
+    figure_id: $("ve-figure").value.trim(),
+    doc_id: $("ve-docid").value.trim(),
+  };
+  if (!payload.claim_text || !payload.figure_id || !payload.doc_id) return window.alert("Claim, figure label, and document ID are required.");
+  try {
+    const result = await fetchApi("/tool/visual-entailment", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload),
     });
+    showToolResult("ve-result", result);
+  } catch (error) { showToolResult("ve-result", `Error: ${error.message}`); }
 }
 
-// ============================================================
-// Left Panel Tabs
-// ============================================================
-function switchLeftTab(tab, el) {
-    document.querySelectorAll(".left-tab").forEach(t => t.classList.remove("active"));
-    document.querySelectorAll(".left-tab-pane").forEach(p => p.classList.remove("active"));
-    el?.classList.add("active");
-    document.getElementById(`tab-${tab}`)?.classList.add("active");
-
-    if (tab === "docs") loadDocList();
-}
-
-// ============================================================
-// Right Panel Tool Tabs
-// ============================================================
-function switchToolTab(tab, el) {
-    document.querySelectorAll(".tool-tab").forEach(t => t.classList.remove("active"));
-    document.querySelectorAll(".tool-pane").forEach(p => p.classList.remove("active"));
-    el?.classList.add("active");
-    document.getElementById(`tool-${tab}`)?.classList.add("active");
-}
-
-// ============================================================
-// Tool: Visual Entailment
-// ============================================================
-async function runVisualEntailment() {
-    const claim   = document.getElementById("ve-claim").value.trim();
-    const figure  = document.getElementById("ve-figure").value.trim();
-    const docId   = document.getElementById("ve-docid").value.trim();
-
-    if (!claim || !figure || !docId) {
-        alert("Please fill in Claim, Figure ID, and Document ID.");
-        return;
-    }
-
-    const resultSection = document.getElementById("ve-result-section");
-    const resultEl      = document.getElementById("ve-result");
-    resultSection.style.display = "none";
-    resultEl.textContent = "Running…";
-
-    try {
-        const res  = await fetch("/tool/visual-entailment", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ claim_text: claim, figure_id: figure, doc_id: docId }),
-        });
-        const data = await res.json();
-        resultSection.style.display = "block";
-
-        if (data.error) {
-            resultEl.innerHTML = `<span style="color:var(--danger)"><strong>Error:</strong> ${escapeHTML(data.error)}</span>`;
-            return;
-        }
-
-        const verdictColors = {
-            supports: "var(--success)", contradicts: "var(--danger)",
-            insufficient: "var(--warning)", uncertain: "#94a3b8",
-        };
-        const color = verdictColors[data.verdict] || "#94a3b8";
-        resultEl.innerHTML = `<strong style="color:${color}">▶ ${(data.verdict || "?").toUpperCase()}</strong>\n\nConfidence: ${((data.confidence || 0) * 100).toFixed(0)}%\n\n${data.rationale || ""}`;
-
-        // Also post to chat for record
-        appendMessage(
-            `**Visual Entailment Result**\n- **Claim:** ${claim}\n- **Figure:** ${figure} in \`${docId}\`\n- **Verdict:** ${(data.verdict || "?").toUpperCase()} (${((data.confidence || 0) * 100).toFixed(0)}% confidence)\n- **Rationale:** ${data.rationale || "N/A"}`,
-            false
-        );
-    } catch (err) {
-        resultSection.style.display = "block";
-        resultEl.textContent = `Network error: ${err}`;
-    }
-}
-
-// ============================================================
-// Tool: Protocol Extraction
-// ============================================================
-async function runProtocolExtraction() {
-    const text  = document.getElementById("proto-text").value.trim();
-    const docId = document.getElementById("proto-docid").value.trim();
-
-    if (!text) { alert("Please paste the methods section text."); return; }
-
-    const resultSection = document.getElementById("proto-result-section");
-    const resultEl      = document.getElementById("proto-result");
-    resultSection.style.display = "none";
-    resultEl.textContent = "Extracting…";
-
-    try {
-        const res  = await fetch("/tool/protocol", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ text, doc_id: docId }),
-        });
-        const data = await res.json();
-        resultSection.style.display = "block";
-
-        if (data.error) {
-            resultEl.innerHTML = `<span style="color:var(--danger)"><strong>Error:</strong> ${escapeHTML(data.error)}</span>`;
-            return;
-        }
-        if (!data.steps) {
-            resultEl.textContent = JSON.stringify(data, null, 2);
-            return;
-        }
-
-        resultEl.textContent = data.steps.map((s, i) => {
-            let line = `Step ${i + 1}: ${s.description}`;
-            if (s.temperature) line += ` | Temp: ${s.temperature}`;
-            if (s.time)        line += ` | Time: ${s.time}`;
-            if (s.reagent)     line += ` | Reagent: ${s.reagent}`;
-            if (s.notes)       line += `\n  Notes: ${s.notes}`;
-            return line;
-        }).join("\n\n");
-
-        // Mirror to chat
-        const stepsText = data.steps.map((s, i) =>
-            `${i + 1}. **${s.description}**${s.temperature ? ` *(${s.temperature})* ` : ""}${s.time ? ` — ${s.time}` : ""}`
-        ).join("\n");
-        appendMessage(`**Protocol Extracted** (${data.steps.length} steps, method: \`${data.metadata?.extraction_method || "?"}\`)\n\n${stepsText}`, false);
-    } catch (err) {
-        resultSection.style.display = "block";
-        resultEl.textContent = `Network error: ${err}`;
-    }
-}
-
-// ============================================================
-// Tool: Scientific Debate (via main agent)
-// ============================================================
-async function runDebate() {
-    const claim    = document.getElementById("debate-claim").value.trim();
-    const evidence = document.getElementById("debate-evidence").value.trim();
-
-    if (!claim) { alert("Enter a claim to debate."); return; }
-
-    const prompt = evidence
-        ? `Run a rigorous scientific debate on the claim: "${claim}"\n\nContext/Evidence:\n${evidence}`
-        : `Run a rigorous scientific debate on the claim: "${claim}"`;
-
-    setQuery(prompt);
-    await sendQuery();
-}
-
-// ============================================================
-// Tool: BibTeX Export
-// ============================================================
-async function runBibTeX() {
-    const title   = document.getElementById("bib-title").value.trim();
-    const authors = document.getElementById("bib-authors").value.trim();
-    const year    = parseInt(document.getElementById("bib-year").value) || null;
-    const doi     = document.getElementById("bib-doi").value.trim();
-    const journal = document.getElementById("bib-journal").value.trim();
-
-    if (!title) { alert("Title is required."); return; }
-
-    const resultSection = document.getElementById("bib-result-section");
-    const resultEl      = document.getElementById("bib-result");
-    resultSection.style.display = "none";
-    resultEl.textContent = "Generating…";
-
-    try {
-        const res = await fetch("/tool/bibtex", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ title, authors, year, doi, journal }),
-        });
-        const data = await res.json();
-        resultSection.style.display = "block";
-        if (data.error) {
-            resultEl.innerHTML = `<span style="color:var(--danger)"><strong>Error:</strong> ${escapeHTML(data.error)}</span>`;
-            return;
-        }
-        resultEl.textContent = data.bibtex || JSON.stringify(data, null, 2);
-    } catch (err) {
-        resultSection.style.display = "block";
-        resultEl.textContent = `Network error: ${err}`;
-    }
-}
-
-function copyBibTeX() {
-    const text = document.getElementById("bib-result").textContent;
-    navigator.clipboard.writeText(text).then(() => {
-        const btn = document.querySelector("#tool-bibtex .tool-section-title button");
-        if (btn) { const orig = btn.textContent; btn.textContent = "Copied!"; setTimeout(() => btn.textContent = orig, 1200); }
+async function runProtocol() {
+  const payload = { text: $("proto-text").value.trim(), doc_id: $("proto-docid").value.trim() };
+  if (!payload.text) return window.alert("Methods text is required.");
+  try {
+    const result = await fetchApi("/tool/protocol", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload),
     });
+    showToolResult("proto-result", result);
+  } catch (error) { showToolResult("proto-result", `Error: ${error.message}`); }
 }
 
-// ============================================================
-// File inputs & drag-and-drop
-// ============================================================
-fileInput.addEventListener("change", e => handleFiles(e.target.files));
-
-["dragenter", "dragover", "dragleave", "drop"].forEach(ev =>
-    dropArea.addEventListener(ev, e => { e.preventDefault(); e.stopPropagation(); }, false)
-);
-dropArea.addEventListener("dragover",  () => dropArea.classList.add("dragover"));
-dropArea.addEventListener("dragleave", () => dropArea.classList.remove("dragover"));
-dropArea.addEventListener("drop", e => { dropArea.classList.remove("dragover"); handleFiles(e.dataTransfer.files); });
-
-// ============================================================
-// Sidebar Toggle (mobile)
-// ============================================================
-function toggleSidebar() {
-    const panel = document.getElementById("left-panel");
-    const overlay = document.getElementById("sidebar-overlay");
-    panel.classList.toggle("open");
-    overlay.style.display = panel.classList.contains("open") ? "block" : "none";
+async function runBibtex() {
+  const payload = {
+    title: $("bib-title").value.trim(), authors: $("bib-authors").value.trim(),
+    year: Number.parseInt($("bib-year").value, 10) || null,
+    journal: $("bib-journal").value.trim(), doi: $("bib-doi").value.trim(), entry_type: "article",
+  };
+  if (!payload.title) return window.alert("Title is required.");
+  try {
+    const result = await fetchApi("/tool/bibtex", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload),
+    });
+    showToolResult("bib-result", result.bibtex || "");
+  } catch (error) { showToolResult("bib-result", `Error: ${error.message}`); }
 }
 
-document.getElementById("sidebar-overlay").addEventListener("click", () => {
-    document.getElementById("left-panel").classList.remove("open");
-    document.getElementById("sidebar-overlay").style.display = "none";
-});
+async function loadConfig() {
+  try {
+    appConfig = await fetchApi("/config");
+    clearNode(modelSelect);
+    for (const model of appConfig.allowed_models || []) {
+      const option = textElement("option", model);
+      option.value = model;
+      option.selected = model === appConfig.default_model;
+      modelSelect.appendChild(option);
+    }
+    $("auth-box").style.display = appConfig.auth_required ? "flex" : "none";
+    $("retention-note").textContent = appConfig.retain_uploads
+      ? "Original uploads are retained for owner-scoped figure tools. Best-effort PII masking is not guaranteed anonymization."
+      : "Original uploads are deleted after indexing. Best-effort PII masking is not guaranteed anonymization.";
+  } catch { /* defaults remain usable */ }
+}
 
-// ============================================================
-// Boot
-// ============================================================
-restoreSession();
+async function checkHealth() {
+  try {
+    await fetchApi("/health");
+    $("server-status-dot").classList.add("online");
+    $("server-status-text").textContent = "Online";
+  } catch {
+    $("server-status-dot").classList.remove("online");
+    $("server-status-text").textContent = "Offline";
+  }
+}
+
+function bindEvents() {
+  document.querySelectorAll("[data-tab-group]").forEach((button) => button.addEventListener("click", () => switchTab(button.dataset.tabGroup, button.dataset.tab)));
+  document.querySelectorAll("[data-prompt]").forEach((button) => button.addEventListener("click", () => setQuery(button.dataset.prompt)));
+  $("send-btn").addEventListener("click", sendQuery);
+  queryInput.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); sendQuery(); }
+  });
+  $("clear-history").addEventListener("click", () => { sessionStorage.removeItem(HISTORY_KEY); clearNode(chatArea); appendMessage("Conversation cleared.", false, [], false); });
+  $("save-api-key").addEventListener("click", async () => {
+    const key = apiKeyInput.value.trim();
+    if (key) sessionStorage.setItem(API_KEY_KEY, key); else sessionStorage.removeItem(API_KEY_KEY);
+    apiKeyInput.value = "";
+    await checkHealth();
+    await loadDocList();
+  });
+  $("choose-files-btn").addEventListener("click", () => fileInput.click());
+  fileInput.addEventListener("change", () => handleFiles(fileInput.files));
+  ["dragenter", "dragover", "dragleave", "drop"].forEach((name) => dropArea.addEventListener(name, (event) => { event.preventDefault(); event.stopPropagation(); }));
+  dropArea.addEventListener("dragover", () => dropArea.classList.add("dragover"));
+  dropArea.addEventListener("dragleave", () => dropArea.classList.remove("dragover"));
+  dropArea.addEventListener("drop", (event) => { dropArea.classList.remove("dragover"); handleFiles(event.dataTransfer.files); });
+  dropArea.addEventListener("keydown", (event) => { if (event.key === "Enter" || event.key === " ") fileInput.click(); });
+  $("doc-search").addEventListener("input", filterDocs);
+  $("open-sidebar").addEventListener("click", () => togglePanel("left-panel", true));
+  $("open-tools").addEventListener("click", () => togglePanel("right-panel", true));
+  $("close-tools").addEventListener("click", () => togglePanel("right-panel", false));
+  $("sidebar-overlay").addEventListener("click", () => { togglePanel("left-panel", false); togglePanel("right-panel", false); });
+  $("run-entailment").addEventListener("click", runEntailment);
+  $("run-protocol").addEventListener("click", runProtocol);
+  $("run-debate").addEventListener("click", () => {
+    const claim = $("debate-claim").value.trim();
+    const evidence = $("debate-evidence").value.trim();
+    if (!claim || !evidence) return window.alert("A claim and evidence context are required.");
+    setQuery(`Run an evidence-grounded scientific debate on this claim: ${claim}\n\nOriginal evidence:\n${evidence}`);
+    sendQuery();
+  });
+  $("run-bibtex").addEventListener("click", runBibtex);
+  $("copy-bibtex").addEventListener("click", async () => {
+    const text = $("bib-result").textContent || "";
+    if (text) await navigator.clipboard.writeText(text);
+  });
+}
+
+async function boot() {
+  bindEvents();
+  restoreHistory();
+  await loadConfig();
+  await checkHealth();
+  setInterval(checkHealth, 30_000);
+}
+
+boot();
