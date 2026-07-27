@@ -1,69 +1,36 @@
-import pytest
-import os
-from unittest.mock import MagicMock, patch
-from tools.rag import RAGLayer
-from tools.ingestion import ingest_file
+from tools.document_service import ingest_and_index
 
-class TestIngestionRagFlow:
 
-    def test_ingest_and_retrieve(self, tmp_path):
-        # 1. Create a dummy file
-        doc_path = tmp_path / "research_notes.txt"
-        doc_path.write_text("Project Alpha results: 95% accuracy in 2024.", encoding="utf-8")
-        
-        # 2. Ingest
-        # ingest_file parses the file. It does NOT write to RAG directly.
-        result = ingest_file(str(doc_path))
-        assert result.success
-        assert result.document is not None
-        assert "Project Alpha" in result.document.text
-        
-        # 3. Add to RAG (Integration Step)
-        
-        # We need a RAGLayer instance.
-        # Ideally we use a real minimal one or mocked one handling embeddings.
-        # Real one needs chromadb and sentence-transformers model (heavy).
-        # For integration test purity, we should use real components IF FAST.
-        # But this might download models.
-        # Let's mock the embedding function generation to be deterministic and fast,
-        # but keep ChromaDB in-memory or temp dir.
-        
-        rag_dir = tmp_path / "rag_db"
-        
-        with patch('tools.rag.embedding_functions.SentenceTransformerEmbeddingFunction') as mock_emb:
-             # Mock embedding to return fixed vector
-             # Signature must match __call__(self, input)
-             mock_emb.return_value = MagicMock(side_effect=lambda input: [[0.1]*384 for _ in input])
-             # Wait, usually side_effect receives proper args. 
-             # If we mock the instance, instance(input) -> side_effect(input).
-             # If Chromadb calls instance(input=...), keywargs might be used.
-             # Safe mock for ChromaDB's signature check
-             class MockEmbeddingFunction:
-                 def __call__(self, input):
-                     return [[0.1]*384 for _ in input]
-                 def embed_documents(self, input):
-                     return self.__call__(input)
-                 def embed_query(self, input):
-                     return self.__call__(input)
-                 def name(self):
-                     return "default"
-             
-             mock_emb.return_value = MockEmbeddingFunction()
-             
-             rag = RAGLayer(persist_directory=str(rag_dir))
-             
-             # Manually add sections
-             for section in result.document.sections:
-                 rag.add_document(
-                     doc_id="doc_1",
-                     text=section.content,
-                     metadata=result.document.metadata
-                 )
-             
-             # 4. Retrieve
-             # Query
-             hits = rag.query("accuracy")
-             # Since we mocked embedding to be constant, all docs match any query with constant score/distance?
-             # Actually, if query embedding is [0.1...], and doc is [0.1...], distance is 0.
-             assert len(hits) >= 1
-             assert "Project Alpha" in hits[0].text
+class FakeRag:
+    def __init__(self):
+        self.calls = []
+
+    def add_document(self, **kwargs):
+        self.calls.append(kwargs)
+        return len(kwargs["sections"])
+
+
+def test_ingestion_service_indexes_redacted_semantic_sections(tmp_path):
+    path = tmp_path / "research.txt"
+    path.write_text(
+        "Title: Project Alpha\n\nContact alice@example.com.\n\nMethods: measure accuracy.",
+        encoding="utf-8",
+    )
+    rag = FakeRag()
+    indexed = ingest_and_index(str(path), owner_id="alice", rag=rag, client=None)
+    assert indexed.chunk_count >= 1
+    assert len(rag.calls) == 1
+    call = rag.calls[0]
+    assert call["metadata"]["owner_id"] == "alice"
+    assert call["replace"] is True
+    assert call["sections"]
+    assert all("alice@example.com" not in section.content for section in call["sections"])
+    assert call["metadata"]["llm_summary"]
+
+
+def test_repeated_ingestion_produces_same_document_identity(tmp_path):
+    path = tmp_path / "repeat.md"
+    path.write_text("# Repeatable\n\nSame contents.", encoding="utf-8")
+    first = ingest_and_index(str(path), owner_id="alice", rag=FakeRag(), client=None)
+    second = ingest_and_index(str(path), owner_id="alice", rag=FakeRag(), client=None)
+    assert first.document.id == second.document.id
