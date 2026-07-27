@@ -1,50 +1,82 @@
-"""Crawler for trusted academic, educational, and governmental sources."""
+"""Bounded, resumable crawler for explicitly allowed public domains."""
 
 from __future__ import annotations
 
+import os
 import time
 from collections import defaultdict, deque
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Optional, Set, Tuple, TYPE_CHECKING
 from urllib import robotparser
-from urllib.parse import urljoin, urlparse, urlunparse
+from urllib.parse import parse_qsl, urlencode, urljoin, urlparse, urlunparse
 
 import requests
 from bs4 import BeautifulSoup
 
+from tools.security import safe_download
 from trusted_sources import ALL_TRUSTED_DOMAINS, ALL_TRUSTED_SEEDS
 
 if TYPE_CHECKING:
     from storage import CrawlState
 
 DEFAULT_USER_AGENT = (
-    "AcademicSearchBot/2.0 (+https://example.com/academic-search-bot-info)"
+    "RigorousRAGBot/3.0 "
+    f"(+{os.getenv('CRAWLER_CONTACT_URL', 'https://github.com/Anurag9000/RigorousRAG')})"
 )
-REQUEST_TIMEOUT = 10
+REQUEST_TIMEOUT = 15
 ALLOWED_MIME_TYPES = {"text/html", "application/xhtml+xml"}
-MAX_CONTENT_LENGTH = 2_500_000  # ~2.5 MB
+MAX_CONTENT_LENGTH = 2_500_000
 MIN_CONTENT_LENGTH = 512
+_TRACKING_PARAMETERS = {
+    "fbclid", "gclid", "mc_cid", "mc_eid", "ref", "source",
+    "utm_campaign", "utm_content", "utm_medium", "utm_source", "utm_term",
+}
+
+
+def _hostname(url: str) -> str:
+    return (urlparse(url).hostname or "").rstrip(".").lower()
 
 
 def is_trusted_domain(url: str, allowed_suffixes: Iterable[str]) -> bool:
-    parsed = urlparse(url)
-    netloc = parsed.netloc.lower()
-    if not netloc:
+    hostname = _hostname(url)
+    if not hostname:
         return False
-    for suffix in allowed_suffixes:
-        if netloc == suffix or netloc.endswith(f".{suffix}"):
+    for raw_suffix in allowed_suffixes:
+        suffix = _hostname(
+            raw_suffix if "://" in raw_suffix else f"https://{raw_suffix}"
+        )
+        if suffix and (hostname == suffix or hostname.endswith(f".{suffix}")):
             return True
     return False
 
 
 def normalize_url(url: str) -> str:
-    parsed = urlparse(url)
-    if parsed.scheme not in {"http", "https"}:
+    """Canonicalise safe HTTP(S) URLs enough to avoid crawl duplication."""
+
+    parsed = urlparse((url or "").strip())
+    scheme = parsed.scheme.lower()
+    if scheme not in {"http", "https"} or not parsed.hostname:
         return ""
-    if not parsed.netloc:
+    hostname = parsed.hostname.rstrip(".").lower()
+    try:
+        port = parsed.port
+    except ValueError:
         return ""
-    normalized = parsed._replace(fragment="")
-    return urlunparse(normalized)
+    netloc = hostname
+    if port and not ((scheme == "http" and port == 80) or (scheme == "https" and port == 443)):
+        netloc = f"{hostname}:{port}"
+    path = parsed.path or "/"
+    while "//" in path:
+        path = path.replace("//", "/")
+    if path != "/" and path.endswith("/"):
+        path = path[:-1]
+    query_items = [
+        (key, value)
+        for key, value in parse_qsl(parsed.query, keep_blank_values=True)
+        if key.casefold() not in _TRACKING_PARAMETERS
+    ]
+    query = urlencode(sorted(query_items), doseq=True)
+    return urlunparse((scheme, netloc, path, "", query, ""))
 
 
 @dataclass
@@ -58,7 +90,7 @@ class Page:
 
 
 class AcademicCrawler:
-    """Breadth-first crawler constrained to curated trusted domains."""
+    """Breadth-first crawler constrained to an explicit host allowlist."""
 
     def __init__(
         self,
@@ -69,56 +101,68 @@ class AcademicCrawler:
         request_delay: float = 1.0,
         user_agent: str = DEFAULT_USER_AGENT,
         timeout: int = REQUEST_TIMEOUT,
+        robots_fail_open: bool = False,
     ) -> None:
-        self.allowed_domains: Set[str] = set(allowed_domains)
+        if max_pages <= 0 or max_pages_per_domain <= 0:
+            raise ValueError("Page limits must be positive.")
+        if max_depth < 0 or request_delay < 0 or timeout <= 0:
+            raise ValueError("Depth, delay, and timeout values are invalid.")
+        self.allowed_domains: Set[str] = {
+            _hostname(domain if "://" in domain else f"https://{domain}")
+            for domain in allowed_domains
+        }
+        self.allowed_domains.discard("")
         self.max_pages = max_pages
         self.max_pages_per_domain = max_pages_per_domain
         self.max_depth = max_depth
         self.request_delay = request_delay
         self.user_agent = user_agent
         self.timeout = timeout
-
+        self.robots_fail_open = robots_fail_open
         self.session = requests.Session()
+        self.session.trust_env = False
         self.session.headers.update({"User-Agent": user_agent})
-        self._robots_cache: Dict[str, robotparser.RobotFileParser] = {}
+        self._robots_cache: Dict[str, Optional[robotparser.RobotFileParser]] = {}
 
     def crawl(
-        self, seeds: Iterable[str], state: Optional["CrawlState"] = None
+        self,
+        seeds: Iterable[str],
+        state: Optional["CrawlState"] = None,
     ) -> "CrawlState":
         if state is None:
-            from storage import CrawlState as _CrawlState  # Local import to avoid cycle
-
+            from storage import CrawlState as _CrawlState
             state = _CrawlState.empty()
 
-        pages: Dict[str, Page] = dict(state.pages)
-        graph: Dict[str, Set[str]] = {
-            url: set(edges) for url, edges in state.graph.items()
-        }
-        visited: Set[str] = set(state.visited) | set(pages.keys())
-
-        queue: deque[Tuple[str, int]] = deque(state.frontier)
-        queued: Set[str] = {url for url, _ in queue}
-        if not queue:
-            for seed in seeds:
-                normalized = normalize_url(seed)
-                if (
-                    normalized
-                    and normalized not in visited
-                    and normalized not in queued
-                ):
-                    queue.append((normalized, 0))
-                    queued.add(normalized)
+        pages = dict(state.pages)
+        graph = {url: set(edges) for url, edges in state.graph.items()}
+        visited = set(state.visited) | set(pages)
+        queue: deque[Tuple[str, int]] = deque(
+            (normalize_url(url), max(int(depth), 0))
+            for url, depth in state.frontier
+            if normalize_url(url)
+        )
+        queued = {url for url, _depth in queue}
+        # New source configuration must be respected even when a saved frontier exists.
+        for seed in seeds:
+            normalised = normalize_url(seed)
+            if normalised and normalised not in visited and normalised not in queued:
+                queue.append((normalised, 0))
+                queued.add(normalised)
 
         domain_counts: Dict[str, int] = defaultdict(int)
-        for url in pages:
-            netloc = urlparse(url).netloc.lower()
-            if netloc:
-                domain_counts[netloc] += 1
+        for existing_url in pages:
+            hostname = _hostname(existing_url)
+            if hostname:
+                domain_counts[hostname] += 1
 
         while queue and len(pages) < self.max_pages:
             current_url, depth = queue.popleft()
             queued.discard(current_url)
-            if current_url in visited or depth > self.max_depth:
+            if current_url in visited:
+                continue
+            # Record every attempted URL so rejected URLs cannot be repeatedly requeued.
+            visited.add(current_url)
+            if depth > self.max_depth:
                 continue
             if not is_trusted_domain(current_url, self.allowed_domains):
                 continue
@@ -128,30 +172,29 @@ class AcademicCrawler:
                 continue
 
             page = self._fetch_page(current_url)
-            visited.add(current_url)
-
-            if not page:
+            if page is None:
                 continue
-
-            pages[current_url] = page
-            graph.setdefault(current_url, set())
-
-            netloc = urlparse(current_url).netloc.lower()
-            if netloc:
-                domain_counts[netloc] += 1
+            canonical_url = normalize_url(page.url) or current_url
+            if not is_trusted_domain(canonical_url, self.allowed_domains):
+                continue
+            pages[canonical_url] = page
+            graph.setdefault(canonical_url, set())
+            hostname = _hostname(canonical_url)
+            if hostname:
+                domain_counts[hostname] += 1
 
             next_depth = depth + 1
             for link in page.links:
-                graph[current_url].add(link)
+                if not is_trusted_domain(link, self.allowed_domains):
+                    continue
+                graph[canonical_url].add(link)
                 if (
-                    link not in visited
-                    and next_depth <= self.max_depth
-                    and is_trusted_domain(link, self.allowed_domains)
+                    next_depth <= self.max_depth
+                    and link not in visited
                     and link not in queued
                 ):
                     queue.append((link, next_depth))
                     queued.add(link)
-
             if self.request_delay:
                 time.sleep(self.request_delay)
 
@@ -163,102 +206,111 @@ class AcademicCrawler:
 
     def _fetch_page(self, url: str) -> Optional[Page]:
         try:
-            response = self.session.get(
-                url, timeout=self.timeout, allow_redirects=True
+            downloaded = safe_download(
+                url,
+                headers={
+                    "User-Agent": self.user_agent,
+                    "Accept": "text/html,application/xhtml+xml",
+                },
+                timeout=self.timeout,
+                max_bytes=MAX_CONTENT_LENGTH,
+                allowed_content_types=ALLOWED_MIME_TYPES,
+                session=self.session,
             )
-            response.raise_for_status()
-        except requests.RequestException:
+        except Exception:
             return None
-
-        content_type_header = response.headers.get("Content-Type", "")
-        content_type = content_type_header.split(";")[0].strip().lower()
-        content_length_header = response.headers.get("Content-Length")
+        final_url = normalize_url(downloaded.final_url)
+        if not final_url or not is_trusted_domain(final_url, self.allowed_domains):
+            return None
+        content_type_header = downloaded.headers.get("Content-Type", "")
+        content_type = content_type_header.split(";", 1)[0].strip().lower()
+        encoding = "utf-8"
+        if "charset=" in content_type_header.lower():
+            encoding = content_type_header.lower().split("charset=", 1)[1].split(";", 1)[0].strip()
         try:
-            content_length = int(content_length_header) if content_length_header else 0
-        except ValueError:
-            content_length = 0
-
-        if content_length and content_length > MAX_CONTENT_LENGTH:
-            return None
-        if content_length and content_length < MIN_CONTENT_LENGTH:
-            return None
-        if content_type and content_type not in ALLOWED_MIME_TYPES:
-            return None
-
-        soup = BeautifulSoup(response.text, "html.parser")
+            html = downloaded.content.decode(encoding, errors="replace")
+        except LookupError:
+            html = downloaded.content.decode("utf-8", errors="replace")
+        soup = BeautifulSoup(html, "html.parser")
         title = self._extract_title(soup)
         text = self._extract_text(soup)
-        links = self._extract_links(url, soup)
-
         if len(text) < MIN_CONTENT_LENGTH:
             return None
-
+        links = self._extract_links(final_url, soup)
         return Page(
-            url=url,
+            url=final_url,
             title=title,
             text=text,
             links=links,
             content_type=content_type,
-            content_length=content_length,
+            content_length=len(downloaded.content),
         )
 
-    def _extract_title(self, soup: BeautifulSoup) -> str:
+    @staticmethod
+    def _extract_title(soup: BeautifulSoup) -> str:
         if soup.title and soup.title.string:
-            return soup.title.string.strip()
-        first_heading = soup.find(["h1", "h2"])
-        if first_heading and first_heading.get_text(strip=True):
-            return first_heading.get_text(strip=True)
+            return soup.title.string.strip()[:500]
+        heading = soup.find(["h1", "h2"])
+        if heading:
+            return heading.get_text(" ", strip=True)[:500] or "Untitled"
         return "Untitled"
 
-    def _extract_text(self, soup: BeautifulSoup) -> str:
+    @staticmethod
+    def _extract_text(soup: BeautifulSoup) -> str:
         for element in soup(
-            ["script", "style", "noscript", "header", "footer", "nav", "aside"]
+            ["script", "style", "noscript", "header", "footer", "nav", "aside", "svg"]
         ):
             element.decompose()
-        text = soup.get_text(separator=" ", strip=True)
-        return " ".join(text.split())
+        return " ".join(soup.get_text(separator=" ", strip=True).split())
 
     def _extract_links(self, base_url: str, soup: BeautifulSoup) -> List[str]:
         links: Set[str] = set()
         for anchor in soup.find_all("a", href=True):
-            href = anchor.get("href")
+            href = str(anchor.get("href") or "").strip()
             if not href:
                 continue
             absolute = normalize_url(urljoin(base_url, href))
             if not absolute or absolute == base_url:
                 continue
-            if not is_trusted_domain(absolute, self.allowed_domains):
-                continue
-            if not self._is_allowed_by_robots(absolute):
-                continue
-            links.add(absolute)
-        return list(links)
+            if is_trusted_domain(absolute, self.allowed_domains):
+                links.add(absolute)
+        return sorted(links)
 
     def _is_allowed_by_robots(self, url: str) -> bool:
         parsed = urlparse(url)
         base = f"{parsed.scheme}://{parsed.netloc}"
-        robots = self._robots_cache.get(base)
-        if not robots:
-            robots = robotparser.RobotFileParser()
-            robots.set_url(urljoin(base, "/robots.txt"))
+        if base not in self._robots_cache:
+            robots_url = urljoin(base, "/robots.txt")
+            parser: Optional[robotparser.RobotFileParser] = None
             try:
-                robots.read()
+                downloaded = safe_download(
+                    robots_url,
+                    headers={"User-Agent": self.user_agent, "Accept": "text/plain,*/*;q=0.1"},
+                    timeout=self.timeout,
+                    max_bytes=512_000,
+                    session=self.session,
+                )
+                text = downloaded.content.decode("utf-8", errors="replace")
+                parser = robotparser.RobotFileParser(robots_url)
+                parser.parse(text.splitlines())
             except Exception:
-                pass
-            self._robots_cache[base] = robots
+                parser = None
+            self._robots_cache[base] = parser
+        parser = self._robots_cache[base]
+        if parser is None:
+            return self.robots_fail_open
         try:
-            return robots.can_fetch(self.user_agent, url)
+            return parser.can_fetch(self.user_agent, url)
         except Exception:
-            return True
+            return self.robots_fail_open
 
     def _under_domain_quota(
-        self, url: str, domain_counts: Dict[str, int]
+        self,
+        url: str,
+        domain_counts: Dict[str, int],
     ) -> bool:
-        parsed = urlparse(url)
-        netloc = parsed.netloc.lower()
-        if not netloc:
-            return False
-        return domain_counts.get(netloc, 0) < self.max_pages_per_domain
+        hostname = _hostname(url)
+        return bool(hostname) and domain_counts.get(hostname, 0) < self.max_pages_per_domain
 
 
 DEFAULT_SEEDS: List[str] = ALL_TRUSTED_SEEDS
