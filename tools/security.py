@@ -10,10 +10,12 @@ import re
 import socket
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, Mapping, Optional
+from typing import Dict, Iterable, Mapping, Optional, TypeAlias
 from urllib.parse import urljoin, urlparse
 
 import requests
+
+IPAddress: TypeAlias = ipaddress.IPv4Address | ipaddress.IPv6Address
 
 DEFAULT_MAX_DOWNLOAD_BYTES = int(os.getenv("MAX_REMOTE_DOWNLOAD_BYTES", str(5_000_000)))
 DEFAULT_MAX_UPLOAD_BYTES = int(os.getenv("MAX_UPLOAD_BYTES", str(50_000_000)))
@@ -97,12 +99,12 @@ def generated_upload_name(filename: Optional[str]) -> str:
     return safe_upload_suffix(filename)
 
 
-def _resolved_addresses(hostname: str, port: Optional[int]) -> set[ipaddress._BaseAddress]:
+def _resolved_addresses(hostname: str, port: Optional[int]) -> set[IPAddress]:
     try:
         infos = socket.getaddrinfo(hostname, port or 443, type=socket.SOCK_STREAM)
     except socket.gaierror as exc:
         raise SecurityError(f"Could not resolve remote hostname '{hostname}'.") from exc
-    addresses: set[ipaddress._BaseAddress] = set()
+    addresses: set[IPAddress] = set()
     for info in infos:
         try:
             addresses.add(ipaddress.ip_address(info[4][0]))
@@ -113,7 +115,7 @@ def _resolved_addresses(hostname: str, port: Optional[int]) -> set[ipaddress._Ba
     return addresses
 
 
-def _is_public_address(address: ipaddress._BaseAddress) -> bool:
+def _is_public_address(address: IPAddress) -> bool:
     return not (
         address.is_private
         or address.is_loopback
@@ -136,7 +138,7 @@ def validate_public_url(url: str) -> str:
     if host in {"localhost", "localhost.localdomain"} or host.endswith(".localhost"):
         raise SecurityError("Localhost destinations are not allowed.")
     try:
-        addresses = {ipaddress.ip_address(host)}
+        addresses: set[IPAddress] = {ipaddress.ip_address(host)}
     except ValueError:
         addresses = _resolved_addresses(host, parsed.port)
     if any(not _is_public_address(address) for address in addresses):
