@@ -4,9 +4,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
-import threading
-import time
 import uuid
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -19,6 +18,7 @@ from fastapi import (
     File,
     Header,
     HTTPException,
+    Request,
     UploadFile,
 )
 from fastapi.staticfiles import StaticFiles
@@ -30,8 +30,10 @@ from tools.bib import export_to_bibtex
 from tools.document_service import index_document
 from tools.ingestion import ingest_file
 from tools.integrity import check_visual_entailment, extract_protocol
+from tools.job_store import JobStore
 from tools.models import AgentAnswer
 from tools.rag import get_rag_layer
+from tools.rate_limit import SlidingWindowRateLimiter
 from tools.security import (
     DEFAULT_MAX_UPLOAD_BYTES,
     Principal,
@@ -46,6 +48,9 @@ UPLOAD_DIR = Path(os.getenv("UPLOAD_DIR", "uploads")).resolve()
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 RETAIN_UPLOADS = os.getenv("RETAIN_UPLOADS", "false").lower() in {"1", "true", "yes"}
 JOB_TTL_SECONDS = int(os.getenv("JOB_TTL_SECONDS", str(24 * 60 * 60)))
+REQUESTS_PER_MINUTE = int(os.getenv("REQUESTS_PER_MINUTE", "60"))
+_JOB_STORE = JobStore(ttl_seconds=JOB_TTL_SECONDS)
+_RATE_LIMITER = SlidingWindowRateLimiter(REQUESTS_PER_MINUTE)
 
 _parser = argparse.ArgumentParser(add_help=False)
 _parser.add_argument("--local", action="store_true")
@@ -72,16 +77,31 @@ _ALLOWED_MODELS = {
 }
 _ALLOWED_MODELS.add(_DEFAULT_MODEL)
 _API_KEY_OWNERS = parse_api_key_owners()
-_SINGLE_USER_OWNER = normalize_owner_id(
-    os.getenv("SINGLE_USER_OWNER_ID", "default_user")
-)
+_SINGLE_USER_OWNER = normalize_owner_id(os.getenv("SINGLE_USER_OWNER_ID", "default_user"))
+
+
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    request_id = request.headers.get("X-Request-ID") or uuid.uuid4().hex
+    response = await call_next(request)
+    response.headers["X-Request-ID"] = request_id[:128]
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data:; connect-src 'self'; font-src 'self'; object-src 'none'; "
+        "base-uri 'self'; frame-ancestors 'none'; form-action 'self'"
+    )
+    if request.url.path.startswith(("/query", "/ingest", "/status", "/docs", "/tool")):
+        response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 async def get_principal(
     x_api_key: Optional[str] = Header(default=None, alias="X-API-Key"),
 ) -> Principal:
-    """Resolve owner identity from server configuration, never X-Owner-ID."""
-
     if not _API_KEY_OWNERS:
         return Principal(owner_id=_SINGLE_USER_OWNER, authenticated=False)
     owner_id = _API_KEY_OWNERS.get(x_api_key or "")
@@ -90,44 +110,29 @@ async def get_principal(
     return Principal(owner_id=owner_id, authenticated=True)
 
 
+async def get_rate_limited_principal(
+    principal: Principal = Depends(get_principal),
+) -> Principal:
+    retry_after = _RATE_LIMITER.retry_after(principal.owner_id)
+    if retry_after > 0:
+        raise HTTPException(
+            status_code=429,
+            detail="Rate limit exceeded.",
+            headers={"Retry-After": str(max(1, math.ceil(retry_after)))},
+        )
+    return principal
+
+
 def _new_agent(owner_id: str, model: Optional[str] = None) -> SearchAgent:
     selected = model or _DEFAULT_MODEL
     if selected not in _ALLOWED_MODELS:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Model '{selected}' is not enabled by the server.",
-        )
+        raise HTTPException(status_code=400, detail=f"Model '{selected}' is not enabled by the server.")
     return SearchAgent(
         model=selected,
         owner_id=owner_id,
         api_key=_PROVIDER_KEY,
         base_url=_BASE_URL,
     )
-
-
-_job_registry: Dict[str, Dict[str, Any]] = {}
-_job_lock = threading.Lock()
-
-
-def _prune_jobs(now: Optional[float] = None) -> None:
-    current = now or time.time()
-    expired = [
-        job_id
-        for job_id, entry in _job_registry.items()
-        if current - float(entry.get("created_ts", current)) > JOB_TTL_SECONDS
-    ]
-    for job_id in expired:
-        _job_registry.pop(job_id, None)
-
-
-def _update_job(job_id: str, **fields: Any) -> None:
-    with _job_lock:
-        _prune_jobs()
-        entry = _job_registry.setdefault(
-            job_id,
-            {"job_id": job_id, "created_ts": time.time()},
-        )
-        entry.update(fields)
 
 
 class QueryRequest(BaseModel):
@@ -176,13 +181,14 @@ async def public_config() -> Dict[str, Any]:
         "default_model": _DEFAULT_MODEL,
         "max_upload_bytes": DEFAULT_MAX_UPLOAD_BYTES,
         "retain_uploads": RETAIN_UPLOADS,
+        "requests_per_minute": REQUESTS_PER_MINUTE,
     }
 
 
 @app.post("/query", response_model=AgentAnswer)
 async def run_query(
     request: QueryRequest,
-    principal: Principal = Depends(get_principal),
+    principal: Principal = Depends(get_rate_limited_principal),
 ) -> AgentAnswer:
     agent = _new_agent(principal.owner_id, request.model)
     return await run_in_threadpool(agent.run, request.query)
@@ -215,7 +221,7 @@ async def _save_upload(file: UploadFile, destination: Path) -> int:
 async def ingest_document(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
-    principal: Principal = Depends(get_principal),
+    principal: Principal = Depends(get_rate_limited_principal),
 ) -> JobStatus:
     suffix = generated_upload_name(file.filename)
     owner_dir = UPLOAD_DIR / principal.owner_id
@@ -224,9 +230,9 @@ async def ingest_document(
     await _save_upload(file, destination)
     job_id = f"job_{uuid.uuid4().hex}"
     display_name = Path(file.filename or f"upload{suffix}").name
-    _update_job(
+    _JOB_STORE.update(
         job_id,
-        owner_id=principal.owner_id,
+        principal.owner_id,
         status="processing",
         filename=display_name,
     )
@@ -245,20 +251,13 @@ async def get_job_status(
     job_id: str,
     principal: Principal = Depends(get_principal),
 ) -> JobStatus:
-    with _job_lock:
-        _prune_jobs()
-        entry = dict(_job_registry.get(job_id) or {})
-    if not entry or entry.get("owner_id") != principal.owner_id:
+    entry = await run_in_threadpool(_JOB_STORE.get, job_id, principal.owner_id)
+    if not entry:
         raise HTTPException(status_code=404, detail="Job not found.")
     return JobStatus(**entry)
 
 
-def process_ingestion(
-    file_path: str,
-    display_name: str,
-    job_id: str,
-    owner_id: str,
-) -> None:
+def process_ingestion(file_path: str, display_name: str, job_id: str, owner_id: str) -> None:
     path = Path(file_path)
     try:
         result = ingest_file(file_path, owner_id=owner_id)
@@ -275,19 +274,21 @@ def process_ingestion(
             job_id=job_id,
             storage_path=file_path if RETAIN_UPLOADS else None,
         )
-        _update_job(
+        _JOB_STORE.update(
             job_id,
+            owner_id,
             status="success",
             filename=display_name,
             message=f"Indexed {indexed.chunk_count} semantic chunks.",
             doc_id=document.id,
         )
     except Exception as exc:
-        _update_job(
+        _JOB_STORE.update(
             job_id,
+            owner_id,
             status="failed",
             filename=display_name,
-            message=str(exc),
+            message=str(exc)[:2000],
         )
     finally:
         if not RETAIN_UPLOADS:
@@ -308,7 +309,7 @@ async def list_documents(
 @app.delete("/docs/{doc_id}")
 async def delete_document(
     doc_id: str,
-    principal: Principal = Depends(get_principal),
+    principal: Principal = Depends(get_rate_limited_principal),
 ) -> Dict[str, str]:
     rag = get_rag_layer()
     results = rag.collection.get(
@@ -325,11 +326,7 @@ async def delete_document(
     if not metadatas:
         raise HTTPException(status_code=404, detail="Document not found.")
     storage_path = str((metadatas[0] or {}).get("storage_path") or "")
-    await run_in_threadpool(
-        rag.delete_document,
-        owner_id=principal.owner_id,
-        doc_id=doc_id,
-    )
+    await run_in_threadpool(rag.delete_document, owner_id=principal.owner_id, doc_id=doc_id)
     if storage_path:
         candidate = Path(storage_path).resolve()
         try:
@@ -343,7 +340,7 @@ async def delete_document(
 @app.post("/tool/visual-entailment")
 async def direct_visual_entailment(
     request: VisualEntailmentRequest,
-    principal: Principal = Depends(get_principal),
+    principal: Principal = Depends(get_rate_limited_principal),
 ) -> Dict[str, Any]:
     agent = _new_agent(principal.owner_id)
     raw = await run_in_threadpool(
@@ -361,7 +358,7 @@ async def direct_visual_entailment(
 @app.post("/tool/protocol")
 async def direct_extract_protocol(
     request: ProtocolRequest,
-    principal: Principal = Depends(get_principal),
+    principal: Principal = Depends(get_rate_limited_principal),
 ) -> Dict[str, Any]:
     agent = _new_agent(principal.owner_id)
     raw = await run_in_threadpool(
@@ -377,7 +374,7 @@ async def direct_extract_protocol(
 @app.post("/tool/bibtex")
 async def direct_bibtex(
     request: BibTeXRequest,
-    _principal: Principal = Depends(get_principal),
+    _principal: Principal = Depends(get_rate_limited_principal),
 ) -> Dict[str, str]:
     return {
         "bibtex": export_to_bibtex(citations=[{
