@@ -1,29 +1,28 @@
-# Use an official Python runtime as a parent image
-FROM python:3.10-slim
+FROM python:3.12-slim
 
-# Set the working directory in the container
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    TOKENIZERS_PARALLELISM=false \
+    HOME=/home/rigorousrag
+
 WORKDIR /app
 
-# Install system dependencies for document processing
-RUN apt-get update && apt-get install -y \
-    build-essential \
-    libmagic-dev \
-    && rm -rf /var/lib/apt/lists/*
+RUN groupadd --system rigorousrag \
+    && useradd --system --gid rigorousrag --create-home --home-dir /home/rigorousrag rigorousrag
 
-# Copy the requirements file into the container
-COPY requirements.txt .
+COPY requirements.txt /app/requirements.txt
+RUN python -m pip install --upgrade pip \
+    && python -m pip install -r /app/requirements.txt
 
-# Install any needed packages specified in requirements.txt
-RUN pip install --no-cache-dir -r requirements.txt
+COPY --chown=rigorousrag:rigorousrag . /app
+RUN mkdir -p /app/uploads /app/rag_storage /app/data /home/rigorousrag/.cache \
+    && chown -R rigorousrag:rigorousrag /app/uploads /app/rag_storage /app/data /home/rigorousrag
 
-# Copy the rest of the application code
-COPY . .
-
-# Create necessary directories
-RUN mkdir -p uploads rag_storage
-
-# Expose the API port
+USER rigorousrag
 EXPOSE 8000
 
-# Command to run the FastAPI server
-CMD ["python", "server.py"]
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
+  CMD python -c "import json,urllib.request; json.load(urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3))" || exit 1
+
+CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1", "--proxy-headers"]
