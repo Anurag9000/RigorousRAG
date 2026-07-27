@@ -1,182 +1,109 @@
-"""Handbook search tool with adaptive full-text / TF-IDF retrieval."""
+"""Small owner-independent policy handbook retrieval."""
+
+from __future__ import annotations
 
 import math
-import re
+import threading
 from collections import Counter
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 
-# ---------------------------------------------------------------------------
-# Handbook file location (sibling of tools/ directory)
-# ---------------------------------------------------------------------------
-HANDBOOK_PATH = Path(__file__).parent.parent / "handbook.md"
-
-# In-memory cache: invalidated whenever the handbook file's mtime changes
-_HANDBOOK_CACHE: Dict = {"mtime": None, "index": None, "chunks": None}
-
-# Maximum handbook size (chars) before switching to TF-IDF retrieval
-_FULL_TEXT_THRESHOLD = 10_000
-
-
-# ---------------------------------------------------------------------------
-# In-memory TF-IDF index helpers (reuses repo's own Indexer + Crawler)
-# ---------------------------------------------------------------------------
+HANDBOOK_PATH = Path(__file__).resolve().parent.parent / "handbook.md"
+_CACHE: Dict[str, Any] = {"mtime_ns": None, "index": None, "chunks": None}
+_CACHE_LOCK = threading.Lock()
 
 
 def _paragraph_chunks(content: str) -> List[Tuple[str, str]]:
-    """
-    Split handbook content into (chunk_id, text) pairs by double-newline.
-    Merges very short paragraphs (< 120 chars) with the next one.
-    """
-    raw = [p.strip() for p in content.split("\n\n") if p.strip()]
+    paragraphs = [paragraph.strip() for paragraph in content.split("\n\n") if paragraph.strip()]
     chunks: List[Tuple[str, str]] = []
-    buffer = ""
-    for i, para in enumerate(raw):
-        buffer = (buffer + " " + para).strip() if buffer else para
-        if len(buffer) >= 120 or i == len(raw) - 1:
-            chunks.append((f"hb_{i}", buffer))
-            buffer = ""
+    buffer: List[str] = []
+    length = 0
+    for paragraph in paragraphs:
+        if buffer and length + len(paragraph) > 1200:
+            chunks.append((f"handbook-{len(chunks) + 1}", "\n\n".join(buffer)))
+            buffer, length = [], 0
+        buffer.append(paragraph)
+        length += len(paragraph)
+    if buffer:
+        chunks.append((f"handbook-{len(chunks) + 1}", "\n\n".join(buffer)))
     return chunks
 
 
-def _build_handbook_index(content: str):
-    """
-    Build an in-memory TF-IDF index over handbook chunks using the repo's own
-    InvertedIndex implementation.  Returns (index, chunks_list).
-    """
-    from Crawler import Page  # local import to avoid circular import at module level
+def _build_index(content: str):
+    from Crawler import Page
     from Indexer import InvertedIndex
 
     chunks = _paragraph_chunks(content)
-    pages: Dict = {}
-    for cid, text in chunks:
-        pages[cid] = Page(
-            url=cid,
-            title=f"Handbook — {cid}",
+    pages = {
+        chunk_id: Page(
+            url=chunk_id,
+            title=chunk_id,
             text=text,
             links=[],
-            content_type="text/plain",
+            content_type="text/markdown",
             content_length=len(text),
         )
+        for chunk_id, text in chunks
+    }
+    index = InvertedIndex()
+    index.build(pages)
+    return index, chunks
 
-    idx = InvertedIndex()
-    idx.build(pages)
-    return idx, chunks
 
-
-def _tfidf_search(query: str, idx, chunks: List[Tuple[str, str]], top_k: int = 3) -> str:
-    """
-    Score handbook chunks against a query using the inverted index's IDF weights
-    and return the top-k results formatted as Markdown passages.
-    """
+def _search(query: str, index, chunks: List[Tuple[str, str]], top_k: int = 3) -> List[Tuple[str, str]]:
     from Indexer import tokenize
 
     tokens = tokenize(query)
     if not tokens:
-        return ""
-
-    q_counter = Counter(tokens)
-    raw_scores: Dict[str, float] = {}
-
-    for term, freq in q_counter.items():
-        idf = idx.idf.get(term)
+        return []
+    scores: Dict[str, float] = {}
+    for term, frequency in Counter(tokens).items():
+        idf = index.idf.get(term)
         if idf is None:
             continue
-        q_weight = (1.0 + math.log(freq)) * idf
-        for chunk_id, d_weight in idx.index.get(term, {}).items():
-            raw_scores[chunk_id] = raw_scores.get(chunk_id, 0.0) + q_weight * d_weight
-
-    if not raw_scores:
-        # No index hits — return first 5 000 chars as a safe fallback
-        return ""
-
-    chunk_map = {cid: text for cid, text in chunks}
-    top_ids = sorted(raw_scores, key=raw_scores.__getitem__, reverse=True)[:top_k]
-
-    parts = [
-        f"**Handbook Passage {i + 1}:**\n\n{chunk_map[cid]}"
-        for i, cid in enumerate(top_ids)
-        if cid in chunk_map
+        query_weight = (1.0 + math.log(frequency)) * idf
+        for chunk_id, document_weight in index.index.get(term, {}).items():
+            scores[chunk_id] = scores.get(chunk_id, 0.0) + query_weight * document_weight
+    chunk_map = dict(chunks)
+    return [
+        (chunk_id, chunk_map[chunk_id])
+        for chunk_id in sorted(scores, key=scores.get, reverse=True)[:top_k]
+        if chunk_id in chunk_map
     ]
-    return "\n\n---\n\n".join(parts)
-
-
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
 
 
 def search_handbook(query: str) -> str:
-    """
-    Retrieve relevant content from the internal handbook for the agent to use.
-
-    **Small handbooks (≤ 10 000 chars):** returns the full text so that the
-    LLM can process it without any retrieval loss.
-
-    **Large handbooks (> 10 000 chars):** builds an in-memory TF-IDF index
-    (using the same InvertedIndex as the main search engine) and returns the
-    top-3 most relevant passages.  The index is rebuilt only when the handbook
-    file's modification time changes (mtime-keyed cache invalidation).
-
-    Falls back to returning the first 5 000 characters if the index produces
-    no hits for the given query.
-    """
+    query = (query or "").strip()
+    if not query:
+        raise ValueError("A handbook query is required.")
     if not HANDBOOK_PATH.exists():
-        return (
-            "⚠️  Handbook file not found.  Expected location: "
-            f"{HANDBOOK_PATH}"
-        )
-
-    try:
-        stat = HANDBOOK_PATH.stat()
-        content = HANDBOOK_PATH.read_text(encoding="utf-8")
-    except OSError as exc:
-        return f"⚠️  Error reading handbook: {exc}"
-
-    # Small handbook — return full text
-    if len(content) <= _FULL_TEXT_THRESHOLD:
-        return content
-
-    # Large handbook — use TF-IDF retrieval with mtime-based cache invalidation
-    if _HANDBOOK_CACHE["mtime"] != stat.st_mtime:
-        idx, chunks = _build_handbook_index(content)
-        _HANDBOOK_CACHE["mtime"] = stat.st_mtime
-        _HANDBOOK_CACHE["index"] = idx
-        _HANDBOOK_CACHE["chunks"] = chunks
-
-    result = _tfidf_search(
-        query,
-        _HANDBOOK_CACHE["index"],
-        _HANDBOOK_CACHE["chunks"],
-        top_k=3,
+        raise FileNotFoundError(f"Handbook not found at {HANDBOOK_PATH}.")
+    stat = HANDBOOK_PATH.stat()
+    with _CACHE_LOCK:
+        if _CACHE["mtime_ns"] != stat.st_mtime_ns:
+            content = HANDBOOK_PATH.read_text(encoding="utf-8")
+            index, chunks = _build_index(content)
+            _CACHE.update({"mtime_ns": stat.st_mtime_ns, "index": index, "chunks": chunks})
+        results = _search(query, _CACHE["index"], _CACHE["chunks"], top_k=3)
+    if not results:
+        return "No handbook passage matched the query."
+    return "\n\n---\n\n".join(
+        f"**{chunk_id}**\n\n{text}" for chunk_id, text in results
     )
 
-    # Graceful fallback: return start of handbook when index has no hits
-    return result if result else content[:5_000]
-
-
-# ---------------------------------------------------------------------------
-# Tool schema definition (imported by search_agent.py)
-# ---------------------------------------------------------------------------
 
 HANDBOOK_TOOL_DEF = {
     "type": "function",
     "function": {
         "name": "search_handbook",
-        "description": (
-            "Search the internal company/lab handbook for policies, guidelines, "
-            "operating procedures, and data-privacy rules.  Use this for questions "
-            "about internal best practices, compliance, or operational instructions."
-        ),
+        "description": "Retrieve relevant internal operating or privacy policy passages.",
         "parameters": {
             "type": "object",
             "properties": {
-                "query": {
-                    "type": "string",
-                    "description": "The specific policy or topic to look up in the handbook.",
-                }
+                "query": {"type": "string", "minLength": 1, "maxLength": 2000}
             },
             "required": ["query"],
+            "additionalProperties": False,
         },
     },
 }
