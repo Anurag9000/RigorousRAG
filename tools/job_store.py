@@ -9,6 +9,8 @@ import time
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from tools.privacy import mask_metadata_text
+
 
 class JobStore:
     def __init__(self, path: str | Path | None = None, ttl_seconds: int = 86_400) -> None:
@@ -53,10 +55,15 @@ class JobStore:
 
     def update(self, job_id: str, owner_id: str, **fields: Any) -> None:
         now = time.time()
-        status = str(fields.get("status") or "processing")
-        filename = str(fields.get("filename") or "upload")
-        message = fields.get("message")
-        doc_id = fields.get("doc_id")
+        status = str(fields.get("status") or "processing")[:64]
+        filename = mask_metadata_text(str(fields.get("filename") or "upload"))[:500]
+        raw_message = fields.get("message")
+        message = (
+            mask_metadata_text(str(raw_message))[:2000]
+            if raw_message not in (None, "")
+            else None
+        )
+        doc_id = str(fields.get("doc_id"))[:200] if fields.get("doc_id") else None
         with self._lock, self._connect() as connection:
             connection.execute(
                 """
