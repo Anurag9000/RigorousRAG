@@ -1,6 +1,5 @@
-from pathlib import Path
-
 from tools.ingestion import _chunk_text_semantically, ingest_file, redact_text
+from tools.ingestion_models import DocumentSection, IngestedDocument
 
 
 def test_redaction_applies_to_full_text_and_sections(tmp_path):
@@ -18,6 +17,27 @@ def test_redaction_applies_to_full_text_and_sections(tmp_path):
     assert all("alice@example.com" not in section.content for section in document.sections)
     assert all("202-555-0114" not in section.content for section in document.sections)
     assert "file_path" not in document.model_dump(mode="json")
+
+
+def test_document_model_masks_titles_filenames_sections_and_serialized_metadata():
+    document = IngestedDocument(
+        id="doc",
+        filename="alice@example.com-paper.pdf",
+        file_path="/private/alice@example.com-paper.pdf",
+        mime_type="application/pdf",
+        title="Study by alice@example.com",
+        text="redacted body",
+        sections=[DocumentSection(title="Contact +1 202-555-0114", content="redacted")],
+        metadata={"author": "alice@example.com", "nested": {"phone": "+1 202-555-0114"}},
+    )
+    document.filename = "updated-alice@example.com.pdf"
+    serialized = document.model_dump(mode="json")
+    assert "alice@example.com" not in serialized["filename"]
+    assert "alice@example.com" not in serialized["title"]
+    assert "202-555-0114" not in serialized["sections"][0]["title"]
+    assert "alice@example.com" not in str(serialized["metadata"])
+    assert "202-555-0114" not in str(serialized["metadata"])
+    assert "file_path" not in serialized
 
 
 def test_document_id_is_content_and_owner_stable(tmp_path):
