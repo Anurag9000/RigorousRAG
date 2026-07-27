@@ -1,145 +1,118 @@
-"""Citation and hallucination verification tools."""
+"""Deterministic citation-structure checks.
+
+This module intentionally does not claim to prove factual entailment. It checks
+that answer markers map to server-selected evidence and reports weak lexical
+alignment only as a diagnostic signal.
+"""
+
+from __future__ import annotations
 
 import re
-from typing import List, Dict
+from typing import Any, Dict, List
 
-from tools.models import Citation, AgentAnswer
+from tools.models import AgentAnswer, Citation
 
-# ---------------------------------------------------------------------------
-# Stop-word set for Jaccard overlap computation
-# ---------------------------------------------------------------------------
+_MARKER_RE = re.compile(r"\[([A-Za-z0-9_.:-]+)\]")
 _STOP_WORDS = {
     "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
     "have", "has", "had", "do", "does", "did", "will", "would", "could",
-    "should", "may", "might", "shall", "can", "to", "of", "in", "on",
-    "at", "by", "for", "with", "about", "against", "between", "into",
-    "through", "during", "before", "after", "above", "below", "from",
-    "up", "down", "and", "but", "or", "nor", "so", "yet", "both",
-    "either", "neither", "not", "only", "same", "than", "that", "this",
-    "these", "those", "it", "its", "itself", "also", "as", "if", "then",
-    "which", "who", "whom", "when", "where", "why", "how", "all", "each",
+    "should", "may", "might", "can", "to", "of", "in", "on", "at", "by",
+    "for", "with", "about", "from", "and", "but", "or", "not", "that",
+    "this", "these", "those", "it", "its", "as", "if", "then", "which",
 }
 
 
-def _tokenize_for_overlap(text: str) -> set:
-    """
-    Lowercase alphabetic tokens of 3+ characters, filtered of stop-words.
-    Produces a set suitable for Jaccard-similarity computation.
-    """
-    tokens = re.findall(r"[a-zA-Z]{3,}", text.lower())
-    return {t for t in tokens if t not in _STOP_WORDS}
+def _tokenize_for_overlap(text: str) -> set[str]:
+    tokens = re.findall(r"[\w-]{3,}", (text or "").lower(), flags=re.UNICODE)
+    return {token for token in tokens if token not in _STOP_WORDS}
 
 
-def verify_citations(answer: str, citations: List[Citation]) -> List[Dict]:
-    """
-    Cross-references every inline citation [n] in the answer with the actual
-    source snippets using two complementary checks:
+def _answer_markers(answer: str) -> List[str]:
+    return [f"[{value}]" for value in _MARKER_RE.findall(answer or "")]
 
-    1. **Structural check** — every [n] marker found in the answer must map to
-       a provided Citation object.  Missing mappings are flagged immediately.
 
-    2. **Semantic grounding check (Jaccard overlap)** — for each [n] that has a
-       corresponding snippet, we extract the surrounding answer context (±200
-       chars) and compute word-level Jaccard similarity between that context and
-       the citation snippet.  A similarity below 5% with a sufficiently long
-       snippet is flagged as a potential hallucination.
+def verify_citations(answer: str, citations: List[Citation]) -> List[Dict[str, Any]]:
+    issues: List[Dict[str, Any]] = []
+    labels = [citation.label for citation in citations]
+    label_map = {citation.label: citation for citation in citations}
+    if len(labels) != len(set(labels)):
+        issues.append({
+            "type": "duplicate_labels",
+            "label": "*",
+            "error": "The citation list contains duplicate labels.",
+        })
 
-    Returns a list of issue dicts, each containing 'label', 'type', and 'error'.
-    An empty list means all citations pass both checks.
-    """
-    issues: List[Dict] = []
-
-    # Map citation label → Citation object
-    label_to_citation: Dict[str, Citation] = {c.label: c for c in citations}
-
-    # Find all unique citation markers in the answer
-    markers = re.findall(r"\[(\d+)\]", answer)
-    unique_markers = sorted(set(markers), key=int)
-
-    for marker in unique_markers:
-        label = f"[{marker}]"
-
-        # --- Check 1: structural presence ---
-        if label not in label_to_citation:
-            issues.append(
-                {
-                    "label": label,
-                    "type": "missing_source",
-                    "error": (
-                        f"Citation marker {label} used in answer but "
-                        "no corresponding source was provided."
-                    ),
-                }
-            )
+    markers = _answer_markers(answer)
+    for label in sorted(set(markers)):
+        citation = label_map.get(label)
+        if citation is None:
+            issues.append({
+                "type": "missing_source",
+                "label": label,
+                "error": f"Citation marker {label} has no corresponding source.",
+            })
             continue
-
-        citation = label_to_citation[label]
-        snippet = citation.snippet or ""
-
-        # --- Check 2: semantic grounding via Jaccard similarity ---
-        # Only meaningful when the snippet has enough vocabulary
-        snippet_tokens = _tokenize_for_overlap(snippet)
-        if len(snippet_tokens) < 5:
-            # Snippet is too short / trivial — skip overlap check
+        evidence = citation.quote or citation.snippet or ""
+        evidence_tokens = _tokenize_for_overlap(evidence)
+        if len(evidence_tokens) < 8:
             continue
-
-        # Find all occurrences of this label in the answer
-        for m in re.finditer(re.escape(label), answer):
-            start = max(0, m.start() - 200)
-            end = min(len(answer), m.end() + 200)
-            context_window = answer[start:end]
-
-            context_tokens = _tokenize_for_overlap(context_window)
-            union = context_tokens | snippet_tokens
-            intersection = context_tokens & snippet_tokens
-
-            if not union:
+        positions = [match.start() for match in re.finditer(re.escape(label), answer)]
+        for position in positions:
+            context = answer[max(0, position - 300): min(len(answer), position + 300)]
+            context_tokens = _tokenize_for_overlap(context)
+            if not context_tokens:
                 continue
+            overlap = len(context_tokens & evidence_tokens) / max(
+                1, len(context_tokens | evidence_tokens)
+            )
+            if overlap < 0.02:
+                issues.append({
+                    "type": "low_lexical_alignment",
+                    "label": label,
+                    "overlap": round(overlap, 4),
+                    "error": (
+                        f"The nearby answer text has very low lexical alignment with "
+                        f"the evidence for {label}. This is a diagnostic, not a "
+                        "semantic entailment verdict."
+                    ),
+                })
 
-            jaccard = len(intersection) / len(union)
-            if jaccard < 0.05:
-                issues.append(
-                    {
-                        "label": label,
-                        "type": "low_overlap",
-                        "jaccard": round(jaccard, 3),
-                        "error": (
-                            f"Low semantic overlap ({jaccard:.1%}) between answer "
-                            f"context and source snippet for {label}.  The cited "
-                            "source may not actually support the claim made here — "
-                            "possible hallucination or misattribution."
-                        ),
-                    }
-                )
-
+    used = set(markers)
+    for label in labels:
+        if label not in used:
+            issues.append({
+                "type": "unused_source",
+                "label": label,
+                "error": f"Source {label} was returned but not cited in the answer.",
+            })
+    if citations and not markers:
+        issues.append({
+            "type": "missing_markers",
+            "label": "*",
+            "error": "Evidence was retrieved, but the answer contains no citation markers.",
+        })
     return issues
 
 
 def audit_hallucination(agent_answer: AgentAnswer) -> str:
-    """
-    High-level audit of an AgentAnswer for hallucination risk.
-
-    Runs both the structural and semantic grounding checks via verify_citations.
-    Returns a human-readable status string suitable for appending to the answer.
-    """
     issues = verify_citations(agent_answer.answer, agent_answer.citations)
-    if not issues:
+    serious = [
+        issue for issue in issues
+        if issue["type"] in {"missing_source", "duplicate_labels", "missing_markers"}
+    ]
+    if serious:
+        details = "; ".join(issue["error"] for issue in serious)
+        return f"⚠️ Citation-structure warning: {details}"
+    diagnostics = [
+        issue for issue in issues if issue["type"] == "low_lexical_alignment"
+    ]
+    if diagnostics:
+        labels = ", ".join(sorted({issue["label"] for issue in diagnostics}))
         return (
-            f"✅ Citation audit passed: all {len(agent_answer.citations)} "
-            "citation(s) are structurally present and semantically grounded."
+            "⚠️ Citation diagnostic: low lexical alignment was detected for "
+            f"{labels}; manual source inspection is recommended."
         )
-
-    missing = [i for i in issues if i["type"] == "missing_source"]
-    low_overlap = [i for i in issues if i["type"] == "low_overlap"]
-
-    parts = []
-    if missing:
-        labels = ", ".join(i["label"] for i in missing)
-        parts.append(f"{len(missing)} unmapped marker(s): {labels}")
-    if low_overlap:
-        labels = ", ".join(
-            f"{i['label']} (Jaccard={i['jaccard']})" for i in low_overlap
-        )
-        parts.append(f"{len(low_overlap)} low-overlap citation(s): {labels}")
-
-    return f"⚠️ Citation audit warning — Potential grounding issues found: {'; '.join(parts)}."
+    return (
+        f"✅ Citation-structure check passed for "
+        f"{len(agent_answer.citations)} source(s)."
+    )
