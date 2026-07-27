@@ -1,523 +1,450 @@
-"""
-Document ingestion pipeline: PDF, DOCX, and plain-text parsing with
-font-based section detection, semantic chunking, and comprehensive PII redaction.
-"""
+"""Safe document parsing, redaction, metadata extraction, and semantic sections."""
 
+from __future__ import annotations
+
+import hashlib
 import mimetypes
-import os
 import re
 import statistics
+import uuid
+import zipfile
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import docx
-import fitz  # PyMuPDF
+import fitz
 
 from tools.ingestion_models import DocumentSection, IngestedDocument, IngestionResult
+from tools.security import DEFAULT_MAX_UPLOAD_BYTES
 
-
-# ---------------------------------------------------------------------------
-# MIME detection
-# ---------------------------------------------------------------------------
+_ALLOWED_SUFFIXES = {".pdf", ".docx", ".txt", ".md"}
+_PDF_MIME = "application/pdf"
+_DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+_EMAIL_RE = re.compile(r"(?<![\w.+-])[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}(?![\w.-])")
+_PHONE_RE = re.compile(r"(?<!\w)(?:\+?\d{1,3}[\s().-]*)?(?:\d[\s().-]*){7,14}\d(?!\w)")
+_ADDRESS_RE = re.compile(
+    r"\b\d{1,6}\s+[A-Za-z0-9.' -]{2,80}\s+"
+    r"(?:Street|St|Avenue|Ave|Road|Rd|Lane|Ln|Drive|Dr|Boulevard|Blvd|"
+    r"Way|Court|Ct|Place|Pl|Highway|Hwy)\b\.?",
+    flags=re.IGNORECASE,
+)
+_IPV4_RE = re.compile(
+    r"\b(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}"
+    r"(?:25[0-5]|2[0-4]\d|1?\d?\d)\b"
+)
+_CARD_RE = re.compile(r"(?<!\d)(?:\d[ -]*?){13,19}(?!\d)")
+_DOI_RE = re.compile(r"\b10\.\d{4,9}/[-._;()/:A-Z0-9]+\b", re.IGNORECASE)
+_YEAR_RE = re.compile(r"\b(?:19|20)\d{2}\b")
+_AUTHOR_LINE_RE = re.compile(r"^(?:authors?|by)\s*[:—-]\s*(.+)$", re.IGNORECASE)
+_SENTENCE_BOUNDARY_RE = re.compile(r"(?<=[.!?])\s+")
 
 
 def detect_mime_type(file_path: str) -> str:
-    """Guess MIME type from file extension; defaults to octet-stream."""
-    mime, _ = mimetypes.guess_type(file_path)
-    return mime or "application/octet-stream"
+    suffix = Path(file_path).suffix.lower()
+    if suffix == ".pdf":
+        return _PDF_MIME
+    if suffix == ".docx":
+        return _DOCX_MIME
+    if suffix == ".md":
+        return "text/markdown"
+    if suffix == ".txt":
+        return "text/plain"
+    return mimetypes.guess_type(file_path)[0] or "application/octet-stream"
 
 
-# ---------------------------------------------------------------------------
-# PII redaction  (Goal 16.2)
-# ---------------------------------------------------------------------------
+def _luhn_valid(candidate: str) -> bool:
+    digits = [int(value) for value in re.sub(r"\D", "", candidate)]
+    if not 13 <= len(digits) <= 19 or len(set(digits)) == 1:
+        return False
+    total = 0
+    parity = len(digits) % 2
+    for index, digit in enumerate(digits):
+        if index % 2 == parity:
+            digit *= 2
+            if digit > 9:
+                digit -= 9
+        total += digit
+    return total % 10 == 0
 
 
 def redact_text(text: str) -> str:
-    """
-    Redacts a comprehensive set of PII patterns from document text.
+    """Best-effort masking; this is not a proof of anonymization."""
 
-    Patterns covered:
-      - Email addresses
-      - US phone numbers (with/without country code, various separators)
-      - International phone numbers (E.164 prefix format)
-      - US mailing addresses (number + street name + street type)
-      - Social Security Numbers (US)
-      - UK National Insurance numbers
-      - UK postcodes
-      - Credit card numbers (four groups of four digits)
-    """
-    # --- Emails ---
-    text = re.sub(
-        r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}",
-        "[REDACTED_EMAIL]",
-        text,
-    )
+    value = text or ""
+    value = _EMAIL_RE.sub("[REDACTED_EMAIL]", value)
+    value = _ADDRESS_RE.sub("[REDACTED_ADDRESS]", value)
+    value = _IPV4_RE.sub("[REDACTED_IP]", value)
 
-    # --- US phone: (NXX) NXX-XXXX  or  NXX-NXX-XXXX  or  NXX.NXX.XXXX ---
-    text = re.sub(
-        r"(?<!\d)"                          # not preceded by digit
-        r"(?:\+?1[\s.\-]?)?"               # optional +1 country code
-        r"\(?\d{3}\)?[\s.\-]\d{3}[\s.\-]\d{4}"
-        r"(?!\d)",                          # not followed by digit
-        "[REDACTED_PHONE]",
-        text,
-    )
+    def redact_card(match: re.Match[str]) -> str:
+        raw = match.group(0)
+        return "[REDACTED_PAYMENT_CARD]" if _luhn_valid(raw) else raw
 
-    # --- International phone: +CC followed by digit groups ---
-    text = re.sub(
-        r"\+\d{1,3}(?:[\s\-]\d+){2,}",
-        "[REDACTED_PHONE]",
-        text,
-    )
-
-    # --- US mailing addresses: 1–5 digits + 1–3 capitalised words + street type ---
-    text = re.sub(
-        r"\b\d{1,5}\s+"
-        r"(?:[A-Z][a-z]+\s+){1,3}"
-        r"(?:Street|St|Avenue|Ave|Road|Rd|Drive|Dr|Boulevard|Blvd|"
-        r"Lane|Ln|Court|Ct|Way|Place|Pl|Circle|Cir|Highway|Hwy)\.?\b",
-        "[REDACTED_ADDRESS]",
-        text,
-    )
-
-    # --- US Social Security Numbers: NNN-NN-NNNN ---
-    text = re.sub(r"\b\d{3}-\d{2}-\d{4}\b", "[REDACTED_SSN]", text)
-
-    # --- UK National Insurance: XX NN NN NN X ---
-    text = re.sub(
-        r"\b[A-CEGHJ-PR-TW-Z]{2}\s?\d{2}\s?\d{2}\s?\d{2}\s?[A-D]\b",
-        "[REDACTED_NI]",
-        text,
-    )
-
-    # --- UK postcodes: AN NAA or ANN NAA or AAN NAA or AANN NAA ---
-    text = re.sub(
-        r"\b(?:[A-Z]{1,2}\d{1,2}[A-Z]?)\s\d[A-Z]{2}\b",
-        "[REDACTED_POSTCODE]",
-        text,
-    )
-
-    # --- Credit card numbers: four groups of four digits ---
-    text = re.sub(
-        r"\b(?:\d{4}[\s\-]){3}\d{4}\b",
-        "[REDACTED_CC]",
-        text,
-    )
-
-    return text
-
-
-# ---------------------------------------------------------------------------
-# Academic metadata extraction
-# ---------------------------------------------------------------------------
+    value = _CARD_RE.sub(redact_card, value)
+    value = _PHONE_RE.sub("[REDACTED_PHONE]", value)
+    return value
 
 
 def extract_academic_metadata(text: str) -> Dict[str, Any]:
-    """
-    Heuristically extracts DOI, publication year, and title from the first
-    2 000 characters of a document.
-    """
+    sample = (text or "")[:8000]
     metadata: Dict[str, Any] = {}
-    head = text[:2000]
-
-    doi_m = re.search(r"10\.\d{4,9}/[-._;()/:a-zA-Z0-9]+", head)
-    if doi_m:
-        metadata["doi"] = doi_m.group(0)
-
-    year_m = re.search(r"\b(19|20)\d{2}\b", head)
-    if year_m:
-        metadata["year"] = year_m.group(0)
-
-    lines = [line.strip() for line in head.split("\n") if line.strip()]
-    if lines:
-        metadata["extracted_title"] = lines[0][:200]
-
+    doi = _DOI_RE.search(sample)
+    if doi:
+        metadata["doi"] = doi.group(0).rstrip(".,;)")
+    years = _YEAR_RE.findall(sample)
+    if years:
+        metadata["year"] = years[0]
+    lines = [line.strip() for line in sample.splitlines() if line.strip()]
+    title_candidates: List[str] = []
+    for line in lines[:20]:
+        lowered = line.lower().strip(":")
+        if lowered in {"abstract", "introduction", "methods", "results", "references"}:
+            continue
+        if _DOI_RE.search(line) or len(line) < 5 or len(line) > 300:
+            continue
+        if _AUTHOR_LINE_RE.match(line):
+            continue
+        title_candidates.append(line)
+    if title_candidates:
+        metadata["extracted_title"] = title_candidates[0]
+    for line in lines[:30]:
+        author_match = _AUTHOR_LINE_RE.match(line)
+        if author_match:
+            metadata["authors"] = author_match.group(1)[:1000]
+            break
     return metadata
 
 
-# ---------------------------------------------------------------------------
-# Semantic chunking
-# ---------------------------------------------------------------------------
+def _split_oversized_unit(unit: str, max_chars: int) -> List[str]:
+    unit = unit.strip()
+    if not unit:
+        return []
+    if len(unit) <= max_chars:
+        return [unit]
+    sentences = [item.strip() for item in _SENTENCE_BOUNDARY_RE.split(unit) if item.strip()]
+    if len(sentences) <= 1:
+        sentences = []
+    result: List[str] = []
+    current = ""
+    for sentence in sentences:
+        if len(sentence) > max_chars:
+            if current:
+                result.append(current)
+                current = ""
+            word_buffer = ""
+            for word in sentence.split():
+                candidate = f"{word_buffer} {word}".strip()
+                if word_buffer and len(candidate) > max_chars:
+                    result.append(word_buffer)
+                    word_buffer = word
+                else:
+                    word_buffer = candidate
+            if word_buffer:
+                result.append(word_buffer)
+            continue
+        candidate = f"{current} {sentence}".strip()
+        if current and len(candidate) > max_chars:
+            result.append(current)
+            current = sentence
+        else:
+            current = candidate
+    if current:
+        result.append(current)
+    if result:
+        return result
+    return [unit[index:index + max_chars] for index in range(0, len(unit), max_chars)]
 
 
 def _chunk_text_semantically(text: str, max_chars: int = 1500) -> List[str]:
-    """
-    Splits text at double-newline paragraph boundaries; sub-splits at sentence
-    boundaries when a single paragraph exceeds max_chars.
-    """
-    paragraphs = text.split("\n\n")
+    if max_chars < 100:
+        max_chars = max(1, max_chars)
+    paragraphs = [item.strip() for item in re.split(r"\n\s*\n", text or "") if item.strip()]
     chunks: List[str] = []
     current = ""
-
-    for para in paragraphs:
-        if len(current) + len(para) < max_chars:
-            current += para + "\n\n"
-        else:
-            if current:
-                chunks.append(current.strip())
-            if len(para) > max_chars:
-                sentences = re.split(r"(?<=[.!?])\s+", para)
-                sub = ""
-                for s in sentences:
-                    if len(sub) + len(s) < max_chars:
-                        sub += s + " "
-                    else:
-                        chunks.append(sub.strip())
-                        sub = s + " "
-                current = sub
+    for paragraph in paragraphs:
+        for unit in _split_oversized_unit(paragraph, max_chars):
+            candidate = f"{current}\n\n{unit}".strip()
+            if current and len(candidate) > max_chars:
+                chunks.append(current)
+                current = unit
             else:
-                current = para + "\n\n"
-
+                current = candidate
     if current:
-        chunks.append(current.strip())
-    return [c for c in chunks if c]
+        chunks.append(current)
+    return chunks
 
 
-# ---------------------------------------------------------------------------
-# PDF section detection helpers
-# ---------------------------------------------------------------------------
-
-
-def _extract_sections_from_pdf(doc: "fitz.Document") -> List[DocumentSection]:
-    """
-    Two-pass font-size and bold-flag based section detection for PDFs.
-
-    Pass 1 — Statistics:
-        Collect all font sizes across all text spans to determine the body
-        font size (median) and heading threshold (≥112 % of body size, or
-        bold flag set at ≥90 % of body size).
-
-    Pass 2 — Classification:
-        Iterate blocks; spans meeting the heading criteria start a new section.
-        Content between headings is accumulated into the current section.
-
-    Falls back to one section per page if no headings are detected.
-    """
-    # --- Pass 1: font size statistics ---
-    all_sizes: List[float] = []
-    page_blocks_cache: List[tuple] = []
-
-    for page_num, page in enumerate(doc, start=1):
+def _validate_file(path: Path) -> str:
+    if not path.exists() or not path.is_file():
+        raise ValueError("The requested input file does not exist.")
+    size = path.stat().st_size
+    if size <= 0:
+        raise ValueError("The input file is empty.")
+    if size > DEFAULT_MAX_UPLOAD_BYTES:
+        raise ValueError(f"The input file exceeds the {DEFAULT_MAX_UPLOAD_BYTES}-byte upload limit.")
+    suffix = path.suffix.lower()
+    if suffix not in _ALLOWED_SUFFIXES:
+        raise ValueError(
+            f"Unsupported file type '{suffix or 'none'}'. "
+            f"Allowed: {', '.join(sorted(_ALLOWED_SUFFIXES))}."
+        )
+    prefix = path.read_bytes()[:8]
+    if suffix == ".pdf" and not prefix.startswith(b"%PDF-"):
+        raise ValueError("The file extension is .pdf but the content is not a PDF.")
+    if suffix == ".docx":
+        if not prefix.startswith(b"PK"):
+            raise ValueError("The file extension is .docx but the content is not a ZIP package.")
         try:
-            blocks = page.get_text("dict", flags=~fitz.TEXT_PRESERVE_IMAGES)["blocks"]
-        except Exception:
-            blocks = []
-        page_blocks_cache.append((page_num, blocks))
-        for block in blocks:
-            if block.get("type") != 0:
-                continue
-            for line in block.get("lines", []):
-                for span in line.get("spans", []):
-                    sz = span.get("size", 0.0)
-                    if sz > 0:
-                        all_sizes.append(sz)
+            with zipfile.ZipFile(path) as archive:
+                if "word/document.xml" not in archive.namelist():
+                    raise ValueError("The DOCX package does not contain word/document.xml.")
+        except zipfile.BadZipFile as exc:
+            raise ValueError("The DOCX package is malformed.") from exc
+    if suffix in {".txt", ".md"} and b"\x00" in path.read_bytes()[:4096]:
+        raise ValueError("The text file appears to contain binary data.")
+    return detect_mime_type(str(path))
 
-    if not all_sizes:
+
+def _extract_tables_from_page(page: fitz.Page) -> List[str]:
+    try:
+        finder = page.find_tables()
+    except Exception:
         return []
+    rendered: List[str] = []
+    for table in getattr(finder, "tables", []) or []:
+        try:
+            rows = table.extract()
+        except Exception:
+            continue
+        lines = [
+            "\t".join("" if cell is None else str(cell).strip() for cell in row)
+            for row in rows
+        ]
+        text = "\n".join(line for line in lines if line.strip())
+        if text:
+            rendered.append(text)
+    return rendered
 
-    body_size = statistics.median(all_sizes)
-    heading_threshold = body_size * 1.12
 
-    # --- Pass 2: classify blocks ---
-    sections: List[DocumentSection] = []
-    current_title: str = "Preamble"
-    current_content: List[str] = []
-    current_page: int = 1
-
-    def _flush():
-        content = " ".join(current_content).strip()
-        if content:
-            sections.append(
-                DocumentSection(
-                    title=current_title,
-                    content=content,
-                    page_number=current_page,
-                )
-            )
-
-    for page_num, blocks in page_blocks_cache:
-        for block in blocks:
-            if block.get("type") != 0:
+def _page_heading_candidates(page: fitz.Page) -> List[Tuple[str, float, bool]]:
+    try:
+        blocks = page.get_text("dict", sort=True).get("blocks", [])
+    except Exception:
+        return []
+    candidates: List[Tuple[str, float, bool]] = []
+    for block in blocks:
+        for line in block.get("lines", []) or []:
+            spans = line.get("spans", []) or []
+            text = " ".join(str(span.get("text") or "").strip() for span in spans).strip()
+            if not text or len(text) > 250:
                 continue
-            for line in block.get("lines", []):
-                line_parts: List[str] = []
-                is_heading = False
-                for span in line.get("spans", []):
-                    txt = span.get("text", "").strip()
-                    if not txt:
-                        continue
-                    sz = span.get("size", 0.0)
-                    bold = bool(span.get("flags", 0) & 1)
-                    if sz >= heading_threshold or (bold and sz >= body_size * 0.9):
-                        is_heading = True
-                    line_parts.append(txt)
+            sizes = [float(span.get("size") or 0.0) for span in spans if span.get("text")]
+            size = max(sizes) if sizes else 0.0
+            bold = any(int(span.get("flags") or 0) & 16 for span in spans)
+            candidates.append((text, size, bold))
+    return candidates
 
-                line_text = " ".join(line_parts).strip()
-                if not line_text:
-                    continue
 
-                if is_heading and len(line_text) < 150:
-                    _flush()
-                    current_title = line_text
-                    current_content = []
-                    current_page = page_num
-                else:
-                    current_content.append(line_text)
-
-    _flush()
-
-    # Fallback: page-level sections when no headings were detected
-    if not sections:
-        for page_num, blocks in page_blocks_cache:
-            page_text = " ".join(
-                span.get("text", "")
-                for block in blocks
-                if block.get("type") == 0
-                for line in block.get("lines", [])
-                for span in line.get("spans", [])
-            ).strip()
-            if page_text:
-                sections.append(
-                    DocumentSection(
-                        title=f"Page {page_num}",
-                        content=page_text,
-                        page_number=page_num,
-                    )
-                )
-
+def _extract_sections_from_pdf(document: fitz.Document) -> List[DocumentSection]:
+    page_payloads: List[Tuple[int, str, List[Tuple[str, float, bool]]]] = []
+    all_sizes: List[float] = []
+    for page_index, page in enumerate(document):
+        text = page.get_text("text", sort=True).strip()
+        tables = _extract_tables_from_page(page)
+        if tables:
+            text = f"{text}\n\n" + "\n\n".join(f"[TABLE]\n{table}" for table in tables)
+        candidates = _page_heading_candidates(page)
+        all_sizes.extend(size for _, size, _ in candidates if size > 0)
+        page_payloads.append((page_index + 1, text.strip(), candidates))
+    median_size = statistics.median(all_sizes) if all_sizes else 0.0
+    sections: List[DocumentSection] = []
+    for page_number, page_text, candidates in page_payloads:
+        if not page_text:
+            continue
+        heading = f"Page {page_number}"
+        for text, size, bold in candidates:
+            if (bold and size >= median_size) or size >= median_size * 1.25:
+                if 3 <= len(text) <= 180:
+                    heading = text
+                    break
+        sections.append(DocumentSection(title=heading[:500], content=page_text, page_number=page_number))
     return sections
 
 
-# ---------------------------------------------------------------------------
-# Ingestion entry point
-# ---------------------------------------------------------------------------
-
-
-def ingest_file(file_path: str, owner_id: str = "default_user") -> IngestionResult:
-    """
-    Parse a document file and return a fully populated IngestionResult.
-
-    Pipeline:
-      1. Detect MIME type and dispatch to the appropriate parser.
-      2. Apply PII redaction (Goal 16.2).
-      3. Extract academic metadata (DOI, year, title).
-      4. Re-generate sections via semantic chunking (overrides parser sections
-         for uniformity, except for PDFs which keep their heading-based sections).
-      5. Stamp owner_id (Goal 16.1).
-    """
-    path = Path(file_path)
-    if not path.exists():
-        return IngestionResult(success=False, error=f"File not found: {file_path}")
-
-    mime_type = detect_mime_type(file_path)
-
-    try:
-        if mime_type == "application/pdf":
-            result = _ingest_pdf(path)
-        elif mime_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
-            result = _ingest_docx(path)
-        elif mime_type and (mime_type.startswith("text/") or path.suffix in {".md", ".txt", ".py", ".rst"}):
-            result = _ingest_text(path, mime_type)
-        else:
-            return IngestionResult(
-                success=False, error=f"Unsupported file type: {mime_type}"
-            )
-
-        if result and result.document:
-            doc = result.document
-
-            # 2. PII redaction
-            doc.text = redact_text(doc.text)
-
-            # 3. Academic metadata
-            doc.metadata.update(extract_academic_metadata(doc.text))
-
-            # 4. For PDFs we already have heading-based sections; for others
-            #    overwrite with semantic chunks for consistency.
-            if mime_type != "application/pdf" or not doc.sections:
-                semantic_chunks = _chunk_text_semantically(doc.text)
-                doc.sections = [
-                    DocumentSection(
-                        title=f"Section {i + 1}", content=chunk, page_number=1
-                    )
-                    for i, chunk in enumerate(semantic_chunks)
-                ]
-
-            # 5. Ownership
-            doc.metadata["owner_id"] = owner_id
-            doc.metadata["file_path"] = str(path.absolute())
-
-        return result
-
-    except Exception as exc:
-        return IngestionResult(success=False, error=str(exc))
-
-
-# ---------------------------------------------------------------------------
-# Format-specific parsers
-# ---------------------------------------------------------------------------
-
-
 def _ingest_pdf(path: Path) -> IngestionResult:
-    """
-    Parse a PDF using PyMuPDF.
-
-    - Extracts full text from all pages.
-    - Extracts academic metadata (Title, Authors) via PyMuPDF dict and font heuristics.
-    - Detects sections using font-size and bold-flag analysis (two-pass).
-    """
     try:
-        doc = fitz.open(str(path))
+        document = fitz.open(path)
     except Exception as exc:
-        return IngestionResult(success=False, error=f"Cannot open PDF: {exc}")
-
-    title = path.stem
-    metadata: Dict[str, Any] = {}
-    if doc.metadata:
-        metadata = dict(doc.metadata)
-        if metadata.get("title"):
-            title = metadata["title"]
-
-    # --- Academic Metadata Font Heuristics (Gap B) ---
+        return IngestionResult(success=False, error=f"Could not open PDF: {type(exc).__name__}.")
     try:
-        page1 = doc[0]
-        blocks = page1.get_text("dict", flags=~fitz.TEXT_PRESERVE_IMAGES).get("blocks", [])
-        lines_info = []
-        for b in blocks:
-            if b.get("type") == 0:
-                for l in b.get("lines", []):
-                    for s in l.get("spans", []):
-                        txt = s.get("text", "").strip()
-                        sz = s.get("size", 0.0)
-                        if txt and sz > 0:
-                            lines_info.append((txt, sz))
-        if lines_info:
-            max_size = max(sz for txt, sz in lines_info)
-            # Title is usually the largest text on page 1
-            title_parts = [txt for txt, sz in lines_info if sz >= max_size * 0.95]
-            if title_parts and (not metadata.get("title") or metadata.get("title") == "Unnamed Document"):
-                title = " ".join(title_parts)
-                metadata["title"] = title
-            
-            # Authors are typically just below the title in size, before abstract
-            if not metadata.get("author") and not metadata.get("Author"):
-                author_parts = []
-                for txt, sz in lines_info:
-                    if max_size * 0.5 <= sz < max_size * 0.95 and len(txt) > 3:
-                        if "abstract" in txt.lower() or "introduction" in txt.lower():
-                            break
-                        author_parts.append(txt)
-                if author_parts:
-                    metadata["author"] = ", ".join(author_parts[:4])
-    except Exception:
-        pass
+        if document.needs_pass:
+            return IngestionResult(success=False, error="Encrypted PDFs are not supported.")
+        sections = _extract_sections_from_pdf(document)
+        text = "\n\n".join(section.content for section in sections).strip()
+        if not text:
+            return IngestionResult(success=False, error="The PDF contains no extractable text; OCR is required.")
+        metadata = dict(document.metadata or {})
+        title = str(metadata.get("title") or "").strip() or None
+        return IngestionResult(
+            success=True,
+            document=IngestedDocument(
+                id="pending",
+                filename=path.name,
+                file_path=str(path),
+                mime_type=_PDF_MIME,
+                title=title,
+                text=text,
+                sections=sections,
+                metadata={
+                    key: value for key, value in metadata.items()
+                    if isinstance(value, (str, int, float, bool)) and value not in (None, "")
+                },
+            ),
+        )
+    except Exception as exc:
+        return IngestionResult(success=False, error=f"PDF extraction failed: {type(exc).__name__}.")
+    finally:
+        document.close()
 
-    full_text_parts: List[str] = []
-    for page in doc:
-        page_text = page.get_text()
-        if page_text.strip():
-            full_text_parts.append(page_text)
 
-    final_text = "\n\n".join(full_text_parts)
-    sections = _extract_sections_from_pdf(doc)
-    doc.close()
+def _ingest_docx(path: Path) -> IngestionResult:
+    try:
+        document = docx.Document(str(path))
+    except Exception as exc:
+        return IngestionResult(success=False, error=f"Could not open DOCX: {type(exc).__name__}.")
+    sections: List[DocumentSection] = []
+    current_title = "Document"
+    current_lines: List[str] = []
 
+    def flush() -> None:
+        nonlocal current_lines
+        content = "\n".join(line for line in current_lines if line.strip()).strip()
+        if content:
+            sections.append(DocumentSection(title=current_title[:500], content=content))
+        current_lines = []
+
+    for paragraph in document.paragraphs:
+        text = paragraph.text.strip()
+        if not text:
+            continue
+        style_name = str(getattr(paragraph.style, "name", "") or "")
+        if style_name.lower().startswith("heading"):
+            flush()
+            current_title = text
+        else:
+            current_lines.append(text)
+    flush()
+    for table_index, table in enumerate(document.tables, start=1):
+        rows = ["\t".join(cell.text.strip() for cell in row.cells) for row in table.rows]
+        table_text = "\n".join(row for row in rows if row.strip()).strip()
+        if table_text:
+            sections.append(DocumentSection(title=f"Table {table_index}", content=table_text))
+    text = "\n\n".join(section.content for section in sections).strip()
+    if not text:
+        return IngestionResult(success=False, error="The DOCX contains no extractable text.")
+    properties = document.core_properties
+    metadata: Dict[str, Any] = {}
+    for key in ("author", "subject", "keywords", "comments", "category"):
+        value = getattr(properties, key, None)
+        if value:
+            metadata[key] = str(value)
+    title = str(getattr(properties, "title", "") or "").strip() or None
     return IngestionResult(
         success=True,
         document=IngestedDocument(
+            id="pending",
             filename=path.name,
-            file_path=str(path.absolute()),
-            mime_type="application/pdf",
+            file_path=str(path),
+            mime_type=_DOCX_MIME,
             title=title,
-            text=final_text,
+            text=text,
             sections=sections,
             metadata=metadata,
         ),
     )
 
 
-def _ingest_docx(path: Path) -> IngestionResult:
-    """
-    Parse a Word document using python-docx.
-
-    Heading styles trigger new DocumentSection boundaries.
-    """
-    try:
-        doc = docx.Document(str(path))
-    except Exception as exc:
-        return IngestionResult(success=False, error=f"Cannot open DOCX: {exc}")
-
-    props = doc.core_properties
-    title = props.title or path.stem
-
-    full_text: List[str] = []
-    sections: List[DocumentSection] = []
-    current_title = "Introduction"
-    current_content: List[str] = []
-
-    for para in doc.paragraphs:
-        text = para.text.strip()
-        if not text:
-            continue
-        style = para.style.name if para.style else ""
-        if style.startswith("Heading"):
-            if current_content:
-                sections.append(
-                    DocumentSection(
-                        title=current_title,
-                        content="\n".join(current_content),
-                        page_number=1,
-                    )
-                )
-            current_title = text
-            current_content = []
-        else:
-            current_content.append(text)
-        full_text.append(text)
-
-    if current_content:
-        sections.append(
-            DocumentSection(
-                title=current_title,
-                content="\n".join(current_content),
-                page_number=1,
-            )
-        )
-
-    return IngestionResult(
-        success=True,
-        document=IngestedDocument(
-            filename=path.name,
-            file_path=str(path.absolute()),
-            mime_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            title=title,
-            text="\n".join(full_text),
-            sections=sections,
-            metadata={
-                "author": props.author or "",
-                "created": str(props.created or ""),
-                "modified": str(props.modified or ""),
-            },
-        ),
-    )
-
-
 def _ingest_text(path: Path, mime_type: str) -> IngestionResult:
-    """Parse a plain-text or Markdown file; UTF-8 with Latin-1 fallback."""
-    try:
-        text = path.read_text(encoding="utf-8")
-    except UnicodeDecodeError:
-        text = path.read_text(encoding="latin-1")
-
+    raw = path.read_bytes()
+    decoded: Optional[str] = None
+    for encoding in ("utf-8-sig", "utf-8", "cp1252", "latin-1"):
+        try:
+            decoded = raw.decode(encoding)
+            break
+        except UnicodeDecodeError:
+            continue
+    if decoded is None:
+        return IngestionResult(success=False, error="The text encoding could not be decoded.")
+    text = decoded.strip()
+    if not text:
+        return IngestionResult(success=False, error="The text document is empty.")
     return IngestionResult(
         success=True,
         document=IngestedDocument(
+            id="pending",
             filename=path.name,
-            file_path=str(path.absolute()),
+            file_path=str(path),
             mime_type=mime_type,
-            title=path.stem,
+            title=None,
             text=text,
-            sections=[DocumentSection(title="Full Text", content=text, page_number=1)],
+            sections=[DocumentSection(title="Full Text", content=text)],
             metadata={},
         ),
     )
+
+
+def _redact_sections(sections: Sequence[DocumentSection]) -> List[DocumentSection]:
+    redacted: List[DocumentSection] = []
+    for section in sections:
+        content = redact_text(section.content).strip()
+        if not content:
+            continue
+        chunks = _chunk_text_semantically(content, max_chars=6000) or [content]
+        for chunk_index, chunk in enumerate(chunks):
+            title = section.title
+            if len(chunks) > 1:
+                title = f"{title} — Part {chunk_index + 1}"
+            redacted.append(
+                DocumentSection(title=title[:500], content=chunk, page_number=section.page_number)
+            )
+    return redacted
+
+
+def ingest_file(file_path: str, owner_id: str = "default_user") -> IngestionResult:
+    path = Path(file_path)
+    try:
+        mime_type = _validate_file(path)
+    except Exception as exc:
+        return IngestionResult(success=False, error=str(exc))
+    if path.suffix.lower() == ".pdf":
+        result = _ingest_pdf(path)
+    elif path.suffix.lower() == ".docx":
+        result = _ingest_docx(path)
+    else:
+        result = _ingest_text(path, mime_type)
+    if not result.success or not result.document:
+        return result
+
+    document = result.document
+    redacted_text = redact_text(document.text).strip()
+    redacted_sections = _redact_sections(document.sections)
+    if not redacted_text or not redacted_sections:
+        return IngestionResult(success=False, error="No indexable text remained after parsing.")
+    content_hash = hashlib.sha256(redacted_text.encode("utf-8")).hexdigest()
+    stable_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"rigorousrag:{owner_id}:{content_hash}"))
+    extracted = extract_academic_metadata(redacted_text)
+    document.id = stable_id
+    document.text = redacted_text
+    document.sections = redacted_sections
+    document.title = (
+        document.title
+        or extracted.get("extracted_title")
+        or path.stem.replace("_", " ").replace("-", " ")
+    )
+    document.metadata.update(extracted)
+    document.metadata.update({
+        "owner_id": owner_id,
+        "content_sha256": content_hash,
+        "file_size_bytes": path.stat().st_size,
+        "redaction": "best_effort_regex_masking",
+    })
+    return IngestionResult(success=True, document=document)
