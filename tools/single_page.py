@@ -1,12 +1,25 @@
-import requests
-from bs4 import BeautifulSoup
-from pydantic import BaseModel, Field
+"""Bounded public webpage extraction."""
+
+from __future__ import annotations
+
+import os
 from typing import Optional
 
-# Configuration - could be moved to a central config later
-DEFAULT_USER_AGENT = "AcademicSearchBot/2.0 (+https://example.com/academic-search-bot-info)"
-REQUEST_TIMEOUT = 10
-MAX_CONTENT_LENGTH = 5_000_000 # 5MB
+from bs4 import BeautifulSoup
+from pydantic import BaseModel
+
+from tools.security import (
+    DEFAULT_MAX_DOWNLOAD_BYTES,
+    DEFAULT_REQUEST_TIMEOUT,
+    safe_download,
+)
+
+DEFAULT_USER_AGENT = (
+    "RigorousRAGBot/3.0 "
+    f"(+{os.getenv('CRAWLER_CONTACT_URL', 'https://github.com/Anurag9000/RigorousRAG')})"
+)
+ALLOWED_PAGE_CONTENT_TYPES = {"text/html", "application/xhtml+xml", "text/plain"}
+
 
 class PageContent(BaseModel):
     url: str
@@ -15,57 +28,64 @@ class PageContent(BaseModel):
     content_length: int
     error: Optional[str] = None
 
-def fetch_single_page(url: str, user_agent: str = DEFAULT_USER_AGENT) -> PageContent:
-    """
-    Fetches a single web page and extracts its content (title and text).
-    """
+
+def fetch_single_page(
+    url: str,
+    user_agent: str = DEFAULT_USER_AGENT,
+    *,
+    max_bytes: int = DEFAULT_MAX_DOWNLOAD_BYTES,
+) -> PageContent:
+    """Fetch a public page without permitting internal-network access."""
+
     try:
-        headers = {"User-Agent": user_agent}
-        response = requests.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
-        response.raise_for_status()
+        downloaded = safe_download(
+            url,
+            headers={
+                "User-Agent": user_agent,
+                "Accept": "text/html,application/xhtml+xml,text/plain;q=0.8",
+            },
+            timeout=DEFAULT_REQUEST_TIMEOUT,
+            max_bytes=max_bytes,
+            allowed_content_types=ALLOWED_PAGE_CONTENT_TYPES,
+        )
+        content_type = downloaded.headers.get("Content-Type", "").lower()
+        encoding = "utf-8"
+        if "charset=" in content_type:
+            encoding = content_type.split("charset=", 1)[1].split(";", 1)[0].strip()
+        try:
+            decoded = downloaded.content.decode(encoding, errors="replace")
+        except LookupError:
+            decoded = downloaded.content.decode("utf-8", errors="replace")
 
-        # Basic size check
-        content_length_header = response.headers.get("Content-Length")
-        if content_length_header and int(content_length_header) > MAX_CONTENT_LENGTH:
-             return PageContent(
-                url=url,
-                title="Error",
-                text="",
-                content_length=int(content_length_header),
-                error="Page too large"
-            )
-
-        soup = BeautifulSoup(response.text, "html.parser")
-        
-        # Cleanup
-        for element in soup(["script", "style", "noscript", "header", "footer", "nav", "aside"]):
-            element.decompose()
-
-        # Extract title
-        title = "Untitled"
-        if soup.title and soup.title.string:
-            title = soup.title.string.strip()
+        if content_type.startswith("text/plain"):
+            text = " ".join(decoded.split())
+            title = downloaded.final_url
         else:
-            h1 = soup.find("h1")
-            if h1:
-                title = h1.get_text(strip=True)
-
-        # Extract text
-        text = soup.get_text(separator=" ", strip=True)
-        text = " ".join(text.split()) # Normalize whitespace
+            soup = BeautifulSoup(decoded, "html.parser")
+            for element in soup(
+                ["script", "style", "noscript", "header", "footer", "nav", "aside", "svg"]
+            ):
+                element.decompose()
+            title = "Untitled"
+            if soup.title and soup.title.string:
+                title = soup.title.string.strip()
+            else:
+                heading = soup.find(["h1", "h2"])
+                if heading:
+                    title = heading.get_text(" ", strip=True)
+            text = " ".join(soup.get_text(separator=" ", strip=True).split())
 
         return PageContent(
-            url=url,
-            title=title,
-            text=text,
-            content_length=len(text)
+            url=downloaded.final_url,
+            title=title[:500] or "Untitled",
+            text=text[:100_000],
+            content_length=len(downloaded.content),
         )
-
-    except Exception as e:
+    except Exception as exc:
         return PageContent(
             url=url,
             title="Error",
             text="",
             content_length=0,
-            error=str(e)
+            error=str(exc),
         )
