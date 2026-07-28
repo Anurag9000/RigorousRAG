@@ -32,8 +32,11 @@ def test_invalid_status_is_rejected_before_persistence(tmp_path):
 
     with pytest.raises(ValueError, match="status must be one of"):
         store.update("job-1", "alice", status="cancelled", filename="paper.txt")
+    with pytest.raises(ValueError, match="status must be a string"):
+        store.update("job-2", "alice", status=object(), filename="paper.txt")
 
     assert store.get_internal("job-1", "alice") is None
+    assert store.get_internal("job-2", "alice") is None
 
 
 def test_processing_and_finalizing_recovery_transitions_remain_valid(tmp_path):
@@ -130,6 +133,19 @@ def test_retry_delay_is_bounded_for_corrupt_attempt_count(tmp_path):
     assert delay == store.retry_max_seconds
 
 
+def test_ttl_floor_is_preserved_and_invalid_claim_values_are_rejected(tmp_path):
+    store = JobStore(tmp_path / "jobs.sqlite3", ttl_seconds=1)
+    assert store.ttl_seconds == 60
+    store.update("job-1", "alice", status="queued", filename="paper.txt")
+
+    with pytest.raises(ValueError, match="max_attempts"):
+        store.claim("job-1", "alice", max_attempts=0)
+    with pytest.raises(ValueError, match="finite"):
+        store.claim("job-1", "alice", max_attempts=3, now=float("nan"))
+    with pytest.raises(ValueError, match="finite"):
+        store.prune(now=float("inf"))
+
+
 def test_public_filename_never_becomes_empty(tmp_path):
     store = JobStore(tmp_path / "jobs.sqlite3")
     store.update("job-1", "alice", status="queued", filename="   ")
@@ -160,7 +176,7 @@ def test_source_path_is_stored_lexically_without_following_symlink(tmp_path):
     assert internal["source_path"] != str(target.resolve())
 
 
-def test_symlinked_job_database_is_refused(tmp_path):
+def test_symlinked_job_database_and_parent_are_refused(tmp_path):
     target = tmp_path / "target.sqlite3"
     with sqlite3.connect(target) as connection:
         connection.execute("SELECT 1")
@@ -172,3 +188,27 @@ def test_symlinked_job_database_is_refused(tmp_path):
 
     with pytest.raises(ValueError, match="JOB_DB_PATH"):
         JobStore(link)
+
+    real_parent = tmp_path / "real-parent"
+    real_parent.mkdir()
+    parent_link = tmp_path / "linked-parent"
+    try:
+        parent_link.symlink_to(real_parent, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("Directory symlinks are unavailable in this environment.")
+    with pytest.raises(ValueError, match="JOB_DB_PATH"):
+        JobStore(parent_link / "jobs.sqlite3")
+
+
+def test_database_parent_swap_fails_closed(tmp_path):
+    parent = tmp_path / "state"
+    store = JobStore(parent / "jobs.sqlite3")
+    assert store.ping() is True
+    moved = tmp_path / "state-moved"
+    parent.rename(moved)
+    try:
+        parent.symlink_to(moved, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("Directory symlinks are unavailable in this environment.")
+
+    assert store.ping() is False
