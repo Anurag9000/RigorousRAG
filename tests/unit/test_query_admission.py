@@ -117,6 +117,29 @@ def test_direct_protocol_route_uses_same_bounded_executor(server_module, monkeyp
     assert called == [("Add buffer.", "doc-1")]
 
 
+def test_direct_visual_missing_document_is_owner_safe_404(server_module, monkeypatch):
+    def missing_document(*_args, **_kwargs):
+        raise ValueError("owner alice missing at /private/vector.sqlite3")
+
+    monkeypatch.setattr(server_module, "check_visual_entailment", missing_document)
+
+    with TestClient(server_module.app, raise_server_exceptions=False) as client:
+        response = client.post(
+            "/tool/visual-entailment",
+            headers={"X-API-Key": "alice-key"},
+            json={
+                "claim_text": "Accuracy increased.",
+                "figure_id": "Figure 1",
+                "doc_id": "missing-doc",
+            },
+        )
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "Document not found."}
+    assert "/private" not in response.text
+    assert "alice" not in response.text
+
+
 def test_research_executor_failure_is_generic_for_query_and_direct_tool(
     server_module,
     monkeypatch,
