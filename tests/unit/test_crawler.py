@@ -52,6 +52,85 @@ def test_fetch_revalidates_final_redirect_host():
         assert crawler._fetch_page("https://allowed.test/page") is None
 
 
+def test_redirected_canonical_target_is_not_fetched_twice():
+    crawler = AcademicCrawler(
+        allowed_domains=["allowed.test"],
+        max_pages=5,
+        max_depth=0,
+        request_delay=0,
+    )
+    crawler._is_allowed_by_robots = MagicMock(return_value=True)
+    final_url = "https://allowed.test/final"
+    crawler._fetch_page = MagicMock(
+        return_value=Page(final_url, "Final", "x" * 600, [], "text/html", 600)
+    )
+
+    result = crawler.crawl(
+        ["https://allowed.test/start", final_url],
+        CrawlState.empty(),
+    )
+
+    assert crawler._fetch_page.call_count == 1
+    assert set(result.pages) == {final_url}
+    assert final_url in result.visited
+
+
+def test_redirected_target_rechecks_final_domain_quota():
+    crawler = AcademicCrawler(
+        allowed_domains=["a.test", "b.test"],
+        max_pages=5,
+        max_pages_per_domain=1,
+        max_depth=0,
+        request_delay=0,
+    )
+    crawler._is_allowed_by_robots = MagicMock(return_value=True)
+    redirected = "https://b.test/new"
+    crawler._fetch_page = MagicMock(
+        return_value=Page(redirected, "New", "x" * 600, [], "text/html", 600)
+    )
+    state = CrawlState.empty()
+    existing = "https://b.test/existing"
+    state.pages[existing] = Page(existing, "Existing", "x" * 600, [], "text/html", 600)
+
+    result = crawler.crawl(["https://a.test/start"], state)
+
+    assert set(result.pages) == {existing}
+    assert redirected in result.visited
+
+
+def test_redirected_target_rechecks_final_robots_policy():
+    crawler = AcademicCrawler(
+        allowed_domains=["a.test", "b.test"],
+        max_pages=5,
+        max_depth=0,
+        request_delay=0,
+    )
+    redirected = "https://b.test/private"
+    crawler._fetch_page = MagicMock(
+        return_value=Page(
+            redirected,
+            "Private",
+            "x" * 600,
+            ["https://b.test/child"],
+            "text/html",
+            600,
+        )
+    )
+    crawler._is_allowed_by_robots = MagicMock(
+        side_effect=lambda url: url != redirected
+    )
+
+    result = crawler.crawl(["https://a.test/start"], CrawlState.empty())
+
+    assert result.pages == {}
+    assert result.graph == {}
+    assert redirected in result.visited
+    assert crawler._is_allowed_by_robots.call_args_list == [
+        (("https://a.test/start",),),
+        ((redirected,),),
+    ]
+
+
 def test_link_extraction_is_deduplicated_and_trusted():
     crawler = AcademicCrawler(allowed_domains=["example.test"])
     soup = BeautifulSoup(
