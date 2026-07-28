@@ -1,3 +1,5 @@
+import json
+import os
 from types import SimpleNamespace
 
 import pytest
@@ -40,7 +42,7 @@ def test_engine_is_reused_until_storage_signature_changes(monkeypatch, tmp_path)
     assert third.storage_dir == str(tmp_path)
 
 
-def test_manifest_replacement_triggers_reload_even_when_size_is_same(
+def test_manifest_replacement_triggers_reload_even_when_size_and_mtime_match(
     monkeypatch,
     tmp_path,
 ):
@@ -58,15 +60,87 @@ def test_manifest_replacement_triggers_reload_even_when_size_is_same(
     monkeypatch.setattr(internal_search, "AcademicSearchEngine", FakeEngine)
     manifest = tmp_path / "snapshot_manifest.json"
     manifest.write_text("generation-a", encoding="utf-8")
+    original = manifest.stat()
     first = internal_search.get_engine()
 
     replacement = tmp_path / "replacement.tmp"
     replacement.write_text("generation-b", encoding="utf-8")
+    os.utime(
+        replacement,
+        ns=(original.st_atime_ns, original.st_mtime_ns),
+    )
     replacement.replace(manifest)
+    assert manifest.stat().st_size == original.st_size
+    assert manifest.stat().st_mtime_ns == original.st_mtime_ns
 
     second = internal_search.get_engine()
     assert second is not first
     assert len(constructed) == 2
+
+
+def test_referenced_generation_member_replacement_triggers_reload(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setenv("CLASSIC_STORAGE_DIR", str(tmp_path))
+    _reset_engine(monkeypatch)
+    constructed = []
+
+    class FakeEngine:
+        def __init__(self, *, storage_dir):
+            constructed.append(storage_dir)
+
+        def search(self, _query, *, limit):
+            return []
+
+    monkeypatch.setattr(internal_search, "AcademicSearchEngine", FakeEngine)
+    generation = "abc123"
+    names = {
+        "crawl": f"crawl_state.{generation}.json",
+        "index": f"index.{generation}.json",
+        "pagerank": f"pagerank.{generation}.json",
+    }
+    for name in names.values():
+        (tmp_path / name).write_text("member-a", encoding="utf-8")
+    manifest = {
+        "files": {
+            key: {"name": name}
+            for key, name in names.items()
+        }
+    }
+    (tmp_path / "snapshot_manifest.json").write_text(
+        json.dumps(manifest),
+        encoding="utf-8",
+    )
+    first = internal_search.get_engine()
+
+    member = tmp_path / names["index"]
+    original = member.stat()
+    replacement = tmp_path / "index-replacement.tmp"
+    replacement.write_text("member-b", encoding="utf-8")
+    os.utime(replacement, ns=(original.st_atime_ns, original.st_mtime_ns))
+    replacement.replace(member)
+    assert member.stat().st_size == original.st_size
+    assert member.stat().st_mtime_ns == original.st_mtime_ns
+
+    second = internal_search.get_engine()
+    assert second is not first
+    assert len(constructed) == 2
+
+
+def test_symlinked_classic_storage_root_is_refused(monkeypatch, tmp_path):
+    target = tmp_path / "target"
+    target.mkdir()
+    link = tmp_path / "classic"
+    try:
+        link.symlink_to(target, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("Symlinks are unavailable in this environment.")
+    monkeypatch.setenv("CLASSIC_STORAGE_DIR", str(link))
+    _reset_engine(monkeypatch)
+
+    with pytest.raises(ValueError, match="CLASSIC_STORAGE_DIR"):
+        internal_search.get_engine()
 
 
 def test_direct_internal_search_bounds_query_before_engine_lookup(monkeypatch):
