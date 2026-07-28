@@ -107,8 +107,6 @@ class JobStore:
             if existing is not None and str(existing["owner_id"]) != owner:
                 raise PermissionError("A job ID cannot be reassigned to a different owner.")
             attempts = int(existing["attempts"] or 0) if existing else 0
-            if fields.get("increment_attempts"):
-                attempts += 1
             if source_path_value is None and existing is not None:
                 source_path = str(existing["source_path"] or "") or None
             connection.execute(
@@ -141,18 +139,23 @@ class JobStore:
             )
         self.prune(now)
 
-    def mark_processing(self, job_id: str, owner_id: str) -> None:
-        record = self.get_internal(job_id, owner_id)
-        if record is None:
-            raise KeyError("Job not found.")
-        self.update(
-            job_id,
-            owner_id,
-            status="processing",
-            filename=str(record.get("filename") or "upload"),
-            source_path=record.get("source_path"),
-            increment_attempts=True,
-        )
+    def claim(self, job_id: str, owner_id: str, max_attempts: int) -> bool:
+        """Atomically claim one queued job; safe across threads and processes."""
+
+        owner = normalize_owner_id(owner_id)
+        limit = max(1, int(max_attempts))
+        now = time.time()
+        with self._lock, self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE jobs
+                SET status='processing', attempts=attempts + 1,
+                    message=NULL, updated_at=?
+                WHERE job_id=? AND owner_id=? AND status='queued' AND attempts < ?
+                """,
+                (now, job_id, owner, limit),
+            )
+            return cursor.rowcount == 1
 
     def get(self, job_id: str, owner_id: str) -> Optional[Dict[str, Any]]:
         """Return only fields safe for the owner-facing API."""
@@ -182,20 +185,16 @@ class JobStore:
             ).fetchone()
         return dict(row) if row is not None else None
 
-    def recoverable(self, max_attempts: int = 3) -> List[Dict[str, Any]]:
-        """Return queued/interrupted jobs whose source files may be replayed."""
+    def recoverable(self) -> List[Dict[str, Any]]:
+        """Return every queued/interrupted job for startup reconciliation."""
 
-        limit = max(1, int(max_attempts))
         with self._lock, self._connect() as connection:
             rows = connection.execute(
                 """
                 SELECT job_id, owner_id, status, filename, source_path, attempts
                 FROM jobs
                 WHERE status IN ('queued', 'processing')
-                  AND source_path IS NOT NULL
-                  AND attempts < ?
                 ORDER BY created_at ASC
-                """,
-                (limit,),
+                """
             ).fetchall()
         return [dict(row) for row in rows]
