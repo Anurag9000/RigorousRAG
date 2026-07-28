@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import stat
 import tempfile
 from contextlib import contextmanager
 from pathlib import Path
@@ -19,28 +20,33 @@ def materialize_ingestion_snapshot(
     source_path: str | Path,
     max_bytes: int = DEFAULT_MAX_UPLOAD_BYTES,
 ) -> Iterator[Tuple[Path, bytes]]:
-    """Yield a private parser path containing one anchored upload byte snapshot.
+    """Yield a private parser path containing one anchored upload byte snapshot."""
 
-    The retained owner path is opened with the descriptor-relative no-follow reader.
-    Parsers then operate on a private `0600` temporary file containing those exact
-    bytes, so a later owner-directory replacement cannot redirect parser input.
-    """
-
-    limit = int(max_bytes)
-    if limit <= 0:
-        raise UploadStorageError("max_bytes must be positive.")
-    payload = read_owner_file(upload_root, source_path, max_bytes=limit)
+    payload = read_owner_file(
+        upload_root,
+        source_path,
+        max_bytes=max_bytes,
+    )
     if payload is None:
         raise UploadStorageError(
             "The ingestion source was missing, oversized, non-regular, or symlinked."
         )
-    suffix = safe_upload_suffix(Path(source_path).name)
+    try:
+        source_name = os.fspath(source_path)
+    except TypeError as exc:
+        raise UploadStorageError("source_path must be a filesystem path.") from exc
+    suffix = safe_upload_suffix(Path(source_name).name)
     descriptor, raw_path = tempfile.mkstemp(
         prefix="rigorousrag-ingest-",
         suffix=suffix,
     )
     snapshot = Path(raw_path)
     try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise UploadStorageError(
+                "The immutable ingestion snapshot is not a regular file."
+            )
         try:
             os.fchmod(descriptor, 0o600)
         except (AttributeError, OSError):
@@ -49,8 +55,18 @@ def materialize_ingestion_snapshot(
             handle.write(payload)
             handle.flush()
             os.fsync(handle.fileno())
+        descriptor = -1
+        if snapshot.is_symlink() or not snapshot.is_file():
+            raise UploadStorageError(
+                "The immutable ingestion snapshot changed before parser use."
+            )
         yield snapshot, payload
     finally:
+        if descriptor >= 0:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
         try:
             if not snapshot.is_symlink():
                 snapshot.unlink(missing_ok=True)
