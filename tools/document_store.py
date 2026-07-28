@@ -8,9 +8,11 @@ source file used by visual tools.
 from __future__ import annotations
 
 import os
+import shutil
 import sqlite3
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -81,6 +83,48 @@ class DocumentStore:
         if not candidate.exists() or not candidate.is_file():
             raise ValueError("Retained source file does not exist.")
         return str(candidate)
+
+    def copy_source(self, *, owner_id: str, source_path: str | Path) -> Path:
+        """Copy a regular external source into a random owner-scoped retained path."""
+
+        owner = normalize_owner_id(owner_id)
+        raw_source = Path(source_path)
+        if raw_source.is_symlink():
+            raise ValueError("Source files may not be symbolic links.")
+        source = raw_source.resolve()
+        if not source.exists() or not source.is_file():
+            raise ValueError("Source file does not exist.")
+        suffix = source.suffix.lower()
+        if suffix not in {".pdf", ".docx", ".txt", ".md"}:
+            raise ValueError("Unsupported source-file suffix.")
+        owner_dir = self.upload_root / owner
+        owner_dir.mkdir(parents=True, exist_ok=True)
+        destination = owner_dir / f"{uuid.uuid4().hex}{suffix}"
+        try:
+            with source.open("rb") as input_handle, destination.open("xb") as output_handle:
+                shutil.copyfileobj(input_handle, output_handle, length=64 * 1024)
+        except Exception:
+            destination.unlink(missing_ok=True)
+            raise
+        return destination.resolve()
+
+    def remove_source(self, source_path: str | Path | None) -> bool:
+        """Remove one retained regular file without following a symlink."""
+
+        if source_path in (None, ""):
+            return False
+        unresolved = Path(source_path)
+        if unresolved.is_symlink():
+            return False
+        candidate = unresolved.resolve()
+        try:
+            candidate.relative_to(self.upload_root)
+        except ValueError:
+            return False
+        if not candidate.exists() or not candidate.is_file():
+            return False
+        candidate.unlink(missing_ok=True)
+        return True
 
     def register(
         self,
