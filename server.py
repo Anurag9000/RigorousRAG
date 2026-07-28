@@ -99,6 +99,22 @@ def _new_agent(owner_id: str, model: Optional[str] = None) -> SearchAgent:
     )
 
 
+def _safe_unlink_upload(path: str | Path | None) -> bool:
+    """Delete one regular file only when it is contained by UPLOAD_DIR."""
+
+    if path in (None, ""):
+        return False
+    candidate = Path(path).resolve()
+    try:
+        candidate.relative_to(UPLOAD_DIR)
+    except ValueError:
+        return False
+    if candidate.is_symlink() or (candidate.exists() and not candidate.is_file()):
+        return False
+    candidate.unlink(missing_ok=True)
+    return True
+
+
 def _forget_future(future: Future[Any]) -> None:
     with _INGEST_FUTURES_LOCK:
         _INGEST_FUTURES.discard(future)
@@ -129,6 +145,7 @@ def _recover_interrupted_jobs() -> None:
         display_name = str(record.get("filename") or "upload")
         source_path = str(record.get("source_path") or "")
         attempts = int(record.get("attempts") or 0)
+        candidate = Path(source_path).resolve() if source_path else None
         if attempts >= INGEST_MAX_ATTEMPTS:
             _JOB_STORE.update(
                 job_id,
@@ -138,8 +155,8 @@ def _recover_interrupted_jobs() -> None:
                 source_path="",
                 message="Interrupted ingestion exhausted its retry limit.",
             )
+            _safe_unlink_upload(candidate)
             continue
-        candidate = Path(source_path).resolve() if source_path else None
         if candidate is None or not candidate.exists() or not candidate.is_file():
             _JOB_STORE.update(
                 job_id,
@@ -381,12 +398,7 @@ def process_ingestion(file_path: str, display_name: str, job_id: str, owner_id: 
         )
         keep_source = bool(retained_path)
         if previous_path:
-            old_candidate = Path(previous_path).resolve()
-            try:
-                old_candidate.relative_to(UPLOAD_DIR)
-                old_candidate.unlink(missing_ok=True)
-            except ValueError:
-                pass
+            _safe_unlink_upload(previous_path)
         _JOB_STORE.update(
             job_id,
             owner_id,
@@ -407,7 +419,7 @@ def process_ingestion(file_path: str, display_name: str, job_id: str, owner_id: 
         )
     finally:
         if not keep_source:
-            path.unlink(missing_ok=True)
+            _safe_unlink_upload(path)
 
 
 @app.get("/docs/list")
@@ -456,14 +468,7 @@ async def delete_document(
         owner_id=principal.owner_id,
         doc_id=doc_id,
     )
-    raw_path = str((record or {}).get("source_path") or "")
-    if raw_path:
-        candidate = Path(raw_path).resolve()
-        try:
-            candidate.relative_to(UPLOAD_DIR)
-            candidate.unlink(missing_ok=True)
-        except ValueError:
-            pass
+    _safe_unlink_upload(str((record or {}).get("source_path") or ""))
     return {"status": "deleted", "doc_id": doc_id}
 
 
