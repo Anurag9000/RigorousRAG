@@ -20,14 +20,16 @@ graph LR
     CLI --> Services
     FastAPI --> Principal[Credential-derived principal]
     FastAPI --> BodyLimit[Pre-parser body ceiling]
-    FastAPI --> ResearchPool[Bounded query and direct-tool executor]
+    FastAPI --> ResearchPool[Bounded query, document and direct-tool executor]
     ResearchPool --> Agent[Request-scoped agent]
     ResearchPool --> DirectTools[Direct scientific routes]
+    ResearchPool --> Library[Document list/delete services]
     FastAPI --> Queue[SQLite ingestion queue]
     Queue --> Scheduler[One lazy deadline scheduler]
     Scheduler --> Admission[Bounded ingestion admission]
     Admission --> Workers[Ingestion workers]
-    Workers --> Parser[Parsing + optional OCR + redaction]
+    Workers --> Snapshot[Descriptor-anchored immutable upload snapshot]
+    Snapshot --> Parser[Parsing + optional OCR + redaction]
     Parser --> RAG[Owner-scoped Chroma RAG]
     Parser --> Registry[Private source-file registry]
     Agent --> ToolPool[Bounded tool executor]
@@ -37,11 +39,13 @@ graph LR
     ToolPool --> Integrity[Scientific-analysis tools]
     DirectTools --> Integrity
     Integrity --> Registry
+    Registry --> VisualBytes[Identity-verified immutable PDF bytes]
+    VisualBytes --> Integrity
     Agent --> Evidence[Server evidence registry]
     Evidence --> Answer[Bounded AgentAnswer]
 ```
 
-See [Goals and Architecture](docs/GOALS_AND_ARCHITECTURE.md), [Security Model](docs/SECURITY.md), and [Remediation Status](docs/REMEDIATION_STATUS.md).
+See [Goals and Architecture](docs/GOALS_AND_ARCHITECTURE.md), [Security Model](docs/SECURITY.md), [Remediation Status](docs/REMEDIATION_STATUS.md), and the continuation-audit records in `docs/`.
 
 ## Security and reliability properties
 
@@ -49,19 +53,24 @@ See [Goals and Architecture](docs/GOALS_AND_ARCHITECTURE.md), [Security Model](d
 - Every vector read, list, delete, comparison, limitation lookup, and figure operation is owner-scoped.
 - Total HTTP request bodies are bounded before JSON or multipart parsing, including chunked bodies.
 - Uploads are streamed under an inner file-byte ceiling, fsynced, type-checked, and stored under random owner directories.
+- On POSIX, upload creation/read/delete uses no-follow root and owner directory descriptors plus descriptor-relative final-file operations; Windows uses conservative symlink and directory-identity checks.
+- Owner-directory replacements, final-entry symlinks, outside-root paths, and partial oversized uploads fail closed.
 - A queue-write failure removes the just-written upload instead of waiting for orphan cleanup.
-- Symlinked inputs and retained sources are rejected.
+- Queue workers parse private `0600` temporary files containing exact bytes read through the descriptor-anchored owner-file boundary; they do not parse a later pathname reopen.
+- Unexpected snapshot or parser-boundary failures return the claimed job to durable retry state or terminal failure instead of leaving it stuck in `processing`.
 - Filesystem paths are held in private SQLite stores, never in Chroma metadata, citations, manifests, or public job responses.
 - Missing retained files dynamically downgrade a document to text-only capability.
-- Retained visual PDFs are re-hashed against owner/content document identity and checked against page, true pre-render geometry, render-pixel, and exact encoded-image-byte budgets on visual access.
-- Host-side source mutation therefore disables visual analysis without making the retained file unmanaged or undeletable.
+- Retained visual PDFs are read through bounded descriptor-relative access and re-hashed against owner/content document identity.
+- PDF complexity preflight and figure rendering consume the same immutable byte snapshot; no retained pathname is reopened between verification and rendering.
+- Visual page count, true pre-render geometry, actual render pixels, and exact encoded-image bytes are independently bounded.
+- Host-side source mutation disables visual analysis without making the retained file unmanaged or undeletable.
 - Document deletion removes vectors, registry state, and retained source; partial cleanup remains retryable.
 - Old unreferenced uploads are reconciled after a grace period while active, retained, recent, and symlink paths are protected.
 - Public-page tools reject private, loopback, link-local, multicast, reserved, and metadata-network destinations.
 - Every redirect is revalidated, the actual connected peer IP is checked, environment proxies are disabled, and credentials or POST bodies cannot leak across hostile cross-origin redirects.
 - Remote responses have decoded-byte and end-to-end time ceilings.
 - DOCX archive expansion, PDF page count, OCR pixels, extracted characters, vector chunks, request bodies, research-route work, tool work, arguments, results, evidence sources, and final answers are bounded.
-- `/query`, direct visual entailment, and direct protocol extraction share explicit running-plus-queued admission and a whole-operation timeout.
+- `/query`, document list/delete, direct visual entailment, and direct protocol extraction share explicit running-plus-queued admission and a whole-operation timeout.
 - Agent tool execution has an independent process-wide running-plus-queued limit; timed-out running work retains capacity until it actually finishes.
 - Ingestion has durable retry deadlines, one lazy centralized scheduler, and bounded executor admission.
 - Vector replacement uses compensating rollback if a batched write fails.
@@ -71,6 +80,7 @@ See [Goals and Architecture](docs/GOALS_AND_ARCHITECTURE.md), [Security Model](d
 - Every serialized scientific-tool result recursively masks values and keys, including local paths, URI credentials, and common secret parameters.
 - Browser output is rendered through DOM text nodes and a constrained local Markdown renderer; no external JavaScript CDN is used.
 - Raw queries and owner IDs are not written to telemetry. Telemetry is size-bounded, pseudonymous, and rotated.
+- Classic crawl/index/PageRank generations are published by a manifest-last commit and protected by a cross-process snapshot lock during reads, publication, and old-generation cleanup.
 
 These controls do not replace a network egress firewall, malware scanner, parser sandbox, encryption-at-rest policy, secret manager, or regulated-data review.
 
@@ -151,7 +161,9 @@ python search_agent_cli.py --demo
 | Retained visual PDFs | `VISUAL_MAX_PDF_PAGES`, `VISUAL_MAX_RENDER_PIXELS`, `VISUAL_MAX_ENCODED_BYTES` |
 | OCR | `ENABLE_OCR`, `OCR_MAX_PAGES`, `OCR_DPI`, `OCR_TIMEOUT_SECONDS`, `OCR_MIN_TEXT_CHARS` |
 | Vector storage | `CHROMA_PATH`, `EMBEDDING_MODEL`, `MAX_CHUNKS_PER_DOCUMENT`, `DOCUMENT_LIST_SCAN_BATCH`, `MAX_DOCUMENT_LIST_SCAN_CHUNKS` |
-| Remote network | `MAX_REMOTE_DOWNLOAD_BYTES`, `REMOTE_REQUEST_TIMEOUT_SECONDS`, `MAX_REMOTE_REDIRECTS`, `SERPER_MAX_RESPONSE_BYTES` |
+| Classic state | `CLASSIC_STORAGE_DIR`, `CLASSIC_MAX_SNAPSHOT_FILE_BYTES` |
+| Internal handbook | `HANDBOOK_MAX_BYTES`, `HANDBOOK_MAX_CHUNKS` |
+| Remote network | `MAX_REMOTE_DOWNLOAD_BYTES`, `REMOTE_REQUEST_TIMEOUT_SECONDS`, `MAX_REMOTE_REDIRECTS`, `SERPER_MAX_RESPONSE_BYTES`, `WEB_SEARCH_MAX_RESULT_CANDIDATES` |
 | Telemetry | `USAGE_LOG_FILE`, `USAGE_LOG_MAX_BYTES`, `USAGE_LOG_BACKUPS` |
 
 Set `RETAIN_SOURCE_FILES=false` when source retention is prohibited. Text retrieval continues, but figure/visual entailment returns an explicit insufficient-evidence result.
@@ -161,14 +173,15 @@ Set `RETAIN_SOURCE_FILES=false` when source retention is prohibited. Text retrie
 `POST /ingest` performs this lifecycle:
 
 1. enforce the total request-body ceiling before multipart parsing;
-2. stream and fsync an owner-scoped random upload under the file-byte limit;
+2. stream and fsync an owner-scoped random upload through descriptor-anchored storage under the file-byte limit;
 3. persist a `queued` SQLite job;
 4. schedule the job without occupying a worker before its due time;
 5. obtain a bounded executor-admission slot;
 6. atomically claim it as `processing`;
-7. parse, redact, revalidate source identity, and index vectors;
-8. persist `finalizing` before committing the private source registry;
-9. publish `success`, or persist a bounded exponential retry/failure transition.
+7. read the retained owner file through the anchored no-follow boundary and materialize a private immutable parser snapshot;
+8. parse, optionally OCR, redact, and revalidate snapshot identity immediately before summary/vector writes;
+9. persist `finalizing` before committing the private source registry;
+10. publish `success`, or persist a bounded exponential retry/failure transition.
 
 SQLite stores retry deadlines. One lazily started heap/condition scheduler manages all delayed jobs; it does not create one timer thread per job. When executor admission is saturated, durable jobs remain queued and retry admission later. Startup reconciliation reschedules interrupted work, promotes already-registered finalizing documents without re-indexing, and fails exhausted or invalid-source jobs explicitly. Duplicate workers cannot both claim the same job.
 
@@ -177,15 +190,15 @@ This is single-host crash recovery. Distributed/high-scale deployments should re
 ## Parsing, OCR, and retained-source behavior
 
 - Stable document identity is derived from owner ID plus source-file SHA-256, preventing two documents that redact to identical text from overwriting each other.
-- The source identity is recomputed immediately before summary/vector writes.
+- The parser-facing source identity is recomputed immediately before summary/vector writes.
 - Only the redacted-text hash is exposed in document metadata; source hashes remain internal identity inputs.
 - DOCX packages are checked for unsafe paths, duplicate/encrypted/symlink members, member count, total uncompressed size, and compression ratio before parsing.
 - PDF page count, total extracted text, OCR attempts, OCR render pixels, DPI, and per-page timeout are bounded.
 - OCR operates only on low-native-text pages and records attempted, successful, empty, failed, and limit-skipped page provenance.
 - One failed OCR page does not discard usable native/OCR pages from the rest of the document.
-- Document listing reports a retained PDF as eligible but unverified. A visual action triggers current-byte identity verification and PDF page/render checks.
-- Before pixmap allocation, the registry preflights the renderer’s fixed worst-case 565-point caption clip at 2× scale against `VISUAL_MAX_RENDER_PIXELS`.
-- Caption-region rendering also enforces the actual pixel count and exact base64 payload length before image data reaches a vision model.
+- Document listing reports a retained PDF as eligible but unverified. A visual action reads current bytes through the anchored registry boundary and performs identity plus PDF complexity checks.
+- Before pixmap allocation, the registry and renderer preflight the fixed worst-case 565-point caption clip at 2× scale against `VISUAL_MAX_RENDER_PIXELS`.
+- Caption-region rendering also enforces actual pixel count and exact base64 payload length before image data reaches a vision model.
 
 ## Run the web service
 
@@ -277,4 +290,5 @@ CI is configured to run these checks across Python 3.10, 3.11, and 3.12 and buil
 - Scientific-analysis outputs remain model analyses and require expert/source review.
 - Rate limiting, schedulers, executors, SQLite stores, and compensation workflows are process-local/single-host.
 - Python query/tool threads cannot be forcibly killed; bounded admission and provider/network deadlines limit impact.
+- Writable or privileged host access can mutate process storage or memory; filesystem anchoring is not a substitute for host isolation.
 - Dependency bounds are provided; release deployments should generate and verify platform-specific lock files with hashes.
