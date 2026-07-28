@@ -19,12 +19,17 @@ jobs:
         python-version: ["3.10", "3.11", "3.12"]
     env:
       PYTHONHASHSEED: "0"
+      PYTHONDONTWRITEBYTECODE: "1"
       TOKENIZERS_PARALLELISM: "false"
       PIP_DISABLE_PIP_VERSION_CHECK: "1"
       SINGLE_USER_OWNER_ID: ci-user
       CHROMA_PATH: ${{ runner.temp }}/rigorousrag-vectors
       JOB_DB_PATH: ${{ runner.temp }}/rigorousrag-jobs.sqlite3
+      DOCUMENT_DB_PATH: ${{ runner.temp }}/rigorousrag-documents.sqlite3
       UPLOAD_DIR: ${{ runner.temp }}/rigorousrag-uploads
+      USAGE_LOG_FILE: ${{ runner.temp }}/rigorousrag-usage.jsonl
+      ORPHAN_CLEANUP_ON_STARTUP: "false"
+      ENABLE_OCR: "false"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
