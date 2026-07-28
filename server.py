@@ -477,14 +477,21 @@ async def ingest_document(
     await _save_upload(file, destination)
     job_id = f"job_{uuid.uuid4().hex}"
     display_name = Path(file.filename or f"upload{suffix}").name
-    _JOB_STORE.update(
-        job_id,
-        principal.owner_id,
-        status="queued",
-        filename=display_name,
-        source_path=str(destination),
-        message="Waiting for an ingestion worker.",
-    )
+    try:
+        _JOB_STORE.update(
+            job_id,
+            principal.owner_id,
+            status="queued",
+            filename=display_name,
+            source_path=str(destination),
+            message="Waiting for an ingestion worker.",
+        )
+    except Exception as exc:
+        _safe_unlink_upload(destination)
+        raise HTTPException(
+            status_code=503,
+            detail="The ingestion queue is unavailable.",
+        ) from exc
     _submit_ingestion(
         str(destination),
         display_name,
