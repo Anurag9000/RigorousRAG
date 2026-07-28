@@ -8,7 +8,6 @@ consume the same immutable descriptor-anchored byte snapshot.
 from __future__ import annotations
 
 import base64
-import json
 import math
 import re
 import sys
@@ -17,7 +16,6 @@ from typing import Any, Optional, Tuple
 import fitz
 
 from tools import integrity_legacy as _implementation
-from tools.document_store import get_document_store
 from tools.security import DEFAULT_MAX_UPLOAD_BYTES
 
 
@@ -123,7 +121,7 @@ def check_visual_entailment(
     """Check one figure using the exact bytes verified by the private registry."""
 
     metadata = _implementation._document_metadata(doc_id, owner_id)
-    source_bytes = get_document_store().source_bytes(
+    source_bytes = _implementation.get_document_store().source_bytes(
         owner_id=owner_id,
         doc_id=doc_id,
     )
@@ -142,7 +140,7 @@ def check_visual_entailment(
             ).model_dump()
         )
     try:
-        image_b64, page_number, caption_text = _extract_figure_region(
+        image_b64, page_number, caption_text = _implementation._extract_figure_region(
             source_bytes,
             figure_id,
         )
