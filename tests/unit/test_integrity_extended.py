@@ -1,6 +1,7 @@
 import hashlib
 import json
 import uuid
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import fitz
@@ -123,7 +124,10 @@ def _doc_id(path, owner="alice"):
 def test_figure_region_is_tied_to_exact_caption_page(tmp_path):
     path = tmp_path / "figure.pdf"
     _make_figure_pdf(path)
-    encoded, page_number, caption = _extract_figure_region(str(path), "Figure 2B")
+    encoded, page_number, caption = _extract_figure_region(
+        path.read_bytes(),
+        "Figure 2B",
+    )
     assert encoded
     assert page_number == 1
     assert "Figure 2B" in caption
@@ -135,7 +139,7 @@ def test_figure_region_enforces_exact_encoded_payload_bytes(monkeypatch, tmp_pat
     monkeypatch.setattr("tools.integrity._VISUAL_MAX_ENCODED_BYTES", 100)
 
     with pytest.raises(ValueError, match="payload-byte limit"):
-        _extract_figure_region(str(path), "Figure 2B")
+        _extract_figure_region(path.read_bytes(), "Figure 2B")
 
 
 def test_visual_entailment_uses_private_registry_not_vector_path(
@@ -173,6 +177,35 @@ def test_visual_entailment_uses_private_registry_not_vector_path(
     assert result["page_number"] == 1
     assert result["citations"][0]["doc_id"] == document_id
     assert "storage_path" not in result["citations"][0]
+
+
+def test_visual_entailment_passes_exact_registry_snapshot_to_renderer():
+    snapshot = b"immutable-pdf-snapshot"
+    store = SimpleNamespace(
+        source_bytes=lambda **_kwargs: snapshot,
+        source_path=lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("Visual entailment reopened a retained path.")
+        ),
+    )
+    with patch(
+        "tools.integrity._document_metadata",
+        return_value={"filename": "figure.pdf"},
+    ), patch("tools.integrity.get_document_store", return_value=store), patch(
+        "tools.integrity._extract_figure_region",
+        return_value=("encoded", 1, "Figure 1 caption"),
+    ) as extract:
+        result = json.loads(
+            check_visual_entailment(
+                "Claim",
+                "Figure 1",
+                "doc-1",
+                owner_id="alice",
+                client=None,
+            )
+        )
+
+    extract.assert_called_once_with(snapshot, "Figure 1")
+    assert result["page_number"] == 1
 
 
 def test_visual_entailment_denies_other_owner_registry_path(monkeypatch, tmp_path):
