@@ -2,14 +2,14 @@
 
 The complete reasoning and tool loop remains in ``search_agent_legacy``. This module
 hardens values supplied by callers or model providers before the preserved loop uses
-or echoes them.
+or echoes them, and prevents empty local lookups from becoming evidence.
 """
 
 from __future__ import annotations
 
 import math
 import sys
-from typing import Any, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import search_agent_legacy as _implementation
 
@@ -65,7 +65,7 @@ class ToolExecution(_original_tool_execution):
 
 
 class SearchAgent(_implementation.SearchAgent):
-    """Research agent with validated direct-construction parameters."""
+    """Research agent with validated direct-construction and evidence parameters."""
 
     def __init__(
         self,
@@ -104,6 +104,27 @@ class SearchAgent(_implementation.SearchAgent):
             tool_timeout=min(per_tool_timeout, 300.0),
             max_response_tokens=max_response_tokens,
         )
+
+    def _dispatch(
+        self,
+        tool_name: str,
+        arguments: Dict[str, Any],
+    ) -> Tuple[str, List[_implementation.Citation]]:
+        if tool_name == "search_handbook":
+            text = _implementation.search_handbook(**arguments)
+            if not text or text.strip() == "No handbook passage matched the query.":
+                return "No handbook evidence matched the query.", []
+            return text, [
+                _implementation.Citation(
+                    label="[1]",
+                    title="RigorousRAG internal handbook",
+                    url="local://handbook",
+                    source_type="handbook",
+                    snippet=text,
+                    source_id="handbook",
+                )
+            ]
+        return super()._dispatch(tool_name, arguments)
 
 
 _implementation._validate_schema_value = _validate_schema_value
