@@ -1,3 +1,5 @@
+import threading
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -41,6 +43,19 @@ class FakeResponse:
 
     def close(self):
         self.closed = True
+
+
+class BlockingResponse(FakeResponse):
+    def __init__(self, entered, release, **kwargs):
+        super().__init__(**kwargs)
+        self.entered = entered
+        self.release = release
+
+    def iter_content(self, chunk_size):
+        assert chunk_size > 0
+        self.entered.set()
+        assert self.release.wait(2.0)
+        yield from self.chunks
 
 
 class FakeSession:
@@ -117,6 +132,52 @@ def test_post_body_is_not_replayed_after_302_redirect(monkeypatch):
     assert session.calls[1]["json"] is None
     assert redirect.closed is True
     assert final.closed is True
+    assert session.trust_env is True
+
+
+def test_shared_injected_session_cannot_restore_proxies_mid_download(monkeypatch):
+    _public_dns(monkeypatch)
+    entered = threading.Event()
+    release = threading.Event()
+    first = BlockingResponse(
+        entered,
+        release,
+        url="https://example.com/first",
+        chunks=(b"first",),
+    )
+    second = FakeResponse(url="https://example.com/second", chunks=(b"second",))
+    session = FakeSession([first, second])
+    results = []
+    errors = []
+
+    def download(path):
+        try:
+            results.append(
+                safe_download(f"https://example.com/{path}", session=session).content
+            )
+        except Exception as exc:  # pragma: no cover - assertion captures unexpected errors
+            errors.append(exc)
+
+    first_thread = threading.Thread(target=download, args=("first",))
+    second_thread = threading.Thread(target=download, args=("second",))
+    first_thread.start()
+    assert entered.wait(1.0)
+    assert session.trust_env is False
+
+    second_thread.start()
+    time.sleep(0.05)
+    assert len(session.calls) == 1
+    assert session.trust_env is False
+
+    release.set()
+    first_thread.join(2.0)
+    second_thread.join(2.0)
+
+    assert not first_thread.is_alive()
+    assert not second_thread.is_alive()
+    assert errors == []
+    assert sorted(results) == [b"first", b"second"]
+    assert len(session.calls) == 2
     assert session.trust_env is True
 
 
