@@ -8,6 +8,7 @@ from typing import Optional
 from bs4 import BeautifulSoup
 from pydantic import BaseModel, Field
 
+from tools.privacy import mask_metadata_text
 from tools.security import (
     DEFAULT_MAX_DOWNLOAD_BYTES,
     DEFAULT_REQUEST_TIMEOUT,
@@ -29,6 +30,10 @@ class PageContent(BaseModel):
     error: Optional[str] = Field(default=None, max_length=500)
 
 
+def _public_display_url(value: str) -> str:
+    return mask_metadata_text((value or "").strip())[:4096]
+
+
 def fetch_single_page(
     url: str,
     user_agent: str = DEFAULT_USER_AGENT,
@@ -37,7 +42,7 @@ def fetch_single_page(
 ) -> PageContent:
     """Fetch a public page without permitting internal-network access."""
 
-    safe_display_url = (url or "").strip()[:4096]
+    safe_display_url = _public_display_url(url)
     try:
         downloaded = safe_download(
             url,
@@ -77,7 +82,7 @@ def fetch_single_page(
             text = " ".join(soup.get_text(separator=" ", strip=True).split())
 
         return PageContent(
-            url=downloaded.final_url[:4096],
+            url=_public_display_url(downloaded.final_url),
             title=title[:500] or "Untitled",
             text=text[:100_000],
             content_length=len(downloaded.content),
