@@ -162,7 +162,10 @@ class JobStore:
                     status=excluded.status,
                     filename=excluded.filename,
                     message=excluded.message,
-                    doc_id=COALESCE(excluded.doc_id, jobs.doc_id),
+                    doc_id=CASE
+                        WHEN excluded.status='failed' THEN NULL
+                        ELSE COALESCE(excluded.doc_id, jobs.doc_id)
+                    END,
                     source_path=excluded.source_path,
                     attempts=excluded.attempts,
                     next_attempt_at=excluded.next_attempt_at,
