@@ -6,7 +6,7 @@ import os
 from typing import Optional
 
 from bs4 import BeautifulSoup
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from tools.security import (
     DEFAULT_MAX_DOWNLOAD_BYTES,
@@ -22,11 +22,11 @@ ALLOWED_PAGE_CONTENT_TYPES = {"text/html", "application/xhtml+xml", "text/plain"
 
 
 class PageContent(BaseModel):
-    url: str
-    title: str
-    text: str
-    content_length: int
-    error: Optional[str] = None
+    url: str = Field(max_length=4096)
+    title: str = Field(max_length=500)
+    text: str = Field(max_length=100_000)
+    content_length: int = Field(ge=0)
+    error: Optional[str] = Field(default=None, max_length=500)
 
 
 def fetch_single_page(
@@ -37,11 +37,12 @@ def fetch_single_page(
 ) -> PageContent:
     """Fetch a public page without permitting internal-network access."""
 
+    safe_display_url = (url or "").strip()[:4096]
     try:
         downloaded = safe_download(
             url,
             headers={
-                "User-Agent": user_agent,
+                "User-Agent": user_agent[:500],
                 "Accept": "text/html,application/xhtml+xml,text/plain;q=0.8",
             },
             timeout=DEFAULT_REQUEST_TIMEOUT,
@@ -76,16 +77,16 @@ def fetch_single_page(
             text = " ".join(soup.get_text(separator=" ", strip=True).split())
 
         return PageContent(
-            url=downloaded.final_url,
+            url=downloaded.final_url[:4096],
             title=title[:500] or "Untitled",
             text=text[:100_000],
             content_length=len(downloaded.content),
         )
     except Exception as exc:
         return PageContent(
-            url=url,
+            url=safe_display_url,
             title="Error",
             text="",
             content_length=0,
-            error=str(exc),
+            error=f"Page fetch failed ({type(exc).__name__}).",
         )
