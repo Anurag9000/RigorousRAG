@@ -1,6 +1,6 @@
 """Evidence-aware scientific analysis tools.
 
-These helpers fail closed when evidence is unavailable.  Retrieved content and
+These helpers fail closed when evidence is unavailable. Retrieved content and
 model output are never treated as proof; callers must still inspect primary
 sources and obtain expert review where appropriate.
 """
@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import re
 from enum import Enum
 from pathlib import Path
@@ -19,7 +20,21 @@ from pydantic import BaseModel, Field, ValidationError
 
 from tools.document_store import get_document_store
 from tools.models import Citation
+from tools.privacy import sanitize_metadata_dict
 from tools.rag import Chunk, get_rag_layer
+
+_VISUAL_MAX_PDF_PAGES = max(
+    1,
+    min(int(os.getenv("VISUAL_MAX_PDF_PAGES", "500")), 5000),
+)
+_VISUAL_MAX_RENDER_PIXELS = max(
+    1_000_000,
+    min(int(os.getenv("VISUAL_MAX_RENDER_PIXELS", "2000000")), 100_000_000),
+)
+_VISUAL_MAX_ENCODED_BYTES = max(
+    100_000,
+    min(int(os.getenv("VISUAL_MAX_ENCODED_BYTES", "10000000")), 100_000_000),
+)
 
 
 class EntailmentVerdict(str, Enum):
@@ -80,9 +95,9 @@ VISUAL_ENTAILMENT_TOOL_DEF = {
         "parameters": {
             "type": "object",
             "properties": {
-                "claim_text": {"type": "string"},
-                "figure_id": {"type": "string"},
-                "doc_id": {"type": "string"},
+                "claim_text": {"type": "string", "maxLength": 10_000},
+                "figure_id": {"type": "string", "maxLength": 200},
+                "doc_id": {"type": "string", "maxLength": 200},
             },
             "required": ["claim_text", "figure_id", "doc_id"],
             "additionalProperties": False,
@@ -97,8 +112,8 @@ PROTOCOL_EXTRACTION_TOOL_DEF = {
         "parameters": {
             "type": "object",
             "properties": {
-                "text": {"type": "string"},
-                "doc_id": {"type": "string"},
+                "text": {"type": "string", "maxLength": 30_000},
+                "doc_id": {"type": "string", "maxLength": 200},
             },
             "required": ["text"],
             "additionalProperties": False,
@@ -116,8 +131,8 @@ DEBATE_TOOL_DEF = {
         "parameters": {
             "type": "object",
             "properties": {
-                "claim": {"type": "string"},
-                "context": {"type": "string"},
+                "claim": {"type": "string", "maxLength": 10_000},
+                "context": {"type": "string", "maxLength": 30_000},
             },
             "required": ["claim", "context"],
             "additionalProperties": False,
@@ -132,8 +147,12 @@ COMPARISON_TOOL_DEF = {
         "parameters": {
             "type": "object",
             "properties": {
-                "doc_ids": {"type": "array", "items": {"type": "string"}, "maxItems": 10},
-                "query": {"type": "string"},
+                "doc_ids": {
+                    "type": "array",
+                    "items": {"type": "string", "maxLength": 200},
+                    "maxItems": 10,
+                },
+                "query": {"type": "string", "maxLength": 10_000},
             },
             "required": ["doc_ids", "query"],
             "additionalProperties": False,
@@ -148,8 +167,16 @@ MATRIX_TOOL_DEF = {
         "parameters": {
             "type": "object",
             "properties": {
-                "doc_ids": {"type": "array", "items": {"type": "string"}, "maxItems": 10},
-                "metrics": {"type": "array", "items": {"type": "string"}, "maxItems": 12},
+                "doc_ids": {
+                    "type": "array",
+                    "items": {"type": "string", "maxLength": 200},
+                    "maxItems": 10,
+                },
+                "metrics": {
+                    "type": "array",
+                    "items": {"type": "string", "maxLength": 500},
+                    "maxItems": 12,
+                },
             },
             "required": ["doc_ids", "metrics"],
             "additionalProperties": False,
@@ -164,8 +191,8 @@ CONFLICT_TOOL_DEF = {
         "parameters": {
             "type": "object",
             "properties": {
-                "topic": {"type": "string"},
-                "context": {"type": "string"},
+                "topic": {"type": "string", "maxLength": 5_000},
+                "context": {"type": "string", "maxLength": 35_000},
             },
             "required": ["topic", "context"],
             "additionalProperties": False,
@@ -180,8 +207,8 @@ LIMITATIONS_TOOL_DEF = {
         "parameters": {
             "type": "object",
             "properties": {
-                "doc_id": {"type": "string"},
-                "text": {"type": "string"},
+                "doc_id": {"type": "string", "maxLength": 200},
+                "text": {"type": "string", "maxLength": 35_000},
             },
             "required": ["doc_id"],
             "additionalProperties": False,
@@ -191,7 +218,9 @@ LIMITATIONS_TOOL_DEF = {
 
 
 def _json(data: Dict[str, Any]) -> str:
-    return json.dumps(data, ensure_ascii=False)
+    """Serialize only recursively sanitized JSON-compatible scientific output."""
+
+    return json.dumps(sanitize_metadata_dict(data), ensure_ascii=False)
 
 
 def _completion(
@@ -278,20 +307,25 @@ def _document_citation(
 
 
 def _extract_figure_region(pdf_path: str, figure_id: str) -> Tuple[str, int, str]:
-    """Render the region immediately above an exact caption match."""
+    """Render a bounded region immediately above an exact caption match."""
 
     path = Path(pdf_path)
     if path.suffix.lower() != ".pdf":
         raise ValueError("Visual entailment currently supports PDF documents only.")
     if not path.exists() or not path.is_file():
         raise ValueError("The retained PDF source file is missing.")
-    document = fitz.open(path)
+    needle = (figure_id or "").strip()
+    if not needle or len(needle) > 200:
+        raise ValueError("figure_id must contain between 1 and 200 characters.")
+    try:
+        document = fitz.open(path)
+    except Exception as exc:
+        raise ValueError("The retained PDF could not be opened safely.") from exc
     try:
         if document.needs_pass:
             raise ValueError("Encrypted PDFs are not supported.")
-        needle = (figure_id or "").strip()
-        if not needle:
-            raise ValueError("figure_id is required.")
+        if not 1 <= int(document.page_count) <= _VISUAL_MAX_PDF_PAGES:
+            raise ValueError("The retained PDF exceeds the visual page-count limit.")
         candidates = [needle]
         compact = re.sub(r"\s+", " ", needle.replace(".", "")).strip()
         if compact and compact not in candidates:
@@ -313,8 +347,27 @@ def _extract_figure_region(pdf_path: str, figure_id: str) -> Tuple[str, int, str
                 page_rect.x1,
                 min(page_rect.y1, caption.y1 + 45),
             )
-            pixmap = page.get_pixmap(matrix=fitz.Matrix(2, 2), clip=clip, alpha=False)
-            encoded = base64.b64encode(pixmap.tobytes("png")).decode("ascii")
+            try:
+                pixmap = page.get_pixmap(
+                    matrix=fitz.Matrix(2, 2),
+                    clip=clip,
+                    alpha=False,
+                )
+                render_pixels = int(pixmap.width) * int(pixmap.height)
+                if render_pixels > _VISUAL_MAX_RENDER_PIXELS:
+                    raise ValueError(
+                        "The figure region exceeds the visual render-pixel limit."
+                    )
+                png_bytes = pixmap.tobytes("png")
+            except ValueError:
+                raise
+            except Exception as exc:
+                raise ValueError("The figure region could not be rendered safely.") from exc
+            encoded_bytes = base64.b64encode(png_bytes)
+            if len(encoded_bytes) > _VISUAL_MAX_ENCODED_BYTES:
+                raise ValueError(
+                    "The encoded figure region exceeds the visual payload-byte limit."
+                )
             caption_text = page.get_textbox(
                 fitz.Rect(
                     page_rect.x0,
@@ -323,7 +376,7 @@ def _extract_figure_region(pdf_path: str, figure_id: str) -> Tuple[str, int, str
                     min(page_rect.y1, caption.y1 + 120),
                 )
             ).strip()
-            return encoded, page_index + 1, caption_text[:2000]
+            return encoded_bytes.decode("ascii"), page_index + 1, caption_text[:2000]
         raise ValueError(
             "The figure label was not found as selectable text. Provide the exact "
             "caption label or enable OCR before ingestion."
