@@ -14,6 +14,13 @@ def test_web_search_requires_provider_key(monkeypatch):
         web_search("query")
 
 
+def test_web_search_refuses_oversized_provider_key(monkeypatch):
+    monkeypatch.setenv("SERPER_API_KEY", "x" * 4097)
+
+    with pytest.raises(WebSearchError, match="key is invalid"):
+        web_search("query")
+
+
 def test_web_search_uses_bounded_downloader_and_hostname_boundaries(monkeypatch):
     monkeypatch.setenv("SERPER_API_KEY", "test-key")
     downloaded = SimpleNamespace(
@@ -86,12 +93,14 @@ def test_web_search_returns_generic_error_for_invalid_or_failed_provider(monkeyp
     assert "secret provider details" not in str(captured.value)
 
 
-def test_web_search_bounds_query_and_domain_counts(monkeypatch):
+def test_web_search_bounds_query_domain_counts_and_direct_limit(monkeypatch):
     monkeypatch.setenv("SERPER_API_KEY", "test-key")
     with pytest.raises(ValueError, match="2,000"):
         web_search("q" * 2001)
     with pytest.raises(ValueError, match="50"):
         web_search("query", allowed_domains=[f"{index}.example" for index in range(51)])
+    with pytest.raises(ValueError, match="limit must be an integer"):
+        web_search("query", limit="not-an-integer")
 
 
 def test_single_page_uses_bounded_safe_download():
