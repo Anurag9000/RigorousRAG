@@ -17,12 +17,34 @@ from urllib.parse import urljoin, urlparse
 
 import requests
 
+from tools.config import bounded_float_env, bounded_int_env
+
 IPAddress: TypeAlias = ipaddress.IPv4Address | ipaddress.IPv6Address
 
-DEFAULT_MAX_DOWNLOAD_BYTES = int(os.getenv("MAX_REMOTE_DOWNLOAD_BYTES", str(5_000_000)))
-DEFAULT_MAX_UPLOAD_BYTES = int(os.getenv("MAX_UPLOAD_BYTES", str(50_000_000)))
-DEFAULT_REQUEST_TIMEOUT = float(os.getenv("REMOTE_REQUEST_TIMEOUT_SECONDS", "15"))
-MAX_REDIRECTS = max(0, min(int(os.getenv("MAX_REMOTE_REDIRECTS", "4")), 20))
+DEFAULT_MAX_DOWNLOAD_BYTES = bounded_int_env(
+    "MAX_REMOTE_DOWNLOAD_BYTES",
+    5_000_000,
+    minimum=1,
+    maximum=1_000_000_000,
+)
+DEFAULT_MAX_UPLOAD_BYTES = bounded_int_env(
+    "MAX_UPLOAD_BYTES",
+    50_000_000,
+    minimum=1,
+    maximum=1_000_000_000,
+)
+DEFAULT_REQUEST_TIMEOUT = bounded_float_env(
+    "REMOTE_REQUEST_TIMEOUT_SECONDS",
+    15.0,
+    minimum=0.1,
+    maximum=300.0,
+)
+MAX_REDIRECTS = bounded_int_env(
+    "MAX_REMOTE_REDIRECTS",
+    4,
+    minimum=0,
+    maximum=20,
+)
 
 _OWNER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 _ALLOWED_UPLOAD_SUFFIXES = {".pdf", ".docx", ".txt", ".md"}
@@ -282,8 +304,8 @@ def safe_download(
 
     if max_bytes <= 0:
         raise ValueError("max_bytes must be positive.")
-    if timeout <= 0:
-        raise ValueError("timeout must be positive.")
+    if timeout <= 0 or not math.isfinite(timeout):
+        raise ValueError("timeout must be finite and positive.")
     deadline = time.monotonic() + timeout
     current_method = method.upper().strip()
     if current_method not in _ALLOWED_REMOTE_METHODS:
@@ -360,36 +382,30 @@ def safe_download(
                 raw_length = response.headers.get("Content-Length")
                 if raw_length:
                     try:
-                        declared_length = int(raw_length)
+                        if int(raw_length) > max_bytes:
+                            raise SecurityError("Remote response exceeds the byte limit.")
                     except ValueError:
-                        declared_length = 0
-                    if declared_length > max_bytes:
-                        raise SecurityError(
-                            f"Remote response exceeds the {max_bytes}-byte limit."
-                        )
-                body = bytearray()
+                        pass
+                chunks: list[bytes] = []
+                total = 0
                 for chunk in response.iter_content(chunk_size=64 * 1024):
-                    if time.monotonic() > deadline:
-                        raise SecurityError(
-                            "Remote request exceeded the configured time limit."
-                        )
                     if not chunk:
                         continue
-                    body.extend(chunk)
-                    if len(body) > max_bytes:
-                        raise SecurityError(
-                            f"Remote response exceeds the {max_bytes}-byte limit."
-                        )
-                final_url = validate_public_url(response.url or current_url)
+                    total += len(chunk)
+                    if total > max_bytes:
+                        raise SecurityError("Remote response exceeds the byte limit.")
+                    chunks.append(chunk)
+                    if time.monotonic() > deadline:
+                        raise SecurityError("Remote request exceeded the configured time limit.")
                 return DownloadedResponse(
-                    final_url=final_url,
+                    final_url=current_url,
                     status_code=response.status_code,
                     headers=dict(response.headers),
-                    content=bytes(body),
+                    content=b"".join(chunks),
                 )
             finally:
                 response.close()
-        raise SecurityError(f"Remote URL exceeded the {MAX_REDIRECTS}-redirect limit.")
+        raise SecurityError("Remote request exceeded the redirect limit.")
     finally:
         http.trust_env = previous_trust_env
         if owned_session:
