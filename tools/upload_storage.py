@@ -55,10 +55,12 @@ def _owner_directory(
     if os.name == "nt":  # pragma: no cover - exercised by Windows users/CI
         owner_path = _portable_owner_directory(root, owner, create=create)
         before = owner_path.stat()
-        yield root, None, owner_path
-        after = owner_path.stat()
-        if (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino):
-            raise UploadStorageError("Owner upload directory changed during operation.")
+        try:
+            yield root, None, owner_path
+        finally:
+            after = owner_path.stat()
+            if (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino):
+                raise UploadStorageError("Owner upload directory changed during operation.")
         return
 
     directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(
@@ -194,6 +196,51 @@ def store_owner_stream(
         finally:
             os.close(descriptor)
         return root / owner / filename
+
+
+def copy_path_to_owner(
+    source_path: str | Path,
+    *,
+    upload_root: str | Path,
+    owner_id: str,
+    max_bytes: int,
+) -> Path:
+    """Copy a no-follow regular source into randomized descriptor-anchored storage."""
+
+    source = Path(source_path)
+    if source.is_symlink():
+        raise UploadStorageError("Source files may not be symbolic links.")
+    before = source.stat()
+    if not stat.S_ISREG(before.st_mode):
+        raise UploadStorageError("Source file must be a regular file.")
+    limit = int(max_bytes)
+    if limit <= 0:
+        raise UploadStorageError("max_bytes must be positive.")
+    if before.st_size > limit:
+        raise UploadStorageError(f"Source file exceeds the {limit}-byte retention limit.")
+    suffix = safe_upload_suffix(source.name)
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(source, flags)
+    try:
+        opened = os.fstat(descriptor)
+        if not stat.S_ISREG(opened.st_mode):
+            raise UploadStorageError("Source file must be a regular file.")
+        if (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino):
+            raise UploadStorageError("Source file changed before it could be copied.")
+        if opened.st_size > limit:
+            raise UploadStorageError(
+                f"Source file exceeds the {limit}-byte retention limit."
+            )
+        with os.fdopen(descriptor, "rb", closefd=False) as handle:
+            return store_owner_stream(
+                handle,
+                upload_root=upload_root,
+                owner_id=owner_id,
+                suffix=suffix,
+                max_bytes=limit,
+            )
+    finally:
+        os.close(descriptor)
 
 
 def remove_owner_file(
