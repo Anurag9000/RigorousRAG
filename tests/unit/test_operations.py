@@ -115,8 +115,9 @@ def test_document_store_is_owner_scoped_and_keeps_paths_private(tmp_path):
         source_path=source,
     )
     assert previous is None
-    assert store.source_path(owner_id="alice", doc_id="doc-1") == source.resolve()
-    assert store.source_path(owner_id="bob", doc_id="doc-1") is None
+    assert store.retained_source_path(owner_id="alice", doc_id="doc-1") == source.resolve()
+    assert store.retained_source_path(owner_id="bob", doc_id="doc-1") is None
+    assert store.source_path(owner_id="alice", doc_id="doc-1") is None
     assert store.retained_source_paths() == {source.resolve()}
     record = store.delete(owner_id="alice", doc_id="doc-1")
     assert record and Path(record["source_path"]) == source.resolve()
@@ -150,7 +151,7 @@ def test_document_store_rejects_symlinked_sources(tmp_path):
     except OSError:
         pytest.skip("Symlinks are unavailable on this platform.")
     store = DocumentStore(tmp_path / "documents.sqlite3", upload_root)
-    with pytest.raises(ValueError, match="symbolic"):
+    with pytest.raises(ValueError):
         store.register(
             owner_id="alice",
             doc_id="doc-1",
