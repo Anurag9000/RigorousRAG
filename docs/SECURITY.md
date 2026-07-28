@@ -4,7 +4,7 @@
 
 ### Single-user mode
 
-When neither `API_KEY_OWNERS_JSON` nor `ALLOWED_API_KEYS` is set, every request is assigned the server-controlled `SINGLE_USER_OWNER_ID`. This mode is suitable only for a trusted local workstation or an otherwise isolated service.
+When neither `API_KEY_OWNERS_JSON` nor `ALLOWED_API_KEYS` is set, every request is assigned the server-controlled `SINGLE_USER_OWNER_ID`. This mode is suitable only for a trusted local workstation or otherwise isolated service.
 
 ### Authenticated multi-user mode
 
@@ -18,15 +18,39 @@ The server derives tenant identity from this mapping. `X-Owner-ID` is intentiona
 
 `ALLOWED_API_KEYS` remains a compatibility option. Each key receives a distinct server-derived owner ID based on a one-way digest; explicit mappings are preferred.
 
-## Upload security
+## Upload, retention, and document registry
 
 - Maximum bytes are controlled by `MAX_UPLOAD_BYTES`.
 - Only `.pdf`, `.docx`, `.md`, and `.txt` are accepted.
 - PDF and DOCX content signatures are verified.
 - Uploaded names are display metadata only; storage names are random and owner-scoped.
 - Text files containing NUL bytes are rejected as binary.
-- Originals are deleted after indexing unless `RETAIN_UPLOADS=true`.
-- Parsing is not malware analysis. Untrusted deployments should add an external scanning/sandbox layer.
+- `RETAIN_SOURCE_FILES=true` retains sources for figure/visual tools; `false` deletes them after indexing.
+- Retained filesystem paths are stored only in the owner-scoped SQLite document registry (`DOCUMENT_DB_PATH`). They are not written to Chroma metadata, citations, manifests, or API responses.
+- Re-ingesting the same owner/content identity registers the new source before deleting the previous retained file.
+- `DELETE /docs/{doc_id}` removes vectors, registry state, and the retained file.
+- The registry rejects paths outside `UPLOAD_DIR` and revalidates existence/ownership at lookup time.
+- Parsing and extension checks are not malware analysis. Untrusted deployments should add an external scanning and sandbox layer.
+
+Retained files are plaintext unless the deployment volume provides encryption at rest. Highly sensitive deployments should set `RETAIN_SOURCE_FILES=false` or use encrypted storage with an explicit retention policy.
+
+## Durable ingestion boundary
+
+Uploads are written before a durable SQLite job record is created. Jobs enter `queued`, and workers atomically claim them before changing to `processing`. Only one thread/process can claim a queued job. On restart, queued/interrupted jobs are reconciled against their owner-scoped source path and retry count. Missing, out-of-root, or exhausted jobs fail closed.
+
+This is crash recovery for a single shared filesystem/database. It is not a distributed exactly-once queue. Multi-host deployments require a dedicated queue, shared transactional database, worker leases, and idempotency controls.
+
+## OCR boundary
+
+OCR is disabled by default. When enabled:
+
+- only low-native-text pages are OCR candidates;
+- `OCR_MAX_PAGES`, `OCR_DPI`, and `OCR_TIMEOUT_SECONDS` bound cost;
+- OCR text enters the same masking and indexing pipeline as native text;
+- OCR output is untrusted extracted data;
+- scan quality, page language, orientation, and layout can cause omissions or substitutions.
+
+Tesseract is an external executable and should be patched and constrained like any other parser. OCR is not a security sanitizer.
 
 ## Remote fetch security
 
@@ -54,17 +78,17 @@ The browser application:
 - stores API keys and conversation history in `sessionStorage`, not persistent local storage;
 - never sends an owner header.
 
-Deploy behind HTTPS. Add platform-specific CSP, HSTS, framing, and referrer headers at the reverse proxy or ingress layer.
+Deploy behind HTTPS. Add HSTS and environment-specific ingress controls at the reverse proxy.
 
 ## Model and prompt-injection boundary
 
-Documents, webpages, snippets, figures, and tool outputs are evidence data, not instructions. The system prompt states this explicitly. More importantly, tenant scope and authoritative citation objects are enforced by server code rather than model text.
+Documents, webpages, snippets, figures, OCR text, and tool outputs are evidence data, not instructions. The system prompt states this explicitly. Tenant scope and authoritative citation objects are enforced by server code rather than model text.
 
 A model can still produce incorrect prose. The server guarantees only that returned citation objects came from actual tool results and that labels map structurally. Users must inspect evidence for semantic support.
 
 ## Privacy limits
 
-Masking uses regular expressions and a Luhn check for several common identifiers. It can miss identifiers and can occasionally mask benign numeric text. It is not a de-identification certification.
+Masking uses regular expressions and a Luhn check for several common identifiers. It can miss identifiers and can occasionally mask benign text. It is not a de-identification certification.
 
 For regulated or highly sensitive data, use a dedicated data-loss-prevention pipeline, encryption at rest, retention controls, audit access, and jurisdiction-appropriate review.
 
