@@ -55,6 +55,15 @@ def verify_citations(answer: str, citations: List[Citation]) -> List[Dict[str, A
         evidence = citation.quote or citation.snippet or ""
         evidence_tokens = _tokenize_for_overlap(evidence)
         if len(evidence_tokens) < 8:
+            issues.append({
+                "type": "weak_evidence_text",
+                "label": label,
+                "evidence_token_count": len(evidence_tokens),
+                "error": (
+                    f"The evidence text for {label} contains too few meaningful tokens "
+                    "for even a lexical-alignment diagnostic. Inspect the source manually."
+                ),
+            })
             continue
         positions = [match.start() for match in re.finditer(re.escape(label), answer)]
         for position in positions:
@@ -103,6 +112,15 @@ def audit_hallucination(agent_answer: AgentAnswer) -> str:
     if serious:
         details = "; ".join(issue["error"] for issue in serious)
         return f"⚠️ Citation-structure warning: {details}"
+    weak = [
+        issue for issue in issues if issue["type"] == "weak_evidence_text"
+    ]
+    if weak:
+        labels = ", ".join(sorted({issue["label"] for issue in weak}))
+        return (
+            "⚠️ Citation diagnostic: evidence text is too short for lexical checking "
+            f"for {labels}; manual source inspection is required."
+        )
     diagnostics = [
         issue for issue in issues if issue["type"] == "low_lexical_alignment"
     ]
