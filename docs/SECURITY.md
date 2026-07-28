@@ -18,28 +18,57 @@ The server derives tenant identity from this mapping. `X-Owner-ID` is intentiona
 
 `ALLOWED_API_KEYS` remains a compatibility option. Each key receives a distinct server-derived owner ID based on a one-way digest; explicit mappings are preferred.
 
+## HTTP request and execution admission
+
+- `MAX_REQUEST_BODY_BYTES` is enforced by pure ASGI middleware before FastAPI parses JSON or multipart data, including chunked bodies without a usable `Content-Length`.
+- Conflicting or malformed length declarations fall back to streamed counting; oversized requests receive a bounded no-store `413` response and the connection is closed.
+- If an application has already started a response before a streamed limit is crossed, the middleware explicitly terminates that response instead of leaving the connection hanging.
+- Per-principal request throttling is controlled by `REQUESTS_PER_MINUTE`.
+- `/query` uses a dedicated process-wide `BoundedExecutor`. `QUERY_WORKERS` controls running threads, `QUERY_MAX_PENDING` controls running plus queued work, and excess requests fail closed with `503` rather than entering an unbounded executor queue.
+- `QUERY_TIMEOUT_SECONDS` is a whole-request HTTP deadline. A timed-out running request continues to hold admission until its underlying Python thread actually exits; it cannot create unlimited replacement threads.
+- Python cannot safely force-terminate a running third-party thread. Provider/network timeouts and bounded admission therefore remain required together.
+
+Direct scientific HTTP routes are rate-limited and use bounded internal tool/provider operations, but they do not yet share the dedicated whole-request query executor. A common bounded route-execution wrapper remains planned.
+
 ## Upload, parsing, retention, and document identity
 
 - Maximum source bytes are controlled by `MAX_UPLOAD_BYTES`.
 - Only `.pdf`, `.docx`, `.md`, and `.txt` are accepted.
 - Uploaded names are display metadata only; storage names are random and owner-scoped.
 - Uploads are streamed, flushed, and `fsync`ed before the durable job row is created.
+- If durable queue creation fails, the newly written upload is removed immediately and the API returns a generic unavailable response.
 - Symlinked source files are rejected.
 - PDF and DOCX signatures are verified; text files containing NUL bytes are rejected as binary.
 - DOCX packages are checked for required members, duplicate names, unsafe paths, symlinks, encryption, member count, total expansion, and compression ratio.
 - PDF page count, total extracted characters, OCR attempts, OCR render pixels, and vector chunk count are bounded.
-- The source is checked for size, timestamp, and inode changes during parsing.
-- Stable document identity is derived from owner ID plus source-file SHA-256. The source hash is not exported; public metadata contains only a hash of redacted text. This prevents distinct documents that redact to identical text from replacing one another.
+- The source is checked for size, timestamp, and inode changes during parsing, then its SHA-256-derived identity is recomputed immediately before summarization/vector writes.
+- Stable document identity is derived from owner ID plus source-file SHA-256. The source hash is not exported; public metadata contains only a hash of redacted text. Distinct documents that redact to identical text therefore do not replace one another.
 - `RETAIN_SOURCE_FILES=true` retains sources for figure/visual tools; `false` deletes them after indexing.
 - Retained filesystem paths are stored only in the owner-scoped SQLite document registry (`DOCUMENT_DB_PATH`). They are not written to Chroma metadata, citations, manifests, or API responses.
 - Registry reads dynamically validate that a retained path still names a regular non-symlink file inside `UPLOAD_DIR`; missing or invalid files downgrade to text-only capability.
+- Ordinary document listing performs only cheap retained-file/PDF eligibility checks. Full visual verification runs on demand.
+- Before a retained PDF is returned to a visual tool, the registry re-hashes its current bytes and verifies that owner plus SHA-256 still derives the registered `doc_id`. Host-side mutation therefore makes the source visually unavailable while keeping it retained, protected, and deletable.
+- `VISUAL_MAX_PDF_PAGES`, `VISUAL_MAX_RENDER_PIXELS`, and `VISUAL_CLIP_HEIGHT_POINTS` fail closed on excessive page count or caption-region render geometry.
 - Re-ingestion registers the new source before deleting the previous retained file.
 - `DELETE /docs/{doc_id}` removes vectors, registry state, and the retained file.
 - Old unreferenced regular uploads are removed only after a grace period. Active-job, retained-document, recent, and symlink paths are protected. Reconciliation fails closed if either reference store cannot be read.
 
+The visual pixel budget bounds memory and approximate encoded size, but the renderer does not yet enforce a separate exact post-PNG/base64 byte ceiling. Figure localization also still requires selectable caption text.
+
 These checks are not malware analysis or parser sandboxing. Untrusted deployments should add external scanning and isolation.
 
 Retained files are plaintext unless the deployment volume provides encryption at rest. Highly sensitive deployments should set `RETAIN_SOURCE_FILES=false` or use encrypted storage with an explicit retention policy.
+
+## Privacy boundary
+
+Full text, OCR output, sections, titles, filenames, summaries, metadata, and owner-facing job strings pass through masking before indexing or serialization. The metadata sanitizer additionally removes:
+
+- common email, phone, address, payment-card, identity, and IP patterns;
+- POSIX, Windows, home-directory, and `file://` paths;
+- credentials embedded in URIs;
+- common API-key, token, password, and secret query parameters.
+
+Masking uses regular expressions and a Luhn check for several common identifiers. It can miss identifiers and occasionally mask benign text. It is not certified de-identification. For regulated or highly sensitive data, use a dedicated data-loss-prevention pipeline, encryption at rest, retention controls, audit access, and jurisdiction-appropriate review.
 
 ## Durable ingestion boundary
 
@@ -52,11 +81,13 @@ queued -> processing -> finalizing -> success
 
 - SQLite stores owner, source path, attempts, state, and `next_attempt_at`.
 - A worker atomically claims only a due `queued` row and increments its attempt count.
-- Delayed retries wait in a deduplicated daemon scheduler rather than occupying ingestion workers.
 - Retry deadlines use bounded exponential backoff and survive restart.
+- One lazily started heap/condition scheduler thread manages all delayed jobs; there is no `threading.Timer` per job.
+- `INGEST_MAX_PENDING` bounds running plus executor-queued ingestion futures. When saturated, durable jobs remain `queued` and receive a short scheduler admission retry instead of entering an unbounded in-memory queue.
 - Startup reconciliation reschedules interrupted jobs, fails invalid/exhausted jobs, and promotes already-registered `finalizing` jobs without re-indexing.
 - A duplicate worker that loses the atomic claim does not own source cleanup.
-- Internal provider, database, and filesystem exception messages are not copied verbatim into public job status.
+- Failed jobs clear document IDs that never committed.
+- Internal provider, database, credential, and filesystem exception details are not copied verbatim into public job status.
 
 This is crash recovery for one shared host/filesystem/database. It is not a distributed exactly-once queue. Multi-host deployments require a dedicated queue, shared transactional database, worker leases, and idempotency controls.
 
@@ -109,7 +140,9 @@ Documents, webpages, snippets, figures, OCR text, and tool outputs are evidence 
 
 - Tool arguments are parsed as bounded JSON objects and validated against the declared schemas at runtime.
 - Tool results, citations, evidence count, model output tokens, and serialized final answers are bounded.
-- One process-wide tool executor limits live tool threads. A request timeout returns without waiting for unfinished work; Python cannot safely kill a running third-party thread, so provider/network deadlines remain essential.
+- `MAX_CONCURRENT_TOOL_WORKERS` bounds running tool threads and `MAX_PENDING_TOOL_TASKS` bounds running plus queued tool futures process-wide.
+- When tool capacity is saturated, calls fail closed as unavailable rather than accumulating in an unbounded executor queue.
+- A tool deadline returns without waiting for unfinished work. A timed-out running tool retains its admission slot until it actually finishes.
 - Raw tool exception text is not placed in model context or user warnings.
 - The model returns answer prose only. The server registers, deduplicates, relabels, and selects actual evidence objects.
 - Unsupported citation labels are diagnosed structurally.
@@ -127,25 +160,19 @@ The browser application:
 - stores API keys and conversation history in `sessionStorage`, not persistent local storage;
 - never sends an owner header;
 - represents `queued`, `processing`, `finalizing`, `success`, and `failed` states;
-- enables figure actions only when the server reports an actually available retained source.
+- distinguishes retained PDF eligibility from verification performed when a visual action is invoked.
 
 Deploy behind HTTPS. Add HSTS and environment-specific ingress controls at the reverse proxy.
 
 ## API and operational boundaries
 
 - Request IDs are reflected only when they match a strict bounded identifier pattern; otherwise the server generates a new ID.
-- Model names, job IDs, and document IDs are length-bounded at the request boundary.
+- Model names, job IDs, document IDs, response fields, warnings, citations, and metadata strings are bounded.
 - The container readiness probe verifies HTTP liveness, both SQLite registries, and create/fsync/delete access to upload and vector volumes without initializing the embedding model.
 - Telemetry stores query SHA-256/length and owner SHA-256, not raw query text or plaintext owner ID.
 - Telemetry events are recursively bounded, JSONL files rotate at a configured size, and logging failure never fails a user request.
 
 The readiness probe does not prove that the embedding model can download or that every Chroma query will succeed. Operational monitoring should exercise representative retrieval separately.
-
-## Privacy limits
-
-Masking uses regular expressions and a Luhn check for several common identifiers. It can miss identifiers and occasionally mask benign text. It is not certified de-identification.
-
-For regulated or highly sensitive data, use a dedicated data-loss-prevention pipeline, encryption at rest, retention controls, audit access, and jurisdiction-appropriate review.
 
 ## Reporting vulnerabilities
 
