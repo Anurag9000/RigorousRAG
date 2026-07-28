@@ -78,8 +78,9 @@ def index_document(
     client: Optional[Any] = None,
     summary_model: Optional[str] = None,
     job_id: Optional[str] = None,
-    storage_path: Optional[str] = None,
 ) -> IndexedDocument:
+    """Index evidence metadata only; filesystem paths belong in DocumentStore."""
+
     rag = rag or get_rag_layer()
     summary = summarize_document(document, client=client, model=summary_model)
     document.metadata = sanitize_metadata_dict({
@@ -100,9 +101,6 @@ def index_document(
     }
     if job_id:
         metadata["job_id"] = job_id
-    if storage_path:
-        # This remains server-only metadata and is not returned by document listing.
-        metadata["storage_path"] = storage_path
     chunk_count = rag.add_document(
         doc_id=document.id,
         text=document.text,
@@ -132,5 +130,4 @@ def ingest_and_index(
         client=client,
         summary_model=summary_model,
         job_id=job_id,
-        storage_path=file_path,
     )
