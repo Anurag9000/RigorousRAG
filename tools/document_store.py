@@ -1,8 +1,8 @@
 """Private owner-scoped registry for retained source documents.
 
 Source filesystem paths never belong in the vector database or API responses. This
-registry is the single authority for resolving an uploaded document to a retained
-source file used by visual tools.
+registry is the single authority for resolving an uploaded document to retained
+source bytes used by visual tools.
 """
 
 from __future__ import annotations
@@ -19,7 +19,12 @@ from typing import Any, Dict, List, Optional, Set
 
 from tools.privacy import mask_metadata_text
 from tools.security import DEFAULT_MAX_UPLOAD_BYTES, normalize_owner_id
-from tools.upload_storage import copy_path_to_owner, remove_owner_file
+from tools.upload_storage import (
+    copy_path_to_owner,
+    read_owner_file,
+    remove_owner_file,
+    validated_owner_file_path,
+)
 
 
 class DocumentStore:
@@ -106,66 +111,37 @@ class DocumentStore:
             return False
 
     def _resolve_source_path(self, source_path: str | Path | None) -> Optional[Path]:
-        """Resolve one existing regular source without following a symbolic link."""
+        """Return one current regular owner path without following owner/final links."""
 
-        if source_path in (None, ""):
-            return None
-        unresolved = Path(source_path)
-        if unresolved.is_symlink():
-            return None
-        candidate = unresolved.resolve()
-        try:
-            candidate.relative_to(self.upload_root)
-        except ValueError:
-            return None
-        if not candidate.exists() or not candidate.is_file():
-            return None
-        return candidate
+        return validated_owner_file_path(self.upload_root, source_path)
 
-    def _source_matches_document(
-        self,
-        candidate: Path,
+    @staticmethod
+    def _source_bytes_match_document(
+        payload: bytes,
         owner_id: str,
         doc_id: str,
     ) -> bool:
-        """Verify retained bytes still derive the immutable owner/content document ID."""
-
-        try:
-            if candidate.stat().st_size > DEFAULT_MAX_UPLOAD_BYTES:
-                return False
-            digest = hashlib.sha256()
-            total = 0
-            with candidate.open("rb") as handle:
-                while True:
-                    chunk = handle.read(1024 * 1024)
-                    if not chunk:
-                        break
-                    total += len(chunk)
-                    if total > DEFAULT_MAX_UPLOAD_BYTES:
-                        return False
-                    digest.update(chunk)
-        except OSError:
-            return False
         owner = normalize_owner_id(owner_id)
+        digest = hashlib.sha256(payload).hexdigest()
         expected = str(
             uuid.uuid5(
                 uuid.NAMESPACE_URL,
-                f"rigorousrag:{owner}:{digest.hexdigest()}",
+                f"rigorousrag:{owner}:{digest}",
             )
         )
         return expected == str(doc_id or "")
 
-    def _visual_pdf_is_safe(self, candidate: Path) -> bool:
-        """Fail closed before rendering PDFs that exceed visual complexity limits."""
+    def _visual_pdf_bytes_are_safe(self, payload: bytes) -> bool:
+        """Fail closed before rendering a bounded immutable PDF byte snapshot."""
 
-        if candidate.suffix.lower() != ".pdf":
+        if not payload or len(payload) > DEFAULT_MAX_UPLOAD_BYTES:
             return False
         try:
             import fitz
         except ImportError:
             return False
         try:
-            document = fitz.open(candidate)
+            document = fitz.open(stream=payload, filetype="pdf")
         except Exception:
             return False
         try:
@@ -204,16 +180,11 @@ class DocumentStore:
     def _validated_source_path(self, source_path: str | Path | None) -> Optional[str]:
         if source_path in (None, ""):
             return None
-        raw_path = Path(source_path)
-        if raw_path.is_symlink():
-            raise ValueError("Retained source files may not be symbolic links.")
-        candidate = raw_path.resolve()
-        try:
-            candidate.relative_to(self.upload_root)
-        except ValueError as exc:
-            raise ValueError("Retained source path must be inside UPLOAD_DIR.") from exc
-        if not candidate.exists() or not candidate.is_file():
-            raise ValueError("Retained source file does not exist.")
+        candidate = validated_owner_file_path(self.upload_root, source_path)
+        if candidate is None:
+            raise ValueError(
+                "Retained source must be a regular owner file inside UPLOAD_DIR."
+            )
         return str(candidate)
 
     def copy_source(
@@ -279,17 +250,11 @@ class DocumentStore:
             )
             return 0
 
-        referenced: Set[Path] = set()
-        for raw_path in retained | active:
-            unresolved = Path(raw_path)
-            if unresolved.is_symlink():
-                continue
-            candidate = unresolved.resolve()
-            try:
-                candidate.relative_to(self.upload_root)
-            except ValueError:
-                continue
-            referenced.add(candidate)
+        referenced: Set[Path] = set(retained)
+        for raw_path in active:
+            candidate = self._resolve_source_path(raw_path)
+            if candidate is not None:
+                referenced.add(candidate)
 
         current_time = time.time() if now is None else float(now)
         cutoff = current_time - self.orphan_grace_seconds
@@ -306,9 +271,8 @@ class DocumentStore:
             try:
                 if raw_path.is_symlink() or not raw_path.is_file():
                     continue
-                candidate = raw_path.resolve()
-                candidate.relative_to(self.upload_root)
-                if candidate in referenced:
+                candidate = self._resolve_source_path(raw_path)
+                if candidate is None or candidate in referenced:
                     continue
                 if raw_path.stat().st_mtime >= cutoff:
                     continue
@@ -400,16 +364,19 @@ class DocumentStore:
         record["source_path"] = str(source) if source is not None else None
         record["source_retained"] = 1 if source is not None else 0
         record["visual_source_verified"] = bool(verify_visual and visual_candidate)
-        record["visual_source_available"] = bool(
-            visual_candidate
-            and (
-                not verify_visual
-                or (
-                    self._source_matches_document(source, owner, doc_id)
-                    and self._visual_pdf_is_safe(source)
-                )
+        if verify_visual and visual_candidate:
+            payload = read_owner_file(
+                self.upload_root,
+                source,
+                max_bytes=DEFAULT_MAX_UPLOAD_BYTES,
             )
-        )
+            record["visual_source_available"] = bool(
+                payload is not None
+                and self._source_bytes_match_document(payload, owner, doc_id)
+                and self._visual_pdf_bytes_are_safe(payload)
+            )
+        else:
+            record["visual_source_available"] = visual_candidate
         return record
 
     def retained_source_path(self, *, owner_id: str, doc_id: str) -> Optional[Path]:
@@ -419,8 +386,29 @@ class DocumentStore:
         raw_path = str((record or {}).get("source_path") or "")
         return Path(raw_path) if raw_path else None
 
+    def source_bytes(self, *, owner_id: str, doc_id: str) -> Optional[bytes]:
+        """Return one identity-verified, preflighted immutable PDF byte snapshot."""
+
+        record = self.get(owner_id=owner_id, doc_id=doc_id, verify_visual=False)
+        raw_path = str((record or {}).get("source_path") or "")
+        if not raw_path or Path(raw_path).suffix.lower() != ".pdf":
+            return None
+        payload = read_owner_file(
+            self.upload_root,
+            raw_path,
+            max_bytes=DEFAULT_MAX_UPLOAD_BYTES,
+        )
+        if payload is None:
+            return None
+        owner = normalize_owner_id(owner_id)
+        if not self._source_bytes_match_document(payload, owner, doc_id):
+            return None
+        if not self._visual_pdf_bytes_are_safe(payload):
+            return None
+        return payload
+
     def source_path(self, *, owner_id: str, doc_id: str) -> Optional[Path]:
-        """Return an owner-scoped retained PDF only after identity and safety checks."""
+        """Return a verified path for compatibility; visual tools should use bytes."""
 
         record = self.get(owner_id=owner_id, doc_id=doc_id, verify_visual=True)
         raw_path = str((record or {}).get("source_path") or "")
