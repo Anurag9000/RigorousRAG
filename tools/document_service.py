@@ -46,6 +46,20 @@ def _bounded_integer(value: Any, label: str, minimum: int, maximum: int) -> int:
     return numeric
 
 
+def _positive_byte_limit(value: Any) -> int:
+    if isinstance(value, bool):
+        raise ValueError("max_bytes must be a positive integer.")
+    try:
+        numeric = int(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("max_bytes must be a positive integer.") from exc
+    if isinstance(value, float) and not value.is_integer():
+        raise ValueError("max_bytes must be a positive integer.")
+    if numeric <= 0:
+        raise ValueError("max_bytes must be positive.")
+    return min(numeric, 1_000_000_000)
+
+
 def _model_name(value: Any) -> str:
     if not isinstance(value, str):
         raise ValueError("summary model must be a string.")
@@ -112,44 +126,63 @@ def _summary_sample(document: IngestedDocument, max_chars: int = 9000) -> str:
     return sample[:limit + 64]
 
 
-def _validated_source_path(value: str) -> Path:
-    if not isinstance(value, str) or not value or len(value) > _MAX_PATH_CHARS or "\x00" in value:
-        raise ValueError("The source path is invalid or too long.")
-    candidate = Path(value)
+def _validated_source_path(value: str | os.PathLike[str]) -> Path:
+    if not isinstance(value, (str, os.PathLike)):
+        raise ValueError("The source path is unavailable or invalid.")
+    rendered = os.fspath(value)
+    if not rendered or len(rendered) > _MAX_PATH_CHARS or "\x00" in rendered:
+        raise ValueError("The source path is unavailable or invalid.")
+    candidate = Path(rendered)
     if not candidate.is_absolute():
         candidate = Path.cwd() / candidate
     absolute = Path(os.path.abspath(candidate))
     for component in (absolute, *absolute.parents):
         if component.is_symlink():
-            raise ValueError("The source path became symlinked before indexing.")
+            raise ValueError("The source is unavailable because its path is symlinked.")
     return absolute
 
 
-def _source_sha256(path: Path) -> str:
+def _bounded_source_sha256(
+    path: str | os.PathLike[str],
+    *,
+    max_bytes: int,
+) -> str:
+    """Hash one bounded regular source through a no-follow descriptor."""
+
+    limit = _positive_byte_limit(max_bytes)
+    source = _validated_source_path(path)
     flags = (
         os.O_RDONLY
         | getattr(os, "O_NOFOLLOW", 0)
         | getattr(os, "O_NONBLOCK", 0)
     )
-    descriptor = os.open(path, flags)
+    try:
+        descriptor = os.open(source, flags)
+    except OSError as exc:
+        raise ValueError("The source is unavailable for identity verification.") from exc
     digest = hashlib.sha256()
     try:
         metadata = os.fstat(descriptor)
         if not stat.S_ISREG(metadata.st_mode):
-            raise ValueError("The source is no longer a regular file.")
-        if metadata.st_size <= 0 or metadata.st_size > DEFAULT_MAX_UPLOAD_BYTES:
-            raise ValueError("The source size changed outside the ingestion limit.")
+            raise ValueError("The source is unavailable because it is not a regular file.")
+        if metadata.st_size <= 0:
+            raise ValueError("The source is unavailable because it is empty.")
+        if metadata.st_size > limit:
+            raise ValueError("The source exceeds the configured byte limit.")
         total = 0
         while True:
-            chunk = os.read(descriptor, min(1024 * 1024, DEFAULT_MAX_UPLOAD_BYTES + 1 - total))
+            remaining = limit + 1 - total
+            if remaining <= 0:
+                raise ValueError("The source exceeds the configured byte limit.")
+            chunk = os.read(descriptor, min(1024 * 1024, remaining))
             if not chunk:
                 break
             total += len(chunk)
-            if total > DEFAULT_MAX_UPLOAD_BYTES:
-                raise ValueError("The source grew outside the ingestion limit.")
+            if total > limit:
+                raise ValueError("The source exceeds the configured byte limit.")
             digest.update(chunk)
         if total <= 0:
-            raise ValueError("The source became empty before indexing.")
+            raise ValueError("The source is unavailable because it became empty.")
     finally:
         os.close(descriptor)
     return digest.hexdigest()
@@ -159,10 +192,10 @@ def _verify_source_identity(document: IngestedDocument, owner_id: str) -> None:
     if document.metadata.get("document_identity") != "owner_and_source_sha256":
         return
     owner = normalize_owner_id(owner_id)
-    source = _validated_source_path(document.file_path)
-    if not source.exists() or not source.is_file():
-        raise ValueError("The source disappeared before indexing.")
-    current_hash = _source_sha256(source)
+    current_hash = _bounded_source_sha256(
+        document.file_path,
+        max_bytes=DEFAULT_MAX_UPLOAD_BYTES,
+    )
     expected_id = str(
         uuid.uuid5(uuid.NAMESPACE_URL, f"rigorousrag:{owner}:{current_hash}")
     )
