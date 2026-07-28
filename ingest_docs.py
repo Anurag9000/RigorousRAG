@@ -14,8 +14,9 @@ try:
 except ImportError:  # pragma: no cover
     OpenAI = None  # type: ignore[assignment]
 
-from tools.document_service import ingest_and_index
+from tools.document_service import index_document
 from tools.document_store import get_document_store
+from tools.ingestion import ingest_file
 from tools.rag import get_rag_layer
 from tools.security import normalize_owner_id
 
@@ -54,6 +55,20 @@ def _llm_client() -> Optional[Any]:
         timeout=60,
         max_retries=2,
     )
+
+
+def _document_exists(rag: Any, owner_id: str, doc_id: str) -> bool:
+    results = rag.collection.get(
+        where={
+            "$and": [
+                {"owner_id": {"$eq": owner_id}},
+                {"doc_id": {"$eq": doc_id}},
+            ]
+        },
+        include=["metadatas"],
+        limit=1,
+    )
+    return bool(results.get("metadatas") or [])
 
 
 def parse_args() -> argparse.Namespace:
@@ -103,19 +118,26 @@ def main() -> int:
     for path in files:
         print(f"Ingesting {path} ...", end=" ", flush=True)
         retained_copy: Optional[Path] = None
+        indexed = None
+        vector_preexisted = False
+        document = None
         try:
-            indexed = ingest_and_index(
-                str(path),
-                owner_id=owner_id,
-                rag=rag,
-                client=client,
-            )
-            document = indexed.document
+            result = ingest_file(str(path), owner_id=owner_id)
+            if not result.success or result.document is None:
+                raise ValueError(result.error or "Document ingestion failed.")
+            document = result.document
+            vector_preexisted = _document_exists(rag, owner_id, document.id)
             if args.retain_sources:
                 retained_copy = document_store.copy_source(
                     owner_id=owner_id,
                     source_path=path,
                 )
+            indexed = index_document(
+                document,
+                owner_id=owner_id,
+                rag=rag,
+                client=client,
+            )
             previous_path = document_store.register(
                 owner_id=owner_id,
                 doc_id=document.id,
@@ -123,8 +145,9 @@ def main() -> int:
                 mime_type=document.mime_type,
                 source_path=retained_copy,
             )
-            if previous_path:
-                document_store.remove_source(previous_path)
+            replacement_cleanup_pending = bool(
+                previous_path and not document_store.remove_source(previous_path)
+            )
             payload = document.model_dump(
                 mode="json",
                 exclude_none=True,
@@ -132,6 +155,8 @@ def main() -> int:
             )
             payload["chunk_count"] = indexed.chunk_count
             payload["source_retained"] = bool(retained_copy)
+            if replacement_cleanup_pending:
+                payload["replacement_cleanup_pending"] = True
             manifest.append(payload)
             print(
                 f"OK ({indexed.chunk_count} chunks, "
@@ -140,6 +165,11 @@ def main() -> int:
         except Exception as exc:
             if retained_copy is not None:
                 document_store.remove_source(retained_copy)
+            if indexed is not None and document is not None and not vector_preexisted:
+                try:
+                    rag.delete_document(owner_id=owner_id, doc_id=document.id)
+                except Exception:
+                    pass
             failures += 1
             print(f"FAILED ({exc})")
             if args.fail_fast:
