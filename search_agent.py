@@ -8,7 +8,7 @@ import re
 import time
 from concurrent.futures import Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 try:
     from openai import OpenAI
@@ -61,13 +61,30 @@ TOOLS_SCHEMA = [
             "description": "Fetch one specific public HTTP(S) page after SSRF checks.",
             "parameters": {
                 "type": "object",
-                "properties": {"url": {"type": "string"}},
+                "properties": {"url": {"type": "string", "maxLength": 4096}},
                 "required": ["url"],
                 "additionalProperties": False,
             },
         },
     },
 ]
+_TOOL_PARAMETER_SCHEMAS: Dict[str, Mapping[str, Any]] = {
+    str(item["function"]["name"]): item["function"].get("parameters", {})
+    for item in TOOLS_SCHEMA
+}
+_MAX_TOOL_ARGUMENT_CHARS = max(
+    1000,
+    min(int(os.getenv("MAX_TOOL_ARGUMENT_CHARS", "50000")), 500_000),
+)
+_MAX_TOOL_RESULT_CHARS = max(
+    1000,
+    min(int(os.getenv("MAX_TOOL_RESULT_CHARS", "30000")), 200_000),
+)
+_MAX_EVIDENCE_SOURCES = max(
+    1,
+    min(int(os.getenv("MAX_EVIDENCE_SOURCES", "100")), 500),
+)
+_MAX_FINAL_ANSWER_CHARS = 100_000
 
 SYSTEM_PROMPT = """You are RigorousRAG, an evidence-oriented academic research agent.
 
@@ -102,6 +119,100 @@ class ToolExecution:
     duration: float = 0.0
 
 
+def _safe_failure_text(error_type: str) -> str:
+    if error_type in {"ValueError", "TypeError", "JSONDecodeError"}:
+        return "Tool arguments were invalid. Treat this tool result as unavailable."
+    if error_type == "TimeoutError":
+        return "Tool execution timed out. Treat this tool result as unavailable."
+    return "Tool execution failed. Treat this tool result as unavailable."
+
+
+def _validate_schema_value(value: Any, schema: Mapping[str, Any], path: str, depth: int = 0) -> None:
+    if depth > 8:
+        raise ValueError(f"{path} exceeds the maximum schema nesting depth.")
+    alternatives = schema.get("anyOf") or schema.get("oneOf")
+    if alternatives:
+        for alternative in alternatives:
+            try:
+                _validate_schema_value(value, alternative, path, depth + 1)
+                return
+            except ValueError:
+                continue
+        raise ValueError(f"{path} does not match any allowed schema.")
+
+    expected = schema.get("type")
+    if isinstance(expected, list):
+        for candidate in expected:
+            try:
+                _validate_schema_value(value, {**schema, "type": candidate}, path, depth + 1)
+                return
+            except ValueError:
+                continue
+        raise ValueError(f"{path} has an invalid type.")
+    if expected == "string":
+        if not isinstance(value, str):
+            raise ValueError(f"{path} must be a string.")
+        minimum = int(schema.get("minLength", 0))
+        maximum = min(int(schema.get("maxLength", _MAX_TOOL_ARGUMENT_CHARS)), _MAX_TOOL_ARGUMENT_CHARS)
+        if not minimum <= len(value) <= maximum:
+            raise ValueError(f"{path} must contain between {minimum} and {maximum} characters.")
+        if "enum" in schema and value not in schema["enum"]:
+            raise ValueError(f"{path} is not an allowed value.")
+        return
+    if expected == "boolean":
+        if not isinstance(value, bool):
+            raise ValueError(f"{path} must be a boolean.")
+        return
+    if expected == "integer":
+        if not isinstance(value, int) or isinstance(value, bool):
+            raise ValueError(f"{path} must be an integer.")
+        if "minimum" in schema and value < schema["minimum"]:
+            raise ValueError(f"{path} is below the allowed minimum.")
+        if "maximum" in schema and value > schema["maximum"]:
+            raise ValueError(f"{path} exceeds the allowed maximum.")
+        return
+    if expected == "number":
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            raise ValueError(f"{path} must be numeric.")
+        return
+    if expected == "array":
+        if not isinstance(value, list):
+            raise ValueError(f"{path} must be an array.")
+        maximum = min(int(schema.get("maxItems", 100)), 100)
+        minimum = int(schema.get("minItems", 0))
+        if not minimum <= len(value) <= maximum:
+            raise ValueError(f"{path} must contain between {minimum} and {maximum} items.")
+        item_schema = schema.get("items", {})
+        for index, item in enumerate(value):
+            _validate_schema_value(item, item_schema, f"{path}[{index}]", depth + 1)
+        return
+    if expected == "object":
+        if not isinstance(value, dict):
+            raise ValueError(f"{path} must be an object.")
+        properties = schema.get("properties", {})
+        required = set(schema.get("required", []))
+        missing = sorted(required - set(value))
+        if missing:
+            raise ValueError(f"{path} is missing required fields: {', '.join(missing)}.")
+        if schema.get("additionalProperties") is False:
+            extras = sorted(set(value) - set(properties))
+            if extras:
+                raise ValueError(f"{path} contains unsupported fields: {', '.join(extras)}.")
+        if len(value) > 100:
+            raise ValueError(f"{path} contains too many fields.")
+        for key, item in value.items():
+            child_schema = properties.get(key)
+            if child_schema is not None:
+                _validate_schema_value(item, child_schema, f"{path}.{key}", depth + 1)
+        return
+    if expected == "null":
+        if value is not None:
+            raise ValueError(f"{path} must be null.")
+        return
+    if "enum" in schema and value not in schema["enum"]:
+        raise ValueError(f"{path} is not an allowed value.")
+
+
 class SearchAgent:
     """One immutable request context and one reasoning loop."""
 
@@ -116,6 +227,7 @@ class SearchAgent:
         max_turns: int = 8,
         max_tool_calls: int = 24,
         tool_timeout: float = 45.0,
+        max_response_tokens: Optional[int] = None,
     ) -> None:
         self.model = model
         self.owner_id = owner_id
@@ -123,7 +235,9 @@ class SearchAgent:
         self.base_url = base_url or os.getenv("OPENAI_BASE_URL")
         self.max_turns = max(1, min(max_turns, 20))
         self.max_tool_calls = max(1, min(max_tool_calls, 64))
-        self.tool_timeout = max(1.0, tool_timeout)
+        self.tool_timeout = max(1.0, min(float(tool_timeout), 300.0))
+        configured_tokens = max_response_tokens or int(os.getenv("MAX_RESPONSE_TOKENS", "2000"))
+        self.max_response_tokens = max(128, min(int(configured_tokens), 16_000))
         self.client = None
         if OpenAI is not None and (self.api_key or self.base_url):
             self.client = OpenAI(
@@ -168,6 +282,7 @@ class SearchAgent:
                     tools=TOOLS_SCHEMA,
                     tool_choice="auto",
                     temperature=0.1,
+                    max_tokens=self.max_response_tokens,
                 )
                 message = response.choices[0].message
                 tool_calls = list(message.tool_calls or [])
@@ -202,10 +317,16 @@ class SearchAgent:
                         evidence,
                         seen_evidence,
                     )
+                    result_text = execution.content
+                    if len(result_text) > _MAX_TOOL_RESULT_CHARS:
+                        result_text = (
+                            result_text[:_MAX_TOOL_RESULT_CHARS]
+                            + "\n[Tool result truncated by server budget.]"
+                        )
                     payload: Dict[str, Any] = {
                         "ok": execution.success,
                         "tool": execution.tool_name,
-                        "result": execution.content,
+                        "result": result_text,
                         "citations": [
                             citation.model_dump(exclude_none=True)
                             for citation in relabelled
@@ -224,6 +345,10 @@ class SearchAgent:
                         execution.success,
                         error_type=execution.error_type,
                     )
+                if len(evidence) >= _MAX_EVIDENCE_SOURCES and (
+                    not warnings or warnings[-1] != "The evidence-source budget was reached."
+                ):
+                    warnings.append("The evidence-source budget was reached.")
 
             if not final_text:
                 final_text = (
@@ -231,6 +356,9 @@ class SearchAgent:
                     "within the configured reasoning budget."
                 )
                 warnings.append("Reasoning budget exhausted before a final synthesis.")
+            if len(final_text) > _MAX_FINAL_ANSWER_CHARS:
+                final_text = final_text[:_MAX_FINAL_ANSWER_CHARS]
+                warnings.append("The final answer was truncated by the response-size limit.")
             selected = self._citations_used_by_answer(final_text, evidence)
             answer = AgentAnswer(
                 answer=final_text,
@@ -266,12 +394,13 @@ class SearchAgent:
                     "The research request failed before a reliable answer could be "
                     "produced. Retry after checking the configured model provider."
                 ),
-                warnings=[f"{type(exc).__name__}: {exc}"],
+                warnings=[f"Request failed ({type(exc).__name__})."],
                 metadata={"model": self.model},
             )
 
     def _fallback_answer(self, query: str) -> AgentAnswer:
         evidence: List[Citation] = []
+        failures: List[str] = []
         try:
             evidence.extend(search_uploaded_docs(
                 query,
@@ -280,12 +409,12 @@ class SearchAgent:
                 use_multi_query=False,
                 n_results=3,
             ))
-        except Exception:
-            pass
+        except Exception as exc:
+            failures.append(f"Uploaded-document retrieval unavailable ({type(exc).__name__}).")
         try:
             evidence.extend(search_internal(query, limit=3))
-        except Exception:
-            pass
+        except Exception as exc:
+            failures.append(f"Academic-index retrieval unavailable ({type(exc).__name__}).")
         relabelled: List[Citation] = []
         seen: Dict[Tuple[str, str, str], str] = {}
         self._register_citations(evidence, relabelled, seen)
@@ -295,7 +424,7 @@ class SearchAgent:
                     "No language-model provider is configured, and no matching "
                     "local evidence was found."
                 ),
-                warnings=["Extraction-only fallback produced no evidence."],
+                warnings=["Extraction-only fallback produced no evidence.", *failures],
             )
         lines = [
             "No language-model provider is configured. The following retrieved "
@@ -307,65 +436,77 @@ class SearchAgent:
         return AgentAnswer(
             answer="\n".join(lines),
             citations=relabelled,
-            warnings=["This is retrieval output, not an LLM-generated synthesis."],
+            warnings=["This is retrieval output, not an LLM-generated synthesis.", *failures],
         )
 
     def _execute_tools(self, tool_calls: Sequence[Any]) -> List[ToolExecution]:
-        if len(tool_calls) == 1:
-            return [self._execute_tool(tool_calls[0])]
-        executions: Dict[str, ToolExecution] = {}
-        with ThreadPoolExecutor(max_workers=min(len(tool_calls), 8)) as pool:
-            future_map: Dict[Future[ToolExecution], Any] = {
-                pool.submit(self._execute_tool, call): call for call in tool_calls
-            }
+        if not tool_calls:
+            return []
+        pool = ThreadPoolExecutor(max_workers=min(len(tool_calls), 8))
+        future_map: Dict[Future[ToolExecution], Tuple[int, Any]] = {}
+        try:
+            for index, call in enumerate(tool_calls):
+                future_map[pool.submit(self._execute_tool, call)] = (index, call)
             done, pending = wait(list(future_map), timeout=self.tool_timeout)
+            executions: List[Optional[ToolExecution]] = [None] * len(tool_calls)
             for future in done:
-                call = future_map[future]
+                index, call = future_map[future]
                 try:
-                    executions[call.id] = future.result()
+                    executions[index] = future.result()
                 except Exception as exc:
-                    executions[call.id] = ToolExecution(
+                    error_type = type(exc).__name__
+                    executions[index] = ToolExecution(
                         tool_call_id=call.id,
                         tool_name=call.function.name,
-                        content="Tool execution failed.",
+                        content=_safe_failure_text(error_type),
                         success=False,
-                        error_type=type(exc).__name__,
+                        error_type=error_type,
                     )
             for future in pending:
-                call = future_map[future]
+                index, call = future_map[future]
                 future.cancel()
-                executions[call.id] = ToolExecution(
+                executions[index] = ToolExecution(
                     tool_call_id=call.id,
                     tool_name=call.function.name,
-                    content=f"Tool exceeded the {self.tool_timeout:.0f}-second timeout.",
+                    content=_safe_failure_text("TimeoutError"),
                     success=False,
                     error_type="TimeoutError",
                     duration=self.tool_timeout,
                 )
-        return [executions[call.id] for call in tool_calls]
+            return [execution for execution in executions if execution is not None]
+        finally:
+            pool.shutdown(wait=False, cancel_futures=True)
 
     def _execute_tool(self, tool_call: Any) -> ToolExecution:
         started = time.monotonic()
-        name = tool_call.function.name
+        name = str(tool_call.function.name or "")
         try:
-            arguments = json.loads(tool_call.function.arguments or "{}")
+            raw_arguments = tool_call.function.arguments or "{}"
+            if len(raw_arguments) > _MAX_TOOL_ARGUMENT_CHARS:
+                raise ValueError("Tool arguments exceed the server limit.")
+            arguments = json.loads(raw_arguments)
             if not isinstance(arguments, dict):
                 raise ValueError("Tool arguments must be a JSON object.")
+            schema = _TOOL_PARAMETER_SCHEMAS.get(name)
+            if schema is None:
+                raise ValueError(f"Unknown tool '{name}'.")
+            _validate_schema_value(arguments, schema, f"tool.{name}")
             content, citations = self._dispatch(name, arguments)
             return ToolExecution(
                 tool_call_id=tool_call.id,
                 tool_name=name,
-                content=content,
-                citations=citations,
+                content=str(content),
+                citations=list(citations)[:_MAX_EVIDENCE_SOURCES],
                 duration=time.monotonic() - started,
             )
         except Exception as exc:
+            error_type = type(exc).__name__
             return ToolExecution(
                 tool_call_id=tool_call.id,
-                tool_name=name,
-                content=str(exc),
+                tool_name=name or "unknown",
+                content=_safe_failure_text(error_type),
                 success=False,
-                error_type=type(exc).__name__,
+                error_type=error_type,
                 duration=time.monotonic() - started,
             )
 
@@ -394,7 +535,7 @@ class SearchAgent:
         if tool_name == "fetch_page":
             page = fetch_single_page(**arguments)
             if page.error:
-                raise RuntimeError(page.error)
+                raise RuntimeError("The requested page could not be retrieved safely.")
             return page.text, [Citation(
                 label="[1]",
                 title=page.title,
@@ -438,15 +579,15 @@ class SearchAgent:
         try:
             parsed = json.loads(raw)
         except Exception:
-            return raw, []
+            return str(raw)[:_MAX_TOOL_RESULT_CHARS], []
         citation_payloads = parsed.pop("citations", []) if isinstance(parsed, dict) else []
         citations: List[Citation] = []
-        for payload in citation_payloads or []:
+        for payload in (citation_payloads or [])[:_MAX_EVIDENCE_SOURCES]:
             try:
                 citations.append(Citation(**payload))
             except Exception:
                 continue
-        return json.dumps(parsed, ensure_ascii=False), citations
+        return json.dumps(parsed, ensure_ascii=False)[:_MAX_TOOL_RESULT_CHARS], citations
 
     @staticmethod
     def _parse_final_text(content: str) -> str:
@@ -470,6 +611,8 @@ class SearchAgent:
     ) -> List[Citation]:
         selected: List[Citation] = []
         for citation in incoming:
+            if len(registry) >= _MAX_EVIDENCE_SOURCES:
+                break
             key = (
                 citation.source_id or citation.url,
                 citation.doc_id or "",
@@ -489,7 +632,7 @@ class SearchAgent:
     @staticmethod
     def _citations_used_by_answer(answer: str, evidence: Sequence[Citation]) -> List[Citation]:
         used = {f"[{value}]" for value in _MARKER_RE.findall(answer or "")}
-        return [citation for citation in evidence if citation.label in used]
+        return [citation for citation in evidence if citation.label in used][:_MAX_EVIDENCE_SOURCES]
 
     def _expansion_model(self) -> str:
         configured = os.getenv("RETRIEVAL_EXPANSION_MODEL")
