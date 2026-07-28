@@ -3,21 +3,41 @@
 from __future__ import annotations
 
 import argparse
+import os
 
 from Searching import AcademicSearchEngine
 from llm_agent import LLMAgent
 
 _MAX_QUERY_CHARS = 2000
+_MAX_RESULTS = 20
+
+
+def _bounded_limit(value: object) -> int:
+    if isinstance(value, bool):
+        raise ValueError("Result limit must be an integer.")
+    try:
+        numeric = int(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("Result limit must be an integer.") from exc
+    if isinstance(value, float) and not value.is_integer():
+        raise ValueError("Result limit must be an integer.")
+    if not 1 <= numeric <= _MAX_RESULTS:
+        raise ValueError(f"Result limit must be between 1 and {_MAX_RESULTS}.")
+    return numeric
 
 
 def format_summary(summary: str) -> str:
-    """Preserve Markdown and line structure produced by the summariser."""
+    """Preserve bounded Markdown and line structure produced by the summariser."""
 
-    return (summary or "").strip()
+    if not isinstance(summary, str):
+        return "No reliable summary was produced."
+    return summary.strip()[:20_000] or "No reliable summary was produced."
 
 
 def _validated_query(value: str) -> str:
-    query = (value or "").strip()
+    if not isinstance(value, str):
+        raise ValueError("A research query must be a string.")
+    query = value.strip()
     if not query:
         raise ValueError("A research query is required.")
     if len(query) > _MAX_QUERY_CHARS:
@@ -32,7 +52,8 @@ def run_query(
     limit: int,
 ) -> None:
     query = _validated_query(query)
-    hits = engine.search(query, limit=max(1, min(limit, 20)))
+    requested = _bounded_limit(limit)
+    hits = engine.search(query, limit=requested)
     if not hits:
         print("No results found.")
         return
@@ -63,7 +84,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-depth", type=int, default=2)
     parser.add_argument("--delay", type=float, default=1.0)
     parser.add_argument("--results", type=int, default=8)
-    parser.add_argument("--storage-dir", default="data")
+    parser.add_argument(
+        "--storage-dir",
+        default=os.getenv("CLASSIC_STORAGE_DIR", "data"),
+    )
     parser.add_argument("--rebuild", action="store_true")
     parser.add_argument("--model", default="gpt-4o-mini")
     parser.add_argument("--api-key")
@@ -75,44 +99,47 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    engine = AcademicSearchEngine(
-        max_pages=args.max_pages,
-        max_depth=args.max_depth,
-        request_delay=args.delay,
-        storage_dir=args.storage_dir,
-    )
-    if args.rebuild or not engine.ready:
-        print("Crawling and rebuilding the academic index...")
-        total_pages = engine.build()
-        print(f"Indexed {total_pages} pages.\n")
-    else:
-        print(f"Loaded {len(engine.index.documents)} indexed pages from disk.\n")
-    agent = LLMAgent(
-        model=args.model,
-        api_key=args.api_key,
-        base_url=args.base_url,
-        ollama_model=args.ollama_model,
-        ollama_host=args.ollama_host,
-    )
-    if args.query:
-        try:
-            run_query(engine, agent, args.query, args.results)
-        except ValueError as exc:
-            raise SystemExit(str(exc)) from exc
-        return
-    print("Enter an empty line to exit.\n")
-    while True:
-        try:
-            query = input("Ask> ").strip()
-        except (EOFError, KeyboardInterrupt):
-            print()
-            break
-        if not query:
-            break
-        try:
-            run_query(engine, agent, query, args.results)
-        except ValueError as exc:
-            print(f"Invalid query: {exc}")
+    try:
+        requested = _bounded_limit(args.results)
+        with AcademicSearchEngine(
+            max_pages=args.max_pages,
+            max_depth=args.max_depth,
+            request_delay=args.delay,
+            storage_dir=args.storage_dir,
+        ) as engine:
+            if args.rebuild or not engine.ready:
+                print("Crawling and rebuilding the academic index...")
+                total_pages = engine.build()
+                print(f"Indexed {total_pages} pages.\n")
+            else:
+                print(
+                    f"Loaded {len(engine.index.documents)} indexed pages from disk.\n"
+                )
+            agent = LLMAgent(
+                model=args.model,
+                api_key=args.api_key,
+                base_url=args.base_url,
+                ollama_model=args.ollama_model,
+                ollama_host=args.ollama_host,
+            )
+            if args.query:
+                run_query(engine, agent, args.query, requested)
+                return
+            print("Enter an empty line to exit.\n")
+            while True:
+                try:
+                    query = input("Ask> ").strip()
+                except (EOFError, KeyboardInterrupt):
+                    print()
+                    break
+                if not query:
+                    break
+                try:
+                    run_query(engine, agent, query, requested)
+                except ValueError as exc:
+                    print(f"Invalid query: {exc}")
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
 
 
 if __name__ == "__main__":
