@@ -45,7 +45,7 @@ class DocumentStore:
         )
         self.visual_max_render_pixels = max(
             1_000_000,
-            min(int(os.getenv("VISUAL_MAX_RENDER_PIXELS", "12000000")), 100_000_000),
+            min(int(os.getenv("VISUAL_MAX_RENDER_PIXELS", "2000000")), 100_000_000),
         )
         self.visual_clip_height_points = max(
             100.0,
