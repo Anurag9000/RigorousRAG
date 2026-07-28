@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import itertools
 import os
 import re
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Sequence
+from typing import Dict, Iterable, List, Optional, Sequence
 
 from Searching import SearchHit
+from tools.config import bounded_float_env
+from tools.privacy import mask_metadata_text
 
 try:
     from openai import OpenAI
@@ -23,20 +26,75 @@ DEFAULT_OPENAI_MODEL = "gpt-4o-mini"
 DEFAULT_OLLAMA_MODEL = "qwen3:8b"
 _MAX_QUERY_CHARS = 2000
 _MAX_SOURCES = 20
+_MAX_CANDIDATE_HITS = 1000
+_MAX_CANDIDATE_CONTEXTS = 1000
 _MAX_CONTEXT_CHARS_PER_SOURCE = 6000
 _MAX_PROMPT_CHARS = 40_000
+_MAX_PROMPT_TITLE_CHARS = 300
+_MAX_PROMPT_URL_CHARS = 1000
 _MAX_SUMMARY_CHARS = 20_000
 _MAX_SOURCE_CHARS = 5000
+_MAX_MODEL_CHARS = 200
+_MAX_PROVIDER_VALUE_CHARS = 4096
 _MARKER_RE = re.compile(r"\[(\d+)\]")
 
 
+def _safe_text(value: object, *, limit: int, default: str = "") -> str:
+    try:
+        text = str(value if value is not None else default)
+    except Exception:
+        text = default
+    return text[:limit]
+
+
+def _clean_line(value: object, *, limit: int, default: str = "") -> str:
+    text = _safe_text(value, limit=limit, default=default)
+    text = " ".join(text.replace("\r", " ").replace("\n", " ").split())
+    return mask_metadata_text(text)[:limit]
+
+
+def _provider_value(value: object, label: str, *, allow_empty: bool = True) -> Optional[str]:
+    if value in (None, ""):
+        return None if allow_empty else ""
+    text = _safe_text(value, limit=_MAX_PROVIDER_VALUE_CHARS + 1).strip()
+    if len(text) > _MAX_PROVIDER_VALUE_CHARS:
+        raise ValueError(f"{label} may contain at most {_MAX_PROVIDER_VALUE_CHARS} characters.")
+    if "\r" in text or "\n" in text or "\x00" in text:
+        raise ValueError(f"{label} contains invalid control characters.")
+    return text or None
+
+
+def _model_name(value: object, default: str) -> str:
+    text = _clean_line(value, limit=_MAX_MODEL_CHARS, default=default)
+    return text or default
+
+
 def _bounded_query(value: str) -> str:
-    query = (value or "").strip()
+    if not isinstance(value, str):
+        raise ValueError("A research query must be a string.")
+    query = value.strip()
     if not query:
         raise ValueError("A research query is required.")
     if len(query) > _MAX_QUERY_CHARS:
         raise ValueError("Research queries may contain at most 2,000 characters.")
     return query
+
+
+def _bounded_iterable(
+    values: Iterable[object],
+    *,
+    maximum: int,
+    label: str,
+) -> List[object]:
+    if isinstance(values, (str, bytes)):
+        raise ValueError(f"{label} must be an iterable of objects, not a string.")
+    try:
+        items = list(itertools.islice(iter(values), maximum + 1))
+    except TypeError as exc:
+        raise ValueError(f"{label} must be iterable.") from exc
+    if len(items) > maximum:
+        raise ValueError(f"{label} may contain at most {maximum} items.")
+    return items
 
 
 @dataclass
@@ -46,30 +104,57 @@ class CitationSummary:
     warning: Optional[str] = None
 
     def __post_init__(self) -> None:
-        self.summary = str(self.summary or "").strip()[:_MAX_SUMMARY_CHARS]
-        self.sources = [
-            str(source).strip()[:_MAX_SOURCE_CHARS]
-            for source in list(self.sources or [])[:_MAX_SOURCES]
-            if str(source).strip()
-        ]
+        bounded_summary = _safe_text(self.summary, limit=_MAX_SUMMARY_CHARS).strip()
+        self.summary = mask_metadata_text(bounded_summary) or (
+            "No reliable summary was produced."
+        )
+        raw_sources = _bounded_iterable(
+            self.sources or [],
+            maximum=_MAX_SOURCES,
+            label="sources",
+        )
+        sources: List[str] = []
+        for source in raw_sources:
+            rendered = _clean_line(source, limit=_MAX_SOURCE_CHARS)
+            if rendered:
+                sources.append(rendered)
+        self.sources = sources
         if self.warning is not None:
-            self.warning = str(self.warning).strip()[:2000] or None
+            self.warning = _clean_line(self.warning, limit=2000) or None
 
 
 def _align_hits_and_contexts(
     hits: Sequence[SearchHit],
     contexts: Sequence[dict],
 ) -> List[tuple[SearchHit, dict]]:
-    by_url: Dict[str, dict] = {
-        str(context.get("url")): context
-        for context in contexts
-        if isinstance(context, dict) and context.get("url")
-    }
+    hit_values = _bounded_iterable(
+        hits,
+        maximum=_MAX_CANDIDATE_HITS,
+        label="hits",
+    )
+    context_values = _bounded_iterable(
+        contexts,
+        maximum=_MAX_CANDIDATE_CONTEXTS,
+        label="contexts",
+    )
+    by_url: Dict[str, dict] = {}
+    for context in context_values:
+        if not isinstance(context, dict):
+            continue
+        url = context.get("url")
+        if not isinstance(url, str) or not 0 < len(url) <= 4096:
+            continue
+        by_url.setdefault(url, context)
+
     aligned: List[tuple[SearchHit, dict]] = []
-    for hit in hits:
+    seen_urls: set[str] = set()
+    for hit in hit_values:
+        if not isinstance(hit, SearchHit) or hit.url in seen_urls:
+            continue
         context = by_url.get(hit.url)
         if context is None:
             continue
+        seen_urls.add(hit.url)
         aligned.append((hit, context))
         if len(aligned) >= _MAX_SOURCES:
             break
@@ -105,9 +190,12 @@ class ExtractiveFallback:
         lines: List[str] = []
         sources: List[str] = []
         for index, (hit, context) in enumerate(aligned, start=1):
-            snippet = str(context.get("text") or "")[:600].strip()
-            lines.append(f"[{index}] **{str(hit.title)[:500]}** — {snippet}")
-            sources.append(f"[{index}] {str(hit.title)[:500]} — {str(hit.url)[:4096]}")
+            snippet = _safe_text(context.get("text"), limit=600).strip()
+            title = _clean_line(hit.title, limit=500, default="Untitled")
+            lines.append(f"[{index}] **{title}** — {snippet}")
+            sources.append(
+                f"[{index}] {title} — {_clean_line(hit.url, limit=4096)}"
+            )
         if not lines:
             return CitationSummary(
                 summary="No supporting indexed documents were available.",
@@ -134,14 +222,25 @@ class LLMAgent:
         ollama_host: str | None = None,
         base_url: str | None = None,
     ) -> None:
-        self.openai_model = str(model or DEFAULT_OPENAI_MODEL).strip()[:200]
-        self.api_key = api_key or os.getenv("OPENAI_API_KEY")
-        self.base_url = base_url or os.getenv("OPENAI_BASE_URL")
-        self.ollama_model = str(ollama_model or DEFAULT_OLLAMA_MODEL).strip()[:200]
-        self.ollama_host = ollama_host or os.getenv("OLLAMA_HOST")
-        timeout = max(
-            1.0,
-            min(float(os.getenv("LEGACY_LLM_TIMEOUT_SECONDS", "60")), 300.0),
+        self.openai_model = _model_name(model, DEFAULT_OPENAI_MODEL)
+        self.api_key = _provider_value(
+            api_key if api_key is not None else os.getenv("OPENAI_API_KEY"),
+            "api_key",
+        )
+        self.base_url = _provider_value(
+            base_url if base_url is not None else os.getenv("OPENAI_BASE_URL"),
+            "base_url",
+        )
+        self.ollama_model = _model_name(ollama_model, DEFAULT_OLLAMA_MODEL)
+        self.ollama_host = _provider_value(
+            ollama_host if ollama_host is not None else os.getenv("OLLAMA_HOST"),
+            "ollama_host",
+        )
+        timeout = bounded_float_env(
+            "LEGACY_LLM_TIMEOUT_SECONDS",
+            60.0,
+            minimum=1.0,
+            maximum=300.0,
         )
         self.openai_client = None
         if OpenAI is not None and (self.api_key or self.base_url):
@@ -178,7 +277,7 @@ class LLMAgent:
         query = _bounded_query(query)
         aligned = _align_hits_and_contexts(hits, contexts)
         if not aligned:
-            return self.fallback.summarise(query, hits, contexts)
+            return self.fallback.summarise(query, [], [])
         prompt = self._build_prompt(query, aligned)
         summary = self._summarise_with_openai(prompt, aligned)
         if summary is not None:
@@ -190,17 +289,20 @@ class LLMAgent:
 
     @staticmethod
     def _source_list(aligned: Sequence[tuple[SearchHit, dict]]) -> List[str]:
-        return [
-            f"[{index}] {str(hit.title)[:500]} — {str(hit.url)[:4096]}"
-            for index, (hit, _context) in enumerate(aligned[:_MAX_SOURCES], start=1)
-        ]
+        sources: List[str] = []
+        for index, (hit, _context) in enumerate(aligned[:_MAX_SOURCES], start=1):
+            sources.append(
+                f"[{index}] {_clean_line(hit.title, limit=500, default='Untitled')} — "
+                f"{_clean_line(hit.url, limit=4096)}"
+            )
+        return sources
 
     @staticmethod
     def _generated_summary(
         content: str,
         aligned: Sequence[tuple[SearchHit, dict]],
     ) -> Optional[CitationSummary]:
-        bounded = (content or "").strip()[:_MAX_SUMMARY_CHARS]
+        bounded = _safe_text(content, limit=_MAX_SUMMARY_CHARS).strip()
         if not bounded:
             return None
         return CitationSummary(
@@ -233,8 +335,12 @@ class LLMAgent:
                 ],
                 max_tokens=1400,
             )
+            choices = getattr(response, "choices", None)
+            if not choices:
+                return None
+            message = getattr(choices[0], "message", None)
             return self._generated_summary(
-                response.choices[0].message.content or "",
+                getattr(message, "content", "") or "",
                 aligned,
             )
         except Exception:
@@ -263,10 +369,11 @@ class LLMAgent:
                 messages=messages,
             )
             if isinstance(response, dict):
-                content = str(response.get("message", {}).get("content", ""))
+                message = response.get("message", {})
+                content = message.get("content", "") if isinstance(message, dict) else ""
             else:
-                content = str(getattr(getattr(response, "message", None), "content", ""))
-            return self._generated_summary(content, aligned)
+                content = getattr(getattr(response, "message", None), "content", "")
+            return self._generated_summary(content or "", aligned)
         except Exception:
             return None
 
@@ -275,19 +382,31 @@ class LLMAgent:
         query: str,
         aligned: Sequence[tuple[SearchHit, dict]],
     ) -> str:
-        lines = [f"Research question: {query}", "", "Evidence excerpts:"]
-        for index, (hit, context) in enumerate(aligned[:_MAX_SOURCES], start=1):
-            lines.extend([
-                f"[{index}] Title: {str(hit.title)[:500]}",
-                f"URL: {str(hit.url)[:4096]}",
-                (
-                    "Excerpt: "
-                    + str(context.get("text") or "")[:_MAX_CONTEXT_CHARS_PER_SOURCE]
-                ),
-                "",
-            ])
-        lines.append(
-            "Produce a concise answer and a short key-findings list. Cite every "
+        selected = list(aligned[:_MAX_SOURCES])
+        if not selected:
+            return f"Research question: {query}"[:_MAX_PROMPT_CHARS]
+        prefix = f"Research question: {query}\n\nEvidence excerpts:\n"
+        task = (
+            "\nProduce a concise answer and a short key-findings list. Cite every "
             "evidence-dependent statement with the supplied [n] labels."
         )
-        return "\n".join(lines)[:_MAX_PROMPT_CHARS]
+        headers: List[str] = []
+        for index, (hit, _context) in enumerate(selected, start=1):
+            headers.append(
+                f"[{index}] Title: "
+                f"{_clean_line(hit.title, limit=_MAX_PROMPT_TITLE_CHARS, default='Untitled')}\n"
+                f"URL: {_clean_line(hit.url, limit=_MAX_PROMPT_URL_CHARS)}\n"
+                "Excerpt: "
+            )
+        static_size = len(prefix) + len(task) + sum(len(header) + 2 for header in headers)
+        available = max(_MAX_PROMPT_CHARS - static_size, 0)
+        excerpt_budget = min(
+            _MAX_CONTEXT_CHARS_PER_SOURCE,
+            available // len(selected),
+        )
+        sections: List[str] = []
+        for header, (_hit, context) in zip(headers, selected):
+            excerpt = _safe_text(context.get("text"), limit=excerpt_budget)
+            sections.append(f"{header}{excerpt}\n")
+        prompt = prefix + "\n".join(sections) + task
+        return prompt[:_MAX_PROMPT_CHARS]
