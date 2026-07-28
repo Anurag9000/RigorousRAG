@@ -173,7 +173,7 @@ def test_preexisting_registry_does_not_mask_current_vector_failure(
 
     status = server_module._JOB_STORE.get("job-vector-failed", "alice")
     assert status and status["status"] == "queued"
-    assert status["doc_id"] == "existing-doc"
+    assert status["doc_id"] is None
     assert "RuntimeError" in status["message"]
     assert submissions == [
         (str(source), "paper.txt", "job-vector-failed", "alice")
