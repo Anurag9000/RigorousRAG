@@ -7,6 +7,7 @@ source file used by visual tools.
 
 from __future__ import annotations
 
+import hashlib
 import math
 import os
 import sqlite3
@@ -119,6 +120,39 @@ class DocumentStore:
         if not candidate.exists() or not candidate.is_file():
             return None
         return candidate
+
+    def _source_matches_document(
+        self,
+        candidate: Path,
+        owner_id: str,
+        doc_id: str,
+    ) -> bool:
+        """Verify retained bytes still derive the immutable owner/content document ID."""
+
+        try:
+            if candidate.stat().st_size > DEFAULT_MAX_UPLOAD_BYTES:
+                return False
+            digest = hashlib.sha256()
+            total = 0
+            with candidate.open("rb") as handle:
+                while True:
+                    chunk = handle.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    total += len(chunk)
+                    if total > DEFAULT_MAX_UPLOAD_BYTES:
+                        return False
+                    digest.update(chunk)
+        except OSError:
+            return False
+        owner = normalize_owner_id(owner_id)
+        expected = str(
+            uuid.uuid5(
+                uuid.NAMESPACE_URL,
+                f"rigorousrag:{owner}:{digest.hexdigest()}",
+            )
+        )
+        return expected == str(doc_id or "")
 
     def _visual_pdf_is_safe(self, candidate: Path) -> bool:
         """Fail closed when a retained PDF exceeds visual-analysis complexity limits."""
@@ -395,7 +429,13 @@ class DocumentStore:
         record["visual_source_verified"] = bool(verify_visual and visual_candidate)
         record["visual_source_available"] = bool(
             visual_candidate
-            and (not verify_visual or self._visual_pdf_is_safe(source))
+            and (
+                not verify_visual
+                or (
+                    self._source_matches_document(source, owner, doc_id)
+                    and self._visual_pdf_is_safe(source)
+                )
+            )
         )
         return record
 
@@ -407,7 +447,7 @@ class DocumentStore:
         return Path(raw_path) if raw_path else None
 
     def source_path(self, *, owner_id: str, doc_id: str) -> Optional[Path]:
-        """Return an owner-scoped retained PDF only after visual safety verification."""
+        """Return an owner-scoped retained PDF only after identity and safety checks."""
 
         record = self.get(owner_id=owner_id, doc_id=doc_id, verify_visual=True)
         raw_path = str((record or {}).get("source_path") or "")
