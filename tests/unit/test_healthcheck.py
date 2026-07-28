@@ -95,6 +95,37 @@ def test_http_check_rejects_remote_or_oversized_response(monkeypatch):
     assert calls == [True]
 
 
+def test_malformed_healthcheck_timeout_uses_bounded_default(monkeypatch):
+    opener = FakeOpener(FakeResponse())
+    monkeypatch.setattr(healthcheck.urllib.request, "build_opener", lambda *_args: opener)
+
+    assert healthcheck.check_http(
+        "http://127.0.0.1/health",
+        timeout=float("nan"),
+    ) is True
+    assert opener.calls[0][1] == 3.0
+    assert healthcheck._finite_timeout("not-a-number") == 3.0
+    assert healthcheck._finite_timeout(float("inf")) == 3.0
+    assert healthcheck._finite_timeout(999) == 60.0
+
+
+def test_run_checks_does_not_crash_on_malformed_timeout(monkeypatch):
+    monkeypatch.setenv("HEALTHCHECK_TIMEOUT_SECONDS", "not-a-number")
+    captured = []
+    monkeypatch.setattr(
+        healthcheck,
+        "check_http",
+        lambda _url, timeout: captured.append(timeout) or True,
+    )
+    monkeypatch.setattr(healthcheck, "check_sqlite", lambda _path: True)
+    monkeypatch.setattr(healthcheck, "check_writable_directory", lambda _path: True)
+
+    results = healthcheck.run_checks()
+
+    assert all(results.values())
+    assert captured == [3.0]
+
+
 def test_main_returns_nonzero_when_any_dependency_is_unready(monkeypatch, capsys):
     monkeypatch.setattr(
         healthcheck,
