@@ -22,10 +22,37 @@ _ADDRESS_RE = re.compile(
     r"Way|Court|Ct|Place|Pl|Highway|Hwy)\b\.?",
     flags=re.IGNORECASE,
 )
+_URI_CREDENTIAL_RE = re.compile(
+    r"(?P<prefix>[A-Za-z][A-Za-z0-9+.-]*://)"
+    r"[^/@\s:]+(?::[^/@\s]*)?@",
+    flags=re.IGNORECASE,
+)
+_SECRET_QUERY_RE = re.compile(
+    r"(?P<prefix>[?&](?:api[_-]?key|access[_-]?token|token|password|passwd|secret)=)"
+    r"[^&#\s]+",
+    flags=re.IGNORECASE,
+)
+_FILE_URI_RE = re.compile(r"\bfile://(?:localhost)?/[^\s'\"<>]+", flags=re.IGNORECASE)
+_WINDOWS_PATH_RE = re.compile(
+    r"(?<![A-Za-z0-9_])[A-Za-z]:\\(?:[^\\\r\n:*?\"<>|]+\\)*"
+    r"[^\\\r\n:*?\"<>|]*"
+)
+_POSIX_PATH_RE = re.compile(
+    r"(?<![:/A-Za-z0-9_])/(?:[^/\s'\"<>]+/)+[^/\s'\"<>,;:)}\]]*"
+)
+_HOME_PATH_RE = re.compile(r"(?<!\w)~/(?:[^/\s'\"<>]+/)*[^/\s'\"<>]*")
 
 
 def mask_metadata_text(value: str) -> str:
+    """Mask common PII, credentials, and local filesystem paths in public strings."""
+
     text = value or ""
+    text = _URI_CREDENTIAL_RE.sub(r"\g<prefix>[REDACTED_CREDENTIALS]@", text)
+    text = _SECRET_QUERY_RE.sub(r"\g<prefix>[REDACTED_SECRET]", text)
+    text = _FILE_URI_RE.sub("[REDACTED_PATH]", text)
+    text = _WINDOWS_PATH_RE.sub("[REDACTED_PATH]", text)
+    text = _HOME_PATH_RE.sub("[REDACTED_PATH]", text)
+    text = _POSIX_PATH_RE.sub("[REDACTED_PATH]", text)
     text = _EMAIL_RE.sub("[REDACTED_EMAIL]", text)
     text = _ADDRESS_RE.sub("[REDACTED_ADDRESS]", text)
     text = _IPV4_RE.sub("[REDACTED_IP]", text)
