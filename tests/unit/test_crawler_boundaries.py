@@ -113,3 +113,38 @@ def test_updated_allowlist_drops_persisted_pages_from_removed_domains():
     assert result.pages == {}
     assert result.graph == {}
     crawler.close()
+
+
+def test_malformed_persisted_page_fields_are_safely_coerced():
+    from Crawler import Page
+    from storage import CrawlState
+
+    page = Page(
+        "https://example.test/",
+        "Title",
+        "evidence",
+        "https://example.test/character-iteration-must-not-happen",
+        object(),
+        "not-an-integer",
+    )
+    state = CrawlState(
+        pages={"https://example.test/": page},
+        graph={"https://example.test/": "not-an-edge-collection"},
+        visited=set(),
+        frontier=[],
+    )
+    crawler = AcademicCrawler(
+        allowed_domains=["example.test"],
+        max_pages=1,
+        request_delay=0,
+        robots_fail_open=True,
+    )
+
+    result = crawler.crawl([], state)
+
+    stored = result.pages["https://example.test/"]
+    assert stored.links == []
+    assert stored.content_length == 0
+    assert len(stored.content_type) <= 200
+    assert result.graph == {"https://example.test/": set()}
+    crawler.close()
