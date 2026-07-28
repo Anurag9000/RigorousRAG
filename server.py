@@ -25,6 +25,52 @@ def _validated_upload_file(path: str | Path | None) -> Optional[Path]:
     return validated_owner_file_path(_implementation.UPLOAD_DIR, path)
 
 
+def _retry_or_fail_snapshot(
+    *,
+    job_id: str,
+    owner_id: str,
+    display_name: str,
+    path: Path,
+    exc: BaseException,
+) -> None:
+    """Return a claimed job to durable retry state or persist terminal failure."""
+
+    internal = _implementation._JOB_STORE.get_internal(job_id, owner_id) or {}
+    attempts = int(internal.get("attempts") or 0)
+    if attempts < _implementation.INGEST_MAX_ATTEMPTS:
+        try:
+            _implementation._JOB_STORE.update(
+                job_id,
+                owner_id,
+                status="queued",
+                filename=display_name,
+                source_path=str(path),
+                message=_implementation._internal_failure_message(
+                    "Transient ingestion snapshot failure; retry queued",
+                    exc,
+                ),
+            )
+            _implementation._submit_ingestion(
+                str(path),
+                display_name,
+                job_id,
+                owner_id,
+            )
+            return
+        except Exception:
+            return
+    _implementation._persist_failed_job(
+        job_id,
+        owner_id,
+        display_name,
+        path,
+        _implementation._internal_failure_message(
+            "Ingestion snapshot failed",
+            exc,
+        ),
+    )
+
+
 def process_ingestion(
     file_path: str,
     display_name: str,
@@ -191,10 +237,19 @@ def process_ingestion(
                 exc,
             ),
         )
+    except Exception as exc:
+        _retry_or_fail_snapshot(
+            job_id=job_id,
+            owner_id=owner_id,
+            display_name=display_name,
+            path=path,
+            exc=exc,
+        )
 
 
 _implementation._validated_upload_file = _validated_upload_file
 _implementation.materialize_ingestion_snapshot = materialize_ingestion_snapshot
+_implementation._retry_or_fail_snapshot = _retry_or_fail_snapshot
 _implementation.process_ingestion = process_ingestion
 _implementation.__doc__ = __doc__
 
