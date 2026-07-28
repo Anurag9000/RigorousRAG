@@ -71,7 +71,7 @@ def test_queued_job_is_not_promoted_by_preexisting_registry(
     assert submissions == [(str(source), "paper.txt", "job-queued", "alice")]
 
 
-def test_finalizing_job_with_registry_is_promoted_after_restart(
+def test_finalizing_job_is_replayed_instead_of_inferred_success(
     server_module,
     monkeypatch,
 ):
@@ -115,7 +115,8 @@ def test_finalizing_job_with_registry_is_promoted_after_restart(
     server_module._recover_interrupted_jobs()
 
     status = server_module._JOB_STORE.get("job-finalizing", "alice")
-    assert status and status["status"] == "success"
-    assert status["doc_id"] == "committed-doc"
-    assert submissions == []
+    assert status and status["status"] == "queued"
+    assert submissions == [
+        (str(source), "paper.txt", "job-finalizing", "alice")
+    ]
     assert source.exists()
