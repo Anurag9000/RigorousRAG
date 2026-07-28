@@ -15,6 +15,15 @@ CHROMA_PATH = os.getenv("CHROMA_PATH", "rag_storage")
 COLLECTION_NAME = os.getenv("CHROMA_COLLECTION", "academic_rag_v2")
 DEFAULT_EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
 SCHEMA_VERSION = 2
+MAX_CHUNKS_PER_DOCUMENT = max(
+    100,
+    min(int(os.getenv("MAX_CHUNKS_PER_DOCUMENT", "10000")), 100_000),
+)
+LIST_SCAN_BATCH = max(50, min(int(os.getenv("DOCUMENT_LIST_SCAN_BATCH", "500")), 5000))
+MAX_LIST_SCAN_CHUNKS = max(
+    LIST_SCAN_BATCH,
+    min(int(os.getenv("MAX_DOCUMENT_LIST_SCAN_CHUNKS", "100000")), 1_000_000),
+)
 
 
 class Chunk(BaseModel):
@@ -37,7 +46,7 @@ def _combine_filters(filters: Sequence[Optional[Dict[str, Any]]]) -> Optional[Di
 
 
 class RAGLayer:
-    """Chroma wrapper with mandatory owner scoping and retry-safe writes."""
+    """Chroma wrapper with mandatory owner scoping and compensating writes."""
 
     def __init__(
         self,
@@ -65,6 +74,52 @@ class RAGLayer:
             raise ValueError("owner_id is required for every vector-store operation.")
         return {"owner_id": {"$eq": owner}}
 
+    @staticmethod
+    def _batched(values: Sequence[Any], size: int = 128) -> Iterable[Sequence[Any]]:
+        for start in range(0, len(values), size):
+            yield values[start:start + size]
+
+    def ping(self) -> bool:
+        """Return whether the vector collection can complete a metadata read."""
+
+        try:
+            self.collection.count()
+            return True
+        except Exception:
+            return False
+
+    def _rollback_document_write(
+        self,
+        *,
+        new_ids: Sequence[str],
+        existing_ids: Sequence[str],
+        existing_documents: Sequence[str],
+        existing_metadatas: Sequence[Dict[str, Any]],
+    ) -> List[str]:
+        """Best-effort restoration after a partial upsert/delete sequence."""
+
+        errors: List[str] = []
+        old_id_set = set(existing_ids)
+        new_only_ids = sorted(set(new_ids) - old_id_set)
+        if new_only_ids:
+            try:
+                for batch in self._batched(new_only_ids):
+                    self.collection.delete(ids=list(batch))
+            except Exception as exc:
+                errors.append(f"delete_new:{type(exc).__name__}")
+        if existing_ids:
+            try:
+                for start in range(0, len(existing_ids), 128):
+                    stop = start + 128
+                    self.collection.upsert(
+                        ids=list(existing_ids[start:stop]),
+                        documents=list(existing_documents[start:stop]),
+                        metadatas=list(existing_metadatas[start:stop]),
+                    )
+            except Exception as exc:
+                errors.append(f"restore_old:{type(exc).__name__}")
+        return errors
+
     def add_document(
         self,
         doc_id: str,
@@ -76,12 +131,7 @@ class RAGLayer:
         overlap: int = 120,
         replace: bool = True,
     ) -> int:
-        """Index semantic sections with deterministic IDs.
-
-        New chunks are upserted before obsolete IDs are removed. A failed write
-        therefore leaves the previously indexed document available instead of
-        deleting it before replacement succeeds.
-        """
+        """Index semantic sections with deterministic IDs and rollback on failure."""
 
         if not doc_id or not doc_id.strip():
             raise ValueError("doc_id must be non-empty.")
@@ -155,30 +205,63 @@ class RAGLayer:
                     ids.append(chunk_id)
                     documents.append(child_text)
                     metadatas.append(chunk_metadata)
+                    if len(ids) > MAX_CHUNKS_PER_DOCUMENT:
+                        raise ValueError(
+                            "Document produced more than the configured chunk limit."
+                        )
         if not ids:
             raise ValueError("Document produced no vector chunks.")
 
         with self._write_lock:
-            existing_ids: set[str] = set()
+            existing_ids: List[str] = []
+            existing_documents: List[str] = []
+            existing_metadatas: List[Dict[str, Any]] = []
             if replace:
                 existing = self.collection.get(
                     where=document_filter,
-                    include=["metadatas"],
+                    include=["documents", "metadatas"],
                 )
-                existing_ids = {str(value) for value in existing.get("ids") or []}
-            for start in range(0, len(ids), 128):
-                stop = start + 128
-                self.collection.upsert(
-                    ids=ids[start:stop],
-                    documents=documents[start:stop],
-                    metadatas=metadatas[start:stop],
+                existing_ids = [str(value) for value in existing.get("ids") or []]
+                old_documents = existing.get("documents") or []
+                old_metadatas = existing.get("metadatas") or []
+                existing_documents = [
+                    str(old_documents[index]) if index < len(old_documents) else ""
+                    for index in range(len(existing_ids))
+                ]
+                existing_metadatas = [
+                    dict(old_metadatas[index] or {}) if index < len(old_metadatas) else {}
+                    for index in range(len(existing_ids))
+                ]
+            try:
+                for start in range(0, len(ids), 128):
+                    stop = start + 128
+                    self.collection.upsert(
+                        ids=ids[start:stop],
+                        documents=documents[start:stop],
+                        metadatas=metadatas[start:stop],
+                    )
+                stale_ids = sorted(set(existing_ids) - set(ids))
+                if stale_ids:
+                    for batch in self._batched(stale_ids):
+                        self.collection.delete(ids=list(batch))
+            except Exception as exc:
+                rollback_errors = self._rollback_document_write(
+                    new_ids=ids,
+                    existing_ids=existing_ids,
+                    existing_documents=existing_documents,
+                    existing_metadatas=existing_metadatas,
                 )
-            stale_ids = sorted(existing_ids - set(ids))
-            if stale_ids:
-                self.collection.delete(ids=stale_ids)
+                if rollback_errors:
+                    raise RuntimeError(
+                        "Vector write failed and rollback was incomplete: "
+                        + ", ".join(rollback_errors)
+                    ) from exc
+                raise
         return len(ids)
 
     def delete_document(self, *, owner_id: str, doc_id: str) -> None:
+        if not (doc_id or "").strip():
+            raise ValueError("doc_id is required for deletion.")
         where = _combine_filters([
             self._owner_filter(owner_id),
             {"doc_id": {"$eq": doc_id}},
@@ -288,6 +371,8 @@ class RAGLayer:
             )
 
         candidates: Dict[str, Chunk] = {}
+        errors: List[Exception] = []
+        successful_queries = 0
         for current_query in queries[:5]:
             try:
                 results = self.collection.query(
@@ -296,19 +381,21 @@ class RAGLayer:
                     where=scoped_where,
                     include=["documents", "metadatas", "distances"],
                 )
-            except Exception:
+                successful_queries += 1
+            except Exception as exc:
+                errors.append(exc)
                 continue
             docs = (results.get("documents") or [[]])[0]
-            ids = (results.get("ids") or [[]])[0]
+            result_ids = (results.get("ids") or [[]])[0]
             metas = (results.get("metadatas") or [[]])[0]
             distances = (results.get("distances") or [[]])[0]
-            for index, chunk_id in enumerate(ids):
-                text = docs[index] if index < len(docs) else ""
+            for index, chunk_id in enumerate(result_ids):
+                chunk_text = docs[index] if index < len(docs) else ""
                 metadata = metas[index] if index < len(metas) and metas[index] else {}
                 distance = float(distances[index]) if index < len(distances) else 1.0
                 candidate = Chunk(
                     id=str(chunk_id),
-                    text=str(text),
+                    text=str(chunk_text),
                     metadata=dict(metadata),
                     distance=max(distance, 0.0),
                     score=1.0 / (1.0 + max(distance, 0.0)),
@@ -316,33 +403,52 @@ class RAGLayer:
                 existing = candidates.get(candidate.id)
                 if existing is None or candidate.distance < existing.distance:
                     candidates[candidate.id] = candidate
+        if successful_queries == 0 and errors:
+            raise RuntimeError("Vector retrieval is unavailable.") from errors[0]
         return sorted(candidates.values(), key=lambda item: item.distance)[:n_results]
 
     def list_documents(self, *, owner_id: str, limit: int = 1000) -> List[Dict[str, Any]]:
-        results = self.collection.get(
-            where=self._owner_filter(owner_id),
-            include=["metadatas"],
-            limit=max(1, min(limit, 5000)),
-        )
+        requested = max(1, min(int(limit), 5000))
         seen: Dict[str, Dict[str, Any]] = {}
-        for metadata in results.get("metadatas") or []:
-            metadata = dict(metadata or {})
-            doc_id = str(metadata.get("doc_id") or "")
-            if not doc_id or doc_id in seen:
-                continue
-            seen[doc_id] = {
-                "doc_id": doc_id,
-                "filename": metadata.get("filename", doc_id),
-                "owner_id": owner_id,
-                "llm_summary": metadata.get("llm_summary"),
-                "mime_type": metadata.get("mime_type"),
-                "created_at": metadata.get("created_at"),
-            }
+        offset = 0
+        scanned = 0
+        while len(seen) < requested and scanned < MAX_LIST_SCAN_CHUNKS:
+            batch_limit = min(LIST_SCAN_BATCH, MAX_LIST_SCAN_CHUNKS - scanned)
+            results = self.collection.get(
+                where=self._owner_filter(owner_id),
+                include=["metadatas"],
+                limit=batch_limit,
+                offset=offset,
+            )
+            result_ids = results.get("ids") or []
+            metadatas = results.get("metadatas") or []
+            if not result_ids:
+                break
+            for metadata in metadatas:
+                metadata = dict(metadata or {})
+                doc_id = str(metadata.get("doc_id") or "")
+                if not doc_id or doc_id in seen:
+                    continue
+                seen[doc_id] = {
+                    "doc_id": doc_id,
+                    "filename": metadata.get("filename", doc_id),
+                    "owner_id": owner_id,
+                    "llm_summary": metadata.get("llm_summary"),
+                    "mime_type": metadata.get("mime_type"),
+                    "created_at": metadata.get("created_at"),
+                }
+                if len(seen) >= requested:
+                    break
+            consumed = len(result_ids)
+            scanned += consumed
+            offset += consumed
+            if consumed < batch_limit:
+                break
         return sorted(
             seen.values(),
             key=lambda item: str(item.get("created_at") or ""),
             reverse=True,
-        )
+        )[:requested]
 
     @staticmethod
     def _chunk_text(text: str, size: int, overlap: int) -> List[str]:
