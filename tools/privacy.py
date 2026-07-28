@@ -34,8 +34,8 @@ _SECRET_QUERY_RE = re.compile(
 )
 _FILE_URI_RE = re.compile(r"\bfile://(?:localhost)?/[^\s'\"<>]+", flags=re.IGNORECASE)
 _WINDOWS_PATH_RE = re.compile(
-    r"(?<![A-Za-z0-9_])[A-Za-z]:\\(?:[^\\\r\n:*?\"<>|]+\\)*"
-    r"[^\\\r\n:*?\"<>|]*"
+    r"(?<![A-Za-z0-9_])[A-Za-z]:\\(?:[^\\\s:*?\"<>|]+\\)*"
+    r"[^\\\s:*?\"<>|]*"
 )
 _POSIX_PATH_RE = re.compile(
     r"(?<![:/A-Za-z0-9_])/(?:[^/\s'\"<>]+/)+[^/\s'\"<>,;:)}\]]*"
