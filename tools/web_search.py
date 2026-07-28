@@ -17,6 +17,10 @@ _SERPER_MAX_RESPONSE_BYTES = max(
     10_000,
     min(int(os.getenv("SERPER_MAX_RESPONSE_BYTES", "2000000")), 20_000_000),
 )
+_MAX_RESULT_CANDIDATES = max(
+    10,
+    min(int(os.getenv("WEB_SEARCH_MAX_RESULT_CANDIDATES", "30")), 100),
+)
 
 
 class WebSearchInput(BaseModel):
@@ -84,18 +88,21 @@ def web_search(
     if not isinstance(organic, list):
         raise WebSearchError("The web-search provider returned an invalid result structure.")
     citations: List[Citation] = []
-    for result in organic[:100]:
+    for result in organic[:_MAX_RESULT_CANDIDATES]:
         if not isinstance(result, dict):
             continue
         link = str(result.get("link") or "").strip()
         if not link:
             continue
+        parsed = urlparse(link)
+        hostname = parsed.hostname or ""
+        # Apply the caller's hostname restriction before public-address resolution so
+        # irrelevant provider results cannot consume DNS work.
+        if domains and (not hostname or not hostname_matches(hostname, domains)):
+            continue
         try:
             public_url = validate_public_url(link)
         except Exception:
-            continue
-        hostname = urlparse(public_url).hostname or ""
-        if domains and not hostname_matches(hostname, domains):
             continue
         citations.append(
             Citation(
