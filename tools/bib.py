@@ -10,6 +10,15 @@ _ALLOWED_ENTRY_TYPES = {
     "article", "book", "incollection", "inproceedings", "mastersthesis",
     "misc", "phdthesis", "techreport",
 }
+_REQUIRED_FIELDS = {
+    "article": {"journal"},
+    "book": {"publisher"},
+    "incollection": {"booktitle"},
+    "inproceedings": {"booktitle"},
+    "mastersthesis": {"school"},
+    "phdthesis": {"school"},
+    "techreport": {"institution"},
+}
 _SCALAR_SCHEMA = {"anyOf": [{"type": "string"}, {"type": "integer"}]}
 BIBTEX_TOOL_DEF = {
     "type": "function",
@@ -25,20 +34,20 @@ BIBTEX_TOOL_DEF = {
                     "items": {
                         "type": "object",
                         "properties": {
-                            "entry_type": {"type": "string"},
-                            "title": {"type": "string"},
-                            "authors": {"type": "string"},
+                            "entry_type": {"type": "string", "maxLength": 50},
+                            "title": {"type": "string", "maxLength": 1000},
+                            "authors": {"type": "string", "maxLength": 3000},
                             "year": _SCALAR_SCHEMA,
-                            "journal": {"type": "string"},
-                            "booktitle": {"type": "string"},
-                            "publisher": {"type": "string"},
-                            "institution": {"type": "string"},
-                            "school": {"type": "string"},
+                            "journal": {"type": "string", "maxLength": 1000},
+                            "booktitle": {"type": "string", "maxLength": 1000},
+                            "publisher": {"type": "string", "maxLength": 1000},
+                            "institution": {"type": "string", "maxLength": 1000},
+                            "school": {"type": "string", "maxLength": 1000},
                             "volume": _SCALAR_SCHEMA,
                             "number": _SCALAR_SCHEMA,
-                            "pages": {"type": "string"},
-                            "doi": {"type": "string"},
-                            "url": {"type": "string"},
+                            "pages": {"type": "string", "maxLength": 200},
+                            "doi": {"type": "string", "maxLength": 500},
+                            "url": {"type": "string", "maxLength": 4096},
                         },
                         "required": ["title"],
                         "additionalProperties": False,
@@ -60,8 +69,11 @@ _BIBTEX_ESCAPES = {
     "}": r"\}",
     "%": r"\%",
     "#": r"\#",
+    "$": r"\$",
     "&": r"\&",
     "_": r"\_",
+    "~": r"\textasciitilde{}",
+    "^": r"\textasciicircum{}",
 }
 
 
@@ -108,6 +120,8 @@ def _normalise_entry(citation: Dict[str, Any]) -> tuple[str, Dict[str, str]]:
     fields.setdefault("title", "Untitled")
     fields.setdefault("author", "Unknown")
     fields.setdefault("year", "n.d.")
+    if not _REQUIRED_FIELDS.get(entry_type, set()).issubset(fields):
+        entry_type = "misc"
     return entry_type, fields
 
 
@@ -115,7 +129,11 @@ def export_to_bibtex(citations: Iterable[Dict[str, Any]]) -> str:
     entries: List[str] = []
     used_keys: set[str] = set()
     for index, raw in enumerate(citations):
-        citation = dict(raw or {})
+        if index >= 100:
+            break
+        if not isinstance(raw, dict):
+            continue
+        citation = dict(raw)
         entry_type, fields = _normalise_entry(citation)
         key = _citation_key(citation, index)
         base_key = key
