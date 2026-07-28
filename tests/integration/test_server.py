@@ -27,11 +27,15 @@ def server_module(monkeypatch, tmp_path):
     monkeypatch.setenv("DEFAULT_MODEL", "test-model")
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
-    sys.modules.pop("server", None)
+    for name in ("server", "server_app"):
+        sys.modules.pop(name, None)
     module = importlib.import_module("server")
     yield module
+    module._cancel_scheduled_ingestions()
     module._INGEST_EXECUTOR.shutdown(wait=False, cancel_futures=True)
-    sys.modules.pop("server", None)
+    module._QUERY_EXECUTOR.shutdown(wait=False, cancel_futures=True)
+    for name in ("server", "server_app"):
+        sys.modules.pop(name, None)
 
 
 def test_health_config_and_security_headers_are_public(server_module):
@@ -183,7 +187,7 @@ def test_startup_recovery_submits_valid_job_and_cleans_exhausted_source(
     assert not exhausted.exists()
 
 
-def test_finalizing_job_with_registry_is_promoted_without_reindexing(
+def test_finalizing_job_with_registry_is_replayed(
     server_module,
     monkeypatch,
 ):
@@ -215,9 +219,9 @@ def test_finalizing_job_with_registry_is_promoted_without_reindexing(
     server_module._recover_interrupted_jobs()
 
     status = server_module._JOB_STORE.get("job-1", "alice")
-    assert status and status["status"] == "success"
-    assert status["doc_id"] == "doc-1"
-    assert submitted == []
+    assert status and status["status"] == "queued"
+    assert status["doc_id"] is None
+    assert submitted == [(str(source.resolve()), "paper.pdf", "job-1", "alice")]
     assert source.exists()
 
 
@@ -262,7 +266,11 @@ def test_transient_index_failure_requeues_and_preserves_source(
         "ingest_file",
         lambda *_args, **_kwargs: IngestionResult(success=True, document=document),
     )
-    monkeypatch.setattr(server_module, "index_document", MagicMock(side_effect=RuntimeError("down")))
+    monkeypatch.setattr(
+        server_module,
+        "index_document",
+        MagicMock(side_effect=RuntimeError("down")),
+    )
     monkeypatch.setattr(
         server_module,
         "_new_agent",
@@ -279,6 +287,7 @@ def test_transient_index_failure_requeues_and_preserves_source(
 
     status = server_module._JOB_STORE.get("job-1", "alice")
     assert status and status["status"] == "queued"
+    assert status["doc_id"] is None
     assert source.exists()
     assert submitted == [(str(source.resolve()), "paper.txt", "job-1", "alice")]
 
