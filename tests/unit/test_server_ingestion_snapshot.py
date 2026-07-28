@@ -40,6 +40,19 @@ def _owner_source(server_module, content=b"queued bytes") -> Path:
     return source
 
 
+def _document(snapshot: Path, *, doc_id: str = "doc-1") -> IngestedDocument:
+    return IngestedDocument(
+        id=doc_id,
+        filename="paper.txt",
+        file_path=str(snapshot),
+        mime_type="text/plain",
+        text="original queued bytes",
+        sections=[
+            DocumentSection(title="Full Text", content="original queued bytes")
+        ],
+    )
+
+
 def test_worker_passes_private_snapshot_path_to_parser(server_module, monkeypatch, tmp_path):
     source = _owner_source(server_module)
     snapshot = tmp_path / "snapshot.txt"
@@ -79,16 +92,7 @@ def test_mutated_queued_source_is_rejected_before_vector_publication(
     source = _owner_source(server_module, b"original queued bytes")
     snapshot = tmp_path / "snapshot.txt"
     snapshot.write_bytes(source.read_bytes())
-    document = IngestedDocument(
-        id="doc-1",
-        filename="paper.txt",
-        file_path=str(snapshot),
-        mime_type="text/plain",
-        text="original queued bytes",
-        sections=[
-            DocumentSection(title="Full Text", content="original queued bytes")
-        ],
-    )
+    document = _document(snapshot)
 
     @contextmanager
     def fake_snapshot(**_kwargs):
@@ -116,6 +120,65 @@ def test_mutated_queued_source_is_rejected_before_vector_publication(
     assert status and status["status"] == "failed"
     assert "UploadStorageError" in status["message"]
     assert not source.exists()
+
+
+def test_preexisting_registry_does_not_mask_current_vector_failure(
+    server_module,
+    monkeypatch,
+    tmp_path,
+):
+    source = _owner_source(server_module, b"original queued bytes")
+    snapshot = tmp_path / "snapshot.txt"
+    snapshot.write_bytes(source.read_bytes())
+    document = _document(snapshot, doc_id="existing-doc")
+
+    @contextmanager
+    def fake_snapshot(**_kwargs):
+        yield snapshot, snapshot.read_bytes()
+
+    submissions = []
+    monkeypatch.setattr(server_module, "materialize_ingestion_snapshot", fake_snapshot)
+    monkeypatch.setattr(
+        server_module,
+        "ingest_file",
+        lambda *_args, **_kwargs: IngestionResult(success=True, document=document),
+    )
+    monkeypatch.setattr(
+        server_module,
+        "index_document",
+        MagicMock(side_effect=RuntimeError("vector write failed")),
+    )
+    monkeypatch.setattr(
+        server_module._DOCUMENT_STORE,
+        "get",
+        lambda **_kwargs: {
+            "doc_id": "existing-doc",
+            "source_path": str(source),
+            "source_retained": 1,
+        },
+    )
+    monkeypatch.setattr(server_module._JOB_STORE, "claim", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(
+        server_module,
+        "_submit_ingestion",
+        lambda *args: submissions.append(args),
+    )
+
+    server_module.process_ingestion(
+        str(source),
+        "paper.txt",
+        "job-vector-failed",
+        "alice",
+    )
+
+    status = server_module._JOB_STORE.get("job-vector-failed", "alice")
+    assert status and status["status"] == "queued"
+    assert status["doc_id"] == "existing-doc"
+    assert "RuntimeError" in status["message"]
+    assert submissions == [
+        (str(source), "paper.txt", "job-vector-failed", "alice")
+    ]
+    assert source.exists()
 
 
 def test_unexpected_snapshot_failure_returns_job_to_durable_queue(
