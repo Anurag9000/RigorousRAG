@@ -125,9 +125,9 @@ def test_redirected_target_rechecks_final_robots_policy():
     assert result.pages == {}
     assert result.graph == {}
     assert redirected in result.visited
-    assert crawler._is_allowed_by_robots.call_args_list == [
-        (("https://a.test/start",),),
-        ((redirected,),),
+    assert [item.args for item in crawler._is_allowed_by_robots.call_args_list] == [
+        ("https://a.test/start",),
+        (redirected,),
     ]
 
 
