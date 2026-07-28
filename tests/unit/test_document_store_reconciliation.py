@@ -135,6 +135,30 @@ def test_visual_render_pixel_limit_rejects_extreme_page_geometry(
     assert store.source_path(owner_id="alice", doc_id=document_id) is None
 
 
+def test_low_clip_override_cannot_weaken_renderer_preflight(monkeypatch, tmp_path):
+    monkeypatch.setenv("ORPHAN_CLEANUP_ON_STARTUP", "false")
+    monkeypatch.setenv("VISUAL_MAX_RENDER_PIXELS", "1000000")
+    monkeypatch.setenv("VISUAL_CLIP_HEIGHT_POINTS", "100")
+    upload_root = tmp_path / "uploads"
+    source = upload_root / "alice" / "wide.pdf"
+    source.parent.mkdir(parents=True)
+    _make_pdf(source, width=1000, height=1000)
+    document_id = _doc_id(source)
+
+    store = DocumentStore(tmp_path / "documents.sqlite3", upload_root)
+    store.register(
+        owner_id="alice",
+        doc_id=document_id,
+        filename="wide.pdf",
+        mime_type="application/pdf",
+        source_path=source,
+    )
+
+    assert store.visual_clip_height_points == 565.0
+    assert store.source_path(owner_id="alice", doc_id=document_id) is None
+    assert store.retained_source_path(owner_id="alice", doc_id=document_id) == source.resolve()
+
+
 def test_safe_pdf_is_returned_only_after_verification(monkeypatch, tmp_path):
     monkeypatch.setenv("ORPHAN_CLEANUP_ON_STARTUP", "false")
     upload_root = tmp_path / "uploads"
