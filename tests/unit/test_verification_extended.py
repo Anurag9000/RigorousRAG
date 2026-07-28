@@ -28,6 +28,24 @@ def test_duplicate_labels_are_rejected():
     assert any(issue["type"] == "duplicate_labels" for issue in issues)
 
 
+def test_short_evidence_is_diagnostic_not_silently_passed():
+    answer = AgentAnswer(
+        answer="Claim [1].",
+        citations=[citation(snippet="tiny evidence")],
+    )
+
+    issues = verify_citations(answer.answer, answer.citations)
+    assert any(
+        issue["type"] == "weak_evidence_text"
+        and issue["evidence_token_count"] < 8
+        for issue in issues
+    )
+    message = audit_hallucination(answer)
+    assert "too short" in message
+    assert "manual source inspection" in message
+    assert "passed" not in message
+
+
 def test_audit_names_check_as_structural_not_factual_proof():
     answer = AgentAnswer(answer="Alpha beta gamma [1].", citations=[citation()])
     message = audit_hallucination(answer)
