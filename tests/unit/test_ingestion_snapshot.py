@@ -79,10 +79,24 @@ def test_snapshot_enforces_byte_ceiling_before_parser_file_creation(tmp_path):
         max_bytes=100,
     )
 
+    for invalid in (5, 0, True, 1.5, "bad"):
+        with pytest.raises(UploadStorageError):
+            with materialize_ingestion_snapshot(
+                upload_root=root,
+                source_path=stored,
+                max_bytes=invalid,
+            ):
+                pass
+
+
+def test_snapshot_rejects_non_path_source_before_tempfile_creation(tmp_path):
+    root = tmp_path / "uploads"
+    root.mkdir()
+
     with pytest.raises(UploadStorageError):
         with materialize_ingestion_snapshot(
             upload_root=root,
-            source_path=stored,
-            max_bytes=5,
+            source_path=object(),
+            max_bytes=100,
         ):
             pass
