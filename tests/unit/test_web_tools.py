@@ -33,16 +33,39 @@ def test_web_search_uses_bounded_downloader_and_hostname_boundaries(monkeypatch)
         }).encode("utf-8"),
     )
     with patch("tools.web_search.safe_download", return_value=downloaded) as safe, \
-         patch("tools.web_search.validate_public_url", side_effect=lambda value: value):
+         patch("tools.web_search.validate_public_url", side_effect=lambda value: value) as validate:
         results = web_search("query", allowed_domains=["example.org"])
 
     assert [item.title for item in results] == ["Allowed"]
+    validate.assert_called_once_with("https://papers.example.org/a")
     kwargs = safe.call_args.kwargs
     assert kwargs["method"] == "POST"
     assert kwargs["headers"]["X-API-KEY"] == "test-key"
     assert kwargs["json_body"] == {"q": "query", "num": 5}
     assert kwargs["allowed_content_types"] == {"application/json"}
     assert kwargs["max_bytes"] > 0
+
+
+def test_web_search_bounds_public_url_validation_candidates(monkeypatch):
+    monkeypatch.setenv("SERPER_API_KEY", "test-key")
+    downloaded = SimpleNamespace(
+        content=json.dumps({
+            "organic": [
+                {
+                    "title": f"Result {index}",
+                    "link": f"https://candidate-{index}.example.test/result",
+                }
+                for index in range(100)
+            ]
+        }).encode("utf-8"),
+    )
+    with patch("tools.web_search.safe_download", return_value=downloaded), \
+         patch("tools.web_search._MAX_RESULT_CANDIDATES", 7), \
+         patch("tools.web_search.validate_public_url", side_effect=ValueError("invalid")) as validate:
+        results = web_search("query", limit=10)
+
+    assert results == []
+    assert validate.call_count == 7
 
 
 def test_web_search_returns_generic_error_for_invalid_or_failed_provider(monkeypatch):
