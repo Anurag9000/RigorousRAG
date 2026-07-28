@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import itertools
 import re
 from typing import Any, Dict, Iterable, List
 
@@ -63,6 +64,25 @@ _FIELD_ORDER = [
     "title", "author", "year", "journal", "booktitle", "publisher",
     "institution", "school", "volume", "number", "pages", "doi", "url",
 ]
+_FIELD_LIMITS = {
+    "title": 1000,
+    "authors": 3000,
+    "author": 3000,
+    "year": 100,
+    "journal": 1000,
+    "booktitle": 1000,
+    "publisher": 1000,
+    "institution": 1000,
+    "school": 1000,
+    "volume": 100,
+    "number": 100,
+    "pages": 200,
+    "doi": 500,
+    "url": 4096,
+    "entry_type": 50,
+}
+_MAX_OUTPUT_ENTRIES = 100
+_MAX_INSPECTED_CANDIDATES = 1000
 _BIBTEX_ESCAPES = {
     "\\": r"\textbackslash{}",
     "{": r"\{",
@@ -77,6 +97,11 @@ _BIBTEX_ESCAPES = {
 }
 
 
+def _bounded_scalar(value: Any, field: str) -> str:
+    limit = _FIELD_LIMITS.get(field, 1000)
+    return str(value or "")[:limit]
+
+
 def _escape_bibtex(value: Any) -> str:
     """Escape each original character once, avoiding cascading replacements."""
 
@@ -89,13 +114,17 @@ def _slug(value: str, limit: int = 28) -> str:
 
 
 def _citation_key(citation: Dict[str, Any], index: int) -> str:
-    authors = str(citation.get("authors") or citation.get("author") or "")
+    authors = _bounded_scalar(
+        citation.get("authors") or citation.get("author") or "",
+        "authors",
+    )
     first_author = re.split(r"\s+and\s+|,|;", authors, maxsplit=1, flags=re.I)[0]
     surname = first_author.strip().split()[-1] if first_author.strip() else "anon"
-    year = re.sub(r"\D", "", str(citation.get("year") or "nd")) or "nd"
-    title_slug = _slug(str(citation.get("title") or "untitled"), 18)
+    year = re.sub(r"\D", "", _bounded_scalar(citation.get("year") or "nd", "year")) or "nd"
+    title = _bounded_scalar(citation.get("title") or "untitled", "title")
+    title_slug = _slug(title, 18)
     identity = "|".join(
-        str(citation.get(field) or "")
+        _bounded_scalar(citation.get(field) or "", field)
         for field in ("title", "authors", "year", "doi", "url")
     )
     digest = hashlib.sha1(identity.encode("utf-8")).hexdigest()[:6]
@@ -103,7 +132,10 @@ def _citation_key(citation: Dict[str, Any], index: int) -> str:
 
 
 def _normalise_entry(citation: Dict[str, Any]) -> tuple[str, Dict[str, str]]:
-    entry_type = str(citation.get("entry_type") or "article").lower().strip()
+    entry_type = _bounded_scalar(
+        citation.get("entry_type") or "article",
+        "entry_type",
+    ).lower().strip()
     if entry_type not in _ALLOWED_ENTRY_TYPES:
         entry_type = "misc"
     fields: Dict[str, str] = {}
@@ -116,7 +148,7 @@ def _normalise_entry(citation: Dict[str, Any]) -> tuple[str, Dict[str, str]]:
     for source, destination in mappings.items():
         value = citation.get(source)
         if value not in (None, "") and destination not in fields:
-            fields[destination] = _escape_bibtex(value)
+            fields[destination] = _escape_bibtex(_bounded_scalar(value, source))
     fields.setdefault("title", "Untitled")
     fields.setdefault("author", "Unknown")
     fields.setdefault("year", "n.d.")
@@ -128,8 +160,12 @@ def _normalise_entry(citation: Dict[str, Any]) -> tuple[str, Dict[str, str]]:
 def export_to_bibtex(citations: Iterable[Dict[str, Any]]) -> str:
     entries: List[str] = []
     used_keys: set[str] = set()
-    for raw in citations:
-        if len(entries) >= 100:
+    try:
+        iterator = iter(citations)
+    except TypeError as exc:
+        raise ValueError("citations must be an iterable of metadata objects.") from exc
+    for raw in itertools.islice(iterator, _MAX_INSPECTED_CANDIDATES):
+        if len(entries) >= _MAX_OUTPUT_ENTRIES:
             break
         if not isinstance(raw, dict):
             continue
