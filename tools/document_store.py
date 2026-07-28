@@ -52,6 +52,12 @@ class DocumentStore(_original_document_store):
             raise ValueError("DOCUMENT_DB_PATH became a symbolic link.")
         return super()._connect()
 
+    def ping(self) -> bool:
+        try:
+            return super().ping()
+        except (OSError, ValueError):
+            return False
+
     def get(
         self,
         *,
