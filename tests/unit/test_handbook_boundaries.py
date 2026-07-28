@@ -80,3 +80,25 @@ def test_changed_handbook_signature_rebuilds_index(monkeypatch, tmp_path):
     assert "alpha privacy policy" in first
     assert "beta retention policy" in second
     assert "alpha privacy policy" not in second
+
+
+def test_same_size_same_mtime_replacement_rebuilds_cache(monkeypatch, tmp_path):
+    path = tmp_path / "handbook.md"
+    path.write_text("alpha policy", encoding="utf-8")
+    monkeypatch.setattr(handbook, "HANDBOOK_PATH", path)
+    _reset_cache(monkeypatch)
+
+    first = handbook.search_handbook("alpha")
+    original = path.stat()
+    replacement = tmp_path / "replacement.md"
+    replacement.write_text("bravo policy", encoding="utf-8")
+    assert replacement.stat().st_size == original.st_size
+    os.utime(replacement, ns=(original.st_atime_ns, original.st_mtime_ns))
+    replacement.replace(path)
+    assert path.stat().st_mtime_ns == original.st_mtime_ns
+
+    second = handbook.search_handbook("bravo")
+
+    assert "alpha policy" in first
+    assert "bravo policy" in second
+    assert "alpha policy" not in second
