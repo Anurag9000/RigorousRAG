@@ -7,10 +7,22 @@ import argparse
 from Searching import AcademicSearchEngine
 from llm_agent import LLMAgent
 
+_MAX_QUERY_CHARS = 2000
+
 
 def format_summary(summary: str) -> str:
     """Preserve Markdown and line structure produced by the summariser."""
+
     return (summary or "").strip()
+
+
+def _validated_query(value: str) -> str:
+    query = (value or "").strip()
+    if not query:
+        raise ValueError("A research query is required.")
+    if len(query) > _MAX_QUERY_CHARS:
+        raise ValueError("Research queries may contain at most 2,000 characters.")
+    return query
 
 
 def run_query(
@@ -19,6 +31,7 @@ def run_query(
     query: str,
     limit: int,
 ) -> None:
+    query = _validated_query(query)
     hits = engine.search(query, limit=max(1, min(limit, 20)))
     if not hits:
         print("No results found.")
@@ -82,7 +95,10 @@ def main() -> None:
         ollama_host=args.ollama_host,
     )
     if args.query:
-        run_query(engine, agent, args.query, args.results)
+        try:
+            run_query(engine, agent, args.query, args.results)
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from exc
         return
     print("Enter an empty line to exit.\n")
     while True:
@@ -93,7 +109,10 @@ def main() -> None:
             break
         if not query:
             break
-        run_query(engine, agent, query, args.results)
+        try:
+            run_query(engine, agent, query, args.results)
+        except ValueError as exc:
+            print(f"Invalid query: {exc}")
 
 
 if __name__ == "__main__":
