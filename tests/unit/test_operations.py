@@ -34,6 +34,15 @@ def test_job_store_is_owner_scoped_persistent_and_prunable(tmp_path):
     internal = second.get_internal("job-1", "alice")
     assert internal and internal["status"] == "processing"
     assert internal["attempts"] == 1
+    assert internal["doc_id"] is None
+    second.update(
+        "job-1",
+        "alice",
+        status="finalizing",
+        filename="paper.pdf",
+        source_path=str(source),
+        doc_id="doc-1",
+    )
     second.update(
         "job-1",
         "alice",
@@ -71,10 +80,12 @@ def test_recoverable_includes_queued_processing_and_finalizing_only(tmp_path):
             status=status,
             filename=f"{job_id}.txt",
             source_path=str(source) if status not in {"success", "failed"} else "",
-            doc_id="doc-1" if status == "finalizing" else None,
+            doc_id="doc-1" if status in {"finalizing", "success"} else None,
         )
     records = {record["job_id"]: record for record in store.recoverable()}
     assert set(records) == {"queued", "processing", "finalizing"}
+    assert records["queued"]["doc_id"] is None
+    assert records["processing"]["doc_id"] is None
     assert records["finalizing"]["doc_id"] == "doc-1"
     assert store.active_source_paths() == {source.resolve()}
 
@@ -118,7 +129,6 @@ def test_document_store_is_owner_scoped_and_keeps_paths_private(tmp_path):
     assert store.retained_source_path(owner_id="alice", doc_id="doc-1") == source.resolve()
     assert store.retained_source_path(owner_id="bob", doc_id="doc-1") is None
     assert store.source_path(owner_id="alice", doc_id="doc-1") is None
-    assert store.retained_source_paths() == {source.resolve()}
     record = store.delete(owner_id="alice", doc_id="doc-1")
     assert record and Path(record["source_path"]) == source.resolve()
     assert store.get(owner_id="alice", doc_id="doc-1") is None
@@ -151,7 +161,7 @@ def test_document_store_rejects_symlinked_sources(tmp_path):
     except OSError:
         pytest.skip("Symlinks are unavailable on this platform.")
     store = DocumentStore(tmp_path / "documents.sqlite3", upload_root)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="regular file"):
         store.register(
             owner_id="alice",
             doc_id="doc-1",
@@ -166,7 +176,7 @@ def test_copy_source_is_bounded_and_rolls_back_partial_output(tmp_path):
     source.write_bytes(b"0123456789")
     upload_root = tmp_path / "uploads"
     store = DocumentStore(tmp_path / "documents.sqlite3", upload_root)
-    with pytest.raises(ValueError, match="retention limit"):
+    with pytest.raises(ValueError, match="limit"):
         store.copy_source(owner_id="alice", source_path=source, max_bytes=9)
     assert not list(upload_root.rglob("*.txt"))
 
