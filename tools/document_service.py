@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
+import uuid
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Optional
 
 from tools.ingestion import ingest_file
 from tools.ingestion_models import IngestedDocument
 from tools.privacy import mask_metadata_text, sanitize_metadata_dict
 from tools.rag import RAGLayer, get_rag_layer
+from tools.security import normalize_owner_id
 
 
 @dataclass(frozen=True)
@@ -30,6 +34,34 @@ def _summary_sample(document: IngestedDocument, max_chars: int = 9000) -> str:
         + "\n\n[MIDDLE]\n" + document.text[middle_start:middle_start + third]
         + "\n\n[END]\n" + document.text[-third:]
     )
+
+
+def _source_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _verify_source_identity(document: IngestedDocument, owner_id: str) -> None:
+    """Reject a source changed after parsing, even if metadata was preserved."""
+
+    if document.metadata.get("document_identity") != "owner_and_source_sha256":
+        return
+    owner = normalize_owner_id(owner_id)
+    unresolved = Path(document.file_path)
+    if unresolved.is_symlink():
+        raise ValueError("The source became a symbolic link before indexing.")
+    source = unresolved.resolve()
+    if not source.exists() or not source.is_file():
+        raise ValueError("The source disappeared before indexing.")
+    current_hash = _source_sha256(source)
+    expected_id = str(
+        uuid.uuid5(uuid.NAMESPACE_URL, f"rigorousrag:{owner}:{current_hash}")
+    )
+    if expected_id != document.id:
+        raise ValueError("The source changed after parsing and before indexing.")
 
 
 def summarize_document(
@@ -81,6 +113,7 @@ def index_document(
 ) -> IndexedDocument:
     """Index evidence metadata only; filesystem paths belong in DocumentStore."""
 
+    _verify_source_identity(document, owner_id)
     rag = rag or get_rag_layer()
     summary = summarize_document(document, client=client, model=summary_model)
     document.metadata = sanitize_metadata_dict({
