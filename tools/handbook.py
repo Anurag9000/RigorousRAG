@@ -10,14 +10,20 @@ from collections import Counter
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
+from tools.config import bounded_int_env
+
 HANDBOOK_PATH = Path(__file__).resolve().parent.parent / "handbook.md"
-HANDBOOK_MAX_BYTES = max(
-    4096,
-    min(int(os.getenv("HANDBOOK_MAX_BYTES", "1000000")), 20_000_000),
+HANDBOOK_MAX_BYTES = bounded_int_env(
+    "HANDBOOK_MAX_BYTES",
+    1_000_000,
+    minimum=4096,
+    maximum=20_000_000,
 )
-HANDBOOK_MAX_CHUNKS = max(
-    10,
-    min(int(os.getenv("HANDBOOK_MAX_CHUNKS", "1000")), 10_000),
+HANDBOOK_MAX_CHUNKS = bounded_int_env(
+    "HANDBOOK_MAX_CHUNKS",
+    1000,
+    minimum=10,
+    maximum=10_000,
 )
 _CHUNK_CHARS = 1200
 _CACHE: Dict[str, Any] = {"signature": None, "index": None, "chunks": None}
@@ -54,7 +60,7 @@ def _paragraph_chunks(content: str) -> List[Tuple[str, str]]:
     return chunks
 
 
-def _read_handbook(path: Path) -> Tuple[str, Tuple[str, int, int, int, int]]:
+def _read_handbook(path: Path) -> Tuple[str, Tuple[str, int, int, int, int, int]]:
     """Read one regular non-symlink handbook under a strict byte ceiling."""
 
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
@@ -84,6 +90,7 @@ def _read_handbook(path: Path) -> Tuple[str, Tuple[str, int, int, int, int]]:
             str(path.absolute()),
             int(info.st_dev),
             int(info.st_ino),
+            int(info.st_ctime_ns),
             int(info.st_mtime_ns),
             int(info.st_size),
         )
