@@ -41,6 +41,7 @@ _POSIX_PATH_RE = re.compile(
     r"(?<![:/A-Za-z0-9_])/(?:[^/\s'\"<>]+/)+[^/\s'\"<>,;:)}\]]*"
 )
 _HOME_PATH_RE = re.compile(r"(?<!\w)~/(?:[^/\s'\"<>]+/)*[^/\s'\"<>]*")
+_MAX_METADATA_KEY_CHARS = 500
 
 
 def mask_metadata_text(value: str) -> str:
@@ -60,13 +61,32 @@ def mask_metadata_text(value: str) -> str:
     return text
 
 
+def _unique_sanitized_key(raw_key: Any, existing: Dict[str, Any]) -> str:
+    base = mask_metadata_text(str(raw_key))[:_MAX_METADATA_KEY_CHARS]
+    if not base:
+        base = "[REDACTED_KEY]"
+    if base not in existing:
+        return base
+    suffix_index = 2
+    while True:
+        suffix = f"#{suffix_index}"
+        candidate = f"{base[:_MAX_METADATA_KEY_CHARS - len(suffix)]}{suffix}"
+        if candidate not in existing:
+            return candidate
+        suffix_index += 1
+
+
 def sanitize_metadata(value: Any) -> Any:
-    """Recursively mask strings while preserving JSON-compatible structure."""
+    """Recursively mask strings and mapping keys while preserving JSON structure."""
 
     if isinstance(value, str):
         return mask_metadata_text(value)
     if isinstance(value, dict):
-        return {str(key): sanitize_metadata(item) for key, item in value.items()}
+        sanitized: Dict[str, Any] = {}
+        for key, item in value.items():
+            safe_key = _unique_sanitized_key(key, sanitized)
+            sanitized[safe_key] = sanitize_metadata(item)
+        return sanitized
     if isinstance(value, list):
         return [sanitize_metadata(item) for item in value]
     if isinstance(value, tuple):
