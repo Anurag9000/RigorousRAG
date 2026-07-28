@@ -1,5 +1,6 @@
+import json
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -13,22 +14,61 @@ def test_web_search_requires_provider_key(monkeypatch):
         web_search("query")
 
 
-def test_web_search_uses_hostname_boundaries_and_status_validation(monkeypatch):
+def test_web_search_uses_bounded_downloader_and_hostname_boundaries(monkeypatch):
     monkeypatch.setenv("SERPER_API_KEY", "test-key")
-    response = MagicMock()
-    response.raise_for_status.return_value = None
-    response.json.return_value = {
-        "organic": [
-            {"title": "Allowed", "link": "https://papers.example.org/a", "snippet": "A"},
-            {"title": "Attack", "link": "https://example.org.attacker.test/b", "snippet": "B"},
-        ]
-    }
-    with patch("tools.web_search.requests.post", return_value=response), \
+    downloaded = SimpleNamespace(
+        content=json.dumps({
+            "organic": [
+                {
+                    "title": "Allowed",
+                    "link": "https://papers.example.org/a",
+                    "snippet": "A",
+                },
+                {
+                    "title": "Attack",
+                    "link": "https://example.org.attacker.test/b",
+                    "snippet": "B",
+                },
+            ]
+        }).encode("utf-8"),
+    )
+    with patch("tools.web_search.safe_download", return_value=downloaded) as safe, \
          patch("tools.web_search.validate_public_url", side_effect=lambda value: value):
         results = web_search("query", allowed_domains=["example.org"])
+
     assert [item.title for item in results] == ["Allowed"]
-    response.raise_for_status.assert_called_once()
-    assert response.request if hasattr(response, "request") else True
+    kwargs = safe.call_args.kwargs
+    assert kwargs["method"] == "POST"
+    assert kwargs["headers"]["X-API-KEY"] == "test-key"
+    assert kwargs["json_body"] == {"q": "query", "num": 5}
+    assert kwargs["allowed_content_types"] == {"application/json"}
+    assert kwargs["max_bytes"] > 0
+
+
+def test_web_search_returns_generic_error_for_invalid_or_failed_provider(monkeypatch):
+    monkeypatch.setenv("SERPER_API_KEY", "test-key")
+    with patch(
+        "tools.web_search.safe_download",
+        return_value=SimpleNamespace(content=b"not-json"),
+    ):
+        with pytest.raises(WebSearchError, match="provider request failed"):
+            web_search("query")
+
+    with patch(
+        "tools.web_search.safe_download",
+        side_effect=RuntimeError("secret provider details"),
+    ):
+        with pytest.raises(WebSearchError) as captured:
+            web_search("query")
+    assert "secret provider details" not in str(captured.value)
+
+
+def test_web_search_bounds_query_and_domain_counts(monkeypatch):
+    monkeypatch.setenv("SERPER_API_KEY", "test-key")
+    with pytest.raises(ValueError, match="2,000"):
+        web_search("q" * 2001)
+    with pytest.raises(ValueError, match="50"):
+        web_search("query", allowed_domains=[f"{index}.example" for index in range(51)])
 
 
 def test_single_page_uses_bounded_safe_download():
