@@ -1,4 +1,6 @@
+import hashlib
 import json
+import uuid
 from unittest.mock import patch
 
 import fitz
@@ -95,6 +97,13 @@ def _make_figure_pdf(path):
     document.close()
 
 
+def _doc_id(path, owner="alice"):
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    return str(
+        uuid.uuid5(uuid.NAMESPACE_URL, f"rigorousrag:{owner}:{digest}")
+    )
+
+
 def test_figure_region_is_tied_to_exact_caption_page(tmp_path):
     path = tmp_path / "figure.pdf"
     _make_figure_pdf(path)
@@ -112,12 +121,13 @@ def test_visual_entailment_uses_private_registry_not_vector_path(
     path = upload_root / "alice" / "figure.pdf"
     path.parent.mkdir(parents=True)
     _make_figure_pdf(path)
+    document_id = _doc_id(path)
     monkeypatch.setenv("UPLOAD_DIR", str(upload_root))
     monkeypatch.setenv("DOCUMENT_DB_PATH", str(tmp_path / "documents.sqlite3"))
     store = get_document_store()
     store.register(
         owner_id="alice",
-        doc_id="doc-1",
+        doc_id=document_id,
         filename="figure.pdf",
         mime_type="application/pdf",
         source_path=path,
@@ -130,13 +140,13 @@ def test_visual_entailment_uses_private_registry_not_vector_path(
             check_visual_entailment(
                 "Accuracy increased.",
                 "Figure 2B",
-                "doc-1",
+                document_id,
                 owner_id="alice",
                 client=None,
             )
         )
     assert result["page_number"] == 1
-    assert result["citations"][0]["doc_id"] == "doc-1"
+    assert result["citations"][0]["doc_id"] == document_id
     assert "storage_path" not in result["citations"][0]
 
 
@@ -158,3 +168,39 @@ def test_visual_entailment_denies_other_owner_registry_path(monkeypatch, tmp_pat
         )
     assert result["verdict"] == "insufficient"
     assert "retained" in result["rationale"].lower()
+
+
+def test_visual_entailment_refuses_mutated_registered_source(monkeypatch, tmp_path):
+    upload_root = tmp_path / "uploads"
+    path = upload_root / "alice" / "figure.pdf"
+    path.parent.mkdir(parents=True)
+    _make_figure_pdf(path)
+    document_id = _doc_id(path)
+    monkeypatch.setenv("UPLOAD_DIR", str(upload_root))
+    monkeypatch.setenv("DOCUMENT_DB_PATH", str(tmp_path / "documents.sqlite3"))
+    store = get_document_store()
+    store.register(
+        owner_id="alice",
+        doc_id=document_id,
+        filename="figure.pdf",
+        mime_type="application/pdf",
+        source_path=path,
+    )
+    path.write_bytes(path.read_bytes() + b"\n% mutation")
+
+    with patch(
+        "tools.integrity._document_metadata",
+        return_value={"filename": "figure.pdf"},
+    ):
+        result = json.loads(
+            check_visual_entailment(
+                "Accuracy increased.",
+                "Figure 2B",
+                document_id,
+                owner_id="alice",
+                client=None,
+            )
+        )
+
+    assert result["verdict"] == "insufficient"
+    assert result["page_number"] is None
