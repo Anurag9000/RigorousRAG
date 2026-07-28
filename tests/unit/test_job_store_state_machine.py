@@ -1,4 +1,5 @@
 import math
+import time
 
 import pytest
 
@@ -34,7 +35,12 @@ def test_processing_and_finalizing_recovery_transitions_remain_valid(tmp_path):
     store.update("job-1", "alice", status="queued", filename="paper.txt")
     assert store.get_internal("job-1", "alice")["status"] == "queued"
 
-    assert store.claim("job-1", "alice", max_attempts=3, now=10_000) is True
+    assert store.claim(
+        "job-1",
+        "alice",
+        max_attempts=3,
+        now=time.time() + store.retry_max_seconds + 1,
+    ) is True
     store.update("job-1", "alice", status="finalizing", filename="paper.txt")
     store.update("job-1", "alice", status="success", filename="paper.txt")
     assert store.get_internal("job-1", "alice")["status"] == "success"
