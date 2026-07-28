@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import math
 import os
@@ -23,6 +24,7 @@ from starlette.concurrency import run_in_threadpool
 
 from search_agent import SearchAgent
 from tools.bib import export_to_bibtex
+from tools.bounded_pool import BoundedExecutor
 from tools.document_service import index_document
 from tools.document_store import DocumentStore, get_document_store
 from tools.due_scheduler import DueScheduler
@@ -49,6 +51,15 @@ RETAIN_SOURCE_FILES = os.getenv(
 ).lower() in {"1", "true", "yes"}
 JOB_TTL_SECONDS = int(os.getenv("JOB_TTL_SECONDS", str(24 * 60 * 60)))
 REQUESTS_PER_MINUTE = int(os.getenv("REQUESTS_PER_MINUTE", "60"))
+QUERY_WORKERS = max(1, min(int(os.getenv("QUERY_WORKERS", "8")), 64))
+QUERY_MAX_PENDING = max(
+    QUERY_WORKERS,
+    min(int(os.getenv("QUERY_MAX_PENDING", "32")), 1000),
+)
+QUERY_TIMEOUT_SECONDS = max(
+    1.0,
+    min(float(os.getenv("QUERY_TIMEOUT_SECONDS", "120")), 900.0),
+)
 INGEST_WORKERS = max(1, min(int(os.getenv("INGEST_WORKERS", "2")), 16))
 INGEST_MAX_ATTEMPTS = max(1, min(int(os.getenv("INGEST_MAX_ATTEMPTS", "3")), 20))
 INGEST_MAX_PENDING = max(
@@ -74,6 +85,11 @@ MAX_REQUEST_BODY_BYTES = max(
 _JOB_STORE = JobStore(ttl_seconds=JOB_TTL_SECONDS)
 _DOCUMENT_STORE: DocumentStore = get_document_store(upload_root=UPLOAD_DIR)
 _RATE_LIMITER = SlidingWindowRateLimiter(REQUESTS_PER_MINUTE)
+_QUERY_EXECUTOR = BoundedExecutor(
+    max_workers=QUERY_WORKERS,
+    max_pending=QUERY_MAX_PENDING,
+    thread_name_prefix="rigorousrag-query",
+)
 _INGEST_EXECUTOR = ThreadPoolExecutor(
     max_workers=INGEST_WORKERS,
     thread_name_prefix="rigorousrag-ingest",
@@ -125,6 +141,7 @@ def _new_agent(owner_id: str, model: Optional[str] = None) -> SearchAgent:
         owner_id=owner_id,
         api_key=_PROVIDER_KEY,
         base_url=_BASE_URL,
+        request_timeout=min(QUERY_TIMEOUT_SECONDS, 300.0),
     )
 
 
@@ -282,7 +299,7 @@ def _submit_ingestion(
             job_id,
             owner_id,
         )
-    except RuntimeError:
+    except Exception:
         _INGEST_ADMISSION.release()
         _schedule_ingestion_attempt(
             file_path,
@@ -375,7 +392,8 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     await run_in_threadpool(_recover_interrupted_jobs)
     yield
     _cancel_scheduled_ingestions()
-    _INGEST_EXECUTOR.shutdown(wait=False, cancel_futures=False)
+    _INGEST_EXECUTOR.shutdown(wait=False, cancel_futures=True)
+    _QUERY_EXECUTOR.shutdown(wait=False, cancel_futures=True)
 
 
 app = FastAPI(title="RigorousRAG API", version="4.3.0", lifespan=lifespan)
@@ -474,6 +492,9 @@ async def public_config() -> Dict[str, Any]:
         "retain_source_files": RETAIN_SOURCE_FILES,
         "retain_uploads": RETAIN_SOURCE_FILES,
         "requests_per_minute": REQUESTS_PER_MINUTE,
+        "query_workers": QUERY_WORKERS,
+        "query_max_pending": QUERY_MAX_PENDING,
+        "query_timeout_seconds": QUERY_TIMEOUT_SECONDS,
         "ingest_workers": INGEST_WORKERS,
         "ingest_max_pending": INGEST_MAX_PENDING,
         "ingest_max_attempts": INGEST_MAX_ATTEMPTS,
@@ -490,7 +511,23 @@ async def run_query(
     principal: Principal = Depends(get_rate_limited_principal),
 ) -> AgentAnswer:
     agent = _new_agent(principal.owner_id, request.model)
-    return await run_in_threadpool(agent.run, request.query)
+    future = _QUERY_EXECUTOR.submit(agent.run, request.query)
+    if future is None:
+        raise HTTPException(
+            status_code=503,
+            detail="The research query executor is at capacity.",
+            headers={"Retry-After": "1"},
+        )
+    try:
+        return await asyncio.wait_for(
+            asyncio.wrap_future(future),
+            timeout=QUERY_TIMEOUT_SECONDS,
+        )
+    except asyncio.TimeoutError as exc:
+        raise HTTPException(
+            status_code=504,
+            detail="The research query exceeded the server time limit.",
+        ) from exc
 
 
 async def _save_upload(file: UploadFile, destination: Path) -> int:
@@ -705,6 +742,9 @@ async def list_documents(
         document["source_retained"] = bool((record or {}).get("source_retained"))
         document["visual_source_available"] = bool(
             (record or {}).get("visual_source_available")
+        )
+        document["visual_source_verified"] = bool(
+            (record or {}).get("visual_source_verified")
         )
     return documents
 
