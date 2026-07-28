@@ -1,20 +1,129 @@
 """Compatibility entrypoint over the FastAPI service implementation.
 
 `server_app` preserves the complete route/application implementation. This shim
-replaces parser-facing ingestion and recovery so queued uploads are consumed from
-immutable descriptor-anchored byte snapshots and every unfinished operation is
-replayed idempotently instead of inferred successful from ambiguous registry state.
+normalizes service-critical configuration before importing that implementation,
+then replaces parser-facing ingestion and recovery so every unfinished operation is
+replayed idempotently from immutable descriptor-anchored bytes.
 """
 
 from __future__ import annotations
 
 import importlib
+import math
 import os
 import sys
 from pathlib import Path
 from typing import Optional
 
 import uvicorn
+
+
+def _normalize_integer_env(
+    name: str,
+    default: int,
+    *,
+    minimum: int,
+    maximum: int,
+) -> int:
+    try:
+        value = int(os.getenv(name, str(default)))
+    except (TypeError, ValueError, OverflowError):
+        value = default
+    value = max(minimum, min(value, maximum))
+    os.environ[name] = str(value)
+    return value
+
+
+def _normalize_float_env(
+    name: str,
+    default: float,
+    *,
+    minimum: float,
+    maximum: float,
+) -> float:
+    try:
+        value = float(os.getenv(name, str(default)))
+    except (TypeError, ValueError, OverflowError):
+        value = default
+    if not math.isfinite(value):
+        value = default
+    value = max(minimum, min(value, maximum))
+    os.environ[name] = str(value)
+    return value
+
+
+def _normalize_service_environment() -> None:
+    integer_specs = {
+        "MAX_UPLOAD_BYTES": (50_000_000, 1, 1_000_000_000),
+        "MAX_REMOTE_DOWNLOAD_BYTES": (5_000_000, 1, 1_000_000_000),
+        "MAX_REMOTE_REDIRECTS": (4, 0, 20),
+        "JOB_TTL_SECONDS": (86_400, 60, 31_536_000),
+        "REQUESTS_PER_MINUTE": (60, 1, 1_000_000),
+        "QUERY_WORKERS": (8, 1, 64),
+        "QUERY_MAX_PENDING": (32, 1, 1000),
+        "INGEST_WORKERS": (2, 1, 16),
+        "INGEST_MAX_ATTEMPTS": (3, 1, 20),
+        "INGEST_MAX_PENDING": (64, 1, 10_000),
+        "MAX_TOOL_ARGUMENT_CHARS": (50_000, 1000, 500_000),
+        "MAX_TOOL_RESULT_CHARS": (30_000, 1000, 200_000),
+        "MAX_EVIDENCE_SOURCES": (100, 1, 500),
+        "MAX_CONCURRENT_TOOL_WORKERS": (32, 1, 256),
+        "MAX_PENDING_TOOL_TASKS": (64, 1, 4096),
+        "MAX_RESPONSE_TOKENS": (4000, 256, 32_000),
+        "MAX_CHUNKS_PER_DOCUMENT": (10_000, 100, 100_000),
+        "DOCUMENT_LIST_SCAN_BATCH": (500, 50, 5000),
+        "MAX_DOCUMENT_LIST_SCAN_CHUNKS": (100_000, 50, 1_000_000),
+        "ORPHAN_GRACE_SECONDS": (3600, 60, 31_536_000),
+        "VISUAL_MAX_PDF_PAGES": (500, 1, 5000),
+        "VISUAL_MAX_RENDER_PIXELS": (2_000_000, 1_000_000, 100_000_000),
+        "VISUAL_MAX_ENCODED_BYTES": (10_000_000, 100_000, 100_000_000),
+        "OCR_MAX_PAGES": (50, 1, 500),
+        "OCR_DPI": (200, 100, 400),
+        "OCR_TIMEOUT_SECONDS": (30, 1, 300),
+        "OCR_MIN_TEXT_CHARS": (40, 0, 2000),
+        "MAX_PDF_PAGES": (2000, 1, 10_000),
+        "MAX_PDF_RENDER_PIXELS": (40_000_000, 1_000_000, 250_000_000),
+        "MAX_EXTRACTED_CHARS": (5_000_000, 100_000, 50_000_000),
+        "MAX_DOCX_MEMBERS": (10_000, 10, 100_000),
+        "MAX_DOCX_UNCOMPRESSED_BYTES": (200_000_000, 1, 2_000_000_000),
+        "SERPER_MAX_RESPONSE_BYTES": (2_000_000, 10_000, 20_000_000),
+        "WEB_SEARCH_MAX_RESULT_CANDIDATES": (30, 10, 100),
+        "PORT": (8000, 1, 65_535),
+    }
+    for name, (default, minimum, maximum) in integer_specs.items():
+        _normalize_integer_env(
+            name,
+            default,
+            minimum=minimum,
+            maximum=maximum,
+        )
+    float_specs = {
+        "REMOTE_REQUEST_TIMEOUT_SECONDS": (15.0, 0.1, 300.0),
+        "QUERY_TIMEOUT_SECONDS": (120.0, 1.0, 900.0),
+        "INGEST_ADMISSION_RETRY_SECONDS": (1.0, 0.1, 60.0),
+        "MAX_DOCX_COMPRESSION_RATIO": (1000.0, 10.0, 100_000.0),
+    }
+    for name, (default, minimum, maximum) in float_specs.items():
+        _normalize_float_env(
+            name,
+            default,
+            minimum=minimum,
+            maximum=maximum,
+        )
+    upload_limit = int(os.environ["MAX_UPLOAD_BYTES"])
+    request_default = min(upload_limit + 1_048_576, 1_000_000_000)
+    _normalize_integer_env(
+        "MAX_REQUEST_BODY_BYTES",
+        request_default,
+        minimum=upload_limit,
+        maximum=1_000_000_000,
+    )
+    raw_upload_root = Path(os.getenv("UPLOAD_DIR", "uploads"))
+    if raw_upload_root.is_symlink():
+        raise RuntimeError("UPLOAD_DIR may not be a symbolic link.")
+
+
+_normalize_service_environment()
 
 if "server_app" in sys.modules:
     _implementation = importlib.reload(sys.modules["server_app"])
@@ -294,7 +403,7 @@ if __name__ == "__main__":
     uvicorn.run(
         _implementation.app,
         host=os.getenv("HOST", "0.0.0.0"),
-        port=int(os.getenv("PORT", "8000")),
+        port=int(os.environ["PORT"]),
         reload=False,
     )
 else:
