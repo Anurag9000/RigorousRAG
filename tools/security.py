@@ -8,6 +8,7 @@ import json
 import os
 import re
 import socket
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -46,6 +47,10 @@ _SENSITIVE_REDIRECT_HEADERS = {
     "x-api-key",
     "api-key",
 }
+# requests.Session.trust_env is mutable process state on the session object. Calls
+# sharing an injected session must not restore proxy inheritance while another call
+# is still following redirects. Owned per-call sessions do not use this lock.
+_INJECTED_SESSION_ENV_LOCK = threading.RLock()
 
 
 class SecurityError(ValueError):
@@ -289,9 +294,14 @@ def safe_download(
     current_json = json_body
     owned_session = session is None
     http = session or requests.Session()
-    previous_trust_env = getattr(http, "trust_env", False)
-    http.trust_env = False
+    injected_lock_acquired = False
+    previous_trust_env = False
+    if not owned_session:
+        _INJECTED_SESSION_ENV_LOCK.acquire()
+        injected_lock_acquired = True
     try:
+        previous_trust_env = getattr(http, "trust_env", False)
+        http.trust_env = False
         for _ in range(MAX_REDIRECTS + 1):
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -384,3 +394,5 @@ def safe_download(
         http.trust_env = previous_trust_env
         if owned_session:
             http.close()
+        if injected_lock_acquired:
+            _INJECTED_SESSION_ENV_LOCK.release()
