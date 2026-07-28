@@ -1,6 +1,8 @@
 import argparse
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from Searching import SearchHit
 from ai_search import format_summary, main, run_query
 from llm_agent import CitationSummary
@@ -28,6 +30,17 @@ def test_run_query_prints_summary_and_sources(capsys):
     output = capsys.readouterr().out
     assert "Supported [1]." in output
     assert "[1] A" in output
+
+
+def test_run_query_rejects_oversized_input_before_search():
+    engine = MagicMock()
+    agent = MagicMock()
+
+    with pytest.raises(ValueError, match="2,000"):
+        run_query(engine, agent, "q" * 2001, 5)
+
+    engine.search.assert_not_called()
+    agent.summarise.assert_not_called()
 
 
 def test_main_loads_persisted_index_without_rebuild():
