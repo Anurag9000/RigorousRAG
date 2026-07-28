@@ -44,7 +44,7 @@ def test_all_common_latex_special_characters_are_escaped_once():
     output = export_to_bibtex([
         {
             "entry_type": "misc",
-            "title": r"A $ B ~ C ^ D # E % F & G _ H {I} \",
+            "title": "A $ B ~ C ^ D # E % F & G _ H {I} backslash \\ end",
         }
     ])
 
@@ -67,6 +67,6 @@ def test_direct_export_skips_invalid_items_and_caps_at_one_hundred():
 
     output = export_to_bibtex(citations)
 
-    assert output.count("@misc{") == 99
-    assert "Reference 98" in output
-    assert "Reference 99" not in output
+    assert output.count("@misc{") == 100
+    assert "Reference 99" in output
+    assert "Reference 100" not in output
