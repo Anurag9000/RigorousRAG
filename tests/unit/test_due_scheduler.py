@@ -4,6 +4,16 @@ import time
 from tools.due_scheduler import DueScheduler
 
 
+def test_scheduler_starts_no_thread_until_first_schedule():
+    scheduler = DueScheduler(name="test-due-lazy")
+    try:
+        assert scheduler.thread_started() is False
+        assert scheduler.pending_count() == 0
+    finally:
+        scheduler.shutdown()
+    assert scheduler.thread_started() is False
+
+
 def test_due_callback_runs_once():
     scheduler = DueScheduler(name="test-due-once")
     fired = threading.Event()
@@ -15,6 +25,7 @@ def test_due_callback_runs_once():
             lambda value: (calls.append(value), fired.set()),
             "done",
         )
+        assert scheduler.thread_started() is True
         assert fired.wait(1.0)
         assert calls == ["done"]
         assert scheduler.pending_count() == 0
@@ -58,6 +69,7 @@ def test_cancel_and_shutdown_prevent_callbacks():
     assert scheduler.schedule("job-2", time.time() + 10, calls.append, "shutdown")
     scheduler.shutdown()
     assert scheduler.pending_count() == 0
+    assert scheduler.thread_started() is False
     assert scheduler.schedule("job-3", time.time(), calls.append, "late") is False
     assert calls == []
 
