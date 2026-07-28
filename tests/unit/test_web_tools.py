@@ -110,13 +110,36 @@ def test_single_page_uses_bounded_safe_download():
     assert safe.call_args.kwargs["max_bytes"] == 1234
 
 
-def test_single_page_returns_redacted_structured_error():
+def test_single_page_masks_sensitive_success_url():
+    downloaded = SimpleNamespace(
+        final_url="https://alice:password@example.test/article?token=secret-value",
+        headers={"Content-Type": "text/plain; charset=utf-8"},
+        content=b"Evidence text",
+        status_code=200,
+    )
+    with patch("tools.single_page.safe_download", return_value=downloaded):
+        page = fetch_single_page("https://example.test/article")
+
+    assert page.error is None
+    assert "alice" not in page.url
+    assert "password" not in page.url
+    assert "secret-value" not in page.url
+    assert "[REDACTED_CREDENTIALS]" in page.url
+    assert "[REDACTED_SECRET]" in page.url
+
+
+def test_single_page_returns_redacted_structured_error_and_url():
     with patch(
         "tools.single_page.safe_download",
         side_effect=ValueError("secret resolver path /private/state"),
     ):
-        page = fetch_single_page("http://127.0.0.1")
+        page = fetch_single_page(
+            "https://alice:password@example.test/article?api_key=top-secret"
+        )
     assert page.error == "Page fetch failed (ValueError)."
     assert "secret" not in page.error
     assert "/private" not in page.error
+    assert "alice" not in page.url
+    assert "password" not in page.url
+    assert "top-secret" not in page.url
     assert page.text == ""
