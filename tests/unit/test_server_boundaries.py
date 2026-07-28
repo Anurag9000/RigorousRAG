@@ -86,6 +86,28 @@ def test_upload_is_fsynced_before_job_submission(server_module, monkeypatch):
     assert len(submitted) == 1
 
 
+def test_queue_write_failure_removes_saved_upload(server_module, monkeypatch):
+    original_update = server_module._JOB_STORE.update
+
+    def fail_update(*_args, **_kwargs):
+        raise RuntimeError("database unavailable at /private/jobs.sqlite3")
+
+    monkeypatch.setattr(server_module._JOB_STORE, "update", fail_update)
+    with TestClient(server_module.app) as client:
+        response = client.post(
+            "/ingest",
+            headers={"X-API-Key": "alice-key"},
+            files={"file": ("paper.txt", io.BytesIO(b"evidence"), "text/plain")},
+        )
+    monkeypatch.setattr(server_module._JOB_STORE, "update", original_update)
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "The ingestion queue is unavailable."
+    owner_dir = server_module.UPLOAD_DIR / "alice"
+    assert not owner_dir.exists() or not list(owner_dir.iterdir())
+    assert "/private" not in response.text
+
+
 def test_internal_indexing_error_is_redacted_from_public_job_status(
     server_module,
     monkeypatch,
