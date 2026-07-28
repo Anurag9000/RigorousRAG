@@ -6,6 +6,7 @@ import hashlib
 import json
 import math
 import os
+import stat
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
@@ -13,9 +14,28 @@ from typing import Any, Dict
 
 from tools.privacy import mask_metadata_text, sanitize_metadata_dict
 
+
+def _bounded_int_env(name: str, default: int, *, minimum: int, maximum: int) -> int:
+    try:
+        value = int(os.getenv(name, str(default)))
+    except (TypeError, ValueError, OverflowError):
+        value = default
+    return max(minimum, min(value, maximum))
+
+
 LOG_FILE = os.getenv("USAGE_LOG_FILE", "usage_metrics.jsonl")
-LOG_MAX_BYTES = max(1024, int(os.getenv("USAGE_LOG_MAX_BYTES", str(10 * 1024 * 1024))))
-LOG_BACKUPS = max(0, min(int(os.getenv("USAGE_LOG_BACKUPS", "3")), 20))
+LOG_MAX_BYTES = _bounded_int_env(
+    "USAGE_LOG_MAX_BYTES",
+    10 * 1024 * 1024,
+    minimum=1024,
+    maximum=10 * 1024 * 1024 * 1024,
+)
+LOG_BACKUPS = _bounded_int_env(
+    "USAGE_LOG_BACKUPS",
+    3,
+    minimum=0,
+    maximum=20,
+)
 _LOG_LOCK = threading.Lock()
 
 
@@ -60,30 +80,76 @@ def _nonnegative_integer(value: Any) -> int:
         return 0
 
 
+def _absolute_without_resolving(path: str | Path) -> Path:
+    candidate = Path(path)
+    if not candidate.is_absolute():
+        candidate = Path.cwd() / candidate
+    return Path(os.path.abspath(candidate))
+
+
+def _has_symlink_component(path: Path) -> bool:
+    candidate = _absolute_without_resolving(path)
+    for component in (candidate, *candidate.parents):
+        try:
+            if component.is_symlink():
+                return True
+        except OSError:
+            return True
+    return False
+
+
 def _rotated_path(path: Path, index: int) -> Path:
     return path.with_name(f"{path.name}.{index}")
+
+
+def _regular_or_missing(path: Path) -> bool:
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+    return stat.S_ISREG(metadata.st_mode)
 
 
 def _rotate(path: Path) -> None:
     if not path.exists() and not path.is_symlink():
         return
+    if path.is_symlink() or not _regular_or_missing(path):
+        raise OSError("Telemetry rotation refused a non-regular path.")
     if LOG_BACKUPS <= 0:
         path.unlink(missing_ok=True)
         return
     oldest = _rotated_path(path, LOG_BACKUPS)
-    oldest.unlink(missing_ok=True)
+    if oldest.is_symlink() or _regular_or_missing(oldest):
+        oldest.unlink(missing_ok=True)
+    else:
+        raise OSError("Telemetry backup path is not a regular file.")
     for index in range(LOG_BACKUPS - 1, 0, -1):
         source = _rotated_path(path, index)
-        if source.exists() or source.is_symlink():
-            source.replace(_rotated_path(path, index + 1))
+        destination = _rotated_path(path, index + 1)
+        if source.is_symlink():
+            source.unlink(missing_ok=True)
+            continue
+        if source.exists():
+            if not _regular_or_missing(source) or destination.is_symlink():
+                raise OSError("Telemetry backup rotation encountered an unsafe path.")
+            source.replace(destination)
     path.replace(_rotated_path(path, 1))
 
 
 def _append_line(path: Path, line: str) -> None:
-    flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND
+    flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND | getattr(os, "O_NONBLOCK", 0)
     flags |= getattr(os, "O_NOFOLLOW", 0)
     descriptor = os.open(path, flags, 0o600)
     try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise OSError("Telemetry destination must be a regular file.")
+        try:
+            os.fchmod(descriptor, 0o600)
+        except OSError:
+            pass
         with os.fdopen(descriptor, "a", encoding="utf-8", closefd=False) as handle:
             handle.write(line)
             handle.flush()
@@ -101,8 +167,12 @@ def log_activity(activity_type: str, details: Dict[str, Any]) -> None:
         "details": _json_safe(sanitized_details),
     }
     try:
-        path = Path(LOG_FILE)
+        path = _absolute_without_resolving(LOG_FILE)
+        if _has_symlink_component(path.parent):
+            return
         path.parent.mkdir(parents=True, exist_ok=True)
+        if _has_symlink_component(path.parent):
+            return
         line = json.dumps(
             entry,
             ensure_ascii=False,
@@ -120,12 +190,12 @@ def log_activity(activity_type: str, details: Dict[str, Any]) -> None:
             ) + "\n"
             encoded_length = len(line.encode("utf-8"))
         with _LOG_LOCK:
-            if path.is_symlink():
+            if path.is_symlink() or not _regular_or_missing(path):
                 return
             current_size = path.stat().st_size if path.exists() else 0
             if current_size + encoded_length > LOG_MAX_BYTES:
                 _rotate(path)
-            if path.is_symlink():
+            if path.is_symlink() or not _regular_or_missing(path):
                 return
             _append_line(path, line)
     except Exception:
