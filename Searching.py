@@ -49,9 +49,10 @@ class AcademicSearchEngine:
             request_delay=request_delay,
         )
         self.storage = StorageManager(storage_dir)
-        self.state: CrawlState = self.storage.load_crawl_state()
-        self.index = self.storage.load_index() or InvertedIndex()
-        self.pagerank_scores: Dict[str, float] = self.storage.load_pagerank()
+        state, index, pagerank = self.storage.load_snapshot()
+        self.state = state
+        self.index = index or InvertedIndex()
+        self.pagerank_scores = pagerank
         self.pages: Dict[str, Page] = dict(self.state.pages)
 
     @property
@@ -68,12 +69,16 @@ class AcademicSearchEngine:
             for url in page_urls
         }
         self.state.graph = filtered_graph
-        self.storage.save_crawl_state(self.state)
         self.index = InvertedIndex()
         self.index.build(self.pages)
-        self.storage.save_index(self.index)
         self.pagerank_scores = compute_pagerank(filtered_graph)
-        self.storage.save_pagerank(self.pagerank_scores)
+        # Publish crawl state, sparse index, and PageRank through one manifest-last
+        # generation commit. A crash cannot make startup combine different builds.
+        self.storage.save_snapshot(
+            self.state,
+            self.index,
+            self.pagerank_scores,
+        )
         return len(self.pages)
 
     def search(self, query: str, limit: int = 10) -> List[SearchHit]:
