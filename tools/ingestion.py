@@ -1,9 +1,11 @@
-"""Safe document parsing, redaction, metadata extraction, and semantic sections."""
+"""Safe document parsing, optional OCR, redaction, and semantic sections."""
 
 from __future__ import annotations
 
 import hashlib
+import io
 import mimetypes
+import os
 import re
 import statistics
 import uuid
@@ -17,9 +19,21 @@ import fitz
 from tools.ingestion_models import DocumentSection, IngestedDocument, IngestionResult
 from tools.security import DEFAULT_MAX_UPLOAD_BYTES
 
+try:
+    import pytesseract
+    from PIL import Image
+except ImportError:  # OCR is an optional runtime capability.
+    pytesseract = None  # type: ignore[assignment]
+    Image = None  # type: ignore[assignment]
+
 _ALLOWED_SUFFIXES = {".pdf", ".docx", ".txt", ".md"}
 _PDF_MIME = "application/pdf"
 _DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+_ENABLE_OCR = os.getenv("ENABLE_OCR", "false").lower() in {"1", "true", "yes"}
+_OCR_MAX_PAGES = max(1, min(int(os.getenv("OCR_MAX_PAGES", "50")), 500))
+_OCR_DPI = max(100, min(int(os.getenv("OCR_DPI", "200")), 400))
+_OCR_TIMEOUT_SECONDS = max(1, min(int(os.getenv("OCR_TIMEOUT_SECONDS", "30")), 300))
+_OCR_MIN_TEXT_CHARS = max(0, min(int(os.getenv("OCR_MIN_TEXT_CHARS", "40")), 2000))
 _EMAIL_RE = re.compile(r"(?<![\w.+-])[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}(?![\w.-])")
 _PHONE_RE = re.compile(r"(?<!\w)(?:\+?\d{1,3}[\s().-]*)?(?:\d[\s().-]*){7,14}\d(?!\w)")
 _ADDRESS_RE = re.compile(
@@ -180,7 +194,9 @@ def _validate_file(path: Path) -> str:
     if size <= 0:
         raise ValueError("The input file is empty.")
     if size > DEFAULT_MAX_UPLOAD_BYTES:
-        raise ValueError(f"The input file exceeds the {DEFAULT_MAX_UPLOAD_BYTES}-byte upload limit.")
+        raise ValueError(
+            f"The input file exceeds the {DEFAULT_MAX_UPLOAD_BYTES}-byte upload limit."
+        )
     suffix = path.suffix.lower()
     if suffix not in _ALLOWED_SUFFIXES:
         raise ValueError(
@@ -234,56 +250,131 @@ def _page_heading_candidates(page: fitz.Page) -> List[Tuple[str, float, bool]]:
     for block in blocks:
         for line in block.get("lines", []) or []:
             spans = line.get("spans", []) or []
-            text = " ".join(str(span.get("text") or "").strip() for span in spans).strip()
+            text = " ".join(
+                str(span.get("text") or "").strip() for span in spans
+            ).strip()
             if not text or len(text) > 250:
                 continue
-            sizes = [float(span.get("size") or 0.0) for span in spans if span.get("text")]
+            sizes = [
+                float(span.get("size") or 0.0)
+                for span in spans
+                if span.get("text")
+            ]
             size = max(sizes) if sizes else 0.0
             bold = any(int(span.get("flags") or 0) & 16 for span in spans)
             candidates.append((text, size, bold))
     return candidates
 
 
-def _extract_sections_from_pdf(document: fitz.Document) -> List[DocumentSection]:
-    page_payloads: List[Tuple[int, str, List[Tuple[str, float, bool]]]] = []
+def _ocr_page(page: fitz.Page, page_number: int) -> str:
+    if not _ENABLE_OCR or page_number > _OCR_MAX_PAGES:
+        return ""
+    if pytesseract is None or Image is None:
+        raise RuntimeError(
+            "OCR is enabled but Pillow/pytesseract is unavailable. Install OCR dependencies."
+        )
+    pixmap = page.get_pixmap(dpi=_OCR_DPI, alpha=False)
+    with Image.open(io.BytesIO(pixmap.tobytes("png"))) as image:
+        text = pytesseract.image_to_string(
+            image,
+            config="--psm 3",
+            timeout=_OCR_TIMEOUT_SECONDS,
+        )
+    return "\n".join(line.rstrip() for line in text.splitlines()).strip()
+
+
+def _extract_sections_from_pdf(
+    document: fitz.Document,
+) -> Tuple[List[DocumentSection], List[int]]:
+    page_payloads: List[
+        Tuple[int, str, List[Tuple[str, float, bool]], bool]
+    ] = []
     all_sizes: List[float] = []
+    ocr_pages: List[int] = []
     for page_index, page in enumerate(document):
+        page_number = page_index + 1
         text = page.get_text("text", sort=True).strip()
-        tables = _extract_tables_from_page(page)
+        used_ocr = False
+        if len(re.sub(r"\s+", "", text)) < _OCR_MIN_TEXT_CHARS:
+            ocr_text = _ocr_page(page, page_number)
+            if ocr_text:
+                text = ocr_text
+                used_ocr = True
+                ocr_pages.append(page_number)
+        tables = _extract_tables_from_page(page) if not used_ocr else []
         if tables:
-            text = f"{text}\n\n" + "\n\n".join(f"[TABLE]\n{table}" for table in tables)
-        candidates = _page_heading_candidates(page)
+            text = f"{text}\n\n" + "\n\n".join(
+                f"[TABLE]\n{table}" for table in tables
+            )
+        candidates = _page_heading_candidates(page) if not used_ocr else []
         all_sizes.extend(size for _, size, _ in candidates if size > 0)
-        page_payloads.append((page_index + 1, text.strip(), candidates))
+        page_payloads.append((page_number, text.strip(), candidates, used_ocr))
     median_size = statistics.median(all_sizes) if all_sizes else 0.0
     sections: List[DocumentSection] = []
-    for page_number, page_text, candidates in page_payloads:
+    for page_number, page_text, candidates, used_ocr in page_payloads:
         if not page_text:
             continue
         heading = f"Page {page_number}"
-        for text, size, bold in candidates:
-            if (bold and size >= median_size) or size >= median_size * 1.25:
-                if 3 <= len(text) <= 180:
-                    heading = text
-                    break
-        sections.append(DocumentSection(title=heading[:500], content=page_text, page_number=page_number))
-    return sections
+        if used_ocr:
+            heading += " (OCR)"
+        else:
+            for text, size, bold in candidates:
+                if median_size and (
+                    (bold and size >= median_size) or size >= median_size * 1.25
+                ):
+                    if 3 <= len(text) <= 180:
+                        heading = text
+                        break
+        sections.append(
+            DocumentSection(
+                title=heading[:500],
+                content=page_text,
+                page_number=page_number,
+            )
+        )
+    return sections, ocr_pages
 
 
 def _ingest_pdf(path: Path) -> IngestionResult:
     try:
         document = fitz.open(path)
     except Exception as exc:
-        return IngestionResult(success=False, error=f"Could not open PDF: {type(exc).__name__}.")
+        return IngestionResult(
+            success=False,
+            error=f"Could not open PDF: {type(exc).__name__}.",
+        )
     try:
         if document.needs_pass:
             return IngestionResult(success=False, error="Encrypted PDFs are not supported.")
-        sections = _extract_sections_from_pdf(document)
+        sections, ocr_pages = _extract_sections_from_pdf(document)
         text = "\n\n".join(section.content for section in sections).strip()
         if not text:
-            return IngestionResult(success=False, error="The PDF contains no extractable text; OCR is required.")
+            if _ENABLE_OCR and (pytesseract is None or Image is None):
+                error = "The PDF requires OCR, but OCR dependencies are unavailable."
+            elif _ENABLE_OCR and len(document) > _OCR_MAX_PAGES:
+                error = (
+                    "No text was extracted within the configured OCR page limit "
+                    f"({_OCR_MAX_PAGES})."
+                )
+            elif _ENABLE_OCR:
+                error = "OCR completed but produced no indexable text."
+            else:
+                error = "The PDF contains no extractable text; set ENABLE_OCR=true."
+            return IngestionResult(success=False, error=error)
         metadata = dict(document.metadata or {})
         title = str(metadata.get("title") or "").strip() or None
+        safe_metadata = {
+            key: value
+            for key, value in metadata.items()
+            if isinstance(value, (str, int, float, bool)) and value not in (None, "")
+        }
+        safe_metadata.update(
+            {
+                "ocr_enabled": _ENABLE_OCR,
+                "ocr_page_count": len(ocr_pages),
+                "ocr_pages": ",".join(str(page) for page in ocr_pages),
+            }
+        )
         return IngestionResult(
             success=True,
             document=IngestedDocument(
@@ -294,14 +385,16 @@ def _ingest_pdf(path: Path) -> IngestionResult:
                 title=title,
                 text=text,
                 sections=sections,
-                metadata={
-                    key: value for key, value in metadata.items()
-                    if isinstance(value, (str, int, float, bool)) and value not in (None, "")
-                },
+                metadata=safe_metadata,
             ),
         )
+    except RuntimeError as exc:
+        return IngestionResult(success=False, error=str(exc))
     except Exception as exc:
-        return IngestionResult(success=False, error=f"PDF extraction failed: {type(exc).__name__}.")
+        return IngestionResult(
+            success=False,
+            error=f"PDF extraction failed: {type(exc).__name__}.",
+        )
     finally:
         document.close()
 
@@ -310,7 +403,10 @@ def _ingest_docx(path: Path) -> IngestionResult:
     try:
         document = docx.Document(str(path))
     except Exception as exc:
-        return IngestionResult(success=False, error=f"Could not open DOCX: {type(exc).__name__}.")
+        return IngestionResult(
+            success=False,
+            error=f"Could not open DOCX: {type(exc).__name__}.",
+        )
     sections: List[DocumentSection] = []
     current_title = "Document"
     current_lines: List[str] = []
@@ -337,7 +433,9 @@ def _ingest_docx(path: Path) -> IngestionResult:
         rows = ["\t".join(cell.text.strip() for cell in row.cells) for row in table.rows]
         table_text = "\n".join(row for row in rows if row.strip()).strip()
         if table_text:
-            sections.append(DocumentSection(title=f"Table {table_index}", content=table_text))
+            sections.append(
+                DocumentSection(title=f"Table {table_index}", content=table_text)
+            )
     text = "\n\n".join(section.content for section in sections).strip()
     if not text:
         return IngestionResult(success=False, error="The DOCX contains no extractable text.")
@@ -373,7 +471,10 @@ def _ingest_text(path: Path, mime_type: str) -> IngestionResult:
         except UnicodeDecodeError:
             continue
     if decoded is None:
-        return IngestionResult(success=False, error="The text encoding could not be decoded.")
+        return IngestionResult(
+            success=False,
+            error="The text encoding could not be decoded.",
+        )
     text = decoded.strip()
     if not text:
         return IngestionResult(success=False, error="The text document is empty.")
@@ -404,7 +505,11 @@ def _redact_sections(sections: Sequence[DocumentSection]) -> List[DocumentSectio
             if len(chunks) > 1:
                 title = f"{title} — Part {chunk_index + 1}"
             redacted.append(
-                DocumentSection(title=title[:500], content=chunk, page_number=section.page_number)
+                DocumentSection(
+                    title=title[:500],
+                    content=chunk,
+                    page_number=section.page_number,
+                )
             )
     return redacted
 
@@ -428,9 +533,14 @@ def ingest_file(file_path: str, owner_id: str = "default_user") -> IngestionResu
     redacted_text = redact_text(document.text).strip()
     redacted_sections = _redact_sections(document.sections)
     if not redacted_text or not redacted_sections:
-        return IngestionResult(success=False, error="No indexable text remained after parsing.")
+        return IngestionResult(
+            success=False,
+            error="No indexable text remained after parsing.",
+        )
     content_hash = hashlib.sha256(redacted_text.encode("utf-8")).hexdigest()
-    stable_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"rigorousrag:{owner_id}:{content_hash}"))
+    stable_id = str(
+        uuid.uuid5(uuid.NAMESPACE_URL, f"rigorousrag:{owner_id}:{content_hash}")
+    )
     extracted = extract_academic_metadata(redacted_text)
     document.id = stable_id
     document.text = redacted_text
@@ -441,10 +551,12 @@ def ingest_file(file_path: str, owner_id: str = "default_user") -> IngestionResu
         or path.stem.replace("_", " ").replace("-", " ")
     )
     document.metadata.update(extracted)
-    document.metadata.update({
-        "owner_id": owner_id,
-        "content_sha256": content_hash,
-        "file_size_bytes": path.stat().st_size,
-        "redaction": "best_effort_regex_masking",
-    })
+    document.metadata.update(
+        {
+            "owner_id": owner_id,
+            "content_sha256": content_hash,
+            "file_size_bytes": path.stat().st_size,
+            "redaction": "best_effort_regex_masking",
+        }
+    )
     return IngestionResult(success=True, document=document)
