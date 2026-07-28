@@ -6,6 +6,7 @@ import argparse
 import json
 import math
 import os
+import re
 import threading
 import time
 import uuid
@@ -59,6 +60,7 @@ _INGEST_FUTURES_LOCK = threading.Lock()
 _INGEST_TIMERS: Dict[str, threading.Timer] = {}
 _INGEST_TIMERS_LOCK = threading.Lock()
 _INGEST_SHUTDOWN = threading.Event()
+_REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 
 _parser = argparse.ArgumentParser(add_help=False)
 _parser.add_argument("--local", action="store_true")
@@ -93,7 +95,7 @@ def _new_agent(owner_id: str, model: Optional[str] = None) -> SearchAgent:
     if selected not in _ALLOWED_MODELS:
         raise HTTPException(
             status_code=400,
-            detail=f"Model '{selected}' is not enabled by the server.",
+            detail=f"Model '{selected[:200]}' is not enabled by the server.",
         )
     return SearchAgent(
         model=selected,
@@ -101,6 +103,25 @@ def _new_agent(owner_id: str, model: Optional[str] = None) -> SearchAgent:
         api_key=_PROVIDER_KEY,
         base_url=_BASE_URL,
     )
+
+
+def _bounded_identifier(value: str, label: str, max_length: int = 200) -> str:
+    identifier = (value or "").strip()
+    if not identifier or len(identifier) > max_length:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{label} must contain between 1 and {max_length} characters.",
+        )
+    return identifier
+
+
+def _safe_request_id(raw_value: Optional[str]) -> str:
+    candidate = (raw_value or "").strip()
+    return candidate if _REQUEST_ID_RE.fullmatch(candidate) else uuid.uuid4().hex
+
+
+def _internal_failure_message(prefix: str, exc: BaseException) -> str:
+    return f"{prefix} ({type(exc).__name__})."
 
 
 def _validated_upload_file(path: str | Path | None) -> Optional[Path]:
@@ -314,9 +335,9 @@ app = FastAPI(title="RigorousRAG API", version="4.3.0", lifespan=lifespan)
 
 @app.middleware("http")
 async def security_headers(request: Request, call_next):
-    request_id = request.headers.get("X-Request-ID") or uuid.uuid4().hex
+    request_id = _safe_request_id(request.headers.get("X-Request-ID"))
     response = await call_next(request)
-    response.headers["X-Request-ID"] = request_id[:128]
+    response.headers["X-Request-ID"] = request_id
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "no-referrer"
@@ -357,7 +378,7 @@ async def get_rate_limited_principal(
 
 class QueryRequest(BaseModel):
     query: str = Field(..., min_length=1, max_length=20_000)
-    model: Optional[str] = None
+    model: Optional[str] = Field(default=None, max_length=200)
 
 
 class JobStatus(BaseModel):
@@ -434,6 +455,8 @@ async def _save_upload(file: UploadFile, destination: Path) -> int:
                         detail=f"Upload exceeds the {DEFAULT_MAX_UPLOAD_BYTES}-byte limit.",
                     )
                 handle.write(chunk)
+            handle.flush()
+            os.fsync(handle.fileno())
         return total
     except Exception:
         destination.unlink(missing_ok=True)
@@ -476,7 +499,8 @@ async def get_job_status(
     job_id: str,
     principal: Principal = Depends(get_principal),
 ) -> JobStatus:
-    entry = await run_in_threadpool(_JOB_STORE.get, job_id, principal.owner_id)
+    identifier = _bounded_identifier(job_id, "job_id")
+    entry = await run_in_threadpool(_JOB_STORE.get, identifier, principal.owner_id)
     if not entry:
         raise HTTPException(status_code=404, detail="Job not found.")
     return JobStatus(**entry)
@@ -580,7 +604,9 @@ def process_ingestion(file_path: str, display_name: str, job_id: str, owner_id: 
                         status="queued",
                         filename=display_name,
                         source_path=str(path),
-                        message=f"Transient ingestion failure; retry queued: {str(exc)[:1200]}",
+                        message=_internal_failure_message(
+                            "Transient ingestion failure; retry queued", exc
+                        ),
                         doc_id=document.id,
                     )
                     _submit_ingestion(str(path), display_name, job_id, owner_id)
@@ -592,7 +618,7 @@ def process_ingestion(file_path: str, display_name: str, job_id: str, owner_id: 
                     owner_id,
                     display_name,
                     path,
-                    str(exc),
+                    _internal_failure_message("Ingestion failed", exc),
                 ):
                     keep_source = True
     finally:
@@ -623,12 +649,13 @@ async def delete_document(
     doc_id: str,
     principal: Principal = Depends(get_rate_limited_principal),
 ) -> Dict[str, str]:
+    document_id = _bounded_identifier(doc_id, "doc_id")
     rag = get_rag_layer()
     results = rag.collection.get(
         where={
             "$and": [
                 {"owner_id": {"$eq": principal.owner_id}},
-                {"doc_id": {"$eq": doc_id}},
+                {"doc_id": {"$eq": document_id}},
             ]
         },
         include=["metadatas"],
@@ -637,7 +664,7 @@ async def delete_document(
     vector_exists = bool(results.get("metadatas") or [])
     registry_record = _DOCUMENT_STORE.get(
         owner_id=principal.owner_id,
-        doc_id=doc_id,
+        doc_id=document_id,
     )
     if not vector_exists and registry_record is None:
         raise HTTPException(status_code=404, detail="Document not found.")
@@ -645,15 +672,15 @@ async def delete_document(
         await run_in_threadpool(
             rag.delete_document,
             owner_id=principal.owner_id,
-            doc_id=doc_id,
+            doc_id=document_id,
         )
     record = await run_in_threadpool(
         _DOCUMENT_STORE.delete,
         owner_id=principal.owner_id,
-        doc_id=doc_id,
+        doc_id=document_id,
     )
     _safe_unlink_upload(str((record or registry_record or {}).get("source_path") or ""))
-    return {"status": "deleted", "doc_id": doc_id}
+    return {"status": "deleted", "doc_id": document_id}
 
 
 @app.post("/tool/visual-entailment")
