@@ -1,5 +1,8 @@
 from unittest.mock import MagicMock, patch
 
+import pytest
+
+import llm_agent
 from Searching import SearchHit
 from llm_agent import ExtractiveFallback, LLMAgent
 
@@ -31,6 +34,7 @@ def test_openai_summary_uses_aligned_source_list():
         result = agent.summarise("q", hits, contexts)
     assert result.summary == "Supported [1]."
     assert result.sources == ["[1] A — https://a.test"]
+    assert result.warning is None
 
 
 def test_provider_failure_returns_extractive_evidence():
@@ -43,3 +47,62 @@ def test_provider_failure_returns_extractive_evidence():
     result = agent.summarise("q", hits, contexts)
     assert "retrieved evidence" in result.summary.lower()
     assert result.warning
+
+
+def test_query_limit_fails_before_provider_calls():
+    agent = LLMAgent(api_key=None)
+    agent.openai_client = MagicMock()
+    agent.ollama_client = MagicMock()
+
+    with pytest.raises(ValueError, match="2,000"):
+        agent.summarise(
+            "q" * 2001,
+            [hit(1, "https://a.test", "A")],
+            [{"url": "https://a.test", "text": "evidence"}],
+        )
+
+    agent.openai_client.chat.completions.create.assert_not_called()
+    agent.ollama_client.chat.assert_not_called()
+
+
+def test_prompt_and_source_count_are_bounded():
+    hits = [
+        hit(index + 1, f"https://{index}.test", "T" * 1000)
+        for index in range(50)
+    ]
+    contexts = [
+        {"url": item.url, "text": "evidence " * 5000}
+        for item in hits
+    ]
+    aligned = llm_agent._align_hits_and_contexts(hits, contexts)
+    prompt = LLMAgent._build_prompt("question", aligned)
+    sources = LLMAgent._source_list(aligned)
+
+    assert len(aligned) == llm_agent._MAX_SOURCES
+    assert len(prompt) <= llm_agent._MAX_PROMPT_CHARS
+    assert len(sources) == llm_agent._MAX_SOURCES
+    assert all(len(source) <= llm_agent._MAX_SOURCE_CHARS for source in sources)
+
+
+def test_generated_summary_warns_for_missing_or_unsupported_markers():
+    aligned = [
+        (hit(1, "https://a.test", "A"), {"url": "https://a.test", "text": "A"}),
+    ]
+
+    missing = LLMAgent._generated_summary("No marker here.", aligned)
+    unsupported = LLMAgent._generated_summary("Claim [2].", aligned)
+
+    assert missing is not None and "no numeric citation markers" in missing.warning
+    assert unsupported is not None and "[2]" in unsupported.warning
+
+
+def test_generated_summary_and_sources_are_hard_bounded():
+    aligned = [
+        (hit(1, "https://a.test", "A"), {"url": "https://a.test", "text": "A"}),
+    ]
+
+    result = LLMAgent._generated_summary("x" * 100_000 + " [1]", aligned)
+
+    assert result is not None
+    assert len(result.summary) == llm_agent._MAX_SUMMARY_CHARS
+    assert len(result.sources) == 1
