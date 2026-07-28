@@ -14,7 +14,7 @@ import uuid
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, AsyncIterator, Callable, Dict, Optional, TypeVar
+from typing import Any, AsyncIterator, BinaryIO, Callable, Dict, Optional, TypeVar
 
 import uvicorn
 from fastapi import Depends, FastAPI, File, Header, HTTPException, Request, UploadFile
@@ -424,7 +424,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     _QUERY_EXECUTOR.shutdown(wait=False, cancel_futures=True)
 
 
-app = FastAPI(title="RigorousRAG API", version="4.3.0", lifespan=lifespan)
+app = FastAPI(title="RigorousRAG API", version="4.4.0", lifespan=lifespan)
 app.add_middleware(RequestBodyLimitMiddleware, max_bytes=MAX_REQUEST_BODY_BYTES)
 
 
@@ -542,12 +542,15 @@ async def run_query(
     return await _run_research_task(agent.run, request.query)
 
 
-async def _save_upload(file: UploadFile, destination: Path) -> int:
+def _save_upload_stream(source: BinaryIO, destination: Path) -> int:
+    """Copy one parsed upload to durable storage without blocking the event loop."""
+
     total = 0
+    source.seek(0)
     try:
         with destination.open("xb") as handle:
             while True:
-                chunk = await file.read(64 * 1024)
+                chunk = source.read(1024 * 1024)
                 if not chunk:
                     break
                 total += len(chunk)
@@ -563,6 +566,11 @@ async def _save_upload(file: UploadFile, destination: Path) -> int:
     except Exception:
         destination.unlink(missing_ok=True)
         raise
+
+
+async def _save_upload(file: UploadFile, destination: Path) -> int:
+    try:
+        return await run_in_threadpool(_save_upload_stream, file.file, destination)
     finally:
         await file.close()
 
@@ -574,7 +582,7 @@ async def ingest_document(
 ) -> JobStatus:
     suffix = generated_upload_name(file.filename)
     owner_dir = UPLOAD_DIR / principal.owner_id
-    owner_dir.mkdir(parents=True, exist_ok=True)
+    await run_in_threadpool(owner_dir.mkdir, parents=True, exist_ok=True)
     destination = owner_dir / f"{uuid.uuid4().hex}{suffix}"
     await _save_upload(file, destination)
     job_id = f"job_{uuid.uuid4().hex}"
@@ -582,7 +590,8 @@ async def ingest_document(
         Path(file.filename or f"upload{suffix}").name
     )[:500] or f"upload{suffix}"
     try:
-        _JOB_STORE.update(
+        await run_in_threadpool(
+            _JOB_STORE.update,
             job_id,
             principal.owner_id,
             status="queued",
@@ -591,12 +600,13 @@ async def ingest_document(
             message="Waiting for an ingestion worker.",
         )
     except Exception as exc:
-        _safe_unlink_upload(destination)
+        await run_in_threadpool(_safe_unlink_upload, destination)
         raise HTTPException(
             status_code=503,
             detail="The ingestion queue is unavailable.",
         ) from exc
-    _submit_ingestion(
+    await run_in_threadpool(
+        _submit_ingestion,
         str(destination),
         display_name,
         job_id,
@@ -737,18 +747,13 @@ def process_ingestion(file_path: str, display_name: str, job_id: str, owner_id: 
             _safe_unlink_upload(path)
 
 
-@app.get("/docs/list")
-async def list_documents(
-    principal: Principal = Depends(get_rate_limited_principal),
-) -> list[Dict[str, Any]]:
-    documents = await run_in_threadpool(
-        get_rag_layer().list_documents,
-        owner_id=principal.owner_id,
-        limit=1000,
-    )
+def _list_documents_for_owner(owner_id: str) -> list[Dict[str, Any]]:
+    """Perform vector initialization, scanning, and registry joins off the event loop."""
+
+    documents = get_rag_layer().list_documents(owner_id=owner_id, limit=1000)
     for document in documents:
         record = _DOCUMENT_STORE.get(
-            owner_id=principal.owner_id,
+            owner_id=owner_id,
             doc_id=str(document.get("doc_id") or ""),
         )
         document["source_retained"] = bool((record or {}).get("source_retained"))
@@ -761,17 +766,14 @@ async def list_documents(
     return documents
 
 
-@app.delete("/docs/{doc_id}")
-async def delete_document(
-    doc_id: str,
-    principal: Principal = Depends(get_rate_limited_principal),
-) -> Dict[str, str]:
-    document_id = _bounded_identifier(doc_id, "doc_id")
+def _delete_document_for_owner(owner_id: str, document_id: str) -> bool:
+    """Delete vectors, registry state, and retained bytes in one worker operation."""
+
     rag = get_rag_layer()
     results = rag.collection.get(
         where={
             "$and": [
-                {"owner_id": {"$eq": principal.owner_id}},
+                {"owner_id": {"$eq": owner_id}},
                 {"doc_id": {"$eq": document_id}},
             ]
         },
@@ -780,23 +782,38 @@ async def delete_document(
     )
     vector_exists = bool(results.get("metadatas") or [])
     registry_record = _DOCUMENT_STORE.get(
-        owner_id=principal.owner_id,
+        owner_id=owner_id,
         doc_id=document_id,
     )
     if not vector_exists and registry_record is None:
-        raise HTTPException(status_code=404, detail="Document not found.")
+        return False
     if vector_exists:
-        await run_in_threadpool(
-            rag.delete_document,
-            owner_id=principal.owner_id,
-            doc_id=document_id,
-        )
-    record = await run_in_threadpool(
-        _DOCUMENT_STORE.delete,
-        owner_id=principal.owner_id,
-        doc_id=document_id,
-    )
+        rag.delete_document(owner_id=owner_id, doc_id=document_id)
+    record = _DOCUMENT_STORE.delete(owner_id=owner_id, doc_id=document_id)
     _safe_unlink_upload(str((record or registry_record or {}).get("source_path") or ""))
+    return True
+
+
+@app.get("/docs/list")
+async def list_documents(
+    principal: Principal = Depends(get_rate_limited_principal),
+) -> list[Dict[str, Any]]:
+    return await _run_research_task(_list_documents_for_owner, principal.owner_id)
+
+
+@app.delete("/docs/{doc_id}")
+async def delete_document(
+    doc_id: str,
+    principal: Principal = Depends(get_rate_limited_principal),
+) -> Dict[str, str]:
+    document_id = _bounded_identifier(doc_id, "doc_id")
+    deleted = await _run_research_task(
+        _delete_document_for_owner,
+        principal.owner_id,
+        document_id,
+    )
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Document not found.")
     return {"status": "deleted", "doc_id": document_id}
 
 
