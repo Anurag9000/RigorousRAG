@@ -51,7 +51,7 @@ def process_ingestion(
         return
 
     try:
-        snapshot_context = materialize_ingestion_snapshot(
+        snapshot_context = _implementation.materialize_ingestion_snapshot(
             upload_root=_implementation.UPLOAD_DIR,
             source_path=path,
             max_bytes=_implementation.DEFAULT_MAX_UPLOAD_BYTES,
@@ -194,6 +194,7 @@ def process_ingestion(
 
 
 _implementation._validated_upload_file = _validated_upload_file
+_implementation.materialize_ingestion_snapshot = materialize_ingestion_snapshot
 _implementation.process_ingestion = process_ingestion
 _implementation.__doc__ = __doc__
 
