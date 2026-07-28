@@ -68,7 +68,7 @@ This document is not a declaration that the branch is defect-free or production-
 **Correction:**
 
 - stable document IDs remain owner ID plus source-file SHA-256;
-- visual lookup re-hashes the current retained file;
+- visual lookup re-hashes the current retained file under the upload byte ceiling;
 - the registry derives the expected UUID again and compares it to `doc_id`;
 - mutation makes the source visually unavailable;
 - the file remains retained, orphan-protected, manageable, and deletable.
@@ -80,8 +80,8 @@ This document is not a declaration that the branch is defect-free or production-
 **Correction:**
 
 - `VISUAL_MAX_PDF_PAGES` bounds pages inspected;
-- `VISUAL_CLIP_HEIGHT_POINTS` bounds the caption-adjacent region;
-- `VISUAL_MAX_RENDER_PIXELS` bounds actual rendered pixels;
+- the caption renderer has a fixed maximum 565-point clip;
+- `VISUAL_MAX_RENDER_PIXELS` bounds renderer geometry before allocation and actual pixels after rendering;
 - `VISUAL_MAX_ENCODED_BYTES` bounds the exact base64 payload before it reaches a vision model;
 - ordinary document listing performs only cheap retained-PDF eligibility checks;
 - full identity/page/geometry verification runs on visual access;
@@ -123,6 +123,19 @@ This document is not a declaration that the branch is defect-free or production-
 - removed limitations that are now implemented;
 - retained only genuine residual limitations.
 
+### 10. A configurable clip value underestimated actual renderer allocation
+
+**Finding:** the registry preflight used `VISUAL_CLIP_HEIGHT_POINTS`, but the renderer used a hard-coded dynamic region of up to 520 points above and 45 points below the caption. An operator could set the variable to 100, causing preflight to approve geometry larger than the configured pixel budget before the renderer allocated its pixmap.
+
+**Correction:**
+
+- the registry now computes the renderer’s actual worst-case dynamic clip on every page;
+- preflight applies the 2× scale and pixel budget before pixmap allocation;
+- the capability value is fixed at the truthful 565-point maximum;
+- the ineffective environment and Compose override was removed;
+- a regression sets the obsolete override to 100 and proves it cannot weaken rejection;
+- the retained source remains protected and deletable after rejection.
+
 ## Regression contracts added or expanded
 
 The continuation adds focused tests for:
@@ -134,7 +147,8 @@ The continuation adds focused tests for:
 - query success, overload, timeout, and capacity retention after timeout;
 - direct protocol execution through the same bounded research executor;
 - tool-executor saturation, submit failure, shared-pool reuse, and timeout-slot retention;
-- retained-PDF page and render-pixel ceilings;
+- retained-PDF page and actual preallocation-geometry ceilings;
+- a low obsolete clip override that cannot weaken renderer preflight;
 - owner/content byte verification before visual access;
 - refusal of host-mutated retained evidence;
 - exact encoded visual payload limits;
