@@ -80,7 +80,7 @@ The system does not claim that:
 - Dynamic validation of retained-source availability.
 - Cheap document-list eligibility checks and on-demand full visual verification.
 - Visual verification re-hashes current retained bytes against the owner/content document ID.
-- Visual PDF page count, caption-region render geometry, and clip height are bounded.
+- Visual PDF page count, the renderer’s fixed worst-case 565-point caption geometry, actual rendered pixels, and exact encoded image bytes are bounded.
 - Unsafe or mutated retained files remain protected/deletable but are not returned to visual tools.
 - Safe source replacement after successful re-ingestion.
 - Document deletion removes vectors, registry state, and any retained source under `UPLOAD_DIR`.
@@ -106,7 +106,7 @@ The system does not claim that:
 - One immutable agent context per request.
 - Credential-derived owner identity.
 - Server allowlist for model selection.
-- `/query` uses a dedicated process-wide bounded executor with explicit running-plus-queued admission and a whole-request deadline.
+- `/query`, direct visual entailment, and direct protocol extraction share a dedicated process-wide bounded executor with explicit running-plus-queued admission and a whole-operation deadline.
 - Maximum turns, tool calls, tool timeout, request timeout, model output, tool arguments/results, evidence sources, and query length.
 - Runtime validation of tool arguments against declared schemas.
 - One process-wide tool executor with independent running and total-pending limits instead of a pool per request.
@@ -121,6 +121,8 @@ The system does not claim that:
 
 - Figure checks based on an exact caption-adjacent rendered region.
 - Owner/document source resolution through the private registry after current-byte identity and PDF-complexity verification.
+- Pre-allocation checking of the renderer’s true worst-case caption geometry.
+- Post-render actual-pixel and exact base64 payload ceilings before image data reaches a vision model.
 - Conservative protocol extraction that does not invent absent details.
 - Advocate, skeptic, and judge analyses in which the judge receives the original evidence.
 - Cross-paper comparisons and matrices that stop when any required document lacks evidence.
@@ -128,7 +130,7 @@ The system does not claim that:
 - Limitation extraction from explicit text or owner-scoped retrieval.
 - Deterministic, escaped BibTeX output with venue and entry-type support.
 
-A separate exact post-PNG/base64 output-byte limit and OCR-coordinate localization for scanned captions remain future work. Direct scientific HTTP routes are rate-limited but do not yet share `/query`'s dedicated whole-route executor/deadline.
+OCR-coordinate localization for scanned captions remains future work.
 
 ### Service and interface
 
@@ -152,8 +154,9 @@ graph TD
     CLI[Agent / ingestion CLIs] --> Services[Application services]
     API --> BodyLimit[Pre-parser request ceiling]
     API --> Identity[API key to Principal]
-    API --> QueryAdmission[Bounded query admission]
-    QueryAdmission --> Agent[Request-scoped SearchAgent]
+    API --> ResearchAdmission[Bounded research admission]
+    ResearchAdmission --> Agent[Request-scoped SearchAgent]
+    ResearchAdmission --> DirectTools[Direct scientific routes]
     API --> Queue[SQLite ingestion queue]
     Queue --> Scheduler[Persisted deadlines + one lazy scheduler]
     Scheduler --> IngestAdmission[Bounded ingestion admission]
@@ -168,8 +171,9 @@ graph TD
     ToolPool --> Vector
     ToolPool --> Web[Peer-validated Serper/page fetch]
     ToolPool --> Integrity[Scientific-analysis tools]
+    DirectTools --> Integrity
     Integrity --> Registry
-    Registry --> VisualVerify[Owner/content hash + PDF budgets]
+    Registry --> VisualVerify[Owner/content hash + PDF/image budgets]
     Classic --> Crawler[Safe allowed-domain crawler]
     Classic --> Sparse[TF-IDF index]
     Classic --> Rank[PageRank]
@@ -207,7 +211,7 @@ graph TD
 13. Transient failures return to `queued` with a persisted exponential deadline; exhausted failures clear unusable document IDs.
 14. Retrieval always includes the authenticated owner's filter.
 15. Document listing reports retained PDF eligibility without expensive scanning.
-16. A visual request re-hashes retained bytes, verifies `doc_id`, and checks PDF page/render budgets before rendering the caption region.
+16. A visual request re-hashes retained bytes, verifies `doc_id`, checks page count and the fixed worst-case renderer geometry before allocation, then enforces actual pixel and encoded-byte ceilings.
 17. Document deletion removes vector chunks, registry state, and any retained source.
 18. Startup reconciliation reschedules interrupted jobs or promotes durable finalization state.
 19. Orphan reconciliation deletes only old regular files unreferenced by active jobs or retained documents.
@@ -218,7 +222,7 @@ Tests target invariants rather than private implementation methods. Required cle
 
 - Python bytecode compilation;
 - fatal syntax/name lint checks;
-- contract and regression tests for identity, request-body limits, query overload/deadlines, tool admission/timeouts, connected-peer SSRF, redirect secrets, total network deadlines, upload durability, archive/parser bounds, masking, OCR, source revalidation, visual PDF identity/complexity, durable claims/centralized scheduling/admission/recovery, registry isolation, vector rollback/pagination/outages, provenance, scientific fail-closed behavior, ranking, generation-committed storage, telemetry rotation, readiness, and frontend safety;
+- contract and regression tests for identity, request-body limits, research-route overload/deadlines, tool admission/timeouts, connected-peer SSRF, redirect secrets, total network deadlines, upload durability, archive/parser bounds, masking, OCR, source revalidation, visual PDF identity/pre-allocation geometry/render/encoded-byte limits, durable claims/centralized scheduling/admission/recovery, registry isolation, vector rollback/pagination/outages, provenance, scientific fail-closed behavior, ranking, generation-committed storage, telemetry rotation, readiness, and frontend safety;
 - branch coverage with an explicit baseline;
 - container image build.
 
