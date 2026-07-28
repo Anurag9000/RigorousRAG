@@ -68,6 +68,60 @@ assert os.environ['OCR_MAX_PAGES'] == '50'
     assert result.returncode == 0, result.stderr
 
 
+def test_rag_import_survives_malformed_vector_budgets():
+    result = _run_import(
+        """
+import os
+import tools.rag as module
+assert module.MAX_CHUNKS_PER_DOCUMENT == 10000
+assert module.LIST_SCAN_BATCH == 500
+assert module.MAX_LIST_SCAN_CHUNKS == 100000
+assert os.environ['MAX_VECTOR_METADATA_ITEMS'] == '200'
+assert os.environ['MAX_SECTIONS_PER_DOCUMENT'] == '10000'
+assert os.environ['MAX_RAG_QUERY_CHARS'] == '20000'
+""",
+        {
+            "MAX_CHUNKS_PER_DOCUMENT": "bad",
+            "DOCUMENT_LIST_SCAN_BATCH": "bad",
+            "MAX_DOCUMENT_LIST_SCAN_CHUNKS": "bad",
+            "MAX_VECTOR_METADATA_ITEMS": "bad",
+            "MAX_SECTIONS_PER_DOCUMENT": "bad",
+            "MAX_RAG_QUERY_CHARS": "bad",
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_agent_import_survives_malformed_process_wide_budgets():
+    result = _run_import(
+        """
+import os
+import search_agent as module
+assert module._MAX_TOOL_ARGUMENT_CHARS == 50000
+assert module._MAX_TOOL_RESULT_CHARS == 30000
+assert module._MAX_EVIDENCE_SOURCES == 100
+assert module._MAX_CONCURRENT_TOOL_WORKERS == 32
+assert module._MAX_PENDING_TOOL_TASKS == 64
+agent = module.SearchAgent(owner_id='alice')
+assert agent.max_response_tokens == 2000
+assert os.environ['MAX_PENDING_TOOL_TASKS'] == '64'
+""",
+        {
+            "MAX_TOOL_ARGUMENT_CHARS": "bad",
+            "MAX_TOOL_RESULT_CHARS": "bad",
+            "MAX_EVIDENCE_SOURCES": "bad",
+            "MAX_CONCURRENT_TOOL_WORKERS": "bad",
+            "MAX_PENDING_TOOL_TASKS": "bad",
+            "MAX_RESPONSE_TOKENS": "bad",
+            "OPENAI_API_KEY": "",
+            "OPENAI_BASE_URL": "",
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
 def test_bounded_configuration_helper_clamps_and_writes_back():
     result = _run_import(
         """
