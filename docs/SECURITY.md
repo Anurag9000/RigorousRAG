@@ -24,11 +24,9 @@ The server derives tenant identity from this mapping. `X-Owner-ID` is intentiona
 - Conflicting or malformed length declarations fall back to streamed counting; oversized requests receive a bounded no-store `413` response and the connection is closed.
 - If an application has already started a response before a streamed limit is crossed, the middleware explicitly terminates that response instead of leaving the connection hanging.
 - Per-principal request throttling is controlled by `REQUESTS_PER_MINUTE`.
-- `/query` uses a dedicated process-wide `BoundedExecutor`. `QUERY_WORKERS` controls running threads, `QUERY_MAX_PENDING` controls running plus queued work, and excess requests fail closed with `503` rather than entering an unbounded executor queue.
-- `QUERY_TIMEOUT_SECONDS` is a whole-request HTTP deadline. A timed-out running request continues to hold admission until its underlying Python thread actually exits; it cannot create unlimited replacement threads.
+- `/query`, direct visual entailment, and direct protocol extraction share a process-wide `BoundedExecutor`. `QUERY_WORKERS` controls running threads, `QUERY_MAX_PENDING` controls running plus queued work, and excess requests fail closed with `503` rather than entering an unbounded executor queue.
+- `QUERY_TIMEOUT_SECONDS` is a whole-operation HTTP deadline. Timed-out running work continues to hold admission until its underlying Python thread actually exits; it cannot create unlimited replacement threads.
 - Python cannot safely force-terminate a running third-party thread. Provider/network timeouts and bounded admission therefore remain required together.
-
-Direct scientific HTTP routes are rate-limited and use bounded internal tool/provider operations, but they do not yet share the dedicated whole-request query executor. A common bounded route-execution wrapper remains planned.
 
 ## Upload, parsing, retention, and document identity
 
@@ -48,12 +46,12 @@ Direct scientific HTTP routes are rate-limited and use bounded internal tool/pro
 - Registry reads dynamically validate that a retained path still names a regular non-symlink file inside `UPLOAD_DIR`; missing or invalid files downgrade to text-only capability.
 - Ordinary document listing performs only cheap retained-file/PDF eligibility checks. Full visual verification runs on demand.
 - Before a retained PDF is returned to a visual tool, the registry re-hashes its current bytes and verifies that owner plus SHA-256 still derives the registered `doc_id`. Host-side mutation therefore makes the source visually unavailable while keeping it retained, protected, and deletable.
-- `VISUAL_MAX_PDF_PAGES`, `VISUAL_MAX_RENDER_PIXELS`, and `VISUAL_CLIP_HEIGHT_POINTS` fail closed on excessive page count or caption-region render geometry.
+- `VISUAL_MAX_PDF_PAGES`, `VISUAL_MAX_RENDER_PIXELS`, `VISUAL_MAX_ENCODED_BYTES`, and `VISUAL_CLIP_HEIGHT_POINTS` fail closed on excessive page count, caption-region geometry, actual rendered pixels, or exact base64 image payload length.
 - Re-ingestion registers the new source before deleting the previous retained file.
 - `DELETE /docs/{doc_id}` removes vectors, registry state, and the retained file.
 - Old unreferenced regular uploads are removed only after a grace period. Active-job, retained-document, recent, and symlink paths are protected. Reconciliation fails closed if either reference store cannot be read.
 
-The visual pixel budget bounds memory and approximate encoded size, but the renderer does not yet enforce a separate exact post-PNG/base64 byte ceiling. Figure localization also still requires selectable caption text.
+Figure localization still requires selectable caption text; scanned-caption coordinate localization remains unimplemented.
 
 These checks are not malware analysis or parser sandboxing. Untrusted deployments should add external scanning and isolation.
 
@@ -66,7 +64,10 @@ Full text, OCR output, sections, titles, filenames, summaries, metadata, and own
 - common email, phone, address, payment-card, identity, and IP patterns;
 - POSIX, Windows, home-directory, and `file://` paths;
 - credentials embedded in URIs;
-- common API-key, token, password, and secret query parameters.
+- common API-key, token, password, and secret query parameters;
+- sensitive content in mapping keys as well as values, while preserving colliding sanitized keys with deterministic suffixes.
+
+Every serialized scientific-tool result passes through this recursive sanitizer. Keys are length-bounded before JSON serialization.
 
 Masking uses regular expressions and a Luhn check for several common identifiers. It can miss identifiers and occasionally mask benign text. It is not certified de-identification. For regulated or highly sensitive data, use a dedicated data-loss-prevention pipeline, encryption at rest, retention controls, audit access, and jurisdiction-appropriate review.
 
