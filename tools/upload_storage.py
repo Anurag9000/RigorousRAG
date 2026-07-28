@@ -1,8 +1,8 @@
-"""Descriptor-anchored owner upload writes and deletions.
+"""Descriptor-anchored owner upload writes, reads, copies, and deletions.
 
 These helpers keep the final owner directory and file lookup relative to already-opened
 filesystem descriptors on POSIX. This prevents a symlink or rename swap between a
-path validation step and the actual create/unlink operation. A conservative portable
+path validation step and the actual filesystem operation. A conservative portable
 fallback performs repeated no-symlink and directory-identity checks.
 """
 
@@ -114,6 +114,87 @@ def _relative_owner_file(
     if Path(filename).name != filename:
         return None
     return root, owner, filename
+
+
+def validated_owner_file_path(
+    upload_root: str | Path,
+    source_path: str | Path | None,
+) -> Optional[Path]:
+    """Return the lexical owner path only when the current entry is regular/no-follow."""
+
+    parsed = _relative_owner_file(upload_root, source_path)
+    if parsed is None:
+        return None
+    root, owner, filename = parsed
+    try:
+        with _owner_directory(root, owner, create=False) as (_root, owner_fd, owner_path):
+            if owner_fd is None:  # Windows fallback
+                candidate = owner_path / filename
+                if candidate.is_symlink() or not candidate.exists():
+                    return None
+                metadata = candidate.stat()
+            else:
+                metadata = os.stat(filename, dir_fd=owner_fd, follow_symlinks=False)
+            if not stat.S_ISREG(metadata.st_mode):
+                return None
+            return root / owner / filename
+    except (FileNotFoundError, NotADirectoryError, OSError, UploadStorageError):
+        return None
+
+
+def read_owner_file(
+    upload_root: str | Path,
+    source_path: str | Path | None,
+    *,
+    max_bytes: int,
+) -> Optional[bytes]:
+    """Read one regular owner file through a bounded no-follow descriptor."""
+
+    limit = int(max_bytes)
+    if limit <= 0:
+        raise UploadStorageError("max_bytes must be positive.")
+    parsed = _relative_owner_file(upload_root, source_path)
+    if parsed is None:
+        return None
+    root, owner, filename = parsed
+    try:
+        with _owner_directory(root, owner, create=False) as (_root, owner_fd, owner_path):
+            if owner_fd is None:  # Windows fallback
+                candidate = owner_path / filename
+                if candidate.is_symlink() or not candidate.exists():
+                    return None
+                before = candidate.stat()
+                if not stat.S_ISREG(before.st_mode) or before.st_size > limit:
+                    return None
+                with candidate.open("rb") as handle:
+                    opened = os.fstat(handle.fileno())
+                    if (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino):
+                        return None
+                    return _read_bounded(handle, limit)
+
+            flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+            descriptor = os.open(filename, flags, dir_fd=owner_fd)
+            try:
+                metadata = os.fstat(descriptor)
+                if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > limit:
+                    return None
+                with os.fdopen(descriptor, "rb", closefd=False) as handle:
+                    return _read_bounded(handle, limit)
+            finally:
+                os.close(descriptor)
+    except (FileNotFoundError, NotADirectoryError, OSError, UploadStorageError):
+        return None
+
+
+def _read_bounded(source: BinaryIO, limit: int) -> Optional[bytes]:
+    payload = bytearray()
+    while True:
+        chunk = source.read(min(1024 * 1024, limit + 1 - len(payload)))
+        if not chunk:
+            return bytes(payload)
+        payload.extend(chunk)
+        if len(payload) > limit:
+            return None
 
 
 def store_owner_stream(
