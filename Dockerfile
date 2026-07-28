@@ -25,7 +25,7 @@ RUN mkdir -p /app/uploads /app/rag_storage /app/data /home/rigorousrag/.cache \
 USER rigorousrag
 EXPOSE 8000
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
-  CMD python -c "import json,urllib.request; json.load(urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3))" || exit 1
+HEALTHCHECK --interval=30s --timeout=8s --start-period=90s --retries=3 \
+  CMD ["python", "-m", "tools.healthcheck"]
 
 CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1", "--proxy-headers"]
