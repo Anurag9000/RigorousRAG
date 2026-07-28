@@ -1,6 +1,8 @@
 import threading
 import time
 
+import pytest
+
 from tools.due_scheduler import DueScheduler
 
 
@@ -56,6 +58,21 @@ def test_rescheduling_same_key_invalidates_older_entry():
         scheduler.shutdown()
 
 
+def test_repeated_far_future_replacement_compacts_stale_heap():
+    scheduler = DueScheduler(name="test-due-compact")
+    try:
+        for index in range(5000):
+            assert scheduler.schedule(
+                "job-1",
+                time.time() + 10_000 + index,
+                lambda: None,
+            )
+        assert scheduler.pending_count() == 1
+        assert scheduler.heap_size() <= 1024
+    finally:
+        scheduler.shutdown()
+
+
 def test_cancel_and_shutdown_prevent_callbacks():
     scheduler = DueScheduler(name="test-due-cancel")
     calls = []
@@ -67,7 +84,7 @@ def test_cancel_and_shutdown_prevent_callbacks():
     assert calls == []
 
     assert scheduler.schedule("job-2", time.time() + 10, calls.append, "shutdown")
-    scheduler.shutdown()
+    scheduler.shutdown(timeout=float("nan"))
     assert scheduler.pending_count() == 0
     assert scheduler.thread_started() is False
     assert scheduler.schedule("job-3", time.time(), calls.append, "late") is False
@@ -84,5 +101,42 @@ def test_callback_failure_does_not_kill_scheduler():
         assert scheduler.schedule("bad", time.time(), fail)
         assert scheduler.schedule("good", time.time() + 0.02, fired.set)
         assert fired.wait(1.0)
+    finally:
+        scheduler.shutdown()
+
+
+def test_scheduler_rejects_nonfinite_deadlines_and_invalid_keys():
+    scheduler = DueScheduler(name="test-due-invalid")
+    try:
+        for deadline in (float("nan"), float("inf"), float("-inf")):
+            with pytest.raises(ValueError, match="finite"):
+                scheduler.schedule("job", deadline, lambda: None)
+        with pytest.raises(ValueError, match="between 1 and 200"):
+            scheduler.schedule("", time.time(), lambda: None)
+        with pytest.raises(ValueError, match="between 1 and 200"):
+            scheduler.schedule("j" * 201, time.time(), lambda: None)
+        with pytest.raises(ValueError, match="64"):
+            scheduler.schedule("job", time.time(), lambda *_args: None, *range(65))
+    finally:
+        scheduler.shutdown()
+
+
+def test_scheduler_key_capacity_fails_closed():
+    scheduler = DueScheduler(name="test-due-capacity", max_pending_keys=1)
+    try:
+        assert scheduler.schedule("job-1", time.time() + 100, lambda: None)
+        with pytest.raises(RuntimeError, match="capacity"):
+            scheduler.schedule("job-2", time.time() + 100, lambda: None)
+    finally:
+        scheduler.shutdown()
+
+
+def test_scheduler_constructor_validates_capacity():
+    with pytest.raises(ValueError, match="integer"):
+        DueScheduler(max_pending_keys="bad")
+
+    scheduler = DueScheduler(max_pending_keys=999999999, name="x" * 500)
+    try:
+        assert scheduler.max_pending_keys == 1_000_000
     finally:
         scheduler.shutdown()
