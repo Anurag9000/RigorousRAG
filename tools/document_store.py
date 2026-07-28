@@ -47,10 +47,10 @@ class DocumentStore:
             1_000_000,
             min(int(os.getenv("VISUAL_MAX_RENDER_PIXELS", "2000000")), 100_000_000),
         )
-        self.visual_clip_height_points = max(
-            100.0,
-            min(float(os.getenv("VISUAL_CLIP_HEIGHT_POINTS", "565")), 2000.0),
-        )
+        # The renderer captures at most 520 points above and 45 below a caption.
+        # Keep this as a truthful capability value rather than a configurable value
+        # that could underestimate the pixmap allocated by tools.integrity.
+        self.visual_clip_height_points = 565.0
         self.last_cleanup_deleted = 0
         self.last_cleanup_errors: List[str] = []
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -155,7 +155,7 @@ class DocumentStore:
         return expected == str(doc_id or "")
 
     def _visual_pdf_is_safe(self, candidate: Path) -> bool:
-        """Fail closed when a retained PDF exceeds visual-analysis complexity limits."""
+        """Fail closed before rendering PDFs that exceed visual complexity limits."""
 
         if candidate.suffix.lower() != ".pdf":
             return False
@@ -185,9 +185,15 @@ class DocumentStore:
                     or height <= 0
                 ):
                     return False
-                clip_height = min(height, self.visual_clip_height_points)
+                # tools.integrity renders a 2x clip extending up to a dynamic
+                # 520 points above and 45 points below the matched caption. Use
+                # that exact worst-case geometry before pixmap allocation.
+                renderer_clip_height = min(
+                    height,
+                    min(max(height * 0.48, 220.0), 520.0) + 45.0,
+                )
                 render_width = math.ceil(width * 2.0)
-                render_height = math.ceil(clip_height * 2.0)
+                render_height = math.ceil(renderer_clip_height * 2.0)
                 if render_width * render_height > self.visual_max_render_pixels:
                     return False
             return True
