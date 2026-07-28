@@ -3,7 +3,8 @@ import threading
 
 import pytest
 
-from tools.rag import RAGLayer
+import tools.rag as rag_module
+from tools.rag import RAGLayer, get_rag_layer
 
 
 class RecordingCollection:
@@ -149,3 +150,17 @@ def test_symlinked_chroma_root_is_refused_before_initialization(tmp_path):
 
     with pytest.raises(ValueError, match="CHROMA_PATH"):
         RAGLayer(persist_directory=str(link))
+
+
+def test_singleton_factory_refuses_symlinked_chroma_root(tmp_path):
+    target = tmp_path / "target"
+    target.mkdir()
+    link = tmp_path / "vectors"
+    try:
+        link.symlink_to(target, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("Symlinks are unavailable in this environment.")
+    rag_module._RAG_INSTANCES.clear()
+
+    with pytest.raises(ValueError, match="CHROMA_PATH"):
+        get_rag_layer(str(link))
