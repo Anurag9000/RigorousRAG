@@ -1,12 +1,14 @@
 import importlib
 import io
 import json
+import os
 import sys
 from unittest.mock import MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
 
+from tools.ingestion_models import DocumentSection, IngestedDocument, IngestionResult
 from tools.models import AgentAnswer
 
 
@@ -181,6 +183,121 @@ def test_startup_recovery_submits_valid_job_and_cleans_exhausted_source(
     assert not exhausted.exists()
 
 
+def test_finalizing_job_with_registry_is_promoted_without_reindexing(
+    server_module,
+    monkeypatch,
+):
+    source = server_module.UPLOAD_DIR / "alice" / "paper.pdf"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_bytes(b"%PDF-test")
+    server_module._DOCUMENT_STORE.register(
+        owner_id="alice",
+        doc_id="doc-1",
+        filename="paper.pdf",
+        mime_type="application/pdf",
+        source_path=source,
+    )
+    server_module._JOB_STORE.update(
+        "job-1",
+        "alice",
+        status="finalizing",
+        filename="paper.pdf",
+        source_path=str(source),
+        doc_id="doc-1",
+    )
+    submitted = []
+    monkeypatch.setattr(
+        server_module,
+        "_submit_ingestion",
+        lambda *args: submitted.append(args),
+    )
+
+    server_module._recover_interrupted_jobs()
+
+    status = server_module._JOB_STORE.get("job-1", "alice")
+    assert status and status["status"] == "success"
+    assert status["doc_id"] == "doc-1"
+    assert submitted == []
+    assert source.exists()
+
+
+def test_losing_duplicate_worker_does_not_delete_winner_source(
+    server_module,
+    monkeypatch,
+):
+    source = server_module.UPLOAD_DIR / "alice" / "paper.txt"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_text("evidence", encoding="utf-8")
+    monkeypatch.setattr(server_module._JOB_STORE, "claim", lambda *_args, **_kwargs: False)
+
+    server_module.process_ingestion(str(source), "paper.txt", "job-1", "alice")
+
+    assert source.exists()
+
+
+def test_transient_index_failure_requeues_and_preserves_source(
+    server_module,
+    monkeypatch,
+):
+    source = server_module.UPLOAD_DIR / "alice" / "paper.txt"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_text("evidence", encoding="utf-8")
+    server_module._JOB_STORE.update(
+        "job-1",
+        "alice",
+        status="queued",
+        filename="paper.txt",
+        source_path=str(source),
+    )
+    document = IngestedDocument(
+        id="doc-1",
+        filename="paper.txt",
+        file_path=str(source),
+        mime_type="text/plain",
+        text="evidence",
+        sections=[DocumentSection(title="Full Text", content="evidence")],
+    )
+    monkeypatch.setattr(
+        server_module,
+        "ingest_file",
+        lambda *_args, **_kwargs: IngestionResult(success=True, document=document),
+    )
+    monkeypatch.setattr(server_module, "index_document", MagicMock(side_effect=RuntimeError("down")))
+    monkeypatch.setattr(
+        server_module,
+        "_new_agent",
+        lambda *_args, **_kwargs: MagicMock(client=None),
+    )
+    submitted = []
+    monkeypatch.setattr(
+        server_module,
+        "_submit_ingestion",
+        lambda *args: submitted.append(args),
+    )
+
+    server_module.process_ingestion(str(source), "paper.txt", "job-1", "alice")
+
+    status = server_module._JOB_STORE.get("job-1", "alice")
+    assert status and status["status"] == "queued"
+    assert source.exists()
+    assert submitted == [(str(source.resolve()), "paper.txt", "job-1", "alice")]
+
+
+def test_safe_unlink_refuses_symlink(server_module, tmp_path):
+    outside = tmp_path / "outside.txt"
+    outside.write_text("outside", encoding="utf-8")
+    link = server_module.UPLOAD_DIR / "alice" / "link.txt"
+    link.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.symlink(outside, link)
+    except OSError:
+        pytest.skip("Symlinks are unavailable on this platform.")
+
+    assert server_module._safe_unlink_upload(link) is False
+    assert outside.exists()
+    assert link.is_symlink()
+
+
 def test_document_delete_cleans_vectors_registry_and_retained_source(
     server_module,
     monkeypatch,
@@ -197,12 +314,21 @@ def test_document_delete_cleans_vectors_registry_and_retained_source(
     )
 
     class FakeCollection:
+        def __init__(self, exists=True):
+            self.exists = exists
+
         def get(self, **_kwargs):
-            return {"metadatas": [{"doc_id": "doc-1", "owner_id": "alice"}]}
+            return {
+                "metadatas": (
+                    [{"doc_id": "doc-1", "owner_id": "alice"}]
+                    if self.exists
+                    else []
+                )
+            }
 
     class FakeRag:
-        def __init__(self):
-            self.collection = FakeCollection()
+        def __init__(self, exists=True):
+            self.collection = FakeCollection(exists)
             self.deleted = []
 
         def delete_document(self, *, owner_id, doc_id):
@@ -217,6 +343,35 @@ def test_document_delete_cleans_vectors_registry_and_retained_source(
         )
     assert response.status_code == 200
     assert fake_rag.deleted == [("alice", "doc-1")]
+    assert not source.exists()
+    assert server_module._DOCUMENT_STORE.get(owner_id="alice", doc_id="doc-1") is None
+
+
+def test_document_delete_retries_registry_only_cleanup(server_module, monkeypatch):
+    source = server_module.UPLOAD_DIR / "alice" / "paper.pdf"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_bytes(b"%PDF-test")
+    server_module._DOCUMENT_STORE.register(
+        owner_id="alice",
+        doc_id="doc-1",
+        filename="paper.pdf",
+        mime_type="application/pdf",
+        source_path=source,
+    )
+
+    class EmptyCollection:
+        def get(self, **_kwargs):
+            return {"metadatas": []}
+
+    fake_rag = MagicMock(collection=EmptyCollection())
+    monkeypatch.setattr(server_module, "get_rag_layer", lambda: fake_rag)
+    with TestClient(server_module.app) as client:
+        response = client.delete(
+            "/docs/doc-1",
+            headers={"X-API-Key": "alice-key"},
+        )
+    assert response.status_code == 200
+    fake_rag.delete_document.assert_not_called()
     assert not source.exists()
     assert server_module._DOCUMENT_STORE.get(owner_id="alice", doc_id="doc-1") is None
 
