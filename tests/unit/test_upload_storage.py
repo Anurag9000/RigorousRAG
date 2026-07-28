@@ -6,6 +6,7 @@ import pytest
 
 from tools.upload_storage import (
     UploadStorageError,
+    read_owner_file,
     remove_owner_file,
     store_owner_stream,
 )
@@ -23,7 +24,7 @@ def test_store_owner_stream_writes_random_private_regular_file(tmp_path):
         max_bytes=100,
     )
 
-    assert stored.parent == root.resolve() / "alice"
+    assert stored.parent == root.absolute() / "alice"
     assert stored.name != "paper.txt"
     assert stored.suffix == ".txt"
     assert stored.read_bytes() == b"evidence"
@@ -50,6 +51,51 @@ def test_oversized_stream_removes_partial_owner_file(tmp_path):
     assert list(owner_dir.iterdir()) == []
 
 
+def test_invalid_limits_and_nonbyte_streams_fail_without_partial_file(tmp_path):
+    root = tmp_path / "uploads"
+    root.mkdir()
+    for value in (0, True, 1.5, "bad", 1_000_000_001):
+        with pytest.raises(UploadStorageError, match="max_bytes"):
+            store_owner_stream(
+                io.BytesIO(b"evidence"),
+                upload_root=root,
+                owner_id="alice",
+                suffix=".txt",
+                max_bytes=value,
+            )
+
+    with pytest.raises(UploadStorageError, match="produce bytes"):
+        store_owner_stream(
+            io.StringIO("not bytes"),
+            upload_root=root,
+            owner_id="alice",
+            suffix=".txt",
+            max_bytes=100,
+        )
+    assert list((root / "alice").iterdir()) == []
+
+
+def test_store_refuses_symlinked_root_or_parent(tmp_path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    link = tmp_path / "uploads"
+    try:
+        link.symlink_to(outside, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("Symlinks are unavailable in this environment.")
+
+    for root in (link, link / "nested"):
+        with pytest.raises(UploadStorageError, match="symbolic-link components"):
+            store_owner_stream(
+                io.BytesIO(b"secret"),
+                upload_root=root,
+                owner_id="alice",
+                suffix=".txt",
+                max_bytes=100,
+            )
+    assert list(outside.iterdir()) == []
+
+
 def test_store_refuses_symlinked_owner_directory(tmp_path):
     root = tmp_path / "uploads"
     outside = tmp_path / "outside"
@@ -70,6 +116,25 @@ def test_store_refuses_symlinked_owner_directory(tmp_path):
         )
 
     assert list(outside.iterdir()) == []
+
+
+def test_read_owner_file_rejects_invalid_limits_and_nonregular_entry(tmp_path):
+    root = tmp_path / "uploads"
+    root.mkdir()
+    stored = store_owner_stream(
+        io.BytesIO(b"evidence"),
+        upload_root=root,
+        owner_id="alice",
+        suffix=".txt",
+        max_bytes=100,
+    )
+    with pytest.raises(UploadStorageError, match="max_bytes"):
+        read_owner_file(root, stored, max_bytes=float("nan"))
+
+    if hasattr(os, "mkfifo"):
+        fifo = root / "alice" / "pipe.txt"
+        os.mkfifo(fifo)
+        assert read_owner_file(root, fifo, max_bytes=100) is None
 
 
 def test_remove_owner_file_is_descriptor_relative_and_owner_scoped(tmp_path):
