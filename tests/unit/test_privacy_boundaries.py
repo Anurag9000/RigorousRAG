@@ -40,3 +40,18 @@ def test_file_uri_and_nested_metadata_are_redacted():
     assert sanitized["error"] == "[REDACTED_PATH]"
     assert sanitized["nested"][0] == "contact [REDACTED_EMAIL]"
     assert sanitized["nested"][1] == "[REDACTED_PATH]"
+
+
+def test_mapping_keys_are_redacted_bounded_and_collision_preserving():
+    sanitized = sanitize_metadata_dict({
+        "/private/alice/one.txt": "first",
+        "/private/bob/two.txt": "second",
+        "https://alice:password@example.com": "third",
+        "x" * 700: "bounded",
+    })
+
+    assert sanitized["[REDACTED_PATH]"] == "first"
+    assert sanitized["[REDACTED_PATH]#2"] == "second"
+    assert "https://[REDACTED_CREDENTIALS]@example.com" in sanitized
+    assert max(len(key) for key in sanitized) <= 500
+    assert len(sanitized) == 4
