@@ -44,9 +44,11 @@ pollJob = async function pollDurableJob(jobId, item) {
 };
 
 function openFigureToolForDocument(doc) {
-  if (!doc.source_retained) {
+  if (!doc.visual_source_available) {
     window.alert(
-      "This document has text evidence only. Re-ingest it while source retention is enabled to use figure checks.",
+      doc.source_retained
+        ? "This retained source is not an eligible PDF for figure checks."
+        : "This document has text evidence only. Re-ingest it while source retention is enabled to use figure checks.",
     );
     return;
   }
@@ -72,16 +74,18 @@ renderDocList = function renderLifecycleAwareDocuments(documents) {
 
     const actions = document.createElement("div");
     actions.className = "doc-actions";
+    const visualEligible = Boolean(doc.visual_source_available);
+    const sourceRetained = Boolean(doc.source_retained);
     const figureButton = textElement(
       "button",
-      doc.source_retained ? "Figure tool" : "No visual source",
+      visualEligible ? "Figure tool" : (sourceRetained ? "Visual unavailable" : "No visual source"),
       "btn small",
     );
     figureButton.type = "button";
-    figureButton.disabled = !doc.source_retained;
-    figureButton.title = doc.source_retained
-      ? "Open this retained PDF in the figure-check tool"
-      : "The original source was not retained";
+    figureButton.disabled = !visualEligible;
+    figureButton.title = visualEligible
+      ? "Open this retained PDF; identity and complexity are verified when the tool runs"
+      : (sourceRetained ? "The retained source is not currently eligible for PDF figure analysis" : "The original source was not retained");
     figureButton.addEventListener("click", (event) => {
       event.stopPropagation();
       openFigureToolForDocument(doc);
@@ -109,7 +113,9 @@ renderDocList = function renderLifecycleAwareDocuments(documents) {
     card.appendChild(
       textElement(
         "div",
-        doc.source_retained ? "Visual source retained" : "Text evidence only",
+        visualEligible
+          ? "Visual PDF eligible; identity and limits verified on use"
+          : (sourceRetained ? "Source retained; visual analysis unavailable" : "Text evidence only"),
         "meta",
       ),
     );
