@@ -20,14 +20,14 @@ The remediation branch audits and changes every product surface identified in th
 |---|---|---|
 | Default-user cross-tenant retrieval | Resolved in code | Every vector query, list, replace, delete, comparison, limitation lookup, and figure operation requires the server-owned tenant ID. |
 | Spoofable `X-Owner-ID` | Resolved in code | Tenant identity comes from configured API-key mappings or the server-controlled single-user identity. Client owner headers are ignored. |
-| Shared mutable global agent | Resolved in code | Every query gets an immutable owner/model agent and enters a dedicated bounded request executor. |
+| Shared mutable global agent | Resolved in code | Every query gets an immutable owner/model agent and enters a dedicated bounded research executor. |
 | Arbitrary URL SSRF and DNS rebinding | Substantially resolved in code | The shared downloader validates schemes, DNS results, and the actual connected peer; blocks private/local/reserved networks; disables proxies; revalidates redirects; strips cross-origin credentials; prevents POST-body replay; and enforces byte/end-to-end time budgets. Network egress policy remains required defense in depth. |
 | Persistent/reflected browser XSS | Resolved in code | External Markdown runtime removed; no untrusted `innerHTML`; constrained DOM renderer, safe links, CSP, and session-only storage. |
 | Unsafe uploads and parser resource exhaustion | Substantially resolved in code | Pre-parser body ceiling, random owner-scoped names, byte ceilings, fsync, signatures, symlink rejection, DOCX archive expansion/path checks, PDF/OCR/text complexity budgets, mutation detection, and explicit errors. This is not malware scanning or sandboxing. |
 | Authentication incompatible with frontend | Resolved in code | Browser sends `X-API-Key`, reads `/config`, and never supplies tenant identity. |
-| False redaction/privacy guarantee | Corrected and mitigated | Full text, OCR output, sections, titles, filenames, metadata, summaries, and job-facing strings are masked. Diagnostic paths, URI credentials, and common secret parameters are also removed. Documentation states masking is best effort. |
+| False redaction/privacy guarantee | Corrected and mitigated | Full text, OCR output, sections, titles, filenames, metadata, summaries, job-facing strings, and scientific result mappings are masked. Diagnostic paths, URI credentials, common secret parameters, and sensitive mapping keys are removed. Documentation states masking is best effort. |
 | Source paths leaked into vectors | Resolved | Paths exist only in the private owner-scoped registry/queue and are excluded from Chroma, citations, manifests, and public job payloads. |
-| Source lifecycle broke visual tools | Resolved with bounded capability | Retention is explicit; actual file availability is validated dynamically; visual lookup verifies current bytes against the owner/content document ID and enforces PDF page/render budgets; deletion removes vectors, registry, and source. |
+| Source lifecycle broke visual tools | Resolved with bounded capability | Retention is explicit; actual file availability is validated dynamically; visual lookup verifies current bytes against the owner/content document ID and enforces PDF page, render-pixel, and exact encoded-payload limits; deletion removes vectors, registry, and source. |
 
 ## High-severity findings
 
@@ -39,7 +39,7 @@ The remediation branch audits and changes every product surface identified in th
 | Tool argument and context abuse | Resolved in continuation | Runtime JSON-schema validation, bounded argument/result/evidence/answer sizes, generic exception messages, and process-wide bounded running-plus-queued tool admission. |
 | False tool timeout | Resolved in continuation | Single and parallel tool calls return after the configured deadline instead of waiting for executor shutdown. Running third-party Python threads still cannot be killed. |
 | Unbounded timed-out tool threads/queue | Resolved in continuation | Per-request executors were replaced with one process-wide executor; `MAX_PENDING_TOOL_TASKS` prevents an unbounded submission queue and timed-out running work retains capacity until completion. |
-| Unbounded HTTP query work | Resolved in continuation | `/query` uses a dedicated `BoundedExecutor`, explicit running-plus-pending limits, generic overload responses, and a whole-request timeout. |
+| Unbounded HTTP research work | Resolved in continuation | `/query`, direct visual entailment, and direct protocol extraction share a dedicated `BoundedExecutor`, explicit running-plus-pending limits, generic overload responses, and a whole-operation timeout. |
 | Provider/model mismatch | Resolved | Server model allowlist and request-scoped provider configuration; frontend options come from `/config`. |
 | CLI/API ingestion divergence | Resolved | Shared parsing/indexing services and source registry; CLI can explicitly retain bounded random private copies. |
 | Redaction-induced document-ID collisions | Resolved in continuation | Stable IDs use owner plus source-file SHA-256, while only the redacted-text hash is exported. Distinct files that mask to the same text no longer overwrite each other. |
@@ -49,7 +49,8 @@ The remediation branch audits and changes every product surface identified in th
 | One large document hides the library | Resolved in continuation | Document listing paginates chunks until the requested distinct-document count or a configured scan ceiling. |
 | Retrieval outage represented as no evidence | Resolved in continuation | Total Chroma failure raises unavailable rather than returning an empty result. Fallback warnings distinguish outage from no match. |
 | Debate judge lacks original evidence | Resolved | Original evidence is included for advocate, skeptic, and judge. |
-| Incorrect/unbounded figure selection | Substantially remediated | Exact selectable caption text is located; only owner/content-matching retained PDFs under configured page/render limits reach the caption-adjacent renderer. Scanned captions, exact encoded-image byte limiting, and complex multi-panel localization remain limitations. |
+| Incorrect/unbounded figure selection | Substantially remediated | Exact selectable caption text is located; only owner/content-matching retained PDFs under configured page/render limits reach the caption-adjacent renderer; actual rendered pixels and exact base64 payload bytes are capped. Scanned captions and complex multi-panel localization remain limitations. |
+| Scientific output leaks diagnostic metadata | Resolved in continuation | Every scientific result passes through recursive value/key sanitization before JSON serialization; key collisions are preserved with deterministic bounded suffixes. |
 | Empty-evidence comparisons/matrices | Resolved | Required-document evidence gaps stop synthesis. Matrix work is capped and consolidated into one bounded call. |
 | Web domain bypass/unbounded provider call | Resolved | Parsed hostname boundaries; Serper uses the shared peer-validated bounded downloader; provider errors are generic. |
 | Crawler redirect escape/oversized download | Resolved | Shared downloader, final-host trust check, response-byte and total-time ceilings. |
@@ -101,14 +102,16 @@ Functionality added because it directly closes audited gaps:
 13. Compensating vector replacement and paginated library listing.
 14. Credential-derived per-principal throttling.
 15. Pre-parser request-body enforcement.
-16. Dedicated bounded HTTP query executor and whole-request deadline.
+16. Dedicated bounded HTTP research executor and whole-operation deadline for query and direct scientific routes.
 17. Server-side evidence registry and bounded response models.
 18. Runtime tool-schema validation and bounded tool execution/admission.
 19. Connected-peer SSRF validation and safe cross-origin redirect semantics.
-20. Dependency-aware container readiness.
-21. Bounded pseudonymous rotating telemetry.
-22. Security, architecture, remediation, and deployment documentation.
-23. Clean-clone CI and Docker build configuration.
+20. Exact visual page, pixel, and encoded-payload ceilings.
+21. Recursive scientific-result value/key sanitization.
+22. Dependency-aware container readiness.
+23. Bounded pseudonymous rotating telemetry.
+24. Security, architecture, remediation, and deployment documentation.
+25. Clean-clone CI and Docker build configuration.
 
 No unrelated feature was added merely to increase the feature count.
 
@@ -119,8 +122,6 @@ These are disclosed rather than falsely marked complete:
 - OCR quality depends on Tesseract, scan resolution, language packs, orientation, and layout.
 - Scanned figure-caption localization does not use OCR coordinates; exact selectable caption text is required.
 - PDF reading order, tables, formulas, headings, and multi-panel figure localization remain heuristic.
-- Visual page/render geometry is bounded, but the renderer does not yet apply a separate exact post-PNG/base64 byte ceiling.
-- Direct scientific HTTP routes are rate-limited but do not yet share `/query`'s dedicated whole-route executor/deadline.
 - Regex masking is not certified de-identification.
 - File/archive validation is not malware scanning or parser sandboxing.
 - Retained source files are not application-encrypted.
@@ -138,7 +139,7 @@ These are disclosed rather than falsely marked complete:
 ### Statically inspected and contract-tested in source
 
 - The remediation and continuation passes re-read changed public contracts and exact commit diffs through the GitHub connector.
-- Regression tests now target tenant isolation, request-body ceilings, query overload/deadline behavior, tool admission/timeouts, peer-validated networking, redirect secrets, total download deadlines, parser/archive complexity, source identity, retained-source mutation, visual page/render limits, vector rollback, paginated listing, retrieval outages, queue migration/backoff, centralized delayed scheduling, ingestion admission, source reconciliation, bounded models, telemetry rotation, OCR, scientific fail-closed behavior, frontend safety, and deployment configuration.
+- Regression tests now target tenant isolation, request-body ceilings, query/direct-route overload and deadline behavior, tool admission/timeouts, peer-validated networking, redirect secrets, total download deadlines, parser/archive complexity, source identity, retained-source mutation, visual page/render/encoded-byte limits, scientific output sanitization, vector rollback, paginated listing, retrieval outages, queue migration/backoff, centralized delayed scheduling, ingestion admission, source reconciliation, bounded models, telemetry rotation, OCR, scientific fail-closed behavior, frontend safety, and deployment configuration.
 - Runtime artifacts remain ignored and committed stale artifacts were removed.
 
 ### Executable verification still required
