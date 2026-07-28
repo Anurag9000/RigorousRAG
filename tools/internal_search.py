@@ -2,23 +2,49 @@
 
 from __future__ import annotations
 
+import os
 import threading
-from typing import List
+from pathlib import Path
+from typing import List, Optional, Tuple
 
 from pydantic import BaseModel, Field
 
 from Searching import AcademicSearchEngine, SearchHit
 from tools.models import Citation
 
-_ENGINE_INSTANCE = None
+_ENGINE_INSTANCE: Optional[AcademicSearchEngine] = None
+_ENGINE_SIGNATURE: Optional[Tuple[str, Tuple[Tuple[str, int, int], ...]]] = None
 _ENGINE_LOCK = threading.Lock()
 
 
+def _storage_signature(storage_dir: str) -> Tuple[str, Tuple[Tuple[str, int, int], ...]]:
+    root = Path(storage_dir).resolve()
+    paths = [
+        root / "snapshot_manifest.json",
+        root / "crawl_state.json",
+        root / "index.json",
+        root / "pagerank.json",
+    ]
+    entries = []
+    for path in paths:
+        try:
+            stat = path.lstat()
+            entries.append((path.name, int(stat.st_mtime_ns), int(stat.st_size)))
+        except OSError:
+            entries.append((path.name, -1, -1))
+    return str(root), tuple(entries)
+
+
 def get_engine() -> AcademicSearchEngine:
-    global _ENGINE_INSTANCE
+    """Return an engine reloaded whenever the committed storage signature changes."""
+
+    global _ENGINE_INSTANCE, _ENGINE_SIGNATURE
+    storage_dir = os.getenv("CLASSIC_STORAGE_DIR", "data")
+    signature = _storage_signature(storage_dir)
     with _ENGINE_LOCK:
-        if _ENGINE_INSTANCE is None:
-            _ENGINE_INSTANCE = AcademicSearchEngine()
+        if _ENGINE_INSTANCE is None or _ENGINE_SIGNATURE != signature:
+            _ENGINE_INSTANCE = AcademicSearchEngine(storage_dir=storage_dir)
+            _ENGINE_SIGNATURE = _storage_signature(storage_dir)
         return _ENGINE_INSTANCE
 
 
@@ -41,6 +67,8 @@ def search_internal(query: str, limit: int = 5) -> List[Citation]:
     query = (query or "").strip()
     if not query:
         return []
+    if len(query) > 2000:
+        raise ValueError("Internal-search queries may contain at most 2,000 characters.")
     limit = max(1, min(int(limit), 20))
     hits: List[SearchHit] = get_engine().search(query, limit=limit)
     return [
