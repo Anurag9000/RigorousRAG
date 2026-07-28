@@ -73,7 +73,11 @@ class StorageManager(_original_storage_manager):
         """Read one bounded regular file without following its final component."""
 
         self._ensure_storage_root()
-        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        flags = (
+            os.O_RDONLY
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_NONBLOCK", 0)
+        )
         try:
             descriptor = os.open(path, flags)
         except FileNotFoundError:
