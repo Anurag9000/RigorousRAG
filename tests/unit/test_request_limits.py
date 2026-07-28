@@ -1,6 +1,8 @@
 import asyncio
 import json
 
+import pytest
+
 from tools.request_limits import RequestBodyLimitMiddleware
 
 
@@ -136,6 +138,58 @@ def test_conflicting_content_lengths_fall_back_to_stream_counting():
 
     assert called == [True]
     assert sent[0]["status"] == 413
+
+
+def test_visual_missing_document_value_error_becomes_generic_404():
+    sent = []
+
+    async def receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(message):
+        sent.append(message)
+
+    async def app(_scope, _receive, _send):
+        raise ValueError("owner alice missing in /private/vector.sqlite3")
+
+    middleware = RequestBodyLimitMiddleware(app, max_bytes=10)
+    run(
+        middleware(
+            {
+                "type": "http",
+                "path": "/tool/visual-entailment",
+                "headers": [],
+            },
+            receive,
+            send,
+        )
+    )
+
+    assert sent[0]["status"] == 404
+    payload = json.loads(sent[1]["body"])
+    assert payload == {"detail": "Document not found."}
+    assert "/private" not in sent[1]["body"].decode("utf-8")
+
+
+def test_non_visual_value_error_is_not_hidden():
+    async def receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(_message):
+        return None
+
+    async def app(_scope, _receive, _send):
+        raise ValueError("programming bug")
+
+    middleware = RequestBodyLimitMiddleware(app, max_bytes=10)
+    with pytest.raises(ValueError, match="programming bug"):
+        run(
+            middleware(
+                {"type": "http", "path": "/query", "headers": []},
+                receive,
+                send,
+            )
+        )
 
 
 def test_body_within_limit_reaches_application():
