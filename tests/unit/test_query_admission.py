@@ -119,7 +119,7 @@ def test_direct_protocol_route_uses_same_bounded_executor(server_module, monkeyp
 
 def test_direct_visual_missing_document_is_owner_safe_404(server_module, monkeypatch):
     def missing_document(*_args, **_kwargs):
-        raise ValueError("owner alice missing at /private/vector.sqlite3")
+        raise ValueError("The requested document was not found for this owner.")
 
     monkeypatch.setattr(server_module, "check_visual_entailment", missing_document)
 
@@ -136,8 +136,7 @@ def test_direct_visual_missing_document_is_owner_safe_404(server_module, monkeyp
 
     assert response.status_code == 404
     assert response.json() == {"detail": "Document not found."}
-    assert "/private" not in response.text
-    assert "alice" not in response.text
+    assert "owner" not in response.text
 
 
 def test_research_executor_failure_is_generic_for_query_and_direct_tool(
