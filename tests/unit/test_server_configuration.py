@@ -13,6 +13,7 @@ def _base_environment(tmp_path) -> dict[str, str]:
         "JOB_DB_PATH": str(tmp_path / "jobs.sqlite3"),
         "DOCUMENT_DB_PATH": str(tmp_path / "documents.sqlite3"),
         "CHROMA_PATH": str(tmp_path / "vectors"),
+        "CLASSIC_STORAGE_DIR": str(tmp_path / "classic"),
         "ORPHAN_CLEANUP_ON_STARTUP": "false",
         "ALLOWED_MODELS": "test-model",
         "DEFAULT_MODEL": "test-model",
@@ -51,6 +52,8 @@ def test_malformed_numeric_environment_imports_with_bounded_defaults(tmp_path):
         "INGEST_ADMISSION_RETRY_SECONDS": "inf",
         "MAX_REQUEST_BODY_BYTES": "bad",
         "MAX_DOCX_COMPRESSION_RATIO": "nan",
+        "MAX_CONCURRENT_TOOL_WORKERS": "128",
+        "MAX_PENDING_TOOL_TASKS": "1",
         "PORT": "999999",
     })
     result = _run_server_import(
@@ -67,6 +70,8 @@ assert module.INGEST_MAX_ATTEMPTS == 3
 assert module.INGEST_MAX_PENDING >= module.INGEST_WORKERS
 assert module.INGEST_ADMISSION_RETRY_SECONDS == 1.0
 assert module.MAX_REQUEST_BODY_BYTES >= module.DEFAULT_MAX_UPLOAD_BYTES
+assert int(module.os.environ['MAX_PENDING_TOOL_TASKS']) >= 128
+assert int(module.os.environ['MAX_RESPONSE_TOKENS']) <= 16_000
 assert int(module.os.environ['PORT']) == 65_535
 assert module.app.version == '4.4.0'
 module._cancel_scheduled_ingestions()
@@ -101,18 +106,38 @@ module._QUERY_EXECUTOR.shutdown(wait=False, cancel_futures=True)
     assert result.returncode == 0, result.stderr
 
 
-def test_symlinked_upload_root_is_rejected_before_server_app_import(tmp_path):
-    outside = tmp_path / "outside"
-    outside.mkdir()
-    link = tmp_path / "uploads"
+def _directory_symlink_or_skip(link, outside):
     try:
         link.symlink_to(outside, target_is_directory=True)
     except (OSError, NotImplementedError):
-        pytest.skip("Symlinks are unavailable in this environment.")
+        pytest.skip("Directory symlinks are unavailable in this environment.")
+
+
+@pytest.mark.parametrize(
+    ("setting", "suffix"),
+    [
+        ("UPLOAD_DIR", "uploads"),
+        ("JOB_DB_PATH", "state/jobs.sqlite3"),
+        ("DOCUMENT_DB_PATH", "state/documents.sqlite3"),
+        ("CHROMA_PATH", "vectors"),
+        ("CLASSIC_STORAGE_DIR", "classic"),
+    ],
+)
+def test_symlinked_service_path_component_is_rejected_before_server_app_import(
+    tmp_path,
+    setting,
+    suffix,
+):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    link = tmp_path / "linked-parent"
+    _directory_symlink_or_skip(link, outside)
     environment = _base_environment(tmp_path)
-    environment["UPLOAD_DIR"] = str(link)
+    environment[setting] = str(link / suffix)
+
     result = _run_server_import("import server", environment)
 
     assert result.returncode != 0
-    assert "UPLOAD_DIR may not be a symbolic link" in result.stderr
+    assert setting in result.stderr
+    assert "symbolic-link components" in result.stderr
     assert list(outside.iterdir()) == []
