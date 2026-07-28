@@ -13,7 +13,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Dict, Optional, Set
+from typing import Any, Dict, List, Optional, Set
 
 from tools.privacy import mask_metadata_text
 from tools.security import DEFAULT_MAX_UPLOAD_BYTES, normalize_owner_id
@@ -33,10 +33,22 @@ class DocumentStore:
         self.upload_root = Path(
             upload_root or os.getenv("UPLOAD_DIR", "uploads")
         ).resolve()
+        self.orphan_grace_seconds = max(
+            int(os.getenv("ORPHAN_GRACE_SECONDS", "3600")),
+            60,
+        )
+        self.last_cleanup_deleted = 0
+        self.last_cleanup_errors: List[str] = []
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.upload_root.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
         self._initialise()
+        if os.getenv("ORPHAN_CLEANUP_ON_STARTUP", "true").lower() in {
+            "1",
+            "true",
+            "yes",
+        }:
+            self.last_cleanup_deleted = self.cleanup_orphans()
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.path, timeout=10)
@@ -171,6 +183,75 @@ class DocumentStore:
                 continue
             paths.add(candidate)
         return paths
+
+    def cleanup_orphans(
+        self,
+        *,
+        now: Optional[float] = None,
+        job_store: Optional[Any] = None,
+    ) -> int:
+        """Delete only old regular files unreferenced by documents or active jobs.
+
+        If either reference store cannot be read, cleanup fails closed and deletes
+        nothing. Recent files are protected by ``ORPHAN_GRACE_SECONDS`` to cover the
+        interval between writing an upload and committing its job record.
+        """
+
+        self.last_cleanup_errors = []
+        try:
+            retained = self.retained_source_paths()
+            if job_store is None:
+                from tools.job_store import JobStore
+
+                job_store = JobStore()
+            active = set(job_store.active_source_paths())
+        except Exception as exc:
+            self.last_cleanup_errors.append(
+                f"reference_lookup_failed:{type(exc).__name__}"
+            )
+            return 0
+
+        referenced: Set[Path] = set()
+        for raw_path in retained | active:
+            unresolved = Path(raw_path)
+            if unresolved.is_symlink():
+                continue
+            candidate = unresolved.resolve()
+            try:
+                candidate.relative_to(self.upload_root)
+            except ValueError:
+                continue
+            referenced.add(candidate)
+
+        current_time = time.time() if now is None else float(now)
+        cutoff = current_time - self.orphan_grace_seconds
+        deleted = 0
+        try:
+            candidates = list(self.upload_root.rglob("*"))
+        except OSError as exc:
+            self.last_cleanup_errors.append(
+                f"upload_scan_failed:{type(exc).__name__}"
+            )
+            return 0
+
+        for raw_path in candidates:
+            try:
+                if raw_path.is_symlink() or not raw_path.is_file():
+                    continue
+                candidate = raw_path.resolve()
+                candidate.relative_to(self.upload_root)
+                if candidate in referenced:
+                    continue
+                if raw_path.stat().st_mtime >= cutoff:
+                    continue
+                raw_path.unlink()
+                deleted += 1
+            except (OSError, ValueError) as exc:
+                self.last_cleanup_errors.append(
+                    f"orphan_delete_failed:{type(exc).__name__}"
+                )
+        self.last_cleanup_deleted = deleted
+        return deleted
 
     def register(
         self,
