@@ -1,8 +1,9 @@
 from unittest.mock import MagicMock, patch
 
 from Crawler import Page
+from Indexer import InvertedIndex
 from Searching import AcademicSearchEngine, SearchHit
-from storage import CrawlState
+from storage import CrawlState, StorageManager
 
 
 def make_engine(tmp_path):
@@ -40,6 +41,49 @@ def test_build_filters_graph_and_commits_one_snapshot(tmp_path):
     assert set(reloaded.pages) == {"https://a.test/"}
     assert set(reloaded.index.documents) == {"https://a.test/"}
     assert reloaded.pagerank_scores == {"https://a.test/": 1.0}
+
+
+def test_partial_legacy_generation_forces_rebuild(tmp_path):
+    manager = StorageManager(tmp_path)
+    url = "https://a.test/"
+    state = CrawlState(
+        pages={url: Page(url, "A", "alpha evidence", [], "text/html", 14)},
+        graph={url: set()},
+        visited={url},
+        frontier=[],
+    )
+    index = InvertedIndex()
+    index.build(state.pages)
+    manager.save_crawl_state(state)
+    manager.save_index(index)
+
+    engine = make_engine(tmp_path)
+
+    assert engine.ready is False
+    assert engine.pages == {}
+    assert engine.pagerank_scores == {}
+
+
+def test_mismatched_legacy_generation_forces_rebuild(tmp_path):
+    manager = StorageManager(tmp_path)
+    url = "https://a.test/"
+    state = CrawlState(
+        pages={url: Page(url, "A", "alpha evidence", [], "text/html", 14)},
+        graph={url: set()},
+        visited={url},
+        frontier=[],
+    )
+    index = InvertedIndex()
+    index.build(state.pages)
+    manager.save_crawl_state(state)
+    manager.save_index(index)
+    manager.save_pagerank({"https://other.test/": 1.0})
+
+    engine = make_engine(tmp_path)
+
+    assert engine.ready is False
+    assert engine.pages == {}
+    assert engine.pagerank_scores == {}
 
 
 def test_query_snippet_centres_first_matching_term(tmp_path):
