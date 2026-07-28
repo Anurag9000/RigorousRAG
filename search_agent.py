@@ -1,15 +1,47 @@
 """Validated provider boundary over the research-agent implementation.
 
 The complete reasoning and tool loop remains in ``search_agent_legacy``. This module
-hardens values supplied by callers or model providers before the preserved loop uses
-or echoes them, and prevents empty local lookups from becoming evidence.
+normalizes process-wide budgets before importing it, hardens caller/provider values,
+and prevents empty local lookups from becoming evidence.
 """
 
 from __future__ import annotations
 
 import math
+import os
 import sys
 from typing import Any, Dict, List, Optional, Sequence, Tuple
+
+from tools.config import bounded_int_env
+
+_TOOL_WORKERS = bounded_int_env(
+    "MAX_CONCURRENT_TOOL_WORKERS",
+    32,
+    minimum=1,
+    maximum=256,
+    write_back=True,
+)
+for _name, _default, _minimum, _maximum in (
+    ("MAX_TOOL_ARGUMENT_CHARS", 50_000, 1000, 500_000),
+    ("MAX_TOOL_RESULT_CHARS", 30_000, 1000, 200_000),
+    ("MAX_EVIDENCE_SOURCES", 100, 1, 500),
+    ("MAX_RESPONSE_TOKENS", 2000, 128, 16_000),
+):
+    bounded_int_env(
+        _name,
+        _default,
+        minimum=_minimum,
+        maximum=_maximum,
+        write_back=True,
+    )
+_PENDING_TOOLS = bounded_int_env(
+    "MAX_PENDING_TOOL_TASKS",
+    64,
+    minimum=_TOOL_WORKERS,
+    maximum=4096,
+    write_back=True,
+)
+os.environ["MAX_PENDING_TOOL_TASKS"] = str(max(_PENDING_TOOLS, _TOOL_WORKERS))
 
 import search_agent_legacy as _implementation
 
@@ -32,6 +64,14 @@ def _validate_schema_value(
         if not math.isfinite(float(value)):
             raise ValueError(f"{path} must be a finite number.")
     _original_validate_schema_value(value, schema, path, depth)
+
+
+def _bounded_direct_int(value: Any, label: str, *, minimum: int, maximum: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(f"{label} must be an integer.") from exc
+    return max(minimum, min(parsed, maximum))
 
 
 class ToolExecution(_original_tool_execution):
@@ -93,16 +133,36 @@ class SearchAgent(_implementation.SearchAgent):
             raise ValueError("request_timeout must be a finite positive number.")
         if not math.isfinite(per_tool_timeout) or per_tool_timeout <= 0:
             raise ValueError("tool_timeout must be a finite positive number.")
+        turns = _bounded_direct_int(max_turns, "max_turns", minimum=1, maximum=20)
+        tool_calls = _bounded_direct_int(
+            max_tool_calls,
+            "max_tool_calls",
+            minimum=1,
+            maximum=64,
+        )
+        response_tokens = (
+            None
+            if max_response_tokens is None
+            else _bounded_direct_int(
+                max_response_tokens,
+                "max_response_tokens",
+                minimum=128,
+                maximum=16_000,
+            )
+        )
+        selected_base_url = str(base_url).strip() if base_url is not None else None
+        if selected_base_url is not None and len(selected_base_url) > 4096:
+            raise ValueError("base_url may contain at most 4,096 characters.")
         super().__init__(
             model=selected_model,
             api_key=api_key,
-            base_url=base_url,
+            base_url=selected_base_url,
             owner_id=owner,
             request_timeout=min(provider_timeout, 300.0),
-            max_turns=max_turns,
-            max_tool_calls=max_tool_calls,
+            max_turns=turns,
+            max_tool_calls=tool_calls,
             tool_timeout=min(per_tool_timeout, 300.0),
-            max_response_tokens=max_response_tokens,
+            max_response_tokens=response_tokens,
         )
 
     def _dispatch(
