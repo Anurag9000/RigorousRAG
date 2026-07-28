@@ -213,25 +213,24 @@ class RAGLayer:
             raise ValueError("Document produced no vector chunks.")
 
         with self._write_lock:
-            existing_ids: List[str] = []
-            existing_documents: List[str] = []
-            existing_metadatas: List[Dict[str, Any]] = []
-            if replace:
-                existing = self.collection.get(
-                    where=document_filter,
-                    include=["documents", "metadatas"],
-                )
-                existing_ids = [str(value) for value in existing.get("ids") or []]
-                old_documents = existing.get("documents") or []
-                old_metadatas = existing.get("metadatas") or []
-                existing_documents = [
-                    str(old_documents[index]) if index < len(old_documents) else ""
-                    for index in range(len(existing_ids))
-                ]
-                existing_metadatas = [
-                    dict(old_metadatas[index] or {}) if index < len(old_metadatas) else {}
-                    for index in range(len(existing_ids))
-                ]
+            # Snapshot the complete current owner/document generation in both modes.
+            # Deterministic IDs mean replace=False can still overwrite existing rows;
+            # rollback therefore needs the previous bytes and metadata as well.
+            existing = self.collection.get(
+                where=document_filter,
+                include=["documents", "metadatas"],
+            )
+            existing_ids = [str(value) for value in existing.get("ids") or []]
+            old_documents = existing.get("documents") or []
+            old_metadatas = existing.get("metadatas") or []
+            existing_documents = [
+                str(old_documents[index]) if index < len(old_documents) else ""
+                for index in range(len(existing_ids))
+            ]
+            existing_metadatas = [
+                dict(old_metadatas[index] or {}) if index < len(old_metadatas) else {}
+                for index in range(len(existing_ids))
+            ]
             try:
                 for start in range(0, len(ids), 128):
                     stop = start + 128
@@ -240,10 +239,11 @@ class RAGLayer:
                         documents=documents[start:stop],
                         metadatas=metadatas[start:stop],
                     )
-                stale_ids = sorted(set(existing_ids) - set(ids))
-                if stale_ids:
-                    for batch in self._batched(stale_ids):
-                        self.collection.delete(ids=list(batch))
+                if replace:
+                    stale_ids = sorted(set(existing_ids) - set(ids))
+                    if stale_ids:
+                        for batch in self._batched(stale_ids):
+                            self.collection.delete(ids=list(batch))
             except Exception as exc:
                 rollback_errors = self._rollback_document_write(
                     new_ids=ids,
