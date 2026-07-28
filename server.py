@@ -127,6 +127,30 @@ def _safe_unlink_upload(path: str | Path | None) -> bool:
     return True
 
 
+def _persist_failed_job(
+    job_id: str,
+    owner_id: str,
+    display_name: str,
+    path: str | Path | None,
+    message: str,
+) -> bool:
+    """Persist failure before removing its source; preserve the file if persistence fails."""
+
+    try:
+        _JOB_STORE.update(
+            job_id,
+            owner_id,
+            status="failed",
+            filename=display_name,
+            source_path="",
+            message=message[:2000],
+        )
+    except Exception:
+        return False
+    _safe_unlink_upload(path)
+    return True
+
+
 def _forget_future(future: Future[Any]) -> None:
     with _INGEST_FUTURES_LOCK:
         _INGEST_FUTURES.discard(future)
@@ -155,41 +179,65 @@ def _recover_interrupted_jobs() -> None:
         job_id = str(record["job_id"])
         owner_id = str(record["owner_id"])
         display_name = str(record.get("filename") or "upload")
+        doc_id = str(record.get("doc_id") or "")
         source_path = str(record.get("source_path") or "")
         attempts = int(record.get("attempts") or 0)
+        registry_record = (
+            _DOCUMENT_STORE.get(owner_id=owner_id, doc_id=doc_id)
+            if doc_id
+            else None
+        )
+        if registry_record is not None:
+            retained_path = str(registry_record.get("source_path") or "")
+            try:
+                _JOB_STORE.update(
+                    job_id,
+                    owner_id,
+                    status="success",
+                    filename=display_name,
+                    source_path=retained_path,
+                    message="Recovered completed document finalization after restart.",
+                    doc_id=doc_id,
+                )
+            except Exception:
+                continue
+            if not bool(registry_record.get("source_retained")):
+                _safe_unlink_upload(source_path)
+            continue
         candidate = _validated_upload_file(source_path)
         if attempts >= INGEST_MAX_ATTEMPTS:
-            _JOB_STORE.update(
+            _persist_failed_job(
                 job_id,
                 owner_id,
-                status="failed",
-                filename=display_name,
-                source_path="",
-                message="Interrupted ingestion exhausted its retry limit.",
+                display_name,
+                source_path,
+                "Interrupted ingestion exhausted its retry limit.",
             )
-            _safe_unlink_upload(source_path)
             continue
         if candidate is None:
-            _JOB_STORE.update(
+            _persist_failed_job(
                 job_id,
                 owner_id,
-                status="failed",
-                filename=display_name,
-                source_path="",
-                message=(
+                display_name,
+                source_path,
+                (
                     "Interrupted ingestion could not resume because its source file "
                     "was missing, invalid, symlinked, or outside UPLOAD_DIR."
                 ),
             )
             continue
-        _JOB_STORE.update(
-            job_id,
-            owner_id,
-            status="queued",
-            filename=display_name,
-            source_path=str(candidate),
-            message="Recovered after service restart.",
-        )
+        try:
+            _JOB_STORE.update(
+                job_id,
+                owner_id,
+                status="queued",
+                filename=display_name,
+                source_path=str(candidate),
+                message="Recovered after service restart.",
+                doc_id=doc_id or None,
+            )
+        except Exception:
+            continue
         _submit_ingestion(str(candidate), display_name, job_id, owner_id)
 
 
@@ -200,7 +248,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     _INGEST_EXECUTOR.shutdown(wait=False, cancel_futures=False)
 
 
-app = FastAPI(title="RigorousRAG API", version="4.1.0", lifespan=lifespan)
+app = FastAPI(title="RigorousRAG API", version="4.2.0", lifespan=lifespan)
 
 
 @app.middleware("http")
@@ -376,35 +424,31 @@ def process_ingestion(file_path: str, display_name: str, job_id: str, owner_id: 
 
     path = _validated_upload_file(file_path)
     if path is None:
-        _JOB_STORE.update(
+        _persist_failed_job(
             job_id,
             owner_id,
-            status="failed",
-            filename=display_name,
-            source_path="",
-            message="The ingestion source was missing, invalid, symlinked, or outside UPLOAD_DIR.",
+            display_name,
+            file_path,
+            "The ingestion source was missing, invalid, symlinked, or outside UPLOAD_DIR.",
         )
         return
     if not _JOB_STORE.claim(job_id, owner_id, INGEST_MAX_ATTEMPTS):
         return
 
-    keep_source = False
-    registered = False
     result = ingest_file(str(path), owner_id=owner_id)
     if not result.success or result.document is None:
-        _JOB_STORE.update(
+        _persist_failed_job(
             job_id,
             owner_id,
-            status="failed",
-            filename=display_name,
-            source_path="",
-            message=result.error or "Document ingestion failed.",
+            display_name,
+            path,
+            result.error or "Document ingestion failed.",
         )
-        _safe_unlink_upload(path)
         return
 
     document = result.document
     document.filename = display_name
+    keep_source = False
     try:
         agent = _new_agent(owner_id)
         indexed = index_document(
@@ -414,6 +458,15 @@ def process_ingestion(file_path: str, display_name: str, job_id: str, owner_id: 
             client=agent.client,
             job_id=job_id,
         )
+        _JOB_STORE.update(
+            job_id,
+            owner_id,
+            status="finalizing",
+            filename=display_name,
+            source_path=str(path),
+            message="Vector indexing completed; finalizing source lifecycle.",
+            doc_id=document.id,
+        )
         retained_path = str(path) if RETAIN_SOURCE_FILES else None
         previous_path = _DOCUMENT_STORE.register(
             owner_id=owner_id,
@@ -422,8 +475,8 @@ def process_ingestion(file_path: str, display_name: str, job_id: str, owner_id: 
             mime_type=document.mime_type,
             source_path=retained_path,
         )
-        registered = True
-        keep_source = bool(retained_path)
+        registry_record = _DOCUMENT_STORE.get(owner_id=owner_id, doc_id=document.id) or {}
+        keep_source = bool(registry_record.get("source_retained"))
         if previous_path:
             _safe_unlink_upload(previous_path)
         _JOB_STORE.update(
@@ -431,50 +484,56 @@ def process_ingestion(file_path: str, display_name: str, job_id: str, owner_id: 
             owner_id,
             status="success",
             filename=display_name,
-            source_path=retained_path or "",
+            source_path=str(registry_record.get("source_path") or ""),
             message=f"Indexed {indexed.chunk_count} semantic chunks.",
             doc_id=document.id,
         )
     except Exception as exc:
-        internal = _JOB_STORE.get_internal(job_id, owner_id) or {}
-        attempts = int(internal.get("attempts") or 0)
-        if registered:
-            # Index and registry state are already durable. Preserve the source and let
-            # startup reconciliation or a later retry finish the public job transition.
-            keep_source = True
+        registry_record = _DOCUMENT_STORE.get(owner_id=owner_id, doc_id=document.id)
+        if registry_record is not None:
+            retained_path = str(registry_record.get("source_path") or "")
             try:
                 _JOB_STORE.update(
                     job_id,
                     owner_id,
-                    status="queued",
+                    status="success",
                     filename=display_name,
-                    source_path=str(path),
-                    message=f"Finalization will retry: {str(exc)[:1200]}",
+                    source_path=retained_path,
+                    message="Recovered completed document finalization.",
                     doc_id=document.id,
                 )
-                _submit_ingestion(str(path), display_name, job_id, owner_id)
+                keep_source = bool(registry_record.get("source_retained"))
             except Exception:
-                pass
-        elif attempts < INGEST_MAX_ATTEMPTS:
-            keep_source = True
-            _JOB_STORE.update(
-                job_id,
-                owner_id,
-                status="queued",
-                filename=display_name,
-                source_path=str(path),
-                message=f"Transient ingestion failure; retry queued: {str(exc)[:1200]}",
-            )
-            _submit_ingestion(str(path), display_name, job_id, owner_id)
+                # Preserve the upload so startup reconciliation can finish the stale
+                # finalizing job without losing a source that may be required.
+                keep_source = True
         else:
-            _JOB_STORE.update(
-                job_id,
-                owner_id,
-                status="failed",
-                filename=display_name,
-                source_path="",
-                message=str(exc)[:2000],
-            )
+            internal = _JOB_STORE.get_internal(job_id, owner_id) or {}
+            attempts = int(internal.get("attempts") or 0)
+            if attempts < INGEST_MAX_ATTEMPTS:
+                keep_source = True
+                try:
+                    _JOB_STORE.update(
+                        job_id,
+                        owner_id,
+                        status="queued",
+                        filename=display_name,
+                        source_path=str(path),
+                        message=f"Transient ingestion failure; retry queued: {str(exc)[:1200]}",
+                        doc_id=document.id,
+                    )
+                    _submit_ingestion(str(path), display_name, job_id, owner_id)
+                except Exception:
+                    pass
+            else:
+                if not _persist_failed_job(
+                    job_id,
+                    owner_id,
+                    display_name,
+                    path,
+                    str(exc),
+                ):
+                    keep_source = True
     finally:
         if not keep_source:
             _safe_unlink_upload(path)
