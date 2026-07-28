@@ -41,6 +41,7 @@ def test_missing_retained_source_is_reported_as_text_only(monkeypatch, tmp_path)
     record = store.get(owner_id="alice", doc_id="doc-1")
     assert record["source_retained"] == 1
     assert record["visual_source_available"] is True
+    assert record["visual_source_check_performed"] is False
     assert record["visual_source_verified"] is False
     assert store.source_path(owner_id="alice", doc_id="doc-1") is None
 
@@ -51,6 +52,7 @@ def test_missing_retained_source_is_reported_as_text_only(monkeypatch, tmp_path)
     assert record["source_retained"] == 0
     assert record["source_path"] is None
     assert record["visual_source_available"] is False
+    assert record["visual_source_check_performed"] is False
     assert record["visual_source_verified"] is False
     assert store.source_path(owner_id="alice", doc_id="doc-1") is None
     assert store.retained_source_paths() == set()
@@ -82,6 +84,7 @@ def test_visual_page_limit_does_not_turn_retained_source_into_orphan(
     record = store.get(owner_id="alice", doc_id=document_id)
     assert record and record["source_retained"] == 1
     assert record["visual_source_available"] is True
+    assert record["visual_source_check_performed"] is False
     assert record["visual_source_verified"] is False
     verified = store.get(
         owner_id="alice",
@@ -89,7 +92,8 @@ def test_visual_page_limit_does_not_turn_retained_source_into_orphan(
         verify_visual=True,
     )
     assert verified and verified["visual_source_available"] is False
-    assert verified["visual_source_verified"] is True
+    assert verified["visual_source_check_performed"] is True
+    assert verified["visual_source_verified"] is False
     assert store.source_path(owner_id="alice", doc_id=document_id) is None
     assert store.retained_source_path(owner_id="alice", doc_id=document_id) == source.resolve()
     assert store.retained_source_paths() == {source.resolve()}
@@ -125,6 +129,7 @@ def test_visual_render_pixel_limit_rejects_extreme_page_geometry(
     record = store.get(owner_id="alice", doc_id=document_id)
     assert record and record["source_retained"] == 1
     assert record["visual_source_available"] is True
+    assert record["visual_source_check_performed"] is False
     assert record["visual_source_verified"] is False
     verified = store.get(
         owner_id="alice",
@@ -132,6 +137,8 @@ def test_visual_render_pixel_limit_rejects_extreme_page_geometry(
         verify_visual=True,
     )
     assert verified and verified["visual_source_available"] is False
+    assert verified["visual_source_check_performed"] is True
+    assert verified["visual_source_verified"] is False
     assert store.source_path(owner_id="alice", doc_id=document_id) is None
 
 
@@ -178,6 +185,7 @@ def test_safe_pdf_is_returned_only_after_verification(monkeypatch, tmp_path):
 
     quick = store.get(owner_id="alice", doc_id=document_id)
     assert quick and quick["visual_source_available"] is True
+    assert quick["visual_source_check_performed"] is False
     assert quick["visual_source_verified"] is False
     verified = store.get(
         owner_id="alice",
@@ -185,6 +193,7 @@ def test_safe_pdf_is_returned_only_after_verification(monkeypatch, tmp_path):
         verify_visual=True,
     )
     assert verified and verified["visual_source_available"] is True
+    assert verified["visual_source_check_performed"] is True
     assert verified["visual_source_verified"] is True
     assert store.source_path(owner_id="alice", doc_id=document_id) == source.resolve()
 
@@ -211,6 +220,14 @@ def test_mutated_retained_pdf_is_refused_but_remains_managed(monkeypatch, tmp_pa
 
     quick = store.get(owner_id="alice", doc_id=document_id)
     assert quick and quick["source_retained"] == 1
+    checked = store.get(
+        owner_id="alice",
+        doc_id=document_id,
+        verify_visual=True,
+    )
+    assert checked and checked["visual_source_check_performed"] is True
+    assert checked["visual_source_available"] is False
+    assert checked["visual_source_verified"] is False
     assert store.source_path(owner_id="alice", doc_id=document_id) is None
     assert store.retained_source_path(owner_id="alice", doc_id=document_id) == source.resolve()
     assert store.retained_source_paths() == {source.resolve()}
