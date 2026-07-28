@@ -1,8 +1,9 @@
 """Compatibility entrypoint over the FastAPI service implementation.
 
 `server_app` preserves the complete route/application implementation. This shim
-replaces only parser-facing ingestion so queued uploads are consumed from immutable,
-descriptor-anchored byte snapshots rather than reopened owner pathnames.
+replaces parser-facing ingestion and recovery so queued uploads are consumed from
+immutable descriptor-anchored byte snapshots and incomplete jobs cannot be promoted
+from unrelated pre-existing registry state.
 """
 
 from __future__ import annotations
@@ -78,6 +79,84 @@ def _retry_or_fail_snapshot(
             exc,
         ),
     )
+
+
+def _recover_interrupted_jobs() -> None:
+    """Reconcile durable jobs without promoting work that never reached finalization."""
+
+    for record in _implementation._JOB_STORE.recoverable():
+        job_id = str(record["job_id"])
+        owner_id = str(record["owner_id"])
+        status = str(record.get("status") or "")
+        display_name = str(record.get("filename") or "upload")
+        doc_id = str(record.get("doc_id") or "")
+        source_path = str(record.get("source_path") or "")
+        attempts = int(record.get("attempts") or 0)
+
+        registry_record = None
+        if status == "finalizing" and doc_id:
+            registry_record = _implementation._DOCUMENT_STORE.get(
+                owner_id=owner_id,
+                doc_id=doc_id,
+            )
+        if registry_record is not None:
+            retained_path = str(registry_record.get("source_path") or "")
+            try:
+                _implementation._JOB_STORE.update(
+                    job_id,
+                    owner_id,
+                    status="success",
+                    filename=display_name,
+                    source_path=retained_path,
+                    message="Recovered completed document finalization after restart.",
+                    doc_id=doc_id,
+                )
+            except Exception:
+                continue
+            if not bool(registry_record.get("source_retained")):
+                _implementation._safe_unlink_upload(source_path)
+            continue
+
+        candidate = _implementation._validated_upload_file(source_path)
+        if attempts >= _implementation.INGEST_MAX_ATTEMPTS:
+            _implementation._persist_failed_job(
+                job_id,
+                owner_id,
+                display_name,
+                source_path,
+                "Interrupted ingestion exhausted its retry limit.",
+            )
+            continue
+        if candidate is None:
+            _implementation._persist_failed_job(
+                job_id,
+                owner_id,
+                display_name,
+                source_path,
+                (
+                    "Interrupted ingestion could not resume because its source file "
+                    "was missing, invalid, symlinked, or outside UPLOAD_DIR."
+                ),
+            )
+            continue
+        try:
+            _implementation._JOB_STORE.update(
+                job_id,
+                owner_id,
+                status="queued",
+                filename=display_name,
+                source_path=str(candidate),
+                message="Recovered after service restart.",
+                doc_id=doc_id or None,
+            )
+        except Exception:
+            continue
+        _implementation._submit_ingestion(
+            str(candidate),
+            display_name,
+            job_id,
+            owner_id,
+        )
 
 
 def process_ingestion(
@@ -271,6 +350,7 @@ _implementation._validated_upload_file = _validated_upload_file
 _implementation.materialize_ingestion_snapshot = materialize_ingestion_snapshot
 _implementation.read_owner_file = read_owner_file
 _implementation._retry_or_fail_snapshot = _retry_or_fail_snapshot
+_implementation._recover_interrupted_jobs = _recover_interrupted_jobs
 _implementation.process_ingestion = process_ingestion
 _implementation.__doc__ = __doc__
 
