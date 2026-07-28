@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator
@@ -19,6 +20,18 @@ SourceType = Literal[
 ]
 
 
+def _bounded_scalar(value: Any, *, string_limit: int) -> Any:
+    if isinstance(value, str):
+        return value[:string_limit]
+    if isinstance(value, bool) or value is None:
+        return value
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    return str(value)[:string_limit]
+
+
 def _bounded_metadata(value: Dict[str, Any], *, max_items: int = 100) -> Dict[str, Any]:
     sanitized = sanitize_metadata_dict(value)
     bounded: Dict[str, Any] = {}
@@ -26,20 +39,16 @@ def _bounded_metadata(value: Dict[str, Any], *, max_items: int = 100) -> Dict[st
         if index >= max_items:
             break
         safe_key = str(key)[:200]
-        if isinstance(item, str):
-            bounded[safe_key] = item[:4000]
-        elif isinstance(item, (int, float, bool)) or item is None:
-            bounded[safe_key] = item
+        if isinstance(item, dict):
+            bounded[safe_key] = _bounded_metadata(item, max_items=50)
         elif isinstance(item, list):
             bounded[safe_key] = [
-                entry[:1000] if isinstance(entry, str) else entry
+                _bounded_scalar(entry, string_limit=1000)
                 for entry in item[:100]
                 if isinstance(entry, (str, int, float, bool)) or entry is None
             ]
-        elif isinstance(item, dict):
-            bounded[safe_key] = _bounded_metadata(item, max_items=50)
         else:
-            bounded[safe_key] = str(item)[:1000]
+            bounded[safe_key] = _bounded_scalar(item, string_limit=4000)
     return bounded
 
 
