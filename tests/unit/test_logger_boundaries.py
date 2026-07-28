@@ -3,6 +3,7 @@ import os
 
 import pytest
 
+import tools.logger as logger
 from tools.logger import log_activity, log_agent_run, log_tool_call
 
 
@@ -56,3 +57,47 @@ def test_symlinked_telemetry_path_is_refused(tmp_path, monkeypatch):
 
     assert target.read_text(encoding="utf-8") == "unchanged"
     assert link.is_symlink()
+
+
+def test_symlinked_telemetry_parent_is_refused(tmp_path, monkeypatch):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    linked_parent = tmp_path / "logs"
+    try:
+        linked_parent.symlink_to(outside, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("Symlinks are unavailable on this platform.")
+    monkeypatch.setattr(logger, "LOG_FILE", str(linked_parent / "metrics.jsonl"))
+
+    log_activity("event", {"value": "not written outside"})
+
+    assert list(outside.iterdir()) == []
+
+
+def test_nonregular_telemetry_destination_is_refused_without_blocking(
+    tmp_path,
+    monkeypatch,
+):
+    if not hasattr(os, "mkfifo"):
+        pytest.skip("FIFO creation is unavailable on this platform.")
+    fifo = tmp_path / "metrics.jsonl"
+    os.mkfifo(fifo)
+    monkeypatch.setattr(logger, "LOG_FILE", str(fifo))
+
+    log_activity("event", {"value": "must not block"})
+
+    assert fifo.exists()
+    assert not fifo.is_file()
+
+
+def test_malformed_telemetry_integer_environment_uses_default(monkeypatch):
+    monkeypatch.setenv("BAD_TELEMETRY_INTEGER", "not-an-integer")
+
+    value = logger._bounded_int_env(
+        "BAD_TELEMETRY_INTEGER",
+        17,
+        minimum=1,
+        maximum=100,
+    )
+
+    assert value == 17
