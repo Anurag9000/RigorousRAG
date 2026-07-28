@@ -9,6 +9,11 @@ from tools.job_store import JobStore
 from tools.rate_limit import SlidingWindowRateLimiter
 
 
+@pytest.fixture(autouse=True)
+def disable_automatic_orphan_cleanup(monkeypatch):
+    monkeypatch.setenv("ORPHAN_CLEANUP_ON_STARTUP", "false")
+
+
 def test_job_store_is_owner_scoped_persistent_and_prunable(tmp_path):
     path = tmp_path / "jobs.sqlite3"
     source = tmp_path / "upload.pdf"
@@ -71,6 +76,7 @@ def test_recoverable_includes_queued_processing_and_finalizing_only(tmp_path):
     records = {record["job_id"]: record for record in store.recoverable()}
     assert set(records) == {"queued", "processing", "finalizing"}
     assert records["finalizing"]["doc_id"] == "doc-1"
+    assert store.active_source_paths() == {source.resolve()}
 
 
 def test_atomic_claim_enforces_attempt_limit(tmp_path):
@@ -111,6 +117,7 @@ def test_document_store_is_owner_scoped_and_keeps_paths_private(tmp_path):
     assert previous is None
     assert store.source_path(owner_id="alice", doc_id="doc-1") == source.resolve()
     assert store.source_path(owner_id="bob", doc_id="doc-1") is None
+    assert store.retained_source_paths() == {source.resolve()}
     record = store.delete(owner_id="alice", doc_id="doc-1")
     assert record and Path(record["source_path"]) == source.resolve()
     assert store.get(owner_id="alice", doc_id="doc-1") is None
@@ -151,6 +158,86 @@ def test_document_store_rejects_symlinked_sources(tmp_path):
             mime_type="application/pdf",
             source_path=link,
         )
+
+
+def test_copy_source_is_bounded_and_rolls_back_partial_output(tmp_path):
+    source = tmp_path / "large.txt"
+    source.write_bytes(b"0123456789")
+    upload_root = tmp_path / "uploads"
+    store = DocumentStore(tmp_path / "documents.sqlite3", upload_root)
+    with pytest.raises(ValueError, match="retention limit"):
+        store.copy_source(owner_id="alice", source_path=source, max_bytes=9)
+    assert not list(upload_root.rglob("*.txt"))
+
+    copied = store.copy_source(owner_id="alice", source_path=source, max_bytes=10)
+    assert copied.read_bytes() == source.read_bytes()
+    assert copied.parent == (upload_root / "alice").resolve()
+
+
+def test_orphan_cleanup_preserves_referenced_recent_and_symlink_files(tmp_path):
+    upload_root = tmp_path / "uploads"
+    owner_dir = upload_root / "alice"
+    owner_dir.mkdir(parents=True)
+    retained = owner_dir / "retained.pdf"
+    active = owner_dir / "active.txt"
+    recent = owner_dir / "recent.txt"
+    orphan = owner_dir / "orphan.txt"
+    for path in (retained, active, recent, orphan):
+        path.write_text(path.stem, encoding="utf-8")
+
+    outside = tmp_path / "outside.txt"
+    outside.write_text("outside", encoding="utf-8")
+    link = owner_dir / "link.txt"
+    try:
+        os.symlink(outside, link)
+    except OSError:
+        link = None
+
+    store = DocumentStore(tmp_path / "documents.sqlite3", upload_root)
+    store.orphan_grace_seconds = 100
+    store.register(
+        owner_id="alice",
+        doc_id="doc-1",
+        filename="retained.pdf",
+        mime_type="application/pdf",
+        source_path=retained,
+    )
+    for path in (retained, active, orphan):
+        os.utime(path, (0, 0))
+    os.utime(recent, (9_950, 9_950))
+
+    class ActiveJobs:
+        @staticmethod
+        def active_source_paths():
+            return {active.resolve()}
+
+    assert store.cleanup_orphans(now=10_000, job_store=ActiveJobs()) == 1
+    assert retained.exists()
+    assert active.exists()
+    assert recent.exists()
+    assert not orphan.exists()
+    assert outside.exists()
+    if link is not None:
+        assert link.is_symlink()
+
+
+def test_orphan_cleanup_fails_closed_when_references_cannot_be_read(tmp_path):
+    upload_root = tmp_path / "uploads"
+    orphan = upload_root / "alice" / "orphan.txt"
+    orphan.parent.mkdir(parents=True)
+    orphan.write_text("orphan", encoding="utf-8")
+    os.utime(orphan, (0, 0))
+    store = DocumentStore(tmp_path / "documents.sqlite3", upload_root)
+    store.orphan_grace_seconds = 1
+
+    class BrokenJobs:
+        @staticmethod
+        def active_source_paths():
+            raise RuntimeError("database unavailable")
+
+    assert store.cleanup_orphans(now=10_000, job_store=BrokenJobs()) == 0
+    assert orphan.exists()
+    assert store.last_cleanup_errors == ["reference_lookup_failed:RuntimeError"]
 
 
 def test_sliding_window_rate_limiter_reports_retry_time():
