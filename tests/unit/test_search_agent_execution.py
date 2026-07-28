@@ -3,7 +3,9 @@ import time
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import search_agent
 from search_agent import SearchAgent, ToolExecution
+from tools.models import Citation
 
 
 def tool_call(name, arguments, call_id="call-1"):
@@ -34,6 +36,35 @@ def test_single_tool_timeout_returns_without_waiting_for_worker(monkeypatch):
     assert results[0].success is False
     assert results[0].error_type == "TimeoutError"
     assert "timed out" in results[0].content.lower()
+
+
+def test_tool_calls_reuse_process_wide_executor(monkeypatch):
+    agent = SearchAgent(owner_id="alice")
+    executor = search_agent._TOOL_EXECUTOR
+    submitted = []
+    original_submit = executor.submit
+
+    def tracking_submit(*args, **kwargs):
+        submitted.append(args)
+        return original_submit(*args, **kwargs)
+
+    monkeypatch.setattr(executor, "submit", tracking_submit)
+    monkeypatch.setattr(
+        agent,
+        "_execute_tool",
+        lambda call: ToolExecution(
+            tool_call_id=call.id,
+            tool_name=call.function.name,
+            content="ok",
+        ),
+    )
+
+    first = agent._execute_tools([tool_call("fetch_page", '{"url":"https://example.com"}')])
+    second = agent._execute_tools([tool_call("fetch_page", '{"url":"https://example.com"}', "call-2")])
+
+    assert first[0].success and second[0].success
+    assert len(submitted) == 2
+    assert search_agent._TOOL_EXECUTOR is executor
 
 
 def test_runtime_schema_rejects_unknown_arguments_before_dispatch(monkeypatch):
@@ -81,6 +112,35 @@ def test_oversized_tool_arguments_are_rejected(monkeypatch):
     )
     assert result.success is False
     assert result.error_type == "ValueError"
+
+
+def test_existing_citation_is_returned_after_new_evidence_cap(monkeypatch):
+    monkeypatch.setattr(search_agent, "_MAX_EVIDENCE_SOURCES", 1)
+    existing = Citation(
+        label="[1]",
+        title="Existing",
+        url="local://existing",
+        source_type="uploaded_document",
+        snippet="evidence",
+        source_id="existing",
+    )
+    duplicate = existing.model_copy(deep=True)
+    duplicate.label = "[99]"
+    new = Citation(
+        label="[1]",
+        title="New",
+        url="local://new",
+        source_type="uploaded_document",
+        snippet="new evidence",
+        source_id="new",
+    )
+    registry = [existing]
+    seen = {("existing", "", "evidence"): "[1]"}
+
+    selected = SearchAgent._register_citations([duplicate, new], registry, seen)
+
+    assert selected == [existing]
+    assert registry == [existing]
 
 
 def test_fallback_distinguishes_retrieval_outage_from_no_match(monkeypatch):
