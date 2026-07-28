@@ -43,6 +43,7 @@ class JobStore:
                     doc_id TEXT,
                     source_path TEXT,
                     attempts INTEGER NOT NULL DEFAULT 0,
+                    next_attempt_at REAL NOT NULL DEFAULT 0,
                     created_at REAL NOT NULL,
                     updated_at REAL NOT NULL
                 )
@@ -58,17 +59,32 @@ class JobStore:
                 connection.execute(
                     "ALTER TABLE jobs ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0"
                 )
+            if "next_attempt_at" not in existing_columns:
+                connection.execute(
+                    "ALTER TABLE jobs ADD COLUMN next_attempt_at REAL NOT NULL DEFAULT 0"
+                )
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_jobs_owner_updated "
                 "ON jobs(owner_id, updated_at)"
             )
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_jobs_recovery "
-                "ON jobs(status, updated_at)"
+                "ON jobs(status, next_attempt_at, updated_at)"
             )
 
+    def ping(self) -> bool:
+        """Return whether the queue database can complete a trivial read."""
+
+        try:
+            with self._lock, self._connect() as connection:
+                row = connection.execute("SELECT 1 AS ok").fetchone()
+            return bool(row and int(row["ok"]) == 1)
+        except sqlite3.Error:
+            return False
+
     def prune(self, now: Optional[float] = None) -> int:
-        cutoff = (now or time.time()) - self.ttl_seconds
+        current_time = time.time() if now is None else float(now)
+        cutoff = current_time - self.ttl_seconds
         with self._lock, self._connect() as connection:
             cursor = connection.execute(
                 "DELETE FROM jobs WHERE updated_at < ? AND status IN ('success', 'failed')",
@@ -99,9 +115,11 @@ class JobStore:
             if source_path_value not in (None, "")
             else None
         )
+        next_attempt_value = fields.get("next_attempt_at")
         with self._lock, self._connect() as connection:
             existing = connection.execute(
-                "SELECT owner_id, attempts, source_path FROM jobs WHERE job_id=?",
+                "SELECT owner_id, attempts, source_path, next_attempt_at "
+                "FROM jobs WHERE job_id=?",
                 (identifier,),
             ).fetchone()
             if existing is not None and str(existing["owner_id"]) != owner:
@@ -109,12 +127,18 @@ class JobStore:
             attempts = int(existing["attempts"] or 0) if existing else 0
             if source_path_value is None and existing is not None:
                 source_path = str(existing["source_path"] or "") or None
+            if next_attempt_value is None and existing is not None:
+                next_attempt_at = float(existing["next_attempt_at"] or 0.0)
+            else:
+                next_attempt_at = max(0.0, float(next_attempt_value or 0.0))
+            if status != "queued":
+                next_attempt_at = 0.0
             connection.execute(
                 """
                 INSERT INTO jobs(
                     job_id, owner_id, status, filename, message, doc_id,
-                    source_path, attempts, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    source_path, attempts, next_attempt_at, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(job_id) DO UPDATE SET
                     status=excluded.status,
                     filename=excluded.filename,
@@ -122,6 +146,7 @@ class JobStore:
                     doc_id=COALESCE(excluded.doc_id, jobs.doc_id),
                     source_path=excluded.source_path,
                     attempts=excluded.attempts,
+                    next_attempt_at=excluded.next_attempt_at,
                     updated_at=excluded.updated_at
                 """,
                 (
@@ -133,27 +158,36 @@ class JobStore:
                     doc_id,
                     source_path,
                     attempts,
+                    next_attempt_at,
                     now,
                     now,
                 ),
             )
         self.prune(now)
 
-    def claim(self, job_id: str, owner_id: str, max_attempts: int) -> bool:
-        """Atomically claim one queued job; safe across threads and processes."""
+    def claim(
+        self,
+        job_id: str,
+        owner_id: str,
+        max_attempts: int,
+        *,
+        now: Optional[float] = None,
+    ) -> bool:
+        """Atomically claim one due queued job; safe across threads and processes."""
 
         owner = normalize_owner_id(owner_id)
         limit = max(1, int(max_attempts))
-        now = time.time()
+        current_time = time.time() if now is None else float(now)
         with self._lock, self._connect() as connection:
             cursor = connection.execute(
                 """
                 UPDATE jobs
                 SET status='processing', attempts=attempts + 1,
-                    message=NULL, updated_at=?
-                WHERE job_id=? AND owner_id=? AND status='queued' AND attempts < ?
+                    next_attempt_at=0, message=NULL, updated_at=?
+                WHERE job_id=? AND owner_id=? AND status='queued'
+                  AND attempts < ? AND next_attempt_at <= ?
                 """,
-                (now, job_id, owner, limit),
+                (current_time, job_id, owner, limit, current_time),
             )
             return cursor.rowcount == 1
 
@@ -178,7 +212,7 @@ class JobStore:
             row = connection.execute(
                 """
                 SELECT job_id, owner_id, status, filename, message, doc_id,
-                       source_path, attempts, created_at, updated_at
+                       source_path, attempts, next_attempt_at, created_at, updated_at
                 FROM jobs WHERE job_id=? AND owner_id=?
                 """,
                 (job_id, owner),
@@ -192,7 +226,7 @@ class JobStore:
             rows = connection.execute(
                 """
                 SELECT job_id, owner_id, status, filename, doc_id,
-                       source_path, attempts
+                       source_path, attempts, next_attempt_at
                 FROM jobs
                 WHERE status IN ('queued', 'processing', 'finalizing')
                 ORDER BY created_at ASC
