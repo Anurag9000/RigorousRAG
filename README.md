@@ -53,7 +53,7 @@ See [Goals and Architecture](docs/GOALS_AND_ARCHITECTURE.md), [Security Model](d
 - Symlinked inputs and retained sources are rejected.
 - Filesystem paths are held in private SQLite stores, never in Chroma metadata, citations, manifests, or public job responses.
 - Missing retained files dynamically downgrade a document to text-only capability.
-- Retained visual PDFs are re-hashed against owner/content document identity and checked against page, render-pixel, and exact encoded-image-byte budgets on visual access.
+- Retained visual PDFs are re-hashed against owner/content document identity and checked against page, true pre-render geometry, render-pixel, and exact encoded-image-byte budgets on visual access.
 - Host-side source mutation therefore disables visual analysis without making the retained file unmanaged or undeletable.
 - Document deletion removes vectors, registry state, and retained source; partial cleanup remains retryable.
 - Old unreferenced uploads are reconciled after a grace period while active, retained, recent, and symlink paths are protected.
@@ -148,7 +148,7 @@ python search_agent_cli.py --demo
 | Request/upload lifecycle | `MAX_REQUEST_BODY_BYTES`, `MAX_UPLOAD_BYTES`, `RETAIN_SOURCE_FILES`, `ORPHAN_CLEANUP_ON_STARTUP`, `ORPHAN_GRACE_SECONDS` |
 | Durable ingestion | `INGEST_WORKERS`, `INGEST_MAX_PENDING`, `INGEST_ADMISSION_RETRY_SECONDS`, `INGEST_MAX_ATTEMPTS`, `INGEST_RETRY_BASE_SECONDS`, `INGEST_RETRY_MAX_SECONDS`, `JOB_TTL_SECONDS` |
 | PDF/DOCX complexity | `MAX_PDF_PAGES`, `MAX_PDF_RENDER_PIXELS`, `MAX_EXTRACTED_CHARS`, `MAX_DOCX_MEMBERS`, `MAX_DOCX_UNCOMPRESSED_BYTES`, `MAX_DOCX_COMPRESSION_RATIO` |
-| Retained visual PDFs | `VISUAL_MAX_PDF_PAGES`, `VISUAL_MAX_RENDER_PIXELS`, `VISUAL_MAX_ENCODED_BYTES`, `VISUAL_CLIP_HEIGHT_POINTS` |
+| Retained visual PDFs | `VISUAL_MAX_PDF_PAGES`, `VISUAL_MAX_RENDER_PIXELS`, `VISUAL_MAX_ENCODED_BYTES` |
 | OCR | `ENABLE_OCR`, `OCR_MAX_PAGES`, `OCR_DPI`, `OCR_TIMEOUT_SECONDS`, `OCR_MIN_TEXT_CHARS` |
 | Vector storage | `CHROMA_PATH`, `EMBEDDING_MODEL`, `MAX_CHUNKS_PER_DOCUMENT`, `DOCUMENT_LIST_SCAN_BATCH`, `MAX_DOCUMENT_LIST_SCAN_CHUNKS` |
 | Remote network | `MAX_REMOTE_DOWNLOAD_BYTES`, `REMOTE_REQUEST_TIMEOUT_SECONDS`, `MAX_REMOTE_REDIRECTS`, `SERPER_MAX_RESPONSE_BYTES` |
@@ -184,7 +184,8 @@ This is single-host crash recovery. Distributed/high-scale deployments should re
 - OCR operates only on low-native-text pages and records attempted, successful, empty, failed, and limit-skipped page provenance.
 - One failed OCR page does not discard usable native/OCR pages from the rest of the document.
 - Document listing reports a retained PDF as eligible but unverified. A visual action triggers current-byte identity verification and PDF page/render checks.
-- Caption-region rendering enforces both pixel count and the exact base64 payload length before image data reaches a vision model.
+- Before pixmap allocation, the registry preflights the renderer’s fixed worst-case 565-point caption clip at 2× scale against `VISUAL_MAX_RENDER_PIXELS`.
+- Caption-region rendering also enforces the actual pixel count and exact base64 payload length before image data reaches a vision model.
 
 ## Run the web service
 
