@@ -78,8 +78,74 @@ def test_scanned_pdf_uses_ocr_then_redacts_and_preserves_page(monkeypatch, tmp_p
     assert "alice@example.com" not in document.text
     assert "[REDACTED_EMAIL]" in document.text
     assert document.sections[0].page_number == 1
+    assert document.metadata["ocr_attempted_count"] == 1
+    assert document.metadata["ocr_attempted_pages"] == "1"
     assert document.metadata["ocr_page_count"] == 1
     assert document.metadata["ocr_pages"] == "1"
+
+
+def test_ocr_limit_counts_attempts_not_absolute_page_number(monkeypatch, tmp_path):
+    path = tmp_path / "late-scan.pdf"
+    pdf = fitz.open()
+    page = pdf.new_page()
+    page.insert_text((72, 72), "Native selectable text " * 10)
+    pdf.new_page().draw_rect(fitz.Rect(50, 50, 300, 300))
+    pdf.save(path)
+    pdf.close()
+
+    monkeypatch.setattr(ingestion, "_ENABLE_OCR", True)
+    monkeypatch.setattr(ingestion, "_OCR_MAX_PAGES", 1)
+    monkeypatch.setattr(
+        ingestion,
+        "_ocr_page",
+        lambda _page, page_number: f"OCR content from page {page_number}",
+    )
+    result = ingest_file(str(path), owner_id="alice")
+    assert result.success and result.document is not None
+    assert result.document.metadata["ocr_attempted_pages"] == "2"
+    assert result.document.metadata["ocr_pages"] == "2"
+    assert result.document.metadata["ocr_skipped_limit_pages"] == ""
+
+
+def test_ocr_attempt_cap_records_skipped_low_text_pages(monkeypatch, tmp_path):
+    path = tmp_path / "many-scans.pdf"
+    pdf = fitz.open()
+    for _ in range(3):
+        pdf.new_page().draw_rect(fitz.Rect(50, 50, 300, 300))
+    pdf.save(path)
+    pdf.close()
+
+    monkeypatch.setattr(ingestion, "_ENABLE_OCR", True)
+    monkeypatch.setattr(ingestion, "_OCR_MAX_PAGES", 1)
+    monkeypatch.setattr(ingestion, "_ocr_page", lambda _page, _number: "Recovered text")
+    result = ingest_file(str(path), owner_id="alice")
+    assert result.success and result.document is not None
+    metadata = result.document.metadata
+    assert metadata["ocr_attempted_pages"] == "1"
+    assert metadata["ocr_skipped_limit_pages"] == "2,3"
+    assert "skipped" in metadata["extraction_warnings"].lower()
+
+
+def test_page_local_ocr_failure_preserves_native_pages(monkeypatch, tmp_path):
+    path = tmp_path / "partial.pdf"
+    pdf = fitz.open()
+    page = pdf.new_page()
+    page.insert_text((72, 72), "Native evidence remains available " * 8)
+    pdf.new_page().draw_rect(fitz.Rect(50, 50, 300, 300))
+    pdf.save(path)
+    pdf.close()
+
+    monkeypatch.setattr(ingestion, "_ENABLE_OCR", True)
+    monkeypatch.setattr(
+        ingestion,
+        "_ocr_page",
+        lambda _page, _number: (_ for _ in ()).throw(RuntimeError("timeout")),
+    )
+    result = ingest_file(str(path), owner_id="alice")
+    assert result.success and result.document is not None
+    assert "Native evidence" in result.document.text
+    assert result.document.metadata["ocr_failed_pages"] == "2"
+    assert "failed" in result.document.metadata["extraction_warnings"].lower()
 
 
 def test_image_only_pdf_fails_explicitly_when_ocr_disabled(monkeypatch, tmp_path):
