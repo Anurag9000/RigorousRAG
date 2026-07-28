@@ -1,4 +1,6 @@
-from tools.privacy import mask_metadata_text, sanitize_metadata_dict
+import math
+
+from tools.privacy import mask_metadata_text, sanitize_metadata, sanitize_metadata_dict
 
 
 def test_local_paths_are_redacted_from_public_metadata():
@@ -55,3 +57,96 @@ def test_mapping_keys_are_redacted_bounded_and_collision_preserving():
     assert "https://[REDACTED_CREDENTIALS]@example.com" in sanitized
     assert max(len(key) for key in sanitized) <= 500
     assert len(sanitized) == 4
+
+
+def test_nonfinite_numbers_become_json_null_equivalents():
+    sanitized = sanitize_metadata({
+        "nan": float("nan"),
+        "positive": float("inf"),
+        "negative": float("-inf"),
+        "finite": 1.25,
+    })
+
+    assert sanitized == {
+        "nan": None,
+        "positive": None,
+        "negative": None,
+        "finite": 1.25,
+    }
+    assert math.isfinite(sanitized["finite"])
+
+
+def test_self_referential_containers_are_replaced_with_sentinel():
+    mapping = {}
+    mapping["self"] = mapping
+    sequence = []
+    sequence.append(sequence)
+
+    sanitized_mapping = sanitize_metadata(mapping)
+    sanitized_sequence = sanitize_metadata(sequence)
+
+    assert sanitized_mapping["self"] == "[CIRCULAR_REFERENCE]"
+    assert sanitized_sequence == ["[CIRCULAR_REFERENCE]"]
+
+
+def test_excessive_depth_is_truncated_without_recursion_error():
+    nested = value = {}
+    for index in range(20):
+        value["next"] = {}
+        value = value["next"]
+        value["index"] = index
+
+    sanitized = sanitize_metadata(nested)
+    cursor = sanitized
+    found = False
+    for _ in range(20):
+        if cursor == "[TRUNCATED_DEPTH]":
+            found = True
+            break
+        if not isinstance(cursor, dict):
+            break
+        cursor = cursor.get("next")
+
+    assert found is True
+
+
+def test_mapping_and_sequence_item_counts_are_bounded():
+    mapping = {f"key-{index}": index for index in range(1500)}
+    sequence = list(range(1500))
+
+    sanitized_mapping = sanitize_metadata(mapping)
+    sanitized_sequence = sanitize_metadata(sequence)
+
+    assert len(sanitized_mapping) == 1001
+    assert sanitized_mapping["__truncated_items__"] is True
+    assert len(sanitized_sequence) == 1001
+    assert sanitized_sequence[-1] == {"__truncated_items__": True}
+
+
+def test_masked_key_collision_storm_remains_bounded_and_unique():
+    mapping = {
+        f"/private/tenant-{index}/secret.txt": index
+        for index in range(1200)
+    }
+
+    sanitized = sanitize_metadata(mapping)
+
+    assert len(sanitized) == 1001
+    assert len(set(sanitized)) == len(sanitized)
+    assert "[REDACTED_PATH]" in sanitized
+    assert "[REDACTED_PATH]#1000" in sanitized
+    assert sanitized["__truncated_items__"] is True
+
+
+def test_strings_and_hostile_custom_objects_are_bounded():
+    class BrokenString:
+        def __str__(self):
+            raise RuntimeError("private /secret/path")
+
+    sanitized = sanitize_metadata({
+        "long": "x" * 200_000,
+        "broken": BrokenString(),
+    })
+
+    assert len(sanitized["long"]) == 100_000
+    assert sanitized["broken"] == "[UNPRINTABLE_BrokenString]"
