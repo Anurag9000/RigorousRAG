@@ -1,3 +1,4 @@
+import copy
 import json
 import threading
 import time
@@ -193,7 +194,98 @@ def test_oversized_tool_arguments_are_rejected(monkeypatch):
         tool_call("search_handbook", json.dumps({"query": "x" * 100}))
     )
     assert result.success is False
-    assert result.error_type == "ValueError"
+    assert result.error_type == "JSONDecodeError"
+
+
+def test_provider_tool_calls_are_sanitized_before_followup_conversation():
+    recorded_messages = []
+    responses = [
+        SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content="intermediate",
+                        tool_calls=[
+                            tool_call(
+                                "n" * 1000,
+                                "x" * (search_agent._MAX_TOOL_ARGUMENT_CHARS + 1),
+                                "c" * 1000,
+                            )
+                        ],
+                    )
+                )
+            ]
+        ),
+        SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content=json.dumps({"answer": "Final answer."}),
+                        tool_calls=[],
+                    )
+                )
+            ]
+        ),
+    ]
+
+    class Completions:
+        def create(self, **kwargs):
+            recorded_messages.append(copy.deepcopy(kwargs["messages"]))
+            return responses.pop(0)
+
+    agent = SearchAgent(owner_id="alice", max_tool_calls=2)
+    agent.client = SimpleNamespace(chat=SimpleNamespace(completions=Completions()))
+
+    answer = agent.run("question")
+
+    assert answer.answer == "Final answer."
+    second_request = recorded_messages[1]
+    assistant_call = second_request[2]["tool_calls"][0]
+    assert len(assistant_call["id"]) == 200
+    assert len(assistant_call["function"]["name"]) == 200
+    assert assistant_call["function"]["arguments"] == search_agent._INVALID_ARGUMENTS
+    assert second_request[3]["tool_call_id"] == assistant_call["id"]
+    assert "x" * 1000 not in json.dumps(second_request)
+
+
+def test_infinite_provider_tool_stream_is_capped_by_request_budget():
+    def calls():
+        index = 0
+        while True:
+            yield tool_call("search_handbook", "{}", f"call-{index}")
+            index += 1
+
+    response = SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(content="", tool_calls=calls())
+            )
+        ]
+    )
+    client = SimpleNamespace(
+        chat=SimpleNamespace(
+            completions=SimpleNamespace(create=lambda **_kwargs: response)
+        )
+    )
+    agent = SearchAgent(owner_id="alice", max_tool_calls=2)
+    agent.client = client
+    agent._execute_tools = lambda tool_calls: [
+        ToolExecution(call.id, call.function.name, "unavailable", success=False)
+        for call in tool_calls
+    ]
+
+    answer = agent.run("question")
+
+    assert answer.metadata["tool_calls"] == 2
+    assert any("tool-call budget" in warning for warning in answer.warnings)
+
+
+def test_embedded_scientific_json_rejects_nonfinite_and_invalid_citations():
+    content, citations = SearchAgent._content_with_embedded_citations(
+        '{"score":NaN,"citations":["bad"]}'
+    )
+    assert citations == []
+    assert "NaN" in content
 
 
 def test_existing_citation_is_returned_after_new_evidence_cap(monkeypatch):
