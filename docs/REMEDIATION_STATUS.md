@@ -1,80 +1,83 @@
 # Exhaustive Remediation Status
 
-This document records the remediation performed after the repository-wide static audit of 2026-07-27 and the subsequent regression audit of the remediation branch. It does not claim that software can be proven free of every defect. It distinguishes implemented controls, executable verification, and residual limitations.
+This document records the implementation performed after the repository-wide static audit of 2026-07-27 and subsequent regression audits of the remediation branch. It does not claim that the software is proven defect-free. It separates controls implemented in source, tests written for those controls, executable verification, and residual limitations.
 
 ## Scope
 
 The remediation branch audits and changes every product surface identified in the repository inventory:
 
-- classic crawler, sparse index, PageRank, storage, and CLIs;
-- uploaded-document parsing, optional OCR, masking, summaries, source retention, and vector retrieval;
-- durable ingestion queue, bounded workers, startup recovery, and document registry;
-- agent orchestration, provenance, scientific-analysis tools, and web tools;
-- FastAPI identity, uploads, jobs, models, throttling, and direct tool routes;
-- browser rendering, authentication, uploads, document management, and responsive tools;
-- tests, CI, dependencies, containers, runtime artifacts, licensing, and documentation.
+- classic crawler, sparse index, PageRank, persistence, and CLIs;
+- PDF/DOCX/text parsing, optional OCR, masking, source identity, retention, and vector retrieval;
+- durable ingestion queue, delayed retry scheduling, bounded workers, startup recovery, and document registry;
+- agent orchestration, tool concurrency, provenance, scientific-analysis tools, page/web search, and BibTeX;
+- FastAPI identity, uploads, jobs, models, throttling, request boundaries, and direct tool routes;
+- browser rendering, authentication, upload status, document management, source capability, and responsive tools;
+- tests, CI, dependencies, container readiness, runtime artifacts, telemetry, licensing, and documentation.
 
 ## Critical findings
 
 | Finding | Status | Implemented remediation |
 |---|---|---|
-| Default-user cross-tenant vector retrieval | Resolved in code | Every vector query, list, delete, comparison, limitation lookup, and figure operation requires an owner filter. The default owner no longer disables filtering. |
-| Spoofable `X-Owner-ID` | Resolved in code | Tenant identity is derived from `API_KEY_OWNERS_JSON`, legacy server-derived key IDs, or a server-controlled single-user owner. Client owner headers are ignored. |
-| Shared mutable global agent | Resolved in code | A new immutable owner/model agent is created for each request; blocking runs are moved to a worker thread. |
-| Arbitrary URL SSRF | Resolved in code | HTTP(S)-only validation, DNS resolution, private/local/link-local/reserved blocking, redirect revalidation, streaming limits, timeouts, and proxy isolation are implemented. |
-| Persistent/reflected browser XSS | Resolved in code | External Markdown runtime removed; no dynamic `innerHTML`; constrained DOM renderer, safe links, CSP, and session-only storage. |
-| Unsafe upload names and unbounded bodies | Resolved in code | Random owner-scoped storage names, suffix/content-signature checks, streaming byte limits, and collision-safe creation. |
-| Authentication incompatible with frontend | Resolved in code | Browser sends `X-API-Key`, receives model/auth configuration from `/config`, and never sends owner identity. |
-| False redaction/privacy guarantee | Corrected and substantially mitigated | Full text, OCR output, every section, titles, filenames, metadata, summaries, and job-facing strings use masking. Local paths are excluded from serialization, vectors, citations, and public job status. Documentation states masking is best effort. |
-| Source path leaked into vector metadata | Resolved in continuation | Filesystem paths moved to a private owner-scoped SQLite document registry. Scientific visual tools resolve owner/document sources through that registry. |
-| Default ingestion broke visual tools | Resolved in continuation | Source retention is explicit through `RETAIN_SOURCE_FILES`; retained sources are registered, exposed only as a Boolean capability, and deleted with the document. |
+| Default-user cross-tenant retrieval | Resolved in code | Every vector query, list, replace, delete, comparison, limitation lookup, and figure operation requires the server-owned tenant ID. |
+| Spoofable `X-Owner-ID` | Resolved in code | Tenant identity comes from configured API-key mappings or the server-controlled single-user identity. Client owner headers are ignored. |
+| Shared mutable global agent | Resolved in code | Every query gets an immutable owner/model agent; blocking runs execute outside the event loop. |
+| Arbitrary URL SSRF and DNS rebinding | Substantially resolved in code | The shared downloader validates schemes, DNS results, and the actual connected peer; blocks private/local/reserved networks; disables proxies; revalidates redirects; strips cross-origin credentials; prevents POST body replay; and enforces byte/end-to-end time budgets. Network egress policy remains required defense in depth. |
+| Persistent/reflected browser XSS | Resolved in code | External Markdown runtime removed; no untrusted `innerHTML`; constrained DOM renderer, safe links, CSP, and session-only storage. |
+| Unsafe uploads and parser resource exhaustion | Substantially resolved in code | Random owner-scoped names, byte ceilings, fsync, signatures, symlink rejection, DOCX archive expansion/path checks, PDF/OCR/text complexity budgets, mutation detection, and explicit errors. This is not malware scanning or sandboxing. |
+| Authentication incompatible with frontend | Resolved in code | Browser sends `X-API-Key`, reads `/config`, and never supplies tenant identity. |
+| False redaction/privacy guarantee | Corrected and mitigated | Full text, OCR output, sections, titles, filenames, metadata, summaries, and job-facing strings are masked. Documentation states masking is best effort. |
+| Source paths leaked into vectors | Resolved | Paths exist only in the private owner-scoped registry/queue and are excluded from Chroma, citations, manifests, and public job payloads. |
+| Source lifecycle broke visual tools | Resolved | Retention is explicit; actual file availability is validated dynamically; visual capability is exposed only as a Boolean; deletion removes vectors, registry, and source. |
 
 ## High-severity findings
 
 | Area | Status | Notes |
 |---|---|---|
-| Stale tests and absent CI | Remediated in code/config | Tests for removed internals were removed/replaced. CI is configured to compile, perform fatal lint checks, run coverage tests on Python 3.10–3.12, and build the container. Repository Actions still must execute for the exact head. |
-| Model-authored citations | Resolved in code | Models return answer prose only. A server evidence registry chooses and relabels actual tool citations. |
-| Prompt injection from retrieved text | Mitigated | Retrieved and OCR text are explicitly untrusted; tenant scope and provenance are enforced outside the model. Model-prose injection risk cannot be eliminated completely. |
-| Provider/model mismatch | Resolved in code | Server model allowlist and request-scoped provider configuration; frontend options come from the server. |
-| CLI/API ingestion divergence | Resolved | One document service handles summaries and vector indexing for both entrypoints. |
-| Semantic sections discarded by RAG | Resolved | Redacted semantic sections and page data are passed directly into deterministic vector chunks. |
-| Duplicate/non-idempotent indexing | Resolved | Stable owner-content IDs and deterministic upserts; new vectors are written before stale IDs are pruned. |
-| Debate judge lacks original evidence | Resolved | Original evidence is included in advocate, skeptic, and judge prompts; generated arguments are identified as analysis. |
-| Wrong figure image/regex/MIME | Substantially remediated | Exact caption text is searched and a caption-adjacent region is rendered as PNG. Missing labels fail closed. Complex multi-panel and scanned-caption localization remains heuristic. |
-| Empty-evidence comparisons | Resolved | Comparisons and matrices stop and report evidence gaps whenever a required document returns no evidence. |
-| Unbounded matrix cost | Resolved | Document and metric caps plus one bounded synthesis call replace per-cell model calls. |
-| Web domain-filter bypass and missing timeout | Resolved | Parsed host boundary checks, request timeout, HTTP status validation, and structured provider errors. |
-| Crawler redirect escape and oversized downloads | Resolved | Safe bounded downloader and final-host revalidation. |
-| Non-atomic classic-index persistence | Resolved | fsync plus atomic replace, locks, schema versions, and corrupt-file quarantine. |
-| Tracked vector database and generated artifacts | Resolved in branch | Runtime Chroma DB, fake root research fixture, destructive frontend generator, stale self-audits, and mislabeled image were removed. |
-| Sensitive raw-query logging | Resolved | Query SHA-256 and length replace raw text; logging is locked and failure-isolated. |
-| Missing request budgets | Substantially remediated | Query, upload, download, redirect, turn, tool-call, model, execution-time, OCR, worker, retry, and rate limits are implemented. Running Python threads cannot be forcibly killed safely. |
-| Job privacy and restart loss | Resolved for single-host deployment | Private source paths remain in SQLite only; public status is owner-scoped. Queued/interrupted jobs are startup-reconciled and atomically claimed with a retry ceiling. |
-| Multi-worker duplicate job replay | Resolved in continuation | SQLite atomic claim changes only one queued row to processing and increments its attempt count. Other workers cannot process the same claim. |
-| Image-only PDF rejection | Substantially remediated | Optional bounded Tesseract OCR is available for low-text pages. Disabled, missing, exhausted, and empty OCR paths return explicit diagnostics. |
-| Document-specific UI was only prompt text | Resolved | Tool schema and RAG query support exact `doc_id`; document cards prefill a real supported filter. |
-| Incorrect BibTeX | Resolved for supported fields | Escaped values, deterministic keys, venue fields, common entry types, and duplicate-key handling. |
+| Stale tests and absent CI | Remediated in source/config | Tests were replaced with contract/regression tests. CI is configured for Python 3.10–3.12 compile, fatal Ruff checks, pytest/coverage, and Docker build. Exact-head execution is still absent. |
+| Model-authored citations | Resolved | The model returns prose. A bounded server evidence registry selects, deduplicates, relabels, and serializes actual tool citations. |
+| Prompt injection through evidence | Mitigated | Retrieved and OCR text are explicitly untrusted; tenant/provenance controls live outside the model. Model-prose risk remains. |
+| Tool argument and context abuse | Resolved in continuation | Runtime JSON-schema validation, bounded argument/result/evidence/answer sizes, generic exception messages, and a process-wide bounded tool executor. |
+| False tool timeout | Resolved in continuation | Single and parallel tool calls return after the configured deadline instead of waiting for executor shutdown. Running third-party Python threads still cannot be killed. |
+| Unbounded timed-out tool threads | Resolved in continuation | Per-request executors were replaced with one bounded process-wide executor. |
+| Provider/model mismatch | Resolved | Server model allowlist and request-scoped provider configuration; frontend options come from `/config`. |
+| CLI/API ingestion divergence | Resolved | Shared parsing/indexing services and source registry; CLI can explicitly retain bounded random private copies. |
+| Redaction-induced document-ID collisions | Resolved in continuation | Stable IDs use owner plus source-file SHA-256, while only the redacted-text hash is exported. Distinct files that mask to the same text no longer overwrite each other. |
+| Semantic sections discarded | Resolved | Redacted sections/page provenance are passed into deterministic parent/child chunks. |
+| Partial vector generations after failed batches | Substantially resolved in continuation | Previous chunks are captured; new-only chunks are removed and old chunks restored on failed upsert/stale-delete sequences. Incomplete compensation is explicit. |
+| One large document hides the library | Resolved in continuation | Document listing paginates chunks until the requested distinct-document count or a configured scan ceiling. |
+| Retrieval outage represented as no evidence | Resolved in continuation | Total Chroma failure raises unavailable rather than returning an empty result. Fallback warnings distinguish outage from no match. |
+| Debate judge lacks original evidence | Resolved | Original evidence is included for advocates, skeptic, and judge. |
+| Incorrect figure selection | Substantially remediated | Exact selectable caption text is located and a caption-adjacent PNG region is rendered. Scanned captions, pathological page geometry, and complex multi-panel localization remain limitations. |
+| Empty-evidence comparisons/matrices | Resolved | Required-document evidence gaps stop synthesis. Matrix work is capped and consolidated into one bounded call. |
+| Web domain bypass/unbounded provider call | Resolved | Parsed hostname boundaries; Serper uses the shared peer-validated bounded downloader; provider errors are generic. |
+| Crawler redirect escape/oversized download | Resolved | Shared downloader, final-host trust check, response-byte and total-time ceilings. |
+| Non-atomic classic persistence | Resolved | Locking, fsync, atomic replace, schema versions, and corrupt-file quarantine. |
+| Sensitive query/owner logging and unbounded logs | Resolved in continuation | Query/owner SHA-256 replaces plaintext; recursive event bounds and configured JSONL rotation/backups. |
+| Job restart loss and duplicate replay | Resolved for one host | SQLite queue, atomic due claims, attempt ceilings, finalizing reconciliation, source ownership, and retry deadlines. |
+| Immediate retries exhaust attempts/worker starvation | Resolved in continuation | SQLite stores bounded exponential deadlines; delayed retries use deduplicated daemon timers rather than occupying workers. |
+| Image-only PDF rejection | Substantially remediated | Optional bounded Tesseract OCR with actual-attempt accounting and page-local failure provenance. |
+| Incorrect BibTeX | Resolved for supported fields | Escaped values, deterministic unique keys, venue fields, and common entry types. |
+| Liveness mislabeled as readiness | Resolved in continuation | Container probe verifies HTTP, both SQLite stores, and create/fsync/delete access to upload/vector volumes without initializing the embedding model. |
 
 ## Medium and low findings
 
 The branch additionally implements:
 
-- clean index rebuilds without stale postings;
 - Unicode, numeric, and scientific-identifier tokenization;
-- PageRank validation, convergence, fetched-page graph filtering, and normalized authority prior;
+- clean sparse-index rebuilds without stale postings;
+- PageRank validation, convergence, fetched-page graph filtering, and normalized authority blending;
 - stronger URL canonicalization and tracking-parameter removal;
-- fail-closed robots policy by default and a real contact URL;
-- query-centered snippets and context alignment by URL;
-- optional crawling rather than mandatory recrawling in CLIs;
-- clear separation of vector distance and similarity score;
+- fail-closed robots behavior and a real crawler contact URL;
+- query-centered snippets and URL-aligned contexts;
+- persisted-index search without mandatory recrawling;
 - relevant handbook passage retrieval;
-- structured web/tool errors rather than error citations;
+- structured failures rather than error citations;
 - nullable-safe source rendering and mobile tool access;
-- no external frontend runtime dependencies;
-- non-root, read-only container with dropped Linux capabilities, Tesseract, and health checks;
-- separated runtime/development dependencies, unified project tooling, environment template, and an actual MIT license;
-- honest replacement documentation instead of arithmetic completion scorecards.
+- lifecycle-aware upload status and text-only/visual-source document cards;
+- request-ID allowlisting and model/job/document identifier limits;
+- non-root read-only container, dropped capabilities, Tesseract, named state volumes, and dependency-aware readiness;
+- separated runtime/development dependencies, environment template, package metadata, and MIT license;
+- removal of committed runtime databases, fabricated fixtures, destructive generators, mislabeled assets, and stale self-certification documents.
 
 ## New justified functionality
 
@@ -82,60 +85,62 @@ Functionality added because it directly closes audited gaps:
 
 1. Credential-to-owner identity mapping.
 2. Owner-scoped document deletion.
-3. SQLite ingestion queue with crash recovery.
-4. Atomic worker claims and retry ceiling.
-5. Private owner-scoped document/source registry.
-6. Configurable source retention and complete deletion lifecycle.
-7. Optional bounded OCR for scanned and mixed PDFs.
-8. Per-principal rate limiting.
-9. HTTP security headers and request IDs.
-10. Safe public URL downloader shared by crawler/page tools.
-11. Stable owner-content document identities.
-12. Shared API/CLI document service.
-13. Server-side evidence registry.
-14. Structured evidence location fields: document, chunk, page, quote, source ID.
-15. Config endpoint for secure browser/provider integration.
-16. Clean-clone CI and container build configuration.
-17. Security, architecture, and remediation documentation.
+3. Private owner-scoped document/source registry.
+4. SQLite ingestion queue and explicit state machine.
+5. Atomic due claims, attempt ceilings, durable exponential deadlines, and startup reconciliation.
+6. Delayed retry scheduler that does not occupy ingestion workers.
+7. Complete retained-source replacement/deletion/orphan lifecycle.
+8. Optional bounded OCR for scanned and mixed PDFs.
+9. DOCX/PDF/text complexity guards and source-mutation detection.
+10. Stable owner/source document identity.
+11. Shared API/CLI parsing and indexing services.
+12. Compensating vector replacement and paginated library listing.
+13. Credential-derived per-principal throttling.
+14. Server-side evidence registry and bounded response models.
+15. Runtime tool-schema validation and shared bounded tool execution.
+16. Connected-peer SSRF validation and safe cross-origin redirect semantics.
+17. Dependency-aware container readiness.
+18. Bounded pseudonymous rotating telemetry.
+19. Security, architecture, remediation, and deployment documentation.
+20. Clean-clone CI and Docker build configuration.
 
-No unrelated feature was added merely to expand the feature count.
+No unrelated feature was added merely to increase the feature count.
 
 ## Residual limitations
 
-These are intentionally disclosed rather than falsely marked complete:
+These are disclosed rather than falsely marked complete:
 
-- OCR quality depends on Tesseract, scan resolution, language packs, orientation, and layout. OCR output requires review.
-- Scanned figure-caption localization does not yet use OCR coordinates; exact selectable caption text is still required for visual cropping.
-- PDF reading order, tables, formulas, headings, and multi-panel figure localization remain heuristic.
+- OCR quality depends on Tesseract, scan resolution, language packs, orientation, and layout.
+- Scanned figure-caption localization does not use OCR coordinates; exact selectable caption text is required.
+- PDF reading order, tables, formulas, headings, extreme page geometry, and multi-panel figure localization remain heuristic.
 - Regex masking is not certified de-identification.
-- Retained source files are not application-encrypted; deployment storage must provide encryption at rest where required.
-- File validation is not malware scanning or document sandboxing.
-- A process-local rate limiter is insufficient for multiple replicas.
-- SQLite plus the bounded executor provides single-host recovery, not distributed exactly-once execution.
-- Python threads executing third-party calls cannot be safely force-terminated; network/client deadlines are the primary control.
-- Application-level SSRF controls should be combined with egress firewall rules.
-- Citation provenance is structural; semantic support still requires evidence inspection or a separately validated entailment system.
-- Scientific-analysis outputs remain model analyses and do not substitute for expert review or replication.
-- Release deployments should generate platform-specific dependency lock files with hashes.
+- File/archive validation is not malware scanning or parser sandboxing.
+- Retained source files are not application-encrypted.
+- A process-local limiter and timer/executor scheduler do not support multiple replicas.
+- SQLite plus compensating vector writes is not a formal cross-store transaction or distributed exactly-once system.
+- Python threads and operating-system DNS resolution cannot be force-terminated safely; shared concurrency and network/provider deadlines limit impact but do not provide hard cancellation.
+- Application SSRF controls should be combined with DNS/egress firewall rules.
+- The readiness probe tests stores/volumes, not embedding-model download or representative semantic retrieval.
+- Citation provenance is structural; semantic support still requires source inspection or a separately validated entailment system.
+- Scientific-analysis outputs require expert review and replication.
+- Release deployments should generate platform-specific dependency locks with hashes.
 
 ## Verification status
 
-### Statically verified in the remediation work
+### Statically inspected and contract-tested in source
 
-- Every current changed file and public contract was re-read through the GitHub connector.
-- The continuation pass re-audited source retention, ingestion recovery, scientific-tool file access, OCR, and their tests.
-- The branch diff was reconciled against the complete repository inventory.
-- Deterministic stale tests and obsolete runtime artifacts were removed.
-- Contract tests cover security, privacy, identity, vector scope, atomic job claims, source-registry isolation, OCR, provenance, scientific fail-closed behavior, storage, frontend rendering, operations, and deployment configuration.
+- The remediation and continuation passes re-read changed public contracts through the GitHub connector.
+- Regression tests now target tenant isolation, peer-validated networking, redirect secrets, total download deadlines, parser/archive complexity, source identity, vector rollback, paginated listing, retrieval outages, queue migration/backoff, delayed scheduling, source reconciliation, request boundaries, tool timeouts/schema validation, shared concurrency, bounded models, telemetry rotation, OCR, scientific fail-closed behavior, frontend safety, and deployment configuration.
+- Runtime artifacts remain ignored and committed stale artifacts were removed.
 
-### Executable verification
+### Executable verification still required
 
-The branch defines GitHub Actions checks for:
+The branch defines checks for:
 
 - Python 3.10, 3.11, and 3.12;
 - `compileall`;
 - fatal Ruff syntax/name checks;
-- pytest with branch coverage and an honest initial 50% floor;
+- pytest with branch coverage and an initial 50% floor;
 - Docker image build including Tesseract.
 
-The available work environment could not clone GitHub or execute the branch locally, and GitHub reported no workflow runs for the previous PR heads. The remediation is therefore still draft and not considered merge-ready until checks run against the exact current head. The coverage floor should rise only from measured results, not from a fabricated target.
+The available remediation environment could not clone/download and execute the branch, and GitHub Actions had not produced a workflow run for earlier exact heads through the available connector. Therefore this PR remains draft and is not merge-ready until checks run against the exact current head and every failure is corrected. Coverage targets must rise from measured results, not fabricated claims.
