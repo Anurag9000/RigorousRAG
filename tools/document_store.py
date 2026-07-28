@@ -110,10 +110,25 @@ class DocumentStore:
         except sqlite3.Error:
             return False
 
-    def _resolve_source_path(self, source_path: str | Path | None) -> Optional[Path]:
-        """Return one current regular owner path without following owner/final links."""
+    def _resolve_source_path(
+        self,
+        source_path: str | Path | None,
+        owner_id: str | None = None,
+    ) -> Optional[Path]:
+        """Return one regular owner path, optionally requiring an exact owner segment."""
 
-        return validated_owner_file_path(self.upload_root, source_path)
+        candidate = validated_owner_file_path(self.upload_root, source_path)
+        if candidate is None:
+            return None
+        if owner_id is not None:
+            owner = normalize_owner_id(owner_id)
+            try:
+                relative = candidate.relative_to(self.upload_root)
+            except ValueError:
+                return None
+            if len(relative.parts) != 2 or relative.parts[0] != owner:
+                return None
+        return candidate
 
     @staticmethod
     def _source_bytes_match_document(
@@ -162,9 +177,6 @@ class DocumentStore:
                     or height <= 0
                 ):
                     return False
-                # tools.integrity renders a 2x clip extending up to a dynamic
-                # 520 points above and 45 points below the matched caption. Use
-                # that exact worst-case geometry before pixmap allocation.
                 renderer_clip_height = min(
                     height,
                     min(max(height * 0.48, 220.0), 520.0) + 45.0,
@@ -177,13 +189,17 @@ class DocumentStore:
         finally:
             document.close()
 
-    def _validated_source_path(self, source_path: str | Path | None) -> Optional[str]:
+    def _validated_source_path(
+        self,
+        source_path: str | Path | None,
+        owner_id: str,
+    ) -> Optional[str]:
         if source_path in (None, ""):
             return None
-        candidate = validated_owner_file_path(self.upload_root, source_path)
+        candidate = self._resolve_source_path(source_path, owner_id)
         if candidate is None:
             raise ValueError(
-                "Retained source must be a regular owner file inside UPLOAD_DIR."
+                "Retained source must be a regular file inside the matching owner directory."
             )
         return str(candidate)
 
@@ -209,16 +225,19 @@ class DocumentStore:
         return remove_owner_file(self.upload_root, source_path)
 
     def retained_source_paths(self) -> Set[Path]:
-        """Return valid retained paths used to protect files during orphan sweeping."""
+        """Return valid owner-matched retained paths for orphan protection."""
 
         with self._lock, self._connect() as connection:
             rows = connection.execute(
-                "SELECT source_path FROM documents "
+                "SELECT owner_id, source_path FROM documents "
                 "WHERE source_retained=1 AND source_path IS NOT NULL"
             ).fetchall()
         paths: Set[Path] = set()
         for row in rows:
-            candidate = self._resolve_source_path(str(row["source_path"] or ""))
+            candidate = self._resolve_source_path(
+                str(row["source_path"] or ""),
+                str(row["owner_id"] or ""),
+            )
             if candidate is not None:
                 paths.add(candidate)
         return paths
@@ -295,7 +314,7 @@ class DocumentStore:
         mime_type: str,
         source_path: str | Path | None = None,
     ) -> Optional[str]:
-        """Upsert a record and return the previous retained path, if it changed."""
+        """Upsert a record and return the prior same-owner retained path if changed."""
 
         owner = normalize_owner_id(owner_id)
         document_id = (doc_id or "").strip()
@@ -303,7 +322,7 @@ class DocumentStore:
             raise ValueError("doc_id must contain 1-200 characters.")
         safe_filename = mask_metadata_text(Path(filename or "document").name)[:500]
         safe_mime = str(mime_type or "application/octet-stream")[:200]
-        validated_path = self._validated_source_path(source_path)
+        validated_path = self._validated_source_path(source_path, owner)
         now = time.time()
         with self._lock, self._connect() as connection:
             existing = connection.execute(
@@ -334,8 +353,10 @@ class DocumentStore:
                     now,
                 ),
             )
-        previous = str(existing["source_path"]) if existing and existing["source_path"] else None
-        return previous if previous and previous != validated_path else None
+        previous_raw = str(existing["source_path"] or "") if existing else ""
+        previous = self._resolve_source_path(previous_raw, owner)
+        previous_value = str(previous) if previous is not None else None
+        return previous_value if previous_value and previous_value != validated_path else None
 
     def get(
         self,
@@ -359,7 +380,7 @@ class DocumentStore:
         if row is None:
             return None
         record = dict(row)
-        source = self._resolve_source_path(record.get("source_path"))
+        source = self._resolve_source_path(record.get("source_path"), owner)
         visual_candidate = bool(source is not None and source.suffix.lower() == ".pdf")
         record["source_path"] = str(source) if source is not None else None
         record["source_retained"] = 1 if source is not None else 0
@@ -431,7 +452,13 @@ class DocumentStore:
                 "DELETE FROM documents WHERE owner_id=? AND doc_id=?",
                 (owner, doc_id),
             )
-        return dict(row) if row is not None else None
+        if row is None:
+            return None
+        record = dict(row)
+        source = self._resolve_source_path(record.get("source_path"), owner)
+        record["source_path"] = str(source) if source is not None else None
+        record["source_retained"] = 1 if source is not None else 0
+        return record
 
 
 _DOCUMENT_STORES: Dict[tuple[str, str], DocumentStore] = {}
