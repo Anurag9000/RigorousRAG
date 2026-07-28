@@ -25,12 +25,15 @@ from search_agent import SearchAgent
 from tools.bib import export_to_bibtex
 from tools.document_service import index_document
 from tools.document_store import DocumentStore, get_document_store
+from tools.due_scheduler import DueScheduler
 from tools.ingestion import ingest_file
 from tools.integrity import check_visual_entailment, extract_protocol
 from tools.job_store import JobStore
 from tools.models import AgentAnswer
+from tools.privacy import mask_metadata_text
 from tools.rag import get_rag_layer
 from tools.rate_limit import SlidingWindowRateLimiter
+from tools.request_limits import RequestBodyLimitMiddleware
 from tools.security import (
     DEFAULT_MAX_UPLOAD_BYTES,
     Principal,
@@ -48,6 +51,26 @@ JOB_TTL_SECONDS = int(os.getenv("JOB_TTL_SECONDS", str(24 * 60 * 60)))
 REQUESTS_PER_MINUTE = int(os.getenv("REQUESTS_PER_MINUTE", "60"))
 INGEST_WORKERS = max(1, min(int(os.getenv("INGEST_WORKERS", "2")), 16))
 INGEST_MAX_ATTEMPTS = max(1, min(int(os.getenv("INGEST_MAX_ATTEMPTS", "3")), 20))
+INGEST_MAX_PENDING = max(
+    INGEST_WORKERS,
+    min(int(os.getenv("INGEST_MAX_PENDING", "64")), 10_000),
+)
+INGEST_ADMISSION_RETRY_SECONDS = max(
+    0.1,
+    min(float(os.getenv("INGEST_ADMISSION_RETRY_SECONDS", "1")), 60.0),
+)
+MAX_REQUEST_BODY_BYTES = max(
+    DEFAULT_MAX_UPLOAD_BYTES,
+    min(
+        int(
+            os.getenv(
+                "MAX_REQUEST_BODY_BYTES",
+                str(DEFAULT_MAX_UPLOAD_BYTES + 1_048_576),
+            )
+        ),
+        1_000_000_000,
+    ),
+)
 _JOB_STORE = JobStore(ttl_seconds=JOB_TTL_SECONDS)
 _DOCUMENT_STORE: DocumentStore = get_document_store(upload_root=UPLOAD_DIR)
 _RATE_LIMITER = SlidingWindowRateLimiter(REQUESTS_PER_MINUTE)
@@ -55,10 +78,10 @@ _INGEST_EXECUTOR = ThreadPoolExecutor(
     max_workers=INGEST_WORKERS,
     thread_name_prefix="rigorousrag-ingest",
 )
+_INGEST_ADMISSION = threading.BoundedSemaphore(INGEST_MAX_PENDING)
 _INGEST_FUTURES: set[Future[Any]] = set()
 _INGEST_FUTURES_LOCK = threading.Lock()
-_INGEST_TIMERS: Dict[str, threading.Timer] = {}
-_INGEST_TIMERS_LOCK = threading.Lock()
+_INGEST_SCHEDULER = DueScheduler(name="rigorousrag-ingest-delay")
 _INGEST_SHUTDOWN = threading.Event()
 _REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 
@@ -179,6 +202,7 @@ def _persist_failed_job(
 def _forget_future(future: Future[Any]) -> None:
     with _INGEST_FUTURES_LOCK:
         _INGEST_FUTURES.discard(future)
+    _INGEST_ADMISSION.release()
 
 
 def _release_scheduled_ingestion(
@@ -187,10 +211,28 @@ def _release_scheduled_ingestion(
     job_id: str,
     owner_id: str,
 ) -> None:
-    with _INGEST_TIMERS_LOCK:
-        _INGEST_TIMERS.pop(job_id, None)
     if not _INGEST_SHUTDOWN.is_set():
         _submit_ingestion(file_path, display_name, job_id, owner_id)
+
+
+def _schedule_ingestion_attempt(
+    file_path: str,
+    display_name: str,
+    job_id: str,
+    owner_id: str,
+    due_at: float,
+) -> None:
+    if _INGEST_SHUTDOWN.is_set():
+        return
+    _INGEST_SCHEDULER.schedule(
+        job_id,
+        due_at,
+        _release_scheduled_ingestion,
+        file_path,
+        display_name,
+        job_id,
+        owner_id,
+    )
 
 
 def _submit_ingestion(
@@ -199,7 +241,7 @@ def _submit_ingestion(
     job_id: str,
     owner_id: str,
 ) -> None:
-    """Submit a due job or schedule one timer without occupying an executor worker."""
+    """Schedule a delayed job or admit one due job to the bounded executor."""
 
     if _INGEST_SHUTDOWN.is_set():
         return
@@ -208,28 +250,30 @@ def _submit_ingestion(
     except Exception:
         return
     if not internal or str(internal.get("status") or "") != "queued":
+        _INGEST_SCHEDULER.cancel(job_id)
         return
     due_at = float(internal.get("next_attempt_at") or 0.0)
-    delay = max(0.0, due_at - time.time())
-    if delay > 0:
-        with _INGEST_TIMERS_LOCK:
-            existing = _INGEST_TIMERS.get(job_id)
-            if existing is not None and existing.is_alive():
-                return
-            timer = threading.Timer(
-                delay,
-                _release_scheduled_ingestion,
-                args=(file_path, display_name, job_id, owner_id),
-            )
-            timer.daemon = True
-            _INGEST_TIMERS[job_id] = timer
-            timer.start()
+    now = time.time()
+    if due_at > now:
+        _schedule_ingestion_attempt(
+            file_path,
+            display_name,
+            job_id,
+            owner_id,
+            due_at,
+        )
         return
 
-    with _INGEST_TIMERS_LOCK:
-        existing = _INGEST_TIMERS.pop(job_id, None)
-        if existing is not None:
-            existing.cancel()
+    _INGEST_SCHEDULER.cancel(job_id)
+    if not _INGEST_ADMISSION.acquire(blocking=False):
+        _schedule_ingestion_attempt(
+            file_path,
+            display_name,
+            job_id,
+            owner_id,
+            now + INGEST_ADMISSION_RETRY_SECONDS,
+        )
+        return
     try:
         future = _INGEST_EXECUTOR.submit(
             process_ingestion,
@@ -239,6 +283,14 @@ def _submit_ingestion(
             owner_id,
         )
     except RuntimeError:
+        _INGEST_ADMISSION.release()
+        _schedule_ingestion_attempt(
+            file_path,
+            display_name,
+            job_id,
+            owner_id,
+            time.time() + INGEST_ADMISSION_RETRY_SECONDS,
+        )
         return
     with _INGEST_FUTURES_LOCK:
         _INGEST_FUTURES.add(future)
@@ -247,11 +299,7 @@ def _submit_ingestion(
 
 def _cancel_scheduled_ingestions() -> None:
     _INGEST_SHUTDOWN.set()
-    with _INGEST_TIMERS_LOCK:
-        timers = list(_INGEST_TIMERS.values())
-        _INGEST_TIMERS.clear()
-    for timer in timers:
-        timer.cancel()
+    _INGEST_SCHEDULER.shutdown(wait=True)
 
 
 def _recover_interrupted_jobs() -> None:
@@ -331,6 +379,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(title="RigorousRAG API", version="4.3.0", lifespan=lifespan)
+app.add_middleware(RequestBodyLimitMiddleware, max_bytes=MAX_REQUEST_BODY_BYTES)
 
 
 @app.middleware("http")
@@ -382,11 +431,11 @@ class QueryRequest(BaseModel):
 
 
 class JobStatus(BaseModel):
-    job_id: str
-    status: str
-    filename: str
-    message: Optional[str] = None
-    doc_id: Optional[str] = None
+    job_id: str = Field(..., min_length=1, max_length=200)
+    status: str = Field(..., min_length=1, max_length=64)
+    filename: str = Field(..., min_length=1, max_length=500)
+    message: Optional[str] = Field(default=None, max_length=2000)
+    doc_id: Optional[str] = Field(default=None, max_length=200)
 
 
 class VisualEntailmentRequest(BaseModel):
@@ -421,13 +470,17 @@ async def public_config() -> Dict[str, Any]:
         "allowed_models": sorted(_ALLOWED_MODELS),
         "default_model": _DEFAULT_MODEL,
         "max_upload_bytes": DEFAULT_MAX_UPLOAD_BYTES,
+        "max_request_body_bytes": MAX_REQUEST_BODY_BYTES,
         "retain_source_files": RETAIN_SOURCE_FILES,
         "retain_uploads": RETAIN_SOURCE_FILES,
         "requests_per_minute": REQUESTS_PER_MINUTE,
         "ingest_workers": INGEST_WORKERS,
+        "ingest_max_pending": INGEST_MAX_PENDING,
         "ingest_max_attempts": INGEST_MAX_ATTEMPTS,
         "ingest_retry_base_seconds": _JOB_STORE.retry_base_seconds,
         "ingest_retry_max_seconds": _JOB_STORE.retry_max_seconds,
+        "visual_max_pdf_pages": _DOCUMENT_STORE.visual_max_pdf_pages,
+        "visual_max_render_pixels": _DOCUMENT_STORE.visual_max_render_pixels,
     }
 
 
@@ -476,7 +529,9 @@ async def ingest_document(
     destination = owner_dir / f"{uuid.uuid4().hex}{suffix}"
     await _save_upload(file, destination)
     job_id = f"job_{uuid.uuid4().hex}"
-    display_name = Path(file.filename or f"upload{suffix}").name
+    display_name = mask_metadata_text(
+        Path(file.filename or f"upload{suffix}").name
+    )[:500] or f"upload{suffix}"
     try:
         _JOB_STORE.update(
             job_id,
@@ -635,7 +690,7 @@ def process_ingestion(file_path: str, display_name: str, job_id: str, owner_id: 
 
 @app.get("/docs/list")
 async def list_documents(
-    principal: Principal = Depends(get_principal),
+    principal: Principal = Depends(get_rate_limited_principal),
 ) -> list[Dict[str, Any]]:
     documents = await run_in_threadpool(
         get_rag_layer().list_documents,
@@ -648,6 +703,9 @@ async def list_documents(
             doc_id=str(document.get("doc_id") or ""),
         )
         document["source_retained"] = bool((record or {}).get("source_retained"))
+        document["visual_source_available"] = bool(
+            (record or {}).get("visual_source_available")
+        )
     return documents
 
 
