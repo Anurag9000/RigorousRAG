@@ -50,6 +50,21 @@ class AcademicSearchEngine:
         )
         self.storage = StorageManager(storage_dir)
         state, index, pagerank = self.storage.load_snapshot()
+        if not self.storage.snapshot_manifest_path.exists():
+            legacy_presence = (
+                self.storage.crawl_path.exists(),
+                self.storage.index_path.exists(),
+                self.storage.pagerank_path.exists(),
+            )
+            page_urls = set(state.pages)
+            legacy_consistent = (
+                all(legacy_presence)
+                and index is not None
+                and set(index.documents).issubset(page_urls)
+                and set(pagerank) == page_urls
+            )
+            if any(legacy_presence) and not legacy_consistent:
+                state, index, pagerank = CrawlState.empty(), None, {}
         self.state = state
         self.index = index or InvertedIndex()
         self.pagerank_scores = pagerank
