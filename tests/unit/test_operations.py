@@ -1,3 +1,4 @@
+import time
 from pathlib import Path
 
 import pytest
@@ -36,7 +37,7 @@ def test_job_store_is_owner_scoped_persistent_and_prunable(tmp_path):
         doc_id="doc-1",
     )
     assert first.get("job-1", "alice")["doc_id"] == "doc-1"
-    assert second.prune(now=10_000_000) == 1
+    assert second.prune(now=time.time() + 120) == 1
     assert second.get("job-1", "alice") is None
 
 
@@ -66,6 +67,28 @@ def test_recoverable_includes_interrupted_jobs_and_not_completed_jobs(tmp_path):
         source_path="",
     )
     assert [record["job_id"] for record in store.recoverable()] == ["queued"]
+
+
+def test_atomic_claim_enforces_attempt_limit(tmp_path):
+    store = JobStore(tmp_path / "jobs.sqlite3")
+    source = tmp_path / "source.txt"
+    source.write_text("evidence", encoding="utf-8")
+    store.update(
+        "job-1",
+        "alice",
+        status="queued",
+        filename="a.txt",
+        source_path=str(source),
+    )
+    assert store.claim("job-1", "alice", max_attempts=1) is True
+    store.update(
+        "job-1",
+        "alice",
+        status="queued",
+        filename="a.txt",
+        source_path=str(source),
+    )
+    assert store.claim("job-1", "alice", max_attempts=1) is False
 
 
 def test_document_store_is_owner_scoped_and_keeps_paths_out_of_public_vectors(tmp_path):
