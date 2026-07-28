@@ -12,9 +12,14 @@ from tools.models import AgentAnswer
 
 @pytest.fixture
 def server_module(monkeypatch, tmp_path):
-    monkeypatch.setenv("API_KEY_OWNERS_JSON", json.dumps({"alice-key": "alice", "bob-key": "bob"}))
+    monkeypatch.setenv(
+        "API_KEY_OWNERS_JSON",
+        json.dumps({"alice-key": "alice", "bob-key": "bob"}),
+    )
     monkeypatch.setenv("UPLOAD_DIR", str(tmp_path / "uploads"))
     monkeypatch.setenv("JOB_DB_PATH", str(tmp_path / "jobs.sqlite3"))
+    monkeypatch.setenv("DOCUMENT_DB_PATH", str(tmp_path / "documents.sqlite3"))
+    monkeypatch.setenv("RETAIN_SOURCE_FILES", "false")
     monkeypatch.setenv("REQUESTS_PER_MINUTE", "1000")
     monkeypatch.setenv("ALLOWED_MODELS", "test-model")
     monkeypatch.setenv("DEFAULT_MODEL", "test-model")
@@ -23,19 +28,22 @@ def server_module(monkeypatch, tmp_path):
     sys.modules.pop("server", None)
     module = importlib.import_module("server")
     yield module
+    module._INGEST_EXECUTOR.shutdown(wait=False, cancel_futures=True)
     sys.modules.pop("server", None)
 
 
 def test_health_config_and_security_headers_are_public(server_module):
-    client = TestClient(server_module.app)
-    response = client.get("/health")
-    assert response.json()["status"] == "ok"
-    assert response.headers["X-Content-Type-Options"] == "nosniff"
-    assert response.headers["X-Frame-Options"] == "DENY"
-    assert "default-src 'self'" in response.headers["Content-Security-Policy"]
-    config = client.get("/config").json()
+    with TestClient(server_module.app) as client:
+        response = client.get("/health")
+        assert response.json()["status"] == "ok"
+        assert response.headers["X-Content-Type-Options"] == "nosniff"
+        assert response.headers["X-Frame-Options"] == "DENY"
+        assert "default-src 'self'" in response.headers["Content-Security-Policy"]
+        config = client.get("/config").json()
     assert config["auth_required"] is True
     assert config["allowed_models"] == ["test-model"]
+    assert config["retain_source_files"] is False
+    assert config["ingest_max_attempts"] >= 1
 
 
 def test_api_key_selects_server_owned_tenant(server_module, monkeypatch):
@@ -49,11 +57,23 @@ def test_api_key_selects_server_owned_tenant(server_module, monkeypatch):
             captured.append((self.owner, query))
             return AgentAnswer(answer=f"owner={self.owner}")
 
-    monkeypatch.setattr(server_module, "_new_agent", lambda owner_id, model=None: FakeAgent(owner_id))
-    client = TestClient(server_module.app)
-    assert client.post("/query", json={"query": "q"}).status_code == 401
-    alice = client.post("/query", headers={"X-API-Key": "alice-key"}, json={"query": "q"})
-    bob = client.post("/query", headers={"X-API-Key": "bob-key"}, json={"query": "q"})
+    monkeypatch.setattr(
+        server_module,
+        "_new_agent",
+        lambda owner_id, model=None: FakeAgent(owner_id),
+    )
+    with TestClient(server_module.app) as client:
+        assert client.post("/query", json={"query": "q"}).status_code == 401
+        alice = client.post(
+            "/query",
+            headers={"X-API-Key": "alice-key"},
+            json={"query": "q"},
+        )
+        bob = client.post(
+            "/query",
+            headers={"X-API-Key": "bob-key"},
+            json={"query": "q"},
+        )
     assert alice.json()["answer"] == "owner=alice"
     assert bob.json()["answer"] == "owner=bob"
     assert captured == [("alice", "q"), ("bob", "q")]
@@ -63,44 +83,67 @@ def test_client_supplied_owner_header_is_ignored(server_module, monkeypatch):
     monkeypatch.setattr(
         server_module,
         "_new_agent",
-        lambda owner_id, model=None: MagicMock(run=lambda _query: AgentAnswer(answer=owner_id)),
+        lambda owner_id, model=None: MagicMock(
+            run=lambda _query: AgentAnswer(answer=owner_id)
+        ),
     )
-    client = TestClient(server_module.app)
-    response = client.post(
-        "/query",
-        headers={"X-API-Key": "alice-key", "X-Owner-ID": "bob"},
-        json={"query": "q"},
-    )
+    with TestClient(server_module.app) as client:
+        response = client.post(
+            "/query",
+            headers={"X-API-Key": "alice-key", "X-Owner-ID": "bob"},
+            json={"query": "q"},
+        )
     assert response.json()["answer"] == "alice"
 
 
-def test_upload_uses_generated_storage_name_and_owner_scoped_persistent_job(server_module, monkeypatch):
-    monkeypatch.setattr(server_module, "process_ingestion", lambda *_args, **_kwargs: None)
-    client = TestClient(server_module.app)
-    response = client.post(
-        "/ingest",
-        headers={"X-API-Key": "alice-key"},
-        files={"file": ("../../paper.txt", io.BytesIO(b"evidence"), "text/plain")},
+def test_upload_uses_generated_name_and_durable_owner_scoped_queue(
+    server_module,
+    monkeypatch,
+):
+    submitted = []
+    monkeypatch.setattr(
+        server_module,
+        "_submit_ingestion",
+        lambda *args: submitted.append(args),
     )
-    assert response.status_code == 200
-    payload = response.json()
-    stored = list((server_module.UPLOAD_DIR / "alice").iterdir())
-    assert len(stored) == 1
-    assert stored[0].name != "paper.txt"
-    assert stored[0].suffix == ".txt"
-    status = client.get(f"/status/{payload['job_id']}", headers={"X-API-Key": "alice-key"})
+    with TestClient(server_module.app) as client:
+        response = client.post(
+            "/ingest",
+            headers={"X-API-Key": "alice-key"},
+            files={"file": ("../../paper.txt", io.BytesIO(b"evidence"), "text/plain")},
+        )
+        assert response.status_code == 200
+        payload = response.json()
+        stored = list((server_module.UPLOAD_DIR / "alice").iterdir())
+        assert len(stored) == 1
+        assert stored[0].name != "paper.txt"
+        assert stored[0].suffix == ".txt"
+        status = client.get(
+            f"/status/{payload['job_id']}",
+            headers={"X-API-Key": "alice-key"},
+        )
+        hidden = client.get(
+            f"/status/{payload['job_id']}",
+            headers={"X-API-Key": "bob-key"},
+        )
     assert status.status_code == 200
-    hidden = client.get(f"/status/{payload['job_id']}", headers={"X-API-Key": "bob-key"})
+    assert status.json()["status"] == "queued"
     assert hidden.status_code == 404
-    reloaded_store = server_module.JobStore(path=server_module._JOB_STORE.path, ttl_seconds=3600)
-    assert reloaded_store.get(payload["job_id"], "alice")["status"] == "processing"
+    assert len(submitted) == 1
+    reloaded = server_module.JobStore(
+        path=server_module._JOB_STORE.path,
+        ttl_seconds=3600,
+    )
+    internal = reloaded.get_internal(payload["job_id"], "alice")
+    assert internal and internal["status"] == "queued"
+    assert internal["source_path"] == str(stored[0].resolve())
 
 
 def test_model_override_is_allowlisted(server_module):
-    client = TestClient(server_module.app)
-    response = client.post(
-        "/query",
-        headers={"X-API-Key": "alice-key"},
-        json={"query": "q", "model": "unapproved-model"},
-    )
+    with TestClient(server_module.app) as client:
+        response = client.post(
+            "/query",
+            headers={"X-API-Key": "alice-key"},
+            json={"query": "q", "model": "unapproved-model"},
+        )
     assert response.status_code == 400
