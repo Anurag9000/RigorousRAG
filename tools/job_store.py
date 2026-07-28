@@ -7,12 +7,15 @@ import sqlite3
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from tools.privacy import mask_metadata_text
+from tools.security import normalize_owner_id
 
 
 class JobStore:
+    """Durable ingestion queue and public job-status registry."""
+
     def __init__(self, path: str | Path | None = None, ttl_seconds: int = 86_400) -> None:
         self.path = Path(path or os.getenv("JOB_DB_PATH", "data/jobs.sqlite3")).resolve()
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -38,24 +41,50 @@ class JobStore:
                     filename TEXT NOT NULL,
                     message TEXT,
                     doc_id TEXT,
+                    source_path TEXT,
+                    attempts INTEGER NOT NULL DEFAULT 0,
                     created_at REAL NOT NULL,
                     updated_at REAL NOT NULL
                 )
                 """
             )
+            existing_columns = {
+                str(row["name"])
+                for row in connection.execute("PRAGMA table_info(jobs)").fetchall()
+            }
+            if "source_path" not in existing_columns:
+                connection.execute("ALTER TABLE jobs ADD COLUMN source_path TEXT")
+            if "attempts" not in existing_columns:
+                connection.execute(
+                    "ALTER TABLE jobs ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0"
+                )
             connection.execute(
-                "CREATE INDEX IF NOT EXISTS idx_jobs_owner_updated ON jobs(owner_id, updated_at)"
+                "CREATE INDEX IF NOT EXISTS idx_jobs_owner_updated "
+                "ON jobs(owner_id, updated_at)"
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_jobs_recovery "
+                "ON jobs(status, updated_at)"
             )
 
     def prune(self, now: Optional[float] = None) -> int:
         cutoff = (now or time.time()) - self.ttl_seconds
         with self._lock, self._connect() as connection:
-            cursor = connection.execute("DELETE FROM jobs WHERE updated_at < ?", (cutoff,))
+            cursor = connection.execute(
+                "DELETE FROM jobs WHERE updated_at < ? AND status IN ('success', 'failed')",
+                (cutoff,),
+            )
             return max(cursor.rowcount, 0)
 
     def update(self, job_id: str, owner_id: str, **fields: Any) -> None:
+        """Create or update a job without allowing cross-owner ID reuse."""
+
+        owner = normalize_owner_id(owner_id)
+        identifier = (job_id or "").strip()
+        if not identifier or len(identifier) > 200:
+            raise ValueError("job_id must contain 1-200 characters.")
         now = time.time()
-        status = str(fields.get("status") or "processing")[:64]
+        status = str(fields.get("status") or "queued")[:64]
         filename = mask_metadata_text(str(fields.get("filename") or "upload"))[:500]
         raw_message = fields.get("message")
         message = (
@@ -64,24 +93,71 @@ class JobStore:
             else None
         )
         doc_id = str(fields.get("doc_id"))[:200] if fields.get("doc_id") else None
+        source_path_value = fields.get("source_path")
+        source_path = (
+            str(Path(source_path_value).resolve())[:4000]
+            if source_path_value not in (None, "")
+            else None
+        )
         with self._lock, self._connect() as connection:
+            existing = connection.execute(
+                "SELECT owner_id, attempts, source_path FROM jobs WHERE job_id=?",
+                (identifier,),
+            ).fetchone()
+            if existing is not None and str(existing["owner_id"]) != owner:
+                raise PermissionError("A job ID cannot be reassigned to a different owner.")
+            attempts = int(existing["attempts"] or 0) if existing else 0
+            if fields.get("increment_attempts"):
+                attempts += 1
+            if source_path_value is None and existing is not None:
+                source_path = str(existing["source_path"] or "") or None
             connection.execute(
                 """
-                INSERT INTO jobs(job_id, owner_id, status, filename, message, doc_id, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO jobs(
+                    job_id, owner_id, status, filename, message, doc_id,
+                    source_path, attempts, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(job_id) DO UPDATE SET
                     status=excluded.status,
                     filename=excluded.filename,
                     message=excluded.message,
-                    doc_id=excluded.doc_id,
+                    doc_id=COALESCE(excluded.doc_id, jobs.doc_id),
+                    source_path=excluded.source_path,
+                    attempts=excluded.attempts,
                     updated_at=excluded.updated_at
-                WHERE jobs.owner_id=excluded.owner_id
                 """,
-                (job_id, owner_id, status, filename, message, doc_id, now, now),
+                (
+                    identifier,
+                    owner,
+                    status,
+                    filename,
+                    message,
+                    doc_id,
+                    source_path,
+                    attempts,
+                    now,
+                    now,
+                ),
             )
         self.prune(now)
 
+    def mark_processing(self, job_id: str, owner_id: str) -> None:
+        record = self.get_internal(job_id, owner_id)
+        if record is None:
+            raise KeyError("Job not found.")
+        self.update(
+            job_id,
+            owner_id,
+            status="processing",
+            filename=str(record.get("filename") or "upload"),
+            source_path=record.get("source_path"),
+            increment_attempts=True,
+        )
+
     def get(self, job_id: str, owner_id: str) -> Optional[Dict[str, Any]]:
+        """Return only fields safe for the owner-facing API."""
+
+        owner = normalize_owner_id(owner_id)
         self.prune()
         with self._lock, self._connect() as connection:
             row = connection.execute(
@@ -89,6 +165,37 @@ class JobStore:
                 SELECT job_id, status, filename, message, doc_id
                 FROM jobs WHERE job_id=? AND owner_id=?
                 """,
-                (job_id, owner_id),
+                (job_id, owner),
             ).fetchone()
         return dict(row) if row is not None else None
+
+    def get_internal(self, job_id: str, owner_id: str) -> Optional[Dict[str, Any]]:
+        owner = normalize_owner_id(owner_id)
+        with self._lock, self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT job_id, owner_id, status, filename, message, doc_id,
+                       source_path, attempts, created_at, updated_at
+                FROM jobs WHERE job_id=? AND owner_id=?
+                """,
+                (job_id, owner),
+            ).fetchone()
+        return dict(row) if row is not None else None
+
+    def recoverable(self, max_attempts: int = 3) -> List[Dict[str, Any]]:
+        """Return queued/interrupted jobs whose source files may be replayed."""
+
+        limit = max(1, int(max_attempts))
+        with self._lock, self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT job_id, owner_id, status, filename, source_path, attempts
+                FROM jobs
+                WHERE status IN ('queued', 'processing')
+                  AND source_path IS NOT NULL
+                  AND attempts < ?
+                ORDER BY created_at ASC
+                """,
+                (limit,),
+            ).fetchall()
+        return [dict(row) for row in rows]
