@@ -248,6 +248,54 @@ def test_provider_tool_calls_are_sanitized_before_followup_conversation():
     assert "x" * 1000 not in json.dumps(second_request)
 
 
+def test_exact_tool_budget_still_allows_one_final_synthesis_turn():
+    responses = [
+        SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content="",
+                        tool_calls=[
+                            tool_call("search_handbook", '{"query":"one"}', "call-1"),
+                            tool_call("search_handbook", '{"query":"two"}', "call-2"),
+                        ],
+                    )
+                )
+            ]
+        ),
+        SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content=json.dumps({"answer": "Synthesized after two tools."}),
+                        tool_calls=[],
+                    )
+                )
+            ]
+        ),
+    ]
+    calls = []
+
+    def create(**kwargs):
+        calls.append(copy.deepcopy(kwargs["messages"]))
+        return responses.pop(0)
+
+    agent = SearchAgent(owner_id="alice", max_tool_calls=2)
+    agent.client = SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(create=create))
+    )
+    agent._execute_tools = lambda values: [
+        ToolExecution(value.id, value.function.name, "evidence") for value in values
+    ]
+
+    answer = agent.run("question")
+
+    assert answer.answer == "Synthesized after two tools."
+    assert answer.metadata["tool_calls"] == 2
+    assert len(calls) == 2
+    assert not any("budget exhausted" in warning.lower() for warning in answer.warnings)
+
+
 def test_infinite_provider_tool_stream_is_capped_by_request_budget():
     def calls():
         index = 0
@@ -285,7 +333,7 @@ def test_embedded_scientific_json_rejects_nonfinite_and_invalid_citations():
         '{"score":NaN,"citations":["bad"]}'
     )
     assert citations == []
-    assert "NaN" in content
+    assert content == "Scientific tool returned an invalid response."
 
 
 def test_existing_citation_is_returned_after_new_evidence_cap(monkeypatch):
