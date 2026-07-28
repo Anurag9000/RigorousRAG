@@ -7,6 +7,7 @@ descriptor-anchored byte snapshots rather than reopened owner pathnames.
 
 from __future__ import annotations
 
+import importlib
 import os
 import sys
 from pathlib import Path
@@ -14,7 +15,11 @@ from typing import Optional
 
 import uvicorn
 
-import server_app as _implementation
+if "server_app" in sys.modules:
+    _implementation = importlib.reload(sys.modules["server_app"])
+else:
+    _implementation = importlib.import_module("server_app")
+
 from tools.ingestion_snapshot import materialize_ingestion_snapshot
 from tools.upload_storage import UploadStorageError, validated_owner_file_path
 
