@@ -1,28 +1,25 @@
 """Truthful and path-safe retained-source registry boundary.
 
 The complete SQLite implementation remains in ``document_store_legacy``. This module
-normalizes registry budgets, makes verification flags truthful, and prevents
-registry/upload roots from being silently redirected through final-path symlinks.
+normalizes registry budgets, makes verification flags truthful, and prevents registry
+or upload roots from being redirected through symbolic-link path components.
 """
 
 from __future__ import annotations
 
+import math
 import os
+import stat
 import sys
 from pathlib import Path
 from typing import Any, Dict, Optional
 
 from tools.config import bounded_int_env
+from tools.privacy import mask_metadata_text
+from tools.security import normalize_owner_id
 from tools import document_store_legacy as _implementation
 
 _original_document_store = _implementation.DocumentStore
-
-
-def _lexical_absolute(path: str | Path) -> Path:
-    candidate = Path(path)
-    if not candidate.is_absolute():
-        candidate = Path.cwd() / candidate
-    return Path(os.path.abspath(candidate))
 
 
 def _normalize_registry_environment() -> None:
@@ -40,6 +37,44 @@ def _normalize_registry_environment() -> None:
         )
 
 
+def _lexical_absolute(value: str | os.PathLike[str], label: str) -> Path:
+    if not isinstance(value, (str, os.PathLike)):
+        raise ValueError(f"{label} must be a filesystem path.")
+    rendered = os.fspath(value)
+    if not rendered or len(rendered) > 4096 or "\x00" in rendered:
+        raise ValueError(f"{label} is invalid or too long.")
+    path = Path(rendered)
+    if not path.is_absolute():
+        path = Path.cwd() / path
+    absolute = Path(os.path.abspath(path))
+    for candidate in (absolute, *absolute.parents):
+        if candidate.is_symlink():
+            raise ValueError(f"{label} may not contain symbolic-link components.")
+    return absolute
+
+
+def _document_id(value: Any) -> str:
+    if not isinstance(value, str):
+        raise ValueError("doc_id must be a string.")
+    result = value.strip()
+    if not result or len(result) > 200 or "\x00" in result:
+        raise ValueError("doc_id must contain 1-200 valid characters.")
+    return result
+
+
+def _filename(value: Any) -> str:
+    if not isinstance(value, str):
+        raise ValueError("filename must be a string.")
+    return mask_metadata_text(Path(value or "document").name)[:500] or "document"
+
+
+def _mime_type(value: Any) -> str:
+    if not isinstance(value, str):
+        raise ValueError("mime_type must be a string.")
+    rendered = " ".join(value.replace("\r", " ").replace("\n", " ").split())[:200]
+    return rendered or "application/octet-stream"
+
+
 class DocumentStore(_original_document_store):
     """Registry with bounded budgets, truthful flags, and safe storage roots."""
 
@@ -49,31 +84,59 @@ class DocumentStore(_original_document_store):
         upload_root: str | Path | None = None,
     ) -> None:
         _normalize_registry_environment()
-        raw_path = Path(path or os.getenv("DOCUMENT_DB_PATH", "data/documents.sqlite3"))
-        raw_root = Path(upload_root or os.getenv("UPLOAD_DIR", "uploads"))
-        if raw_path.is_symlink():
-            raise ValueError("DOCUMENT_DB_PATH may not be a symbolic link.")
-        if raw_root.is_symlink():
-            raise ValueError("UPLOAD_DIR may not be a symbolic link.")
-        super().__init__(
-            path=_lexical_absolute(raw_path),
-            upload_root=_lexical_absolute(raw_root),
+        selected_path = path if path is not None else os.getenv(
+            "DOCUMENT_DB_PATH", "data/documents.sqlite3"
         )
-        if self.path.is_symlink():
-            raise ValueError("DOCUMENT_DB_PATH may not be a symbolic link.")
-        if self.upload_root.is_symlink():
-            raise ValueError("UPLOAD_DIR may not be a symbolic link.")
+        selected_root = upload_root if upload_root is not None else os.getenv(
+            "UPLOAD_DIR", "uploads"
+        )
+        safe_path = _lexical_absolute(selected_path, "DOCUMENT_DB_PATH")
+        safe_root = _lexical_absolute(selected_root, "UPLOAD_DIR")
+        super().__init__(path=safe_path, upload_root=safe_root)
+        self._ensure_storage_paths()
+
+    def _ensure_storage_paths(self) -> None:
+        _lexical_absolute(self.path, "DOCUMENT_DB_PATH")
+        _lexical_absolute(self.upload_root, "UPLOAD_DIR")
+        if not self.path.parent.exists() or not self.path.parent.is_dir():
+            raise OSError("DOCUMENT_DB_PATH parent must remain a directory.")
+        if not self.upload_root.exists() or not self.upload_root.is_dir():
+            raise OSError("UPLOAD_DIR must remain a directory.")
+        if self.path.exists():
+            try:
+                mode = self.path.stat(follow_symlinks=False).st_mode
+            except OSError as exc:
+                raise OSError("DOCUMENT_DB_PATH could not be inspected.") from exc
+            if not stat.S_ISREG(mode):
+                raise OSError("DOCUMENT_DB_PATH must remain a regular file.")
 
     def _connect(self):
-        if self.path.is_symlink():
-            raise ValueError("DOCUMENT_DB_PATH became a symbolic link.")
+        self._ensure_storage_paths()
         return super()._connect()
 
     def ping(self) -> bool:
         try:
+            self._ensure_storage_paths()
             return super().ping()
         except (OSError, ValueError):
             return False
+
+    def register(
+        self,
+        *,
+        owner_id: str,
+        doc_id: str,
+        filename: str,
+        mime_type: str,
+        source_path: str | Path | None = None,
+    ) -> Optional[str]:
+        return super().register(
+            owner_id=normalize_owner_id(owner_id),
+            doc_id=_document_id(doc_id),
+            filename=_filename(filename),
+            mime_type=_mime_type(mime_type),
+            source_path=source_path,
+        )
 
     def get(
         self,
@@ -82,18 +145,18 @@ class DocumentStore(_original_document_store):
         doc_id: str,
         verify_visual: bool = False,
     ) -> Optional[Dict[str, Any]]:
+        if not isinstance(verify_visual, bool):
+            raise ValueError("verify_visual must be a boolean.")
         record = super().get(
-            owner_id=owner_id,
-            doc_id=doc_id,
+            owner_id=normalize_owner_id(owner_id),
+            doc_id=_document_id(doc_id),
             verify_visual=verify_visual,
         )
         if record is None:
             return None
         raw_path = str(record.get("source_path") or "")
         check_performed = bool(
-            verify_visual
-            and raw_path
-            and Path(raw_path).suffix.lower() == ".pdf"
+            verify_visual and raw_path and Path(raw_path).suffix.lower() == ".pdf"
         )
         record["visual_source_check_performed"] = check_performed
         record["visual_source_verified"] = bool(
@@ -101,26 +164,51 @@ class DocumentStore(_original_document_store):
         )
         return record
 
+    def delete(self, *, owner_id: str, doc_id: str) -> Optional[Dict[str, Any]]:
+        return super().delete(
+            owner_id=normalize_owner_id(owner_id),
+            doc_id=_document_id(doc_id),
+        )
+
+    def cleanup_orphans(
+        self,
+        *,
+        now: Optional[float] = None,
+        job_store: Optional[Any] = None,
+    ) -> int:
+        if now is not None:
+            try:
+                current = float(now)
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise ValueError("now must be numeric.") from exc
+            if not math.isfinite(current) or current < 0:
+                raise ValueError("now must be finite and non-negative.")
+            now = current
+        self._ensure_storage_paths()
+        return super().cleanup_orphans(now=now, job_store=job_store)
+
 
 def get_document_store(
     path: str | Path | None = None,
     upload_root: str | Path | None = None,
 ) -> DocumentStore:
     _normalize_registry_environment()
-    raw_path = Path(path or os.getenv("DOCUMENT_DB_PATH", "data/documents.sqlite3"))
-    raw_root = Path(upload_root or os.getenv("UPLOAD_DIR", "uploads"))
-    if raw_path.is_symlink():
-        raise ValueError("DOCUMENT_DB_PATH may not be a symbolic link.")
-    if raw_root.is_symlink():
-        raise ValueError("UPLOAD_DIR may not be a symbolic link.")
-    resolved_path = str(_lexical_absolute(raw_path))
-    resolved_root = str(_lexical_absolute(raw_root))
+    selected_path = path if path is not None else os.getenv(
+        "DOCUMENT_DB_PATH", "data/documents.sqlite3"
+    )
+    selected_root = upload_root if upload_root is not None else os.getenv(
+        "UPLOAD_DIR", "uploads"
+    )
+    resolved_path = str(_lexical_absolute(selected_path, "DOCUMENT_DB_PATH"))
+    resolved_root = str(_lexical_absolute(selected_root, "UPLOAD_DIR"))
     key = (resolved_path, resolved_root)
     with _implementation._DOCUMENT_STORE_LOCK:
         store = _implementation._DOCUMENT_STORES.get(key)
         if store is None or not isinstance(store, DocumentStore):
             store = DocumentStore(resolved_path, resolved_root)
             _implementation._DOCUMENT_STORES[key] = store
+        else:
+            store._ensure_storage_paths()
         return store
 
 
