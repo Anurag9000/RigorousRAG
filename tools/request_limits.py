@@ -9,6 +9,8 @@ ASGIReceive = Callable[..., Awaitable[Dict[str, Any]]]
 ASGISend = Callable[..., Awaitable[None]]
 ASGIApp = Callable[[Dict[str, Any], ASGIReceive, ASGISend], Awaitable[None]]
 
+_MISSING_VISUAL_DOCUMENT_ERROR = "The requested document was not found for this owner."
+
 
 class RequestBodyTooLarge(Exception):
     """Raised internally when a streamed request crosses the configured ceiling."""
@@ -129,12 +131,14 @@ class RequestBodyLimitMiddleware:
                     "body": b"",
                     "more_body": False,
                 })
-        except ValueError:
-            # The visual tool's only uncaught ValueError is owner-scoped document
-            # metadata absence. Translate it without exposing vector/backend details.
+        except ValueError as exc:
+            # Translate only the exact owner-scoped metadata absence sentinel. Other
+            # ValueErrors—including invalid JSON or programming defects—must remain visible
+            # to the normal server error boundary.
             if (
                 not response_started
                 and str(scope.get("path") or "") == "/tool/visual-entailment"
+                and str(exc) == _MISSING_VISUAL_DOCUMENT_ERROR
             ):
                 await self._json_error(
                     send,
