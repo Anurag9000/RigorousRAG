@@ -4,10 +4,12 @@ import uuid
 from unittest.mock import patch
 
 import fitz
+import pytest
 
 from tools.document_store import get_document_store
 from tools.integrity import (
     _extract_figure_region,
+    _json,
     check_visual_entailment,
     compare_papers,
     extract_protocol,
@@ -30,6 +32,20 @@ def test_protocol_fallback_extracts_only_explicit_actions():
     assert len(result["steps"]) == 1
     assert "Add buffer" in result["steps"][0]["description"]
     assert result["metadata"]["source_doc"] == "doc-1"
+
+
+def test_scientific_json_boundary_redacts_paths_and_credentials():
+    result = json.loads(
+        _json({
+            "error": "failed at /private/alice/state.sqlite3",
+            "source": "https://alice:password@example.com/?api_key=secret",
+        })
+    )
+
+    assert "/private" not in result["error"]
+    assert "password" not in result["source"]
+    assert "api_key=secret" not in result["source"]
+    assert "example.com" in result["source"]
 
 
 def test_debate_fails_closed_without_evidence():
@@ -111,6 +127,15 @@ def test_figure_region_is_tied_to_exact_caption_page(tmp_path):
     assert encoded
     assert page_number == 1
     assert "Figure 2B" in caption
+
+
+def test_figure_region_enforces_exact_encoded_payload_bytes(monkeypatch, tmp_path):
+    path = tmp_path / "figure.pdf"
+    _make_figure_pdf(path)
+    monkeypatch.setattr("tools.integrity._VISUAL_MAX_ENCODED_BYTES", 100)
+
+    with pytest.raises(ValueError, match="payload-byte limit"):
+        _extract_figure_region(str(path), "Figure 2B")
 
 
 def test_visual_entailment_uses_private_registry_not_vector_path(
