@@ -10,20 +10,47 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
+from tools.config import bounded_int_env
+
+for _name, _default, _minimum, _maximum in (
+    ("MAX_CHUNKS_PER_DOCUMENT", 10_000, 100, 100_000),
+    ("DOCUMENT_LIST_SCAN_BATCH", 500, 50, 5000),
+    ("MAX_DOCUMENT_LIST_SCAN_CHUNKS", 100_000, 50, 1_000_000),
+    ("MAX_VECTOR_METADATA_ITEMS", 200, 10, 2000),
+    ("MAX_SECTIONS_PER_DOCUMENT", 10_000, 1, 100_000),
+    ("MAX_RAG_QUERY_CHARS", 20_000, 1000, 100_000),
+):
+    bounded_int_env(
+        _name,
+        _default,
+        minimum=_minimum,
+        maximum=_maximum,
+        write_back=True,
+    )
+_raw_chroma_path = Path(os.getenv("CHROMA_PATH", "rag_storage"))
+if _raw_chroma_path.is_symlink():
+    raise ValueError("CHROMA_PATH may not be a symbolic link.")
+
 from tools import rag_legacy as _implementation
 from tools.security import normalize_owner_id
 
-_MAX_METADATA_ITEMS = max(
-    10,
-    min(int(os.getenv("MAX_VECTOR_METADATA_ITEMS", "200")), 2000),
+_MAX_METADATA_ITEMS = bounded_int_env(
+    "MAX_VECTOR_METADATA_ITEMS",
+    200,
+    minimum=10,
+    maximum=2000,
 )
-_MAX_SECTIONS = max(
-    1,
-    min(int(os.getenv("MAX_SECTIONS_PER_DOCUMENT", "10000")), 100_000),
+_MAX_SECTIONS = bounded_int_env(
+    "MAX_SECTIONS_PER_DOCUMENT",
+    10_000,
+    minimum=1,
+    maximum=100_000,
 )
-_MAX_QUERY_CHARS = max(
-    1000,
-    min(int(os.getenv("MAX_RAG_QUERY_CHARS", "20000")), 100_000),
+_MAX_QUERY_CHARS = bounded_int_env(
+    "MAX_RAG_QUERY_CHARS",
+    20_000,
+    minimum=1000,
+    maximum=100_000,
 )
 _MAX_WHERE_CHARS = 20_000
 
