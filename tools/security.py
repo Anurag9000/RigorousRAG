@@ -26,6 +26,25 @@ _OWNER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 _ALLOWED_UPLOAD_SUFFIXES = {".pdf", ".docx", ".txt", ".md"}
 _REDIRECT_CODES = {301, 302, 303, 307, 308}
 _ALLOWED_REMOTE_METHODS = {"GET", "HEAD", "POST"}
+_FORBIDDEN_CALLER_HEADERS = {
+    "connection",
+    "content-length",
+    "host",
+    "keep-alive",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "te",
+    "trailer",
+    "transfer-encoding",
+    "upgrade",
+}
+_SENSITIVE_REDIRECT_HEADERS = {
+    "authorization",
+    "cookie",
+    "proxy-authorization",
+    "x-api-key",
+    "api-key",
+}
 
 
 class SecurityError(ValueError):
@@ -157,6 +176,41 @@ def hostname_matches(hostname: str, allowed_domains: Iterable[str]) -> bool:
     return False
 
 
+def _origin(url: str) -> tuple[str, str, int]:
+    parsed = urlparse(url)
+    scheme = parsed.scheme.lower()
+    port = parsed.port or (443 if scheme == "https" else 80)
+    return scheme, (parsed.hostname or "").rstrip(".").lower(), port
+
+
+def _sanitize_request_headers(headers: Optional[Mapping[str, str]]) -> Dict[str, str]:
+    sanitized: Dict[str, str] = {}
+    for raw_name, raw_value in (headers or {}).items():
+        name = str(raw_name).strip()
+        value = str(raw_value).strip()
+        lowered = name.lower()
+        if not name or lowered in _FORBIDDEN_CALLER_HEADERS:
+            raise SecurityError(f"Caller-controlled header '{name or 'empty'}' is not allowed.")
+        if "\r" in name or "\n" in name or "\r" in value or "\n" in value:
+            raise SecurityError("Remote request headers may not contain line breaks.")
+        sanitized[name] = value
+    return sanitized
+
+
+def _strip_cross_origin_secrets(headers: Mapping[str, str]) -> Dict[str, str]:
+    result: Dict[str, str] = {}
+    for name, value in headers.items():
+        lowered = name.lower()
+        if (
+            lowered in _SENSITIVE_REDIRECT_HEADERS
+            or lowered.endswith("-api-key")
+            or lowered.endswith("-token")
+        ):
+            continue
+        result[name] = value
+    return result
+
+
 def _socket_from_response(response: requests.Response) -> Any:
     """Best-effort extraction of the connected socket from urllib3/httplib layers."""
 
@@ -224,6 +278,7 @@ def safe_download(
     if current_method not in _ALLOWED_REMOTE_METHODS:
         raise SecurityError(f"Remote method '{current_method or 'empty'}' is not allowed.")
     current_url = validate_public_url(url)
+    current_headers = _sanitize_request_headers(headers)
     current_data = data
     current_json = json_body
     owned_session = session is None
@@ -235,7 +290,7 @@ def safe_download(
             response = http.request(
                 method=current_method,
                 url=current_url,
-                headers=dict(headers or {}),
+                headers=current_headers,
                 data=current_data,
                 json=current_json,
                 timeout=timeout,
@@ -250,7 +305,18 @@ def safe_download(
                         raise SecurityError(
                             "Redirect response did not include a Location header."
                         )
-                    current_url = validate_public_url(urljoin(current_url, location))
+                    next_url = validate_public_url(urljoin(current_url, location))
+                    cross_origin = _origin(next_url) != _origin(current_url)
+                    if cross_origin:
+                        current_headers = _strip_cross_origin_secrets(current_headers)
+                        if response.status_code in {307, 308} and current_method not in {
+                            "GET",
+                            "HEAD",
+                        }:
+                            raise SecurityError(
+                                "Cross-origin redirects may not replay a request body."
+                            )
+                    current_url = next_url
                     if response.status_code in {301, 302, 303} and current_method not in {
                         "GET",
                         "HEAD",
