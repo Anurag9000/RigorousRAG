@@ -1,22 +1,29 @@
-"""Serper-backed web search with strict result-host filtering."""
+"""Serper-backed web search with strict network and result-host boundaries."""
 
 from __future__ import annotations
 
+import json
 import os
 from typing import List, Optional
 from urllib.parse import urlparse
 
-import requests
 from pydantic import BaseModel, Field
 
 from tools.models import Citation
-from tools.security import hostname_matches, validate_public_url
+from tools.security import hostname_matches, safe_download, validate_public_url
+
+_SERPER_ENDPOINT = "https://google.serper.dev/search"
+_SERPER_MAX_RESPONSE_BYTES = max(
+    10_000,
+    min(int(os.getenv("SERPER_MAX_RESPONSE_BYTES", "2000000")), 20_000_000),
+)
 
 
 class WebSearchInput(BaseModel):
     query: str = Field(..., min_length=1, max_length=2000)
     allowed_domains: Optional[List[str]] = Field(
         default=None,
+        max_length=50,
         description="Optional exact hostnames or parent domains.",
     )
 
@@ -44,30 +51,42 @@ def web_search(
     query = (query or "").strip()
     if not query:
         return []
+    if len(query) > 2000:
+        raise ValueError("Web-search queries may contain at most 2,000 characters.")
+    domains = [str(value).strip()[:253] for value in (allowed_domains or []) if str(value).strip()]
+    if len(domains) > 50:
+        raise ValueError("At most 50 allowed domains may be supplied.")
     api_key = os.getenv("SERPER_API_KEY")
     if not api_key:
         raise WebSearchError("Web search is unavailable because SERPER_API_KEY is not configured.")
     limit = max(1, min(int(limit), 10))
     try:
-        response = requests.post(
-            "https://google.serper.dev/search",
+        downloaded = safe_download(
+            _SERPER_ENDPOINT,
+            method="POST",
             headers={
                 "X-API-KEY": api_key,
                 "Content-Type": "application/json",
                 "Accept": "application/json",
             },
-            json={"q": query, "num": limit},
+            json_body={"q": query, "num": limit},
             timeout=15,
+            max_bytes=_SERPER_MAX_RESPONSE_BYTES,
+            allowed_content_types={"application/json"},
         )
-        response.raise_for_status()
-        payload = response.json()
-    except requests.RequestException as exc:
+        payload = json.loads(downloaded.content.decode("utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError("Provider response must be a JSON object.")
+    except Exception as exc:
         raise WebSearchError("The configured web-search provider request failed.") from exc
-    except ValueError as exc:
-        raise WebSearchError("The web-search provider returned invalid JSON.") from exc
 
+    organic = payload.get("organic", [])
+    if not isinstance(organic, list):
+        raise WebSearchError("The web-search provider returned an invalid result structure.")
     citations: List[Citation] = []
-    for result in payload.get("organic", []) or []:
+    for result in organic[:100]:
+        if not isinstance(result, dict):
+            continue
         link = str(result.get("link") or "").strip()
         if not link:
             continue
@@ -76,7 +95,7 @@ def web_search(
         except Exception:
             continue
         hostname = urlparse(public_url).hostname or ""
-        if allowed_domains and not hostname_matches(hostname, allowed_domains):
+        if domains and not hostname_matches(hostname, domains):
             continue
         citations.append(
             Citation(
