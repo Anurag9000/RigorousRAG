@@ -4,7 +4,7 @@ import pytest
 
 import llm_agent
 from Searching import SearchHit
-from llm_agent import ExtractiveFallback, LLMAgent
+from llm_agent import CitationSummary, ExtractiveFallback, LLMAgent
 
 
 def hit(rank, url, title):
@@ -65,9 +65,9 @@ def test_query_limit_fails_before_provider_calls():
     agent.ollama_client.chat.assert_not_called()
 
 
-def test_prompt_and_source_count_are_bounded():
+def test_prompt_and_source_count_are_bounded_and_complete():
     hits = [
-        hit(index + 1, f"https://{index}.test", "T" * 1000)
+        hit(index + 1, f"https://{index}.test/" + "u" * 2000, "T" * 1000)
         for index in range(50)
     ]
     contexts = [
@@ -82,6 +82,8 @@ def test_prompt_and_source_count_are_bounded():
     assert len(prompt) <= llm_agent._MAX_PROMPT_CHARS
     assert len(sources) == llm_agent._MAX_SOURCES
     assert all(len(source) <= llm_agent._MAX_SOURCE_CHARS for source in sources)
+    assert "[20] Title:" in prompt
+    assert "Cite every evidence-dependent statement" in prompt
 
 
 def test_generated_summary_warns_for_missing_or_unsupported_markers():
@@ -106,3 +108,46 @@ def test_generated_summary_and_sources_are_hard_bounded():
     assert result is not None
     assert len(result.summary) == llm_agent._MAX_SUMMARY_CHARS
     assert len(result.sources) == 1
+
+
+def test_hit_and_context_iterables_are_bounded():
+    def infinite_hits():
+        index = 0
+        while True:
+            yield hit(index, f"https://{index}.test", str(index))
+            index += 1
+
+    with pytest.raises(ValueError, match="at most 1000"):
+        llm_agent._align_hits_and_contexts(infinite_hits(), [])
+
+    def infinite_sources():
+        while True:
+            yield "source"
+
+    with pytest.raises(ValueError, match="at most 20"):
+        CitationSummary("summary", infinite_sources())
+
+
+def test_malformed_timeout_falls_back_and_provider_values_are_bounded(monkeypatch):
+    monkeypatch.setenv("LEGACY_LLM_TIMEOUT_SECONDS", "nan")
+    monkeypatch.setattr(llm_agent, "OpenAI", None)
+    monkeypatch.setattr(llm_agent, "ollama", None)
+
+    agent = LLMAgent(api_key=None)
+    assert agent.openai_client is None
+
+    with pytest.raises(ValueError, match="4096"):
+        LLMAgent(api_key="x" * 4097)
+    with pytest.raises(ValueError, match="control characters"):
+        LLMAgent(base_url="http://localhost\r\nInjected: yes")
+
+
+def test_summary_masks_credentials_and_local_paths():
+    result = CitationSummary(
+        "See file:///private/secret and https://alice:password@example.test.",
+        ["https://alice:password@example.test?api_key=secret"],
+    )
+    rendered = result.summary + " " + " ".join(result.sources)
+    assert "password" not in rendered
+    assert "api_key=secret" not in rendered
+    assert "/private" not in rendered
