@@ -150,7 +150,7 @@ def test_visual_missing_document_value_error_becomes_generic_404():
         sent.append(message)
 
     async def app(_scope, _receive, _send):
-        raise ValueError("owner alice missing in /private/vector.sqlite3")
+        raise ValueError("The requested document was not found for this owner.")
 
     middleware = RequestBodyLimitMiddleware(app, max_bytes=10)
     run(
@@ -168,7 +168,31 @@ def test_visual_missing_document_value_error_becomes_generic_404():
     assert sent[0]["status"] == 404
     payload = json.loads(sent[1]["body"])
     assert payload == {"detail": "Document not found."}
-    assert "/private" not in sent[1]["body"].decode("utf-8")
+
+
+def test_unrelated_visual_value_error_is_not_hidden():
+    async def receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(_message):
+        return None
+
+    async def app(_scope, _receive, _send):
+        raise ValueError("invalid scientific JSON")
+
+    middleware = RequestBodyLimitMiddleware(app, max_bytes=10)
+    with pytest.raises(ValueError, match="invalid scientific JSON"):
+        run(
+            middleware(
+                {
+                    "type": "http",
+                    "path": "/tool/visual-entailment",
+                    "headers": [],
+                },
+                receive,
+                send,
+            )
+        )
 
 
 def test_non_visual_value_error_is_not_hidden():
