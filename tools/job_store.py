@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 import sqlite3
 import threading
@@ -12,6 +13,34 @@ from typing import Any, Dict, List, Optional, Set
 from tools.privacy import mask_metadata_text
 from tools.security import normalize_owner_id
 
+_ALLOWED_STATUSES = frozenset({"queued", "processing", "finalizing", "success", "failed"})
+_ALLOWED_TRANSITIONS = {
+    "queued": frozenset({"queued", "failed", "success"}),
+    "processing": frozenset({"processing", "queued", "finalizing", "failed", "success"}),
+    "finalizing": frozenset({"finalizing", "queued", "failed", "success"}),
+    "success": frozenset({"success"}),
+    "failed": frozenset({"failed"}),
+}
+
+
+def _finite_positive_env(name: str, default: str, *, minimum: float) -> float:
+    try:
+        value = float(os.getenv(name, default))
+    except (TypeError, ValueError):
+        value = float(default)
+    if not math.isfinite(value):
+        value = float(default)
+    return max(value, minimum)
+
+
+def _lexical_absolute(path: str | Path) -> Path:
+    """Make a path absolute without following a symlink or resolving its target."""
+
+    candidate = Path(path)
+    if not candidate.is_absolute():
+        candidate = Path.cwd() / candidate
+    return Path(os.path.abspath(candidate))
+
 
 class JobStore:
     """Durable ingestion queue and public job-status registry."""
@@ -20,13 +49,18 @@ class JobStore:
         self.path = Path(path or os.getenv("JOB_DB_PATH", "data/jobs.sqlite3")).resolve()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.ttl_seconds = max(int(ttl_seconds), 60)
-        self.retry_base_seconds = max(
-            0.1,
-            float(os.getenv("INGEST_RETRY_BASE_SECONDS", "2")),
+        self.retry_base_seconds = _finite_positive_env(
+            "INGEST_RETRY_BASE_SECONDS",
+            "2",
+            minimum=0.1,
         )
         self.retry_max_seconds = max(
             self.retry_base_seconds,
-            float(os.getenv("INGEST_RETRY_MAX_SECONDS", "30")),
+            _finite_positive_env(
+                "INGEST_RETRY_MAX_SECONDS",
+                "30",
+                minimum=0.1,
+            ),
         )
         self._lock = threading.RLock()
         self._initialise()
@@ -92,6 +126,8 @@ class JobStore:
 
     def prune(self, now: Optional[float] = None) -> int:
         current_time = time.time() if now is None else float(now)
+        if not math.isfinite(current_time):
+            raise ValueError("now must be a finite timestamp.")
         cutoff = current_time - self.ttl_seconds
         with self._lock, self._connect() as connection:
             cursor = connection.execute(
@@ -104,26 +140,39 @@ class JobStore:
         exponent = max(int(attempts) - 1, 0)
         return min(self.retry_max_seconds, self.retry_base_seconds * (2**exponent))
 
+    @staticmethod
+    def _validate_transition(previous_status: str, status: str) -> None:
+        if status not in _ALLOWED_STATUSES:
+            raise ValueError(
+                "status must be one of queued, processing, finalizing, success, or failed."
+            )
+        if previous_status and status not in _ALLOWED_TRANSITIONS.get(previous_status, frozenset()):
+            raise ValueError(
+                f"Invalid ingestion job transition from {previous_status} to {status}."
+            )
+
     def update(self, job_id: str, owner_id: str, **fields: Any) -> None:
-        """Create or update a job without allowing cross-owner ID reuse."""
+        """Create or update a job without owner reassignment or terminal resurrection."""
 
         owner = normalize_owner_id(owner_id)
         identifier = (job_id or "").strip()
         if not identifier or len(identifier) > 200:
             raise ValueError("job_id must contain 1-200 characters.")
         now = time.time()
-        status = str(fields.get("status") or "queued")[:64]
-        filename = mask_metadata_text(str(fields.get("filename") or "upload"))[:500]
+        status = str(fields.get("status") or "queued").strip().lower()
+        filename = mask_metadata_text(str(fields.get("filename") or "upload")).strip()[:500]
+        filename = filename or "upload"
         raw_message = fields.get("message")
         message = (
-            mask_metadata_text(str(raw_message))[:2000]
+            mask_metadata_text(str(raw_message)).strip()[:2000]
             if raw_message not in (None, "")
             else None
         )
-        doc_id = str(fields.get("doc_id"))[:200] if fields.get("doc_id") else None
+        message = message or None
+        doc_id = str(fields.get("doc_id") or "").strip()[:200] or None
         source_path_value = fields.get("source_path")
         source_path = (
-            str(Path(source_path_value).resolve())[:4000]
+            str(_lexical_absolute(str(source_path_value)))[:4000]
             if source_path_value not in (None, "")
             else None
         )
@@ -138,12 +187,15 @@ class JobStore:
                 raise PermissionError("A job ID cannot be reassigned to a different owner.")
             attempts = int(existing["attempts"] or 0) if existing else 0
             previous_status = str(existing["status"] or "") if existing else ""
+            self._validate_transition(previous_status, status)
             if source_path_value is None and existing is not None:
                 source_path = str(existing["source_path"] or "") or None
             if next_attempt_value is None and existing is not None:
                 next_attempt_at = float(existing["next_attempt_at"] or 0.0)
             else:
                 next_attempt_at = max(0.0, float(next_attempt_value or 0.0))
+            if not math.isfinite(next_attempt_at):
+                raise ValueError("next_attempt_at must be a finite timestamp.")
             if (
                 status == "queued"
                 and next_attempt_value is None
@@ -200,6 +252,8 @@ class JobStore:
         owner = normalize_owner_id(owner_id)
         limit = max(1, int(max_attempts))
         current_time = time.time() if now is None else float(now)
+        if not math.isfinite(current_time):
+            raise ValueError("now must be a finite timestamp.")
         with self._lock, self._connect() as connection:
             cursor = connection.execute(
                 """
@@ -257,7 +311,7 @@ class JobStore:
         return [dict(row) for row in rows]
 
     def active_source_paths(self) -> Set[Path]:
-        """Return source paths referenced by unfinished jobs for orphan protection."""
+        """Return lexical source paths referenced by unfinished jobs."""
 
         with self._lock, self._connect() as connection:
             rows = connection.execute(
@@ -271,5 +325,5 @@ class JobStore:
         for row in rows:
             raw_path = str(row["source_path"] or "")
             if raw_path:
-                paths.add(Path(raw_path).resolve())
+                paths.add(_lexical_absolute(raw_path))
         return paths
