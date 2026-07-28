@@ -7,6 +7,7 @@ import json
 import math
 import os
 import threading
+import time
 import uuid
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import asynccontextmanager
@@ -55,6 +56,9 @@ _INGEST_EXECUTOR = ThreadPoolExecutor(
 )
 _INGEST_FUTURES: set[Future[Any]] = set()
 _INGEST_FUTURES_LOCK = threading.Lock()
+_INGEST_TIMERS: Dict[str, threading.Timer] = {}
+_INGEST_TIMERS_LOCK = threading.Lock()
+_INGEST_SHUTDOWN = threading.Event()
 
 _parser = argparse.ArgumentParser(add_help=False)
 _parser.add_argument("--local", action="store_true")
@@ -156,22 +160,77 @@ def _forget_future(future: Future[Any]) -> None:
         _INGEST_FUTURES.discard(future)
 
 
+def _release_scheduled_ingestion(
+    file_path: str,
+    display_name: str,
+    job_id: str,
+    owner_id: str,
+) -> None:
+    with _INGEST_TIMERS_LOCK:
+        _INGEST_TIMERS.pop(job_id, None)
+    if not _INGEST_SHUTDOWN.is_set():
+        _submit_ingestion(file_path, display_name, job_id, owner_id)
+
+
 def _submit_ingestion(
     file_path: str,
     display_name: str,
     job_id: str,
     owner_id: str,
 ) -> None:
-    future = _INGEST_EXECUTOR.submit(
-        process_ingestion,
-        file_path,
-        display_name,
-        job_id,
-        owner_id,
-    )
+    """Submit a due job or schedule one timer without occupying an executor worker."""
+
+    if _INGEST_SHUTDOWN.is_set():
+        return
+    try:
+        internal = _JOB_STORE.get_internal(job_id, owner_id)
+    except Exception:
+        return
+    if not internal or str(internal.get("status") or "") != "queued":
+        return
+    due_at = float(internal.get("next_attempt_at") or 0.0)
+    delay = max(0.0, due_at - time.time())
+    if delay > 0:
+        with _INGEST_TIMERS_LOCK:
+            existing = _INGEST_TIMERS.get(job_id)
+            if existing is not None and existing.is_alive():
+                return
+            timer = threading.Timer(
+                delay,
+                _release_scheduled_ingestion,
+                args=(file_path, display_name, job_id, owner_id),
+            )
+            timer.daemon = True
+            _INGEST_TIMERS[job_id] = timer
+            timer.start()
+        return
+
+    with _INGEST_TIMERS_LOCK:
+        existing = _INGEST_TIMERS.pop(job_id, None)
+        if existing is not None:
+            existing.cancel()
+    try:
+        future = _INGEST_EXECUTOR.submit(
+            process_ingestion,
+            file_path,
+            display_name,
+            job_id,
+            owner_id,
+        )
+    except RuntimeError:
+        return
     with _INGEST_FUTURES_LOCK:
         _INGEST_FUTURES.add(future)
     future.add_done_callback(_forget_future)
+
+
+def _cancel_scheduled_ingestions() -> None:
+    _INGEST_SHUTDOWN.set()
+    with _INGEST_TIMERS_LOCK:
+        timers = list(_INGEST_TIMERS.values())
+        _INGEST_TIMERS.clear()
+    for timer in timers:
+        timer.cancel()
 
 
 def _recover_interrupted_jobs() -> None:
@@ -243,12 +302,14 @@ def _recover_interrupted_jobs() -> None:
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    _INGEST_SHUTDOWN.clear()
     await run_in_threadpool(_recover_interrupted_jobs)
     yield
+    _cancel_scheduled_ingestions()
     _INGEST_EXECUTOR.shutdown(wait=False, cancel_futures=False)
 
 
-app = FastAPI(title="RigorousRAG API", version="4.2.0", lifespan=lifespan)
+app = FastAPI(title="RigorousRAG API", version="4.3.0", lifespan=lifespan)
 
 
 @app.middleware("http")
@@ -344,6 +405,8 @@ async def public_config() -> Dict[str, Any]:
         "requests_per_minute": REQUESTS_PER_MINUTE,
         "ingest_workers": INGEST_WORKERS,
         "ingest_max_attempts": INGEST_MAX_ATTEMPTS,
+        "ingest_retry_base_seconds": _JOB_STORE.retry_base_seconds,
+        "ingest_retry_max_seconds": _JOB_STORE.retry_max_seconds,
     }
 
 
