@@ -20,8 +20,9 @@ graph LR
     CLI --> Services
     FastAPI --> Principal[Credential-derived principal]
     FastAPI --> BodyLimit[Pre-parser body ceiling]
-    FastAPI --> QueryPool[Bounded query executor]
-    QueryPool --> Agent[Request-scoped agent]
+    FastAPI --> ResearchPool[Bounded query and direct-tool executor]
+    ResearchPool --> Agent[Request-scoped agent]
+    ResearchPool --> DirectTools[Direct scientific routes]
     FastAPI --> Queue[SQLite ingestion queue]
     Queue --> Scheduler[One lazy deadline scheduler]
     Scheduler --> Admission[Bounded ingestion admission]
@@ -34,6 +35,7 @@ graph LR
     ToolPool --> RAG
     ToolPool --> Web[Peer-validated web tools]
     ToolPool --> Integrity[Scientific-analysis tools]
+    DirectTools --> Integrity
     Integrity --> Registry
     Agent --> Evidence[Server evidence registry]
     Evidence --> Answer[Bounded AgentAnswer]
@@ -51,24 +53,24 @@ See [Goals and Architecture](docs/GOALS_AND_ARCHITECTURE.md), [Security Model](d
 - Symlinked inputs and retained sources are rejected.
 - Filesystem paths are held in private SQLite stores, never in Chroma metadata, citations, manifests, or public job responses.
 - Missing retained files dynamically downgrade a document to text-only capability.
-- Retained visual PDFs are re-hashed against owner/content document identity and checked against page/render budgets on visual access.
+- Retained visual PDFs are re-hashed against owner/content document identity and checked against page, render-pixel, and exact encoded-image-byte budgets on visual access.
 - Host-side source mutation therefore disables visual analysis without making the retained file unmanaged or undeletable.
 - Document deletion removes vectors, registry state, and retained source; partial cleanup remains retryable.
 - Old unreferenced uploads are reconciled after a grace period while active, retained, recent, and symlink paths are protected.
 - Public-page tools reject private, loopback, link-local, multicast, reserved, and metadata-network destinations.
 - Every redirect is revalidated, the actual connected peer IP is checked, environment proxies are disabled, and credentials or POST bodies cannot leak across hostile cross-origin redirects.
 - Remote responses have decoded-byte and end-to-end time ceilings.
-- DOCX archive expansion, PDF page count, OCR pixels, extracted characters, vector chunks, request bodies, query work, tool work, arguments, results, evidence sources, and final answers are bounded.
-- `/query` has explicit running-plus-queued admission and a whole-request timeout.
-- Tool execution has process-wide running-plus-queued admission; timed-out running work retains capacity until it actually finishes.
+- DOCX archive expansion, PDF page count, OCR pixels, extracted characters, vector chunks, request bodies, research-route work, tool work, arguments, results, evidence sources, and final answers are bounded.
+- `/query`, direct visual entailment, and direct protocol extraction share explicit running-plus-queued admission and a whole-operation timeout.
+- Agent tool execution has an independent process-wide running-plus-queued limit; timed-out running work retains capacity until it actually finishes.
 - Ingestion has durable retry deadlines, one lazy centralized scheduler, and bounded executor admission.
 - Vector replacement uses compensating rollback if a batched write fails.
 - Retrieved/OCR text is treated as untrusted evidence, not model instructions.
 - The model cannot define authoritative citation objects.
 - Tool arguments are validated at runtime against declared schemas.
+- Every serialized scientific-tool result recursively masks values and keys, including local paths, URI credentials, and common secret parameters.
 - Browser output is rendered through DOM text nodes and a constrained local Markdown renderer; no external JavaScript CDN is used.
 - Raw queries and owner IDs are not written to telemetry. Telemetry is size-bounded, pseudonymous, and rotated.
-- Public metadata masking also removes common local paths, URI credentials, and secret query parameters.
 
 These controls do not replace a network egress firewall, malware scanner, parser sandbox, encryption-at-rest policy, secret manager, or regulated-data review.
 
@@ -140,13 +142,13 @@ python search_agent_cli.py --demo
 | Group | Important variables |
 |---|---|
 | Identity | `API_KEY_OWNERS_JSON`, `SINGLE_USER_OWNER_ID` |
-| HTTP query execution | `QUERY_WORKERS`, `QUERY_MAX_PENDING`, `QUERY_TIMEOUT_SECONDS` |
+| HTTP research execution | `QUERY_WORKERS`, `QUERY_MAX_PENDING`, `QUERY_TIMEOUT_SECONDS` |
 | Models and agent | `DEFAULT_MODEL`, `ALLOWED_MODELS`, `MAX_RESPONSE_TOKENS` |
 | Tool admission/evidence | `MAX_CONCURRENT_TOOL_WORKERS`, `MAX_PENDING_TOOL_TASKS`, `MAX_TOOL_ARGUMENT_CHARS`, `MAX_TOOL_RESULT_CHARS`, `MAX_EVIDENCE_SOURCES` |
 | Request/upload lifecycle | `MAX_REQUEST_BODY_BYTES`, `MAX_UPLOAD_BYTES`, `RETAIN_SOURCE_FILES`, `ORPHAN_CLEANUP_ON_STARTUP`, `ORPHAN_GRACE_SECONDS` |
 | Durable ingestion | `INGEST_WORKERS`, `INGEST_MAX_PENDING`, `INGEST_ADMISSION_RETRY_SECONDS`, `INGEST_MAX_ATTEMPTS`, `INGEST_RETRY_BASE_SECONDS`, `INGEST_RETRY_MAX_SECONDS`, `JOB_TTL_SECONDS` |
 | PDF/DOCX complexity | `MAX_PDF_PAGES`, `MAX_PDF_RENDER_PIXELS`, `MAX_EXTRACTED_CHARS`, `MAX_DOCX_MEMBERS`, `MAX_DOCX_UNCOMPRESSED_BYTES`, `MAX_DOCX_COMPRESSION_RATIO` |
-| Retained visual PDFs | `VISUAL_MAX_PDF_PAGES`, `VISUAL_MAX_RENDER_PIXELS`, `VISUAL_CLIP_HEIGHT_POINTS` |
+| Retained visual PDFs | `VISUAL_MAX_PDF_PAGES`, `VISUAL_MAX_RENDER_PIXELS`, `VISUAL_MAX_ENCODED_BYTES`, `VISUAL_CLIP_HEIGHT_POINTS` |
 | OCR | `ENABLE_OCR`, `OCR_MAX_PAGES`, `OCR_DPI`, `OCR_TIMEOUT_SECONDS`, `OCR_MIN_TEXT_CHARS` |
 | Vector storage | `CHROMA_PATH`, `EMBEDDING_MODEL`, `MAX_CHUNKS_PER_DOCUMENT`, `DOCUMENT_LIST_SCAN_BATCH`, `MAX_DOCUMENT_LIST_SCAN_CHUNKS` |
 | Remote network | `MAX_REMOTE_DOWNLOAD_BYTES`, `REMOTE_REQUEST_TIMEOUT_SECONDS`, `MAX_REMOTE_REDIRECTS`, `SERPER_MAX_RESPONSE_BYTES` |
@@ -182,8 +184,7 @@ This is single-host crash recovery. Distributed/high-scale deployments should re
 - OCR operates only on low-native-text pages and records attempted, successful, empty, failed, and limit-skipped page provenance.
 - One failed OCR page does not discard usable native/OCR pages from the rest of the document.
 - Document listing reports a retained PDF as eligible but unverified. A visual action triggers current-byte identity verification and PDF page/render checks.
-
-The visual render-pixel budget bounds memory and approximate image size. A separate exact post-PNG/base64 byte ceiling is still a documented residual.
+- Caption-region rendering enforces both pixel count and the exact base64 payload length before image data reaches a vision model.
 
 ## Run the web service
 
@@ -269,8 +270,6 @@ CI is configured to run these checks across Python 3.10, 3.11, and 3.12 and buil
 - OCR quality depends on scan quality, language packs, orientation, layout, and Tesseract.
 - PDF table, equation, heading, reading-order, and multi-panel figure extraction remains heuristic.
 - Figure localization requires a selectable exact caption label; scanned-caption coordinate OCR is not implemented.
-- Visual pixels are bounded, but exact encoded PNG/base64 output bytes are not yet separately capped.
-- Direct scientific HTTP routes are rate-limited but do not yet use the dedicated `/query` whole-route executor/deadline.
 - Retained sources are plaintext unless deployment storage provides encryption at rest.
 - DNS resolution is a platform call that cannot be forcibly cancelled in a Python thread; application controls should be paired with network egress policy.
 - The crawler indexes static HTML, not JavaScript-rendered pages or publisher PDFs.
