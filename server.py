@@ -2,8 +2,8 @@
 
 `server_app` preserves the complete route/application implementation. This shim
 replaces parser-facing ingestion and recovery so queued uploads are consumed from
-immutable descriptor-anchored byte snapshots and every unfinished job is replayed
-idempotently rather than inferred successful from ambiguous registry state.
+immutable descriptor-anchored byte snapshots and every unfinished operation is
+replayed idempotently instead of inferred successful from ambiguous registry state.
 """
 
 from __future__ import annotations
@@ -30,21 +30,19 @@ from tools.upload_storage import (
 
 
 def _validated_upload_file(path: str | Path | None) -> Optional[Path]:
-    """Return one current regular owner file through anchored validation."""
-
     return validated_owner_file_path(_implementation.UPLOAD_DIR, path)
 
 
-def _retry_or_fail_snapshot(
+def _retry_or_fail_job(
     *,
     job_id: str,
     owner_id: str,
     display_name: str,
     path: Path,
     exc: BaseException,
+    retry_prefix: str,
+    failure_prefix: str,
 ) -> None:
-    """Return a claimed job to durable retry state or persist terminal failure."""
-
     internal = _implementation._JOB_STORE.get_internal(job_id, owner_id) or {}
     attempts = int(internal.get("attempts") or 0)
     if attempts < _implementation.INGEST_MAX_ATTEMPTS:
@@ -55,10 +53,7 @@ def _retry_or_fail_snapshot(
                 status="queued",
                 filename=display_name,
                 source_path=str(path),
-                message=_implementation._internal_failure_message(
-                    "Transient ingestion snapshot failure; retry queued",
-                    exc,
-                ),
+                message=_implementation._internal_failure_message(retry_prefix, exc),
             )
             _implementation._submit_ingestion(
                 str(path),
@@ -74,10 +69,26 @@ def _retry_or_fail_snapshot(
         owner_id,
         display_name,
         path,
-        _implementation._internal_failure_message(
-            "Ingestion snapshot failed",
-            exc,
-        ),
+        _implementation._internal_failure_message(failure_prefix, exc),
+    )
+
+
+def _retry_or_fail_snapshot(
+    *,
+    job_id: str,
+    owner_id: str,
+    display_name: str,
+    path: Path,
+    exc: BaseException,
+) -> None:
+    _retry_or_fail_job(
+        job_id=job_id,
+        owner_id=owner_id,
+        display_name=display_name,
+        path=path,
+        exc=exc,
+        retry_prefix="Transient ingestion snapshot failure; retry queued",
+        failure_prefix="Ingestion snapshot failed",
     )
 
 
@@ -90,7 +101,6 @@ def _recover_interrupted_jobs() -> None:
         display_name = str(record.get("filename") or "upload")
         source_path = str(record.get("source_path") or "")
         attempts = int(record.get("attempts") or 0)
-
         if attempts >= _implementation.INGEST_MAX_ATTEMPTS:
             _implementation._persist_failed_job(
                 job_id,
@@ -191,7 +201,6 @@ def process_ingestion(
             document = result.document
             document.filename = display_name
             keep_source = True
-            indexed = None
             try:
                 agent = _implementation._new_agent(owner_id)
                 indexed = _implementation.index_document(
@@ -221,8 +230,10 @@ def process_ingestion(
                 registry_record = _implementation._DOCUMENT_STORE.get(
                     owner_id=owner_id,
                     doc_id=document.id,
-                ) or {}
-                keep_source = bool(registry_record.get("source_retained"))
+                )
+                if registry_record is None:
+                    raise RuntimeError("Document registry did not return the committed row.")
+                registry_keeps_source = bool(registry_record.get("source_retained"))
                 if previous_path:
                     _implementation._safe_unlink_upload(previous_path)
                 _implementation._JOB_STORE.update(
@@ -234,66 +245,18 @@ def process_ingestion(
                     message=f"Indexed {indexed.chunk_count} semantic chunks.",
                     doc_id=document.id,
                 )
+                keep_source = registry_keeps_source
             except Exception as exc:
-                registry_record = _implementation._DOCUMENT_STORE.get(
+                keep_source = True
+                _retry_or_fail_job(
+                    job_id=job_id,
                     owner_id=owner_id,
-                    doc_id=document.id,
+                    display_name=display_name,
+                    path=path,
+                    exc=exc,
+                    retry_prefix="Transient ingestion failure; retry queued",
+                    failure_prefix="Ingestion failed",
                 )
-                if indexed is not None and registry_record is not None:
-                    retained_path = str(registry_record.get("source_path") or "")
-                    try:
-                        _implementation._JOB_STORE.update(
-                            job_id,
-                            owner_id,
-                            status="success",
-                            filename=display_name,
-                            source_path=retained_path,
-                            message="Recovered completed document finalization.",
-                            doc_id=document.id,
-                        )
-                        keep_source = bool(registry_record.get("source_retained"))
-                    except Exception:
-                        keep_source = True
-                else:
-                    internal = _implementation._JOB_STORE.get_internal(
-                        job_id,
-                        owner_id,
-                    ) or {}
-                    attempts = int(internal.get("attempts") or 0)
-                    if attempts < _implementation.INGEST_MAX_ATTEMPTS:
-                        keep_source = True
-                        try:
-                            _implementation._JOB_STORE.update(
-                                job_id,
-                                owner_id,
-                                status="queued",
-                                filename=display_name,
-                                source_path=str(path),
-                                message=_implementation._internal_failure_message(
-                                    "Transient ingestion failure; retry queued",
-                                    exc,
-                                ),
-                            )
-                            _implementation._submit_ingestion(
-                                str(path),
-                                display_name,
-                                job_id,
-                                owner_id,
-                            )
-                        except Exception:
-                            pass
-                    else:
-                        if not _implementation._persist_failed_job(
-                            job_id,
-                            owner_id,
-                            display_name,
-                            path,
-                            _implementation._internal_failure_message(
-                                "Ingestion failed",
-                                exc,
-                            ),
-                        ):
-                            keep_source = True
             finally:
                 if not keep_source:
                     _implementation._safe_unlink_upload(path)
@@ -321,6 +284,7 @@ def process_ingestion(
 _implementation._validated_upload_file = _validated_upload_file
 _implementation.materialize_ingestion_snapshot = materialize_ingestion_snapshot
 _implementation.read_owner_file = read_owner_file
+_implementation._retry_or_fail_job = _retry_or_fail_job
 _implementation._retry_or_fail_snapshot = _retry_or_fail_snapshot
 _implementation._recover_interrupted_jobs = _recover_interrupted_jobs
 _implementation.process_ingestion = process_ingestion
