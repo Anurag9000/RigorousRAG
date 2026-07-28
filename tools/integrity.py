@@ -1,8 +1,8 @@
 """Compatibility shim over the scientific-integrity implementation.
 
 The legacy implementation remains byte-for-byte preserved in ``integrity_legacy``.
-This module replaces only retained-PDF visual access so verification and rendering
-consume the same immutable descriptor-anchored byte snapshot.
+This module normalizes visual budgets before import and replaces only retained-PDF
+access so verification and rendering consume one descriptor-anchored byte snapshot.
 """
 
 from __future__ import annotations
@@ -14,6 +14,21 @@ import sys
 from typing import Any, Optional, Tuple
 
 import fitz
+
+from tools.config import bounded_int_env
+
+for _name, _default, _minimum, _maximum in (
+    ("VISUAL_MAX_PDF_PAGES", 500, 1, 5000),
+    ("VISUAL_MAX_RENDER_PIXELS", 2_000_000, 1_000_000, 100_000_000),
+    ("VISUAL_MAX_ENCODED_BYTES", 10_000_000, 100_000, 100_000_000),
+):
+    bounded_int_env(
+        _name,
+        _default,
+        minimum=_minimum,
+        maximum=_maximum,
+        write_back=True,
+    )
 
 from tools import integrity_legacy as _implementation
 from tools.security import DEFAULT_MAX_UPLOAD_BYTES
@@ -227,9 +242,6 @@ def check_visual_entailment(
     return _implementation._json(response)
 
 
-# Override only the visual functions on the original module object, then expose that
-# object under this module name. Existing monkeypatch paths keep targeting the globals
-# used by all non-visual legacy functions.
 _implementation._extract_figure_region = _extract_figure_region
 _implementation.check_visual_entailment = check_visual_entailment
 _implementation.__doc__ = __doc__
