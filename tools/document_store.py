@@ -1,6 +1,6 @@
 """Private owner-scoped registry for retained source documents.
 
-Source filesystem paths never belong in the vector database or API responses.  This
+Source filesystem paths never belong in the vector database or API responses. This
 registry is the single authority for resolving an uploaded document to a retained
 source file used by visual tools.
 """
@@ -70,7 +70,10 @@ class DocumentStore:
     def _validated_source_path(self, source_path: str | Path | None) -> Optional[str]:
         if source_path in (None, ""):
             return None
-        candidate = Path(source_path).resolve()
+        raw_path = Path(source_path)
+        if raw_path.is_symlink():
+            raise ValueError("Retained source files may not be symbolic links.")
+        candidate = raw_path.resolve()
         try:
             candidate.relative_to(self.upload_root)
         except ValueError as exc:
@@ -148,7 +151,10 @@ class DocumentStore:
         raw_path = str((record or {}).get("source_path") or "")
         if not raw_path:
             return None
-        candidate = Path(raw_path).resolve()
+        unresolved = Path(raw_path)
+        if unresolved.is_symlink():
+            return None
+        candidate = unresolved.resolve()
         try:
             candidate.relative_to(self.upload_root)
         except ValueError:
