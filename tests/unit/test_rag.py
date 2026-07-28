@@ -81,6 +81,73 @@ def test_failed_batch_rolls_back_new_ids_and_restores_previous_chunks():
     assert restore_call.kwargs["documents"] == ["previous evidence"]
 
 
+def test_non_replace_success_retains_old_non_overlapping_chunks():
+    rag = make_rag()
+    rag.collection.get.return_value = {
+        "ids": ["legacy-chunk"],
+        "documents": ["legacy evidence"],
+        "metadatas": [{"owner_id": "alice", "doc_id": "doc-1"}],
+    }
+
+    count = rag.add_document(
+        "doc-1",
+        "new evidence " * 100,
+        {"owner_id": "alice"},
+        chunk_size=120,
+        overlap=20,
+        replace=False,
+    )
+
+    assert count > 0
+    rag.collection.delete.assert_not_called()
+    assert rag.collection.get.call_args.kwargs["where"]["$and"] == [
+        {"owner_id": {"$eq": "alice"}},
+        {"doc_id": {"$eq": "doc-1"}},
+    ]
+
+
+def test_non_replace_failure_restores_overwritten_deterministic_chunk():
+    rag = make_rag()
+    overlapping_id = "doc-1:s0:p0:c0"
+    rag.collection.get.return_value = {
+        "ids": [overlapping_id, "legacy-chunk"],
+        "documents": ["old first chunk", "legacy evidence"],
+        "metadatas": [
+            {"owner_id": "alice", "doc_id": "doc-1", "version": "old"},
+            {"owner_id": "alice", "doc_id": "doc-1", "version": "legacy"},
+        ],
+    }
+    upsert_calls = {"count": 0}
+
+    def fail_second_batch(**_kwargs):
+        upsert_calls["count"] += 1
+        if upsert_calls["count"] == 2:
+            raise RuntimeError("embedding failed")
+
+    rag.collection.upsert.side_effect = fail_second_batch
+    with pytest.raises(RuntimeError, match="embedding failed"):
+        rag.add_document(
+            "doc-1",
+            "new evidence " * 5000,
+            {"owner_id": "alice"},
+            chunk_size=20,
+            overlap=2,
+            replace=False,
+        )
+
+    deleted_ids = {
+        chunk_id
+        for call in rag.collection.delete.call_args_list
+        for chunk_id in call.kwargs.get("ids", [])
+    }
+    assert overlapping_id not in deleted_ids
+    assert "legacy-chunk" not in deleted_ids
+    restore_call = rag.collection.upsert.call_args_list[-1]
+    assert restore_call.kwargs["ids"] == [overlapping_id, "legacy-chunk"]
+    assert restore_call.kwargs["documents"] == ["old first chunk", "legacy evidence"]
+    assert restore_call.kwargs["metadatas"][0]["version"] == "old"
+
+
 def test_query_always_combines_owner_and_document_filters():
     rag = make_rag()
     rag.collection.query.return_value = {
