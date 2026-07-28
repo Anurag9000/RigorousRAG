@@ -87,8 +87,13 @@ def test_single_page_uses_bounded_safe_download():
     assert safe.call_args.kwargs["max_bytes"] == 1234
 
 
-def test_single_page_returns_structured_error():
-    with patch("tools.single_page.safe_download", side_effect=ValueError("blocked")):
+def test_single_page_returns_redacted_structured_error():
+    with patch(
+        "tools.single_page.safe_download",
+        side_effect=ValueError("secret resolver path /private/state"),
+    ):
         page = fetch_single_page("http://127.0.0.1")
-    assert page.error == "blocked"
+    assert page.error == "Page fetch failed (ValueError)."
+    assert "secret" not in page.error
+    assert "/private" not in page.error
     assert page.text == ""
