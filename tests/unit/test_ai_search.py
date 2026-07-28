@@ -8,9 +8,11 @@ from ai_search import format_summary, main, run_query
 from llm_agent import CitationSummary
 
 
-def test_format_summary_preserves_markdown():
+def test_format_summary_preserves_markdown_and_bounds_output():
     markdown = "# Heading\n\n- item\n- item"
     assert format_summary(markdown) == markdown
+    assert len(format_summary("x" * 30_000)) == 20_000
+    assert "reliable summary" in format_summary(None).lower()
 
 
 def test_run_query_reports_no_results(capsys):
@@ -22,39 +24,73 @@ def test_run_query_reports_no_results(capsys):
 
 def test_run_query_prints_summary_and_sources(capsys):
     engine = MagicMock()
-    engine.search.return_value = [SearchHit(1, "https://a.test", "A", "snippet", 0.9, 0.8, 0.1, 10)]
-    engine.gather_context.return_value = [{"url": "https://a.test", "text": "evidence"}]
+    engine.search.return_value = [
+        SearchHit(
+            1,
+            "https://a.test",
+            "A",
+            "snippet",
+            0.9,
+            0.8,
+            0.1,
+            10,
+        )
+    ]
+    engine.gather_context.return_value = [
+        {"url": "https://a.test", "text": "evidence"}
+    ]
     agent = MagicMock()
-    agent.summarise.return_value = CitationSummary("Supported [1].", ["[1] A — https://a.test"])
+    agent.summarise.return_value = CitationSummary(
+        "Supported [1].",
+        ["[1] A — https://a.test"],
+    )
     run_query(engine, agent, "q", 5)
     output = capsys.readouterr().out
     assert "Supported [1]." in output
     assert "[1] A" in output
 
 
-def test_run_query_rejects_oversized_input_before_search():
+def test_run_query_rejects_oversized_input_and_invalid_limit_before_search():
     engine = MagicMock()
     agent = MagicMock()
 
     with pytest.raises(ValueError, match="2,000"):
         run_query(engine, agent, "q" * 2001, 5)
+    with pytest.raises(ValueError, match="integer"):
+        run_query(engine, agent, "query", "bad")
+    with pytest.raises(ValueError, match="between 1 and 20"):
+        run_query(engine, agent, "query", 21)
 
     engine.search.assert_not_called()
     agent.summarise.assert_not_called()
 
 
-def test_main_loads_persisted_index_without_rebuild():
+def test_main_loads_persisted_index_without_rebuild_and_closes_engine():
     args = argparse.Namespace(
-        query="q", max_pages=10, max_depth=1, delay=0, results=5,
-        storage_dir="data", rebuild=False, model="m", api_key=None,
-        base_url=None, ollama_model="o", ollama_host=None,
+        query="q",
+        max_pages=10,
+        max_depth=1,
+        delay=0,
+        results=5,
+        storage_dir="data",
+        rebuild=False,
+        model="m",
+        api_key=None,
+        base_url=None,
+        ollama_model="o",
+        ollama_host=None,
     )
-    with patch("ai_search.parse_args", return_value=args), \
-         patch("ai_search.AcademicSearchEngine") as engine_class, \
-         patch("ai_search.LLMAgent"), \
-         patch("ai_search.run_query") as run:
-        engine_class.return_value.ready = True
-        engine_class.return_value.index.documents = {"a": object()}
+    engine = MagicMock()
+    engine.ready = True
+    engine.index.documents = {"a": object()}
+    engine_manager = MagicMock()
+    engine_manager.__enter__.return_value = engine
+    with patch("ai_search.parse_args", return_value=args), patch(
+        "ai_search.AcademicSearchEngine",
+        return_value=engine_manager,
+    ), patch("ai_search.LLMAgent"), patch("ai_search.run_query") as run:
         main()
-    assert not engine_class.return_value.build.called
-    assert run.called
+
+    engine.build.assert_not_called()
+    run.assert_called_once()
+    engine_manager.__exit__.assert_called_once()
