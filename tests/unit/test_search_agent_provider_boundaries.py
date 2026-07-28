@@ -57,3 +57,32 @@ def test_valid_direct_agent_parameters_are_normalized(monkeypatch):
     assert agent.model == "model-name"
     assert agent.owner_id == "alice"
     assert agent.tool_timeout == 300.0
+
+
+def test_unmatched_handbook_lookup_returns_no_evidence(monkeypatch):
+    agent = SearchAgent(owner_id="alice")
+    monkeypatch.setattr(
+        search_agent,
+        "search_handbook",
+        lambda **_kwargs: "No handbook passage matched the query.",
+    )
+
+    content, citations = agent._dispatch("search_handbook", {"query": "missing"})
+
+    assert content == "No handbook evidence matched the query."
+    assert citations == []
+
+
+def test_matched_handbook_lookup_keeps_one_real_citation(monkeypatch):
+    agent = SearchAgent(owner_id="alice")
+    monkeypatch.setattr(
+        search_agent,
+        "search_handbook",
+        lambda **_kwargs: "**handbook-1**\n\nPolicy evidence.",
+    )
+
+    content, citations = agent._dispatch("search_handbook", {"query": "policy"})
+
+    assert "Policy evidence" in content
+    assert len(citations) == 1
+    assert citations[0].source_type == "handbook"
