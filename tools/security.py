@@ -8,6 +8,7 @@ import json
 import os
 import re
 import socket
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, Mapping, Optional, TypeAlias
@@ -154,16 +155,20 @@ def validate_public_url(url: str) -> str:
         raise SecurityError("The URL must contain a hostname.")
     if parsed.username or parsed.password:
         raise SecurityError("Credentials embedded in URLs are not allowed.")
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise SecurityError("The URL contains an invalid port.") from exc
     host = parsed.hostname.rstrip(".").lower()
     if host in {"localhost", "localhost.localdomain"} or host.endswith(".localhost"):
         raise SecurityError("Localhost destinations are not allowed.")
     try:
         addresses: set[IPAddress] = {ipaddress.ip_address(host)}
     except ValueError:
-        addresses = _resolved_addresses(host, parsed.port)
+        addresses = _resolved_addresses(host, port)
     if any(not _is_public_address(address) for address in addresses):
         raise SecurityError("Private, local, reserved, and link-local destinations are blocked.")
-    return parsed.geturl()
+    return parsed._replace(fragment="").geturl()
 
 
 def hostname_matches(hostname: str, allowed_domains: Iterable[str]) -> bool:
@@ -268,12 +273,13 @@ def safe_download(
     allowed_content_types: Optional[Iterable[str]] = None,
     session: Optional[requests.Session] = None,
 ) -> DownloadedResponse:
-    """Download a bounded public resource while revalidating every redirect."""
+    """Download a bounded public resource with one end-to-end time budget."""
 
     if max_bytes <= 0:
         raise ValueError("max_bytes must be positive.")
     if timeout <= 0:
         raise ValueError("timeout must be positive.")
+    deadline = time.monotonic() + timeout
     current_method = method.upper().strip()
     if current_method not in _ALLOWED_REMOTE_METHODS:
         raise SecurityError(f"Remote method '{current_method or 'empty'}' is not allowed.")
@@ -287,13 +293,16 @@ def safe_download(
     http.trust_env = False
     try:
         for _ in range(MAX_REDIRECTS + 1):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise SecurityError("Remote request exceeded the configured time limit.")
             response = http.request(
                 method=current_method,
                 url=current_url,
                 headers=current_headers,
                 data=current_data,
                 json=current_json,
-                timeout=timeout,
+                timeout=max(0.1, min(timeout, remaining)),
                 allow_redirects=False,
                 stream=True,
             )
@@ -350,6 +359,10 @@ def safe_download(
                         )
                 body = bytearray()
                 for chunk in response.iter_content(chunk_size=64 * 1024):
+                    if time.monotonic() > deadline:
+                        raise SecurityError(
+                            "Remote request exceeded the configured time limit."
+                        )
                     if not chunk:
                         continue
                     body.extend(chunk)
