@@ -99,17 +99,29 @@ def _new_agent(owner_id: str, model: Optional[str] = None) -> SearchAgent:
     )
 
 
-def _safe_unlink_upload(path: str | Path | None) -> bool:
-    """Delete one regular file only when it is contained by UPLOAD_DIR."""
+def _validated_upload_file(path: str | Path | None) -> Optional[Path]:
+    """Return a regular, non-symlink file contained by UPLOAD_DIR."""
 
     if path in (None, ""):
-        return False
-    candidate = Path(path).resolve()
+        return None
+    raw_path = Path(path)
+    if raw_path.is_symlink():
+        return None
+    candidate = raw_path.resolve()
     try:
         candidate.relative_to(UPLOAD_DIR)
     except ValueError:
-        return False
-    if candidate.is_symlink() or (candidate.exists() and not candidate.is_file()):
+        return None
+    if not candidate.exists() or not candidate.is_file():
+        return None
+    return candidate
+
+
+def _safe_unlink_upload(path: str | Path | None) -> bool:
+    """Delete one regular non-symlink file only when contained by UPLOAD_DIR."""
+
+    candidate = _validated_upload_file(path)
+    if candidate is None:
         return False
     candidate.unlink(missing_ok=True)
     return True
@@ -145,7 +157,7 @@ def _recover_interrupted_jobs() -> None:
         display_name = str(record.get("filename") or "upload")
         source_path = str(record.get("source_path") or "")
         attempts = int(record.get("attempts") or 0)
-        candidate = Path(source_path).resolve() if source_path else None
+        candidate = _validated_upload_file(source_path)
         if attempts >= INGEST_MAX_ATTEMPTS:
             _JOB_STORE.update(
                 job_id,
@@ -155,28 +167,19 @@ def _recover_interrupted_jobs() -> None:
                 source_path="",
                 message="Interrupted ingestion exhausted its retry limit.",
             )
-            _safe_unlink_upload(candidate)
+            _safe_unlink_upload(source_path)
             continue
-        if candidate is None or not candidate.exists() or not candidate.is_file():
+        if candidate is None:
             _JOB_STORE.update(
                 job_id,
                 owner_id,
                 status="failed",
                 filename=display_name,
                 source_path="",
-                message="Interrupted ingestion could not resume because its source file is missing.",
-            )
-            continue
-        try:
-            candidate.relative_to(UPLOAD_DIR)
-        except ValueError:
-            _JOB_STORE.update(
-                job_id,
-                owner_id,
-                status="failed",
-                filename=display_name,
-                source_path="",
-                message="Interrupted ingestion source path was outside UPLOAD_DIR.",
+                message=(
+                    "Interrupted ingestion could not resume because its source file "
+                    "was missing, invalid, symlinked, or outside UPLOAD_DIR."
+                ),
             )
             continue
         _JOB_STORE.update(
@@ -369,17 +372,40 @@ async def get_job_status(
 
 
 def process_ingestion(file_path: str, display_name: str, job_id: str, owner_id: str) -> None:
-    path = Path(file_path).resolve()
+    """Claim and process one job; only the winning worker owns source cleanup."""
+
+    path = _validated_upload_file(file_path)
+    if path is None:
+        _JOB_STORE.update(
+            job_id,
+            owner_id,
+            status="failed",
+            filename=display_name,
+            source_path="",
+            message="The ingestion source was missing, invalid, symlinked, or outside UPLOAD_DIR.",
+        )
+        return
+    if not _JOB_STORE.claim(job_id, owner_id, INGEST_MAX_ATTEMPTS):
+        return
+
     keep_source = False
+    registered = False
+    result = ingest_file(str(path), owner_id=owner_id)
+    if not result.success or result.document is None:
+        _JOB_STORE.update(
+            job_id,
+            owner_id,
+            status="failed",
+            filename=display_name,
+            source_path="",
+            message=result.error or "Document ingestion failed.",
+        )
+        _safe_unlink_upload(path)
+        return
+
+    document = result.document
+    document.filename = display_name
     try:
-        path.relative_to(UPLOAD_DIR)
-        if not _JOB_STORE.claim(job_id, owner_id, INGEST_MAX_ATTEMPTS):
-            return
-        result = ingest_file(str(path), owner_id=owner_id)
-        if not result.success or result.document is None:
-            raise ValueError(result.error or "Document ingestion failed.")
-        document = result.document
-        document.filename = display_name
         agent = _new_agent(owner_id)
         indexed = index_document(
             document,
@@ -396,6 +422,7 @@ def process_ingestion(file_path: str, display_name: str, job_id: str, owner_id: 
             mime_type=document.mime_type,
             source_path=retained_path,
         )
+        registered = True
         keep_source = bool(retained_path)
         if previous_path:
             _safe_unlink_upload(previous_path)
@@ -409,14 +436,45 @@ def process_ingestion(file_path: str, display_name: str, job_id: str, owner_id: 
             doc_id=document.id,
         )
     except Exception as exc:
-        _JOB_STORE.update(
-            job_id,
-            owner_id,
-            status="failed",
-            filename=display_name,
-            source_path="",
-            message=str(exc)[:2000],
-        )
+        internal = _JOB_STORE.get_internal(job_id, owner_id) or {}
+        attempts = int(internal.get("attempts") or 0)
+        if registered:
+            # Index and registry state are already durable. Preserve the source and let
+            # startup reconciliation or a later retry finish the public job transition.
+            keep_source = True
+            try:
+                _JOB_STORE.update(
+                    job_id,
+                    owner_id,
+                    status="queued",
+                    filename=display_name,
+                    source_path=str(path),
+                    message=f"Finalization will retry: {str(exc)[:1200]}",
+                    doc_id=document.id,
+                )
+                _submit_ingestion(str(path), display_name, job_id, owner_id)
+            except Exception:
+                pass
+        elif attempts < INGEST_MAX_ATTEMPTS:
+            keep_source = True
+            _JOB_STORE.update(
+                job_id,
+                owner_id,
+                status="queued",
+                filename=display_name,
+                source_path=str(path),
+                message=f"Transient ingestion failure; retry queued: {str(exc)[:1200]}",
+            )
+            _submit_ingestion(str(path), display_name, job_id, owner_id)
+        else:
+            _JOB_STORE.update(
+                job_id,
+                owner_id,
+                status="failed",
+                filename=display_name,
+                source_path="",
+                message=str(exc)[:2000],
+            )
     finally:
         if not keep_source:
             _safe_unlink_upload(path)
@@ -456,19 +514,25 @@ async def delete_document(
         include=["metadatas"],
         limit=1,
     )
-    if not (results.get("metadatas") or []):
-        raise HTTPException(status_code=404, detail="Document not found.")
-    await run_in_threadpool(
-        rag.delete_document,
+    vector_exists = bool(results.get("metadatas") or [])
+    registry_record = _DOCUMENT_STORE.get(
         owner_id=principal.owner_id,
         doc_id=doc_id,
     )
+    if not vector_exists and registry_record is None:
+        raise HTTPException(status_code=404, detail="Document not found.")
+    if vector_exists:
+        await run_in_threadpool(
+            rag.delete_document,
+            owner_id=principal.owner_id,
+            doc_id=doc_id,
+        )
     record = await run_in_threadpool(
         _DOCUMENT_STORE.delete,
         owner_id=principal.owner_id,
         doc_id=doc_id,
     )
-    _safe_unlink_upload(str((record or {}).get("source_path") or ""))
+    _safe_unlink_upload(str((record or registry_record or {}).get("source_path") or ""))
     return {"status": "deleted", "doc_id": doc_id}
 
 
