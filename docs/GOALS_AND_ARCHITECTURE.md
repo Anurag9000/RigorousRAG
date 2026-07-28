@@ -17,8 +17,10 @@ The system does not claim that:
 - a citation marker proves semantic entailment;
 - role-prompted model analyses are independent experiments or reviewers;
 - best-effort regular-expression masking guarantees anonymization;
+- OCR reproduces every character, table, formula, or layout correctly;
 - visual, comparison, conflict, protocol, or limitation tools replace expert review;
-- a preprint and a peer-reviewed article have equivalent evidentiary status.
+- a preprint and a peer-reviewed article have equivalent evidentiary status;
+- the built-in single-host executor is a distributed exactly-once queue.
 
 ## Core goals
 
@@ -44,17 +46,38 @@ The system does not claim that:
 - Optional HyDE and multi-query expansion with request budgets.
 - Explicit document-ID filtering.
 - Owner-scoped document listing and deletion.
+- Evidence-only vector metadata: no filesystem paths or private queue state.
 
 ### Ingestion
 
 - File-size, extension, and content-signature validation.
 - PDF, DOCX, Markdown, and plain-text extraction.
-- Sorted PDF text, page provenance, basic table extraction, and explicit OCR-required errors for image-only documents.
-- Complete masking pass over full text and every section.
+- Sorted native PDF text, page provenance, basic table extraction, and optional bounded OCR of low-text pages.
+- OCR page-count, resolution, and per-page timeout controls.
+- Complete masking pass over native text, OCR text, titles, metadata, summaries, and every section.
 - Safe serialization that excludes local storage paths.
 - Shared CLI/API ingestion and indexing service.
 - Beginning/middle/end sampling for optional two-sentence summaries.
-- Deletion of original uploads by default; optional declared retention for later figure inspection.
+- Stable owner-content identities and retry-safe vector replacement.
+
+### Source-file lifecycle
+
+- Random owner-scoped upload names.
+- A private SQLite document registry keyed by owner and document ID.
+- Filesystem paths held only in the registry, not Chroma or API output.
+- Configurable source retention for later visual inspection.
+- Safe source replacement after successful re-ingestion.
+- Document deletion removes vectors, registry state, and any retained source under `UPLOAD_DIR`.
+
+### Durable jobs
+
+- SQLite-backed queued, processing, success, and failed states.
+- Owner-scoped public status with private source paths excluded.
+- Atomic claim transition so only one worker/process can claim a queued job.
+- Bounded worker pool and retry-attempt ceiling.
+- Startup reconciliation for interrupted jobs whose source remains valid.
+- Explicit failure for missing, exhausted, or out-of-root recovery sources.
+- Expiry of completed/failed status records.
 
 ### Agent and provenance
 
@@ -71,6 +94,7 @@ The system does not claim that:
 ### Scientific-analysis tools
 
 - Figure checks based on an exact caption-adjacent rendered region.
+- Owner/document source resolution through the private registry.
 - Conservative protocol extraction that does not invent absent details.
 - Advocate, skeptic, and judge analyses in which the judge receives the original evidence.
 - Cross-paper comparisons and matrices that stop when any required document lacks evidence.
@@ -83,7 +107,7 @@ The system does not claim that:
 - FastAPI request validation and public health/config endpoints.
 - API-key-to-owner mapping for authenticated deployments.
 - Random owner-scoped upload storage names and bounded streaming.
-- Owner-scoped jobs with expiry.
+- Owner-scoped durable jobs and document records.
 - Browser interface without external JavaScript/font dependencies.
 - DOM construction through text nodes and a constrained local Markdown renderer.
 - Session-only conversation history and API-key storage.
@@ -98,14 +122,17 @@ graph TD
     CLI[Agent / ingestion CLIs] --> Services[Application services]
     API --> Identity[API key to Principal]
     API --> Agent[Request-scoped SearchAgent]
-    API --> Ingestion[DocumentService]
+    API --> Queue[SQLite ingestion queue]
+    Queue --> Workers[Bounded workers / atomic claims]
+    Workers --> Parser[Validated parsing + optional OCR + masking]
+    Parser --> Vector[Owner-scoped Chroma RAG]
+    Parser --> Registry[Private source registry]
     Agent --> Evidence[Server evidence registry]
     Agent --> Classic[Classic academic index]
-    Agent --> Vector[Owner-scoped Chroma RAG]
+    Agent --> Vector
     Agent --> Web[Serper search / safe page fetch]
     Agent --> Integrity[Scientific-analysis tools]
-    Ingestion --> Parser[Validated parsing and masking]
-    Parser --> Vector
+    Integrity --> Registry
     Classic --> Crawler[Safe allowed-domain crawler]
     Classic --> Sparse[TF-IDF index]
     Classic --> Rank[PageRank]
@@ -117,28 +144,34 @@ graph TD
 - Browser input is untrusted.
 - API keys identify principals; owner headers do not.
 - Uploaded files are untrusted binary input.
+- OCR output is untrusted extracted text.
 - Web URLs and redirect targets are untrusted network destinations.
 - Retrieved text is untrusted model context.
 - Model output is untrusted prose and cannot define authoritative citations or tenant scope.
-- Chroma metadata and local paths are server-side data and are never accepted from a model.
+- Chroma contains evidence metadata, not private source paths.
+- Source paths and queued-job internals remain private server-side state.
 
 ## Data lifecycle
 
 1. The service receives a bounded supported file under a random owner-scoped storage name.
-2. The parser validates the content signature and extracts text/sections.
-3. Every text representation is masked.
-4. A stable owner-and-content document ID is computed.
-5. Redacted semantic sections are indexed with deterministic child IDs.
-6. The original upload is deleted unless retention is explicitly enabled.
-7. Retrieval always includes the authenticated owner's filter.
-8. Document deletion removes vector chunks and any retained original within the configured upload root.
+2. A durable owner-scoped `queued` job records its private source path.
+3. One worker atomically claims the job.
+4. The parser validates the content signature and extracts native text, tables, and optional OCR text.
+5. Every text and metadata representation is masked.
+6. A stable owner-and-content document ID is computed.
+7. Redacted semantic sections are indexed with deterministic child IDs.
+8. The private registry records the retained source, or records no source when retention is disabled.
+9. The job becomes success only after indexing and registry handling finish.
+10. Retrieval always includes the authenticated owner's filter.
+11. Document deletion removes vector chunks, registry state, and any retained source.
+12. Startup reconciliation requeues interrupted jobs when their source and retry budget remain valid.
 
 ## Verification philosophy
 
 Tests target invariants rather than private implementation methods. The required clean-clone checks are:
 
 - Python bytecode compilation;
-- contract tests for identity, SSRF, upload bounds, masking, RAG ownership, provenance, scientific fail-closed behavior, ranking, storage, and frontend safety;
+- contract tests for identity, SSRF, upload bounds, masking, OCR, durable claims, recovery, source-registry isolation, RAG ownership, provenance, scientific fail-closed behavior, ranking, storage, and frontend safety;
 - coverage reporting with an explicit baseline;
 - container image build.
 
