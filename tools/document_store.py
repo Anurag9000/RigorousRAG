@@ -19,6 +19,7 @@ from typing import Any, Dict, List, Optional, Set
 
 from tools.privacy import mask_metadata_text
 from tools.security import DEFAULT_MAX_UPLOAD_BYTES, normalize_owner_id
+from tools.upload_storage import copy_path_to_owner, remove_owner_file
 
 
 class DocumentStore:
@@ -222,54 +223,19 @@ class DocumentStore:
         source_path: str | Path,
         max_bytes: int = DEFAULT_MAX_UPLOAD_BYTES,
     ) -> Path:
-        """Copy a regular external source into a bounded random owner-scoped path."""
+        """Copy a regular external source into descriptor-anchored owner storage."""
 
-        owner = normalize_owner_id(owner_id)
-        limit = int(max_bytes)
-        if limit <= 0:
-            raise ValueError("max_bytes must be positive.")
-        raw_source = Path(source_path)
-        if raw_source.is_symlink():
-            raise ValueError("Source files may not be symbolic links.")
-        source = raw_source.resolve()
-        if not source.exists() or not source.is_file():
-            raise ValueError("Source file does not exist.")
-        if source.stat().st_size > limit:
-            raise ValueError(f"Source file exceeds the {limit}-byte retention limit.")
-        suffix = source.suffix.lower()
-        if suffix not in {".pdf", ".docx", ".txt", ".md"}:
-            raise ValueError("Unsupported source-file suffix.")
-        owner_dir = self.upload_root / owner
-        owner_dir.mkdir(parents=True, exist_ok=True)
-        destination = owner_dir / f"{uuid.uuid4().hex}{suffix}"
-        total = 0
-        try:
-            with source.open("rb") as input_handle, destination.open("xb") as output_handle:
-                while True:
-                    chunk = input_handle.read(64 * 1024)
-                    if not chunk:
-                        break
-                    total += len(chunk)
-                    if total > limit:
-                        raise ValueError(
-                            f"Source file exceeds the {limit}-byte retention limit."
-                        )
-                    output_handle.write(chunk)
-                output_handle.flush()
-                os.fsync(output_handle.fileno())
-        except Exception:
-            destination.unlink(missing_ok=True)
-            raise
-        return destination.resolve()
+        return copy_path_to_owner(
+            source_path,
+            upload_root=self.upload_root,
+            owner_id=owner_id,
+            max_bytes=max_bytes,
+        )
 
     def remove_source(self, source_path: str | Path | None) -> bool:
-        """Remove one retained regular file without following a symlink."""
+        """Remove one retained owner file through descriptor-relative lookup."""
 
-        candidate = self._resolve_source_path(source_path)
-        if candidate is None:
-            return False
-        candidate.unlink(missing_ok=True)
-        return True
+        return remove_owner_file(self.upload_root, source_path)
 
     def retained_source_paths(self) -> Set[Path]:
         """Return valid retained paths used to protect files during orphan sweeping."""
@@ -346,7 +312,8 @@ class DocumentStore:
                     continue
                 if raw_path.stat().st_mtime >= cutoff:
                     continue
-                raw_path.unlink()
+                if not self.remove_source(raw_path):
+                    raise OSError("Descriptor-relative orphan deletion was refused.")
                 deleted += 1
             except (OSError, ValueError) as exc:
                 self.last_cleanup_errors.append(
