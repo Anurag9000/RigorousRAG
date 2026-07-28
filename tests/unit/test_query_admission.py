@@ -21,7 +21,7 @@ def server_module(monkeypatch, tmp_path):
     monkeypatch.setenv("DEFAULT_MODEL", "test-model")
     monkeypatch.setenv("QUERY_WORKERS", "1")
     monkeypatch.setenv("QUERY_MAX_PENDING", "1")
-    monkeypatch.setenv("QUERY_TIMEOUT_SECONDS", "0.03")
+    monkeypatch.setenv("QUERY_TIMEOUT_SECONDS", "1")
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
     sys.modules.pop("server", None)
@@ -61,6 +61,7 @@ def test_timed_out_query_retains_capacity_until_worker_finishes(
 ):
     started = threading.Event()
     release = threading.Event()
+    monkeypatch.setattr(server_module, "QUERY_TIMEOUT_SECONDS", 0.03)
 
     class BlockingAgent:
         def run(self, _query):
