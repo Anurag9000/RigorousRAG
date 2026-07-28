@@ -128,14 +128,14 @@ def _normalise_entry(citation: Dict[str, Any]) -> tuple[str, Dict[str, str]]:
 def export_to_bibtex(citations: Iterable[Dict[str, Any]]) -> str:
     entries: List[str] = []
     used_keys: set[str] = set()
-    for index, raw in enumerate(citations):
-        if index >= 100:
+    for raw in citations:
+        if len(entries) >= 100:
             break
         if not isinstance(raw, dict):
             continue
         citation = dict(raw)
         entry_type, fields = _normalise_entry(citation)
-        key = _citation_key(citation, index)
+        key = _citation_key(citation, len(entries))
         base_key = key
         suffix = 2
         while key in used_keys:
