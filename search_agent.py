@@ -84,7 +84,15 @@ _MAX_EVIDENCE_SOURCES = max(
     1,
     min(int(os.getenv("MAX_EVIDENCE_SOURCES", "100")), 500),
 )
+_MAX_CONCURRENT_TOOL_WORKERS = max(
+    1,
+    min(int(os.getenv("MAX_CONCURRENT_TOOL_WORKERS", "32")), 256),
+)
 _MAX_FINAL_ANSWER_CHARS = 100_000
+_TOOL_EXECUTOR = ThreadPoolExecutor(
+    max_workers=_MAX_CONCURRENT_TOOL_WORKERS,
+    thread_name_prefix="rigorousrag-tool",
+)
 
 SYSTEM_PROMPT = """You are RigorousRAG, an evidence-oriented academic research agent.
 
@@ -124,6 +132,8 @@ def _safe_failure_text(error_type: str) -> str:
         return "Tool arguments were invalid. Treat this tool result as unavailable."
     if error_type == "TimeoutError":
         return "Tool execution timed out. Treat this tool result as unavailable."
+    if error_type == "ExecutorUnavailable":
+        return "Tool capacity is unavailable. Treat this tool result as unavailable."
     return "Tool execution failed. Treat this tool result as unavailable."
 
 
@@ -153,7 +163,10 @@ def _validate_schema_value(value: Any, schema: Mapping[str, Any], path: str, dep
         if not isinstance(value, str):
             raise ValueError(f"{path} must be a string.")
         minimum = int(schema.get("minLength", 0))
-        maximum = min(int(schema.get("maxLength", _MAX_TOOL_ARGUMENT_CHARS)), _MAX_TOOL_ARGUMENT_CHARS)
+        maximum = min(
+            int(schema.get("maxLength", _MAX_TOOL_ARGUMENT_CHARS)),
+            _MAX_TOOL_ARGUMENT_CHARS,
+        )
         if not minimum <= len(value) <= maximum:
             raise ValueError(f"{path} must contain between {minimum} and {maximum} characters.")
         if "enum" in schema and value not in schema["enum"]:
@@ -442,13 +455,23 @@ class SearchAgent:
     def _execute_tools(self, tool_calls: Sequence[Any]) -> List[ToolExecution]:
         if not tool_calls:
             return []
-        pool = ThreadPoolExecutor(max_workers=min(len(tool_calls), 8))
         future_map: Dict[Future[ToolExecution], Tuple[int, Any]] = {}
-        try:
-            for index, call in enumerate(tool_calls):
-                future_map[pool.submit(self._execute_tool, call)] = (index, call)
+        executions: List[Optional[ToolExecution]] = [None] * len(tool_calls)
+        for index, call in enumerate(tool_calls):
+            try:
+                future = _TOOL_EXECUTOR.submit(self._execute_tool, call)
+            except RuntimeError:
+                executions[index] = ToolExecution(
+                    tool_call_id=call.id,
+                    tool_name=call.function.name,
+                    content=_safe_failure_text("ExecutorUnavailable"),
+                    success=False,
+                    error_type="ExecutorUnavailable",
+                )
+                continue
+            future_map[future] = (index, call)
+        if future_map:
             done, pending = wait(list(future_map), timeout=self.tool_timeout)
-            executions: List[Optional[ToolExecution]] = [None] * len(tool_calls)
             for future in done:
                 index, call = future_map[future]
                 try:
@@ -473,15 +496,15 @@ class SearchAgent:
                     error_type="TimeoutError",
                     duration=self.tool_timeout,
                 )
-            return [execution for execution in executions if execution is not None]
-        finally:
-            pool.shutdown(wait=False, cancel_futures=True)
+        return [execution for execution in executions if execution is not None]
 
     def _execute_tool(self, tool_call: Any) -> ToolExecution:
         started = time.monotonic()
         name = str(tool_call.function.name or "")
         try:
             raw_arguments = tool_call.function.arguments or "{}"
+            if not isinstance(raw_arguments, str):
+                raise TypeError("Tool arguments must be JSON text.")
             if len(raw_arguments) > _MAX_TOOL_ARGUMENT_CHARS:
                 raise ValueError("Tool arguments exceed the server limit.")
             arguments = json.loads(raw_arguments)
@@ -611,8 +634,6 @@ class SearchAgent:
     ) -> List[Citation]:
         selected: List[Citation] = []
         for citation in incoming:
-            if len(registry) >= _MAX_EVIDENCE_SOURCES:
-                break
             key = (
                 citation.source_id or citation.url,
                 citation.doc_id or "",
@@ -620,7 +641,14 @@ class SearchAgent:
             )
             existing_label = seen.get(key)
             if existing_label:
-                selected.append(next(item for item in registry if item.label == existing_label))
+                existing = next(
+                    (item for item in registry if item.label == existing_label),
+                    None,
+                )
+                if existing is not None:
+                    selected.append(existing)
+                continue
+            if len(registry) >= _MAX_EVIDENCE_SOURCES:
                 continue
             copy = citation.model_copy(deep=True)
             copy.label = f"[{len(registry) + 1}]"
