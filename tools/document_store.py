@@ -1,12 +1,13 @@
-"""Truthful retained-source capability boundary.
+"""Truthful and path-safe retained-source registry boundary.
 
-The complete SQLite registry implementation remains in ``document_store_legacy``.
-This module narrows only the public verification flags: a source is "verified" only
-when the requested byte-identity and PDF-safety checks actually pass.
+The complete SQLite implementation remains in ``document_store_legacy``. This module
+makes verification flags truthful and prevents registry/upload roots from being
+silently redirected through final-path symbolic links.
 """
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -16,8 +17,40 @@ from tools import document_store_legacy as _implementation
 _original_document_store = _implementation.DocumentStore
 
 
+def _lexical_absolute(path: str | Path) -> Path:
+    candidate = Path(path)
+    if not candidate.is_absolute():
+        candidate = Path.cwd() / candidate
+    return Path(os.path.abspath(candidate))
+
+
 class DocumentStore(_original_document_store):
-    """Registry whose verification flags distinguish attempted from successful checks."""
+    """Registry with truthful visual flags and non-symlinked storage roots."""
+
+    def __init__(
+        self,
+        path: str | Path | None = None,
+        upload_root: str | Path | None = None,
+    ) -> None:
+        raw_path = Path(path or os.getenv("DOCUMENT_DB_PATH", "data/documents.sqlite3"))
+        raw_root = Path(upload_root or os.getenv("UPLOAD_DIR", "uploads"))
+        if raw_path.is_symlink():
+            raise ValueError("DOCUMENT_DB_PATH may not be a symbolic link.")
+        if raw_root.is_symlink():
+            raise ValueError("UPLOAD_DIR may not be a symbolic link.")
+        super().__init__(
+            path=_lexical_absolute(raw_path),
+            upload_root=_lexical_absolute(raw_root),
+        )
+        if self.path.is_symlink():
+            raise ValueError("DOCUMENT_DB_PATH may not be a symbolic link.")
+        if self.upload_root.is_symlink():
+            raise ValueError("UPLOAD_DIR may not be a symbolic link.")
+
+    def _connect(self):
+        if self.path.is_symlink():
+            raise ValueError("DOCUMENT_DB_PATH became a symbolic link.")
+        return super()._connect()
 
     def get(
         self,
@@ -46,6 +79,28 @@ class DocumentStore(_original_document_store):
         return record
 
 
+def get_document_store(
+    path: str | Path | None = None,
+    upload_root: str | Path | None = None,
+) -> DocumentStore:
+    raw_path = Path(path or os.getenv("DOCUMENT_DB_PATH", "data/documents.sqlite3"))
+    raw_root = Path(upload_root or os.getenv("UPLOAD_DIR", "uploads"))
+    if raw_path.is_symlink():
+        raise ValueError("DOCUMENT_DB_PATH may not be a symbolic link.")
+    if raw_root.is_symlink():
+        raise ValueError("UPLOAD_DIR may not be a symbolic link.")
+    resolved_path = str(_lexical_absolute(raw_path))
+    resolved_root = str(_lexical_absolute(raw_root))
+    key = (resolved_path, resolved_root)
+    with _implementation._DOCUMENT_STORE_LOCK:
+        store = _implementation._DOCUMENT_STORES.get(key)
+        if store is None or not isinstance(store, DocumentStore):
+            store = DocumentStore(resolved_path, resolved_root)
+            _implementation._DOCUMENT_STORES[key] = store
+        return store
+
+
 _implementation.DocumentStore = DocumentStore
+_implementation.get_document_store = get_document_store
 _implementation.__doc__ = __doc__
 sys.modules[__name__] = _implementation
