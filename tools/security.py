@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import ipaddress
 import json
+import math
 import os
 import re
 import socket
@@ -69,9 +70,6 @@ _SENSITIVE_REDIRECT_HEADERS = {
     "x-api-key",
     "api-key",
 }
-# requests.Session.trust_env is mutable process state on the session object. Calls
-# sharing an injected session must not restore proxy inheritance while another call
-# is still following redirects. Owned per-call sessions do not use this lock.
 _INJECTED_SESSION_ENV_LOCK = threading.RLock()
 
 
