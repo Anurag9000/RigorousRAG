@@ -1,3 +1,6 @@
+import fitz
+
+import tools.ingestion as ingestion
 from tools.ingestion import _chunk_text_semantically, ingest_file, redact_text
 from tools.ingestion_models import DocumentSection, IngestedDocument
 
@@ -50,6 +53,46 @@ def test_document_id_is_content_and_owner_stable(tmp_path):
     assert first.id == second.id
     assert first.id != other_owner.id
     assert first.metadata["content_sha256"] == second.metadata["content_sha256"]
+
+
+def test_scanned_pdf_uses_ocr_then_redacts_and_preserves_page(monkeypatch, tmp_path):
+    path = tmp_path / "scan.pdf"
+    pdf = fitz.open()
+    pdf.new_page().draw_rect(fitz.Rect(50, 50, 300, 300))
+    pdf.save(path)
+    pdf.close()
+
+    monkeypatch.setattr(ingestion, "_ENABLE_OCR", True)
+    monkeypatch.setattr(
+        ingestion,
+        "_ocr_page",
+        lambda _page, page_number: (
+            "Scanned methods. Contact alice@example.com."
+            if page_number == 1
+            else ""
+        ),
+    )
+    result = ingest_file(str(path), owner_id="alice")
+    assert result.success and result.document is not None
+    document = result.document
+    assert "alice@example.com" not in document.text
+    assert "[REDACTED_EMAIL]" in document.text
+    assert document.sections[0].page_number == 1
+    assert document.metadata["ocr_page_count"] == 1
+    assert document.metadata["ocr_pages"] == "1"
+
+
+def test_image_only_pdf_fails_explicitly_when_ocr_disabled(monkeypatch, tmp_path):
+    path = tmp_path / "scan.pdf"
+    pdf = fitz.open()
+    pdf.new_page().draw_rect(fitz.Rect(50, 50, 300, 300))
+    pdf.save(path)
+    pdf.close()
+
+    monkeypatch.setattr(ingestion, "_ENABLE_OCR", False)
+    result = ingest_file(str(path), owner_id="alice")
+    assert not result.success
+    assert "enable_ocr" in (result.error or "").lower()
 
 
 def test_semantic_chunks_enforce_maximum_even_for_long_sentence():
