@@ -8,16 +8,15 @@ source file used by visual tools.
 from __future__ import annotations
 
 import os
-import shutil
 import sqlite3
 import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Set
 
 from tools.privacy import mask_metadata_text
-from tools.security import normalize_owner_id
+from tools.security import DEFAULT_MAX_UPLOAD_BYTES, normalize_owner_id
 
 
 class DocumentStore:
@@ -84,25 +83,48 @@ class DocumentStore:
             raise ValueError("Retained source file does not exist.")
         return str(candidate)
 
-    def copy_source(self, *, owner_id: str, source_path: str | Path) -> Path:
-        """Copy a regular external source into a random owner-scoped retained path."""
+    def copy_source(
+        self,
+        *,
+        owner_id: str,
+        source_path: str | Path,
+        max_bytes: int = DEFAULT_MAX_UPLOAD_BYTES,
+    ) -> Path:
+        """Copy a regular external source into a bounded random owner-scoped path."""
 
         owner = normalize_owner_id(owner_id)
+        limit = int(max_bytes)
+        if limit <= 0:
+            raise ValueError("max_bytes must be positive.")
         raw_source = Path(source_path)
         if raw_source.is_symlink():
             raise ValueError("Source files may not be symbolic links.")
         source = raw_source.resolve()
         if not source.exists() or not source.is_file():
             raise ValueError("Source file does not exist.")
+        if source.stat().st_size > limit:
+            raise ValueError(f"Source file exceeds the {limit}-byte retention limit.")
         suffix = source.suffix.lower()
         if suffix not in {".pdf", ".docx", ".txt", ".md"}:
             raise ValueError("Unsupported source-file suffix.")
         owner_dir = self.upload_root / owner
         owner_dir.mkdir(parents=True, exist_ok=True)
         destination = owner_dir / f"{uuid.uuid4().hex}{suffix}"
+        total = 0
         try:
             with source.open("rb") as input_handle, destination.open("xb") as output_handle:
-                shutil.copyfileobj(input_handle, output_handle, length=64 * 1024)
+                while True:
+                    chunk = input_handle.read(64 * 1024)
+                    if not chunk:
+                        break
+                    total += len(chunk)
+                    if total > limit:
+                        raise ValueError(
+                            f"Source file exceeds the {limit}-byte retention limit."
+                        )
+                    output_handle.write(chunk)
+                output_handle.flush()
+                os.fsync(output_handle.fileno())
         except Exception:
             destination.unlink(missing_ok=True)
             raise
@@ -125,6 +147,30 @@ class DocumentStore:
             return False
         candidate.unlink(missing_ok=True)
         return True
+
+    def retained_source_paths(self) -> Set[Path]:
+        """Return valid retained paths used to protect files during orphan sweeping."""
+
+        with self._lock, self._connect() as connection:
+            rows = connection.execute(
+                "SELECT source_path FROM documents "
+                "WHERE source_retained=1 AND source_path IS NOT NULL"
+            ).fetchall()
+        paths: Set[Path] = set()
+        for row in rows:
+            raw_path = str(row["source_path"] or "")
+            if not raw_path:
+                continue
+            unresolved = Path(raw_path)
+            if unresolved.is_symlink():
+                continue
+            candidate = unresolved.resolve()
+            try:
+                candidate.relative_to(self.upload_root)
+            except ValueError:
+                continue
+            paths.add(candidate)
+        return paths
 
     def register(
         self,
