@@ -46,7 +46,8 @@ The server derives tenant identity from this mapping. `X-Owner-ID` is intentiona
 - Registry reads dynamically validate that a retained path still names a regular non-symlink file inside `UPLOAD_DIR`; missing or invalid files downgrade to text-only capability.
 - Ordinary document listing performs only cheap retained-file/PDF eligibility checks. Full visual verification runs on demand.
 - Before a retained PDF is returned to a visual tool, the registry re-hashes its current bytes and verifies that owner plus SHA-256 still derives the registered `doc_id`. Host-side mutation therefore makes the source visually unavailable while keeping it retained, protected, and deletable.
-- `VISUAL_MAX_PDF_PAGES`, `VISUAL_MAX_RENDER_PIXELS`, `VISUAL_MAX_ENCODED_BYTES`, and `VISUAL_CLIP_HEIGHT_POINTS` fail closed on excessive page count, caption-region geometry, actual rendered pixels, or exact base64 image payload length.
+- `VISUAL_MAX_PDF_PAGES`, `VISUAL_MAX_RENDER_PIXELS`, and `VISUAL_MAX_ENCODED_BYTES` fail closed on excessive page count, renderer geometry, actual rendered pixels, or exact base64 image payload length.
+- Before pixmap allocation, the registry evaluates the renderer’s fixed worst-case 565-point caption clip at 2× scale; this safety geometry is not operator-reducible.
 - Re-ingestion registers the new source before deleting the previous retained file.
 - `DELETE /docs/{doc_id}` removes vectors, registry state, and the retained file.
 - Old unreferenced regular uploads are removed only after a grace period. Active-job, retained-document, recent, and symlink paths are protected. Reconciliation fails closed if either reference store cannot be read.
@@ -98,7 +99,7 @@ This is crash recovery for one shared host/filesystem/database. It is not a dist
 - Deterministic chunk IDs make normal re-ingestion idempotent.
 - Replacement captures the previous chunks before writing the new generation.
 - If any upsert or stale-delete batch fails, the vector layer removes new-only chunks and restores the previous generation. Incomplete compensation becomes an explicit error.
-- Total retrieval backend failure raises an unavailable error rather than being represented as an empty evidence result.
+- Total retrieval backend failure raises unavailable rather than being represented as an empty evidence result.
 - Document listing paginates chunks until it reaches the requested number of distinct documents or a configured scan ceiling.
 
 Chroma is not a cross-database transaction participant with SQLite. Compensating restoration substantially reduces mixed-generation states but cannot provide a formal distributed transaction guarantee.
