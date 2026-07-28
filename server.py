@@ -1,639 +1,41 @@
-"""FastAPI service with request-scoped identity and durable ingestion."""
+"""Compatibility entrypoint over the FastAPI service implementation.
+
+`server_app` preserves the complete route/application implementation. This shim
+replaces only parser-facing ingestion so queued uploads are consumed from immutable,
+descriptor-anchored byte snapshots rather than reopened owner pathnames.
+"""
 
 from __future__ import annotations
 
-import argparse
-import asyncio
-import json
-import math
 import os
-import re
-import threading
-import time
-import uuid
-from concurrent.futures import Future, ThreadPoolExecutor
-from contextlib import asynccontextmanager
+import sys
 from pathlib import Path
-from typing import Any, AsyncIterator, BinaryIO, Callable, Dict, Optional, TypeVar
+from typing import Optional
 
 import uvicorn
-from fastapi import Depends, FastAPI, File, Header, HTTPException, Request, UploadFile
-from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
-from starlette.concurrency import run_in_threadpool
 
-from search_agent import SearchAgent
-from tools.bib import export_to_bibtex
-from tools.bounded_pool import BoundedExecutor
-from tools.document_service import index_document
-from tools.document_store import DocumentStore, get_document_store
-from tools.due_scheduler import DueScheduler
-from tools.ingestion import ingest_file
-from tools.integrity import check_visual_entailment, extract_protocol
-from tools.job_store import JobStore
-from tools.models import AgentAnswer
-from tools.privacy import mask_metadata_text
-from tools.rag import get_rag_layer
-from tools.rate_limit import SlidingWindowRateLimiter
-from tools.request_limits import RequestBodyLimitMiddleware
-from tools.security import (
-    DEFAULT_MAX_UPLOAD_BYTES,
-    Principal,
-    generated_upload_name,
-    normalize_owner_id,
-    parse_api_key_owners,
-)
-from tools.upload_storage import UploadStorageError, remove_owner_file, store_owner_stream
-
-T = TypeVar("T")
-
-UPLOAD_DIR = Path(os.getenv("UPLOAD_DIR", "uploads")).resolve()
-UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-RETAIN_SOURCE_FILES = os.getenv(
-    "RETAIN_SOURCE_FILES", os.getenv("RETAIN_UPLOADS", "true")
-).lower() in {"1", "true", "yes"}
-JOB_TTL_SECONDS = int(os.getenv("JOB_TTL_SECONDS", str(24 * 60 * 60)))
-REQUESTS_PER_MINUTE = int(os.getenv("REQUESTS_PER_MINUTE", "60"))
-QUERY_WORKERS = max(1, min(int(os.getenv("QUERY_WORKERS", "8")), 64))
-QUERY_MAX_PENDING = max(
-    QUERY_WORKERS,
-    min(int(os.getenv("QUERY_MAX_PENDING", "32")), 1000),
-)
-QUERY_TIMEOUT_SECONDS = max(
-    1.0,
-    min(float(os.getenv("QUERY_TIMEOUT_SECONDS", "120")), 900.0),
-)
-INGEST_WORKERS = max(1, min(int(os.getenv("INGEST_WORKERS", "2")), 16))
-INGEST_MAX_ATTEMPTS = max(1, min(int(os.getenv("INGEST_MAX_ATTEMPTS", "3")), 20))
-INGEST_MAX_PENDING = max(
-    INGEST_WORKERS,
-    min(int(os.getenv("INGEST_MAX_PENDING", "64")), 10_000),
-)
-INGEST_ADMISSION_RETRY_SECONDS = max(
-    0.1,
-    min(float(os.getenv("INGEST_ADMISSION_RETRY_SECONDS", "1")), 60.0),
-)
-MAX_REQUEST_BODY_BYTES = max(
-    DEFAULT_MAX_UPLOAD_BYTES,
-    min(
-        int(
-            os.getenv(
-                "MAX_REQUEST_BODY_BYTES",
-                str(DEFAULT_MAX_UPLOAD_BYTES + 1_048_576),
-            )
-        ),
-        1_000_000_000,
-    ),
-)
-_JOB_STORE = JobStore(ttl_seconds=JOB_TTL_SECONDS)
-_DOCUMENT_STORE: DocumentStore = get_document_store(upload_root=UPLOAD_DIR)
-_RATE_LIMITER = SlidingWindowRateLimiter(REQUESTS_PER_MINUTE)
-_QUERY_EXECUTOR = BoundedExecutor(
-    max_workers=QUERY_WORKERS,
-    max_pending=QUERY_MAX_PENDING,
-    thread_name_prefix="rigorousrag-query",
-)
-_INGEST_EXECUTOR = ThreadPoolExecutor(
-    max_workers=INGEST_WORKERS,
-    thread_name_prefix="rigorousrag-ingest",
-)
-_INGEST_ADMISSION = threading.BoundedSemaphore(INGEST_MAX_PENDING)
-_INGEST_FUTURES: set[Future[Any]] = set()
-_INGEST_FUTURES_LOCK = threading.Lock()
-_INGEST_SCHEDULER = DueScheduler(name="rigorousrag-ingest-delay")
-_INGEST_SHUTDOWN = threading.Event()
-_REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
-
-_parser = argparse.ArgumentParser(add_help=False)
-_parser.add_argument("--local", action="store_true")
-_parser.add_argument("--demo", action="store_true")
-_args, _unknown = _parser.parse_known_args()
-
-if _args.demo:
-    _DEFAULT_MODEL = "qwen2.5:0.5b"
-    _BASE_URL = "http://localhost:11434/v1"
-    _PROVIDER_KEY = "ollama"
-elif _args.local:
-    _DEFAULT_MODEL = "llama3.1"
-    _BASE_URL = "http://localhost:11434/v1"
-    _PROVIDER_KEY = "ollama"
-else:
-    _DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "gpt-4o")
-    _BASE_URL = os.getenv("OPENAI_BASE_URL")
-    _PROVIDER_KEY = os.getenv("OPENAI_API_KEY")
-
-_ALLOWED_MODELS = {
-    value.strip()
-    for value in os.getenv("ALLOWED_MODELS", _DEFAULT_MODEL).split(",")
-    if value.strip()
-}
-_ALLOWED_MODELS.add(_DEFAULT_MODEL)
-_API_KEY_OWNERS = parse_api_key_owners()
-_SINGLE_USER_OWNER = normalize_owner_id(os.getenv("SINGLE_USER_OWNER_ID", "default_user"))
-
-
-def _new_agent(owner_id: str, model: Optional[str] = None) -> SearchAgent:
-    selected = model or _DEFAULT_MODEL
-    if selected not in _ALLOWED_MODELS:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Model '{selected[:200]}' is not enabled by the server.",
-        )
-    return SearchAgent(
-        model=selected,
-        owner_id=owner_id,
-        api_key=_PROVIDER_KEY,
-        base_url=_BASE_URL,
-        request_timeout=min(QUERY_TIMEOUT_SECONDS, 300.0),
-    )
-
-
-def _bounded_identifier(value: str, label: str, max_length: int = 200) -> str:
-    identifier = (value or "").strip()
-    if not identifier or len(identifier) > max_length:
-        raise HTTPException(
-            status_code=400,
-            detail=f"{label} must contain between 1 and {max_length} characters.",
-        )
-    return identifier
-
-
-def _safe_request_id(raw_value: Optional[str]) -> str:
-    candidate = (raw_value or "").strip()
-    return candidate if _REQUEST_ID_RE.fullmatch(candidate) else uuid.uuid4().hex
-
-
-def _internal_failure_message(prefix: str, exc: BaseException) -> str:
-    return f"{prefix} ({type(exc).__name__})."
-
-
-async def _run_research_task(
-    function: Callable[..., T],
-    *args: Any,
-    **kwargs: Any,
-) -> T:
-    """Run one expensive research operation under shared admission and deadline."""
-
-    future = _QUERY_EXECUTOR.submit(function, *args, **kwargs)
-    if future is None:
-        raise HTTPException(
-            status_code=503,
-            detail="The research executor is at capacity.",
-            headers={"Retry-After": "1"},
-        )
-    try:
-        return await asyncio.wait_for(
-            asyncio.wrap_future(future),
-            timeout=QUERY_TIMEOUT_SECONDS,
-        )
-    except asyncio.TimeoutError as exc:
-        raise HTTPException(
-            status_code=504,
-            detail="The research operation exceeded the server time limit.",
-        ) from exc
+import server_app as _implementation
+from tools.ingestion_snapshot import materialize_ingestion_snapshot
+from tools.upload_storage import UploadStorageError, validated_owner_file_path
 
 
 def _validated_upload_file(path: str | Path | None) -> Optional[Path]:
-    """Return a regular, non-symlink file contained by UPLOAD_DIR."""
+    """Return one current regular owner file through anchored validation."""
 
-    if path in (None, ""):
-        return None
-    raw_path = Path(path)
-    if raw_path.is_symlink():
-        return None
-    candidate = raw_path.resolve()
-    try:
-        candidate.relative_to(UPLOAD_DIR)
-    except ValueError:
-        return None
-    if not candidate.exists() or not candidate.is_file():
-        return None
-    return candidate
+    return validated_owner_file_path(_implementation.UPLOAD_DIR, path)
 
 
-def _safe_unlink_upload(path: str | Path | None) -> bool:
-    """Delete one owner-scoped regular upload through descriptor-relative lookup."""
-
-    return remove_owner_file(UPLOAD_DIR, path)
-
-
-def _persist_failed_job(
-    job_id: str,
-    owner_id: str,
-    display_name: str,
-    path: str | Path | None,
-    message: str,
-) -> bool:
-    """Persist failure before removing its source; preserve the file if persistence fails."""
-
-    try:
-        _JOB_STORE.update(
-            job_id,
-            owner_id,
-            status="failed",
-            filename=display_name,
-            source_path="",
-            message=message[:2000],
-        )
-    except Exception:
-        return False
-    _safe_unlink_upload(path)
-    return True
-
-
-def _forget_future(future: Future[Any]) -> None:
-    with _INGEST_FUTURES_LOCK:
-        _INGEST_FUTURES.discard(future)
-    _INGEST_ADMISSION.release()
-
-
-def _release_scheduled_ingestion(
+def process_ingestion(
     file_path: str,
     display_name: str,
     job_id: str,
     owner_id: str,
 ) -> None:
-    if not _INGEST_SHUTDOWN.is_set():
-        _submit_ingestion(file_path, display_name, job_id, owner_id)
+    """Claim and process one job from an immutable anchored upload snapshot."""
 
-
-def _schedule_ingestion_attempt(
-    file_path: str,
-    display_name: str,
-    job_id: str,
-    owner_id: str,
-    due_at: float,
-) -> None:
-    if _INGEST_SHUTDOWN.is_set():
-        return
-    _INGEST_SCHEDULER.schedule(
-        job_id,
-        due_at,
-        _release_scheduled_ingestion,
-        file_path,
-        display_name,
-        job_id,
-        owner_id,
-    )
-
-
-def _submit_ingestion(
-    file_path: str,
-    display_name: str,
-    job_id: str,
-    owner_id: str,
-) -> None:
-    """Schedule a delayed job or admit one due job to the bounded executor."""
-
-    if _INGEST_SHUTDOWN.is_set():
-        return
-    try:
-        internal = _JOB_STORE.get_internal(job_id, owner_id)
-    except Exception:
-        return
-    if not internal or str(internal.get("status") or "") != "queued":
-        _INGEST_SCHEDULER.cancel(job_id)
-        return
-    due_at = float(internal.get("next_attempt_at") or 0.0)
-    now = time.time()
-    if due_at > now:
-        _schedule_ingestion_attempt(
-            file_path,
-            display_name,
-            job_id,
-            owner_id,
-            due_at,
-        )
-        return
-
-    _INGEST_SCHEDULER.cancel(job_id)
-    if not _INGEST_ADMISSION.acquire(blocking=False):
-        _schedule_ingestion_attempt(
-            file_path,
-            display_name,
-            job_id,
-            owner_id,
-            now + INGEST_ADMISSION_RETRY_SECONDS,
-        )
-        return
-    try:
-        future = _INGEST_EXECUTOR.submit(
-            process_ingestion,
-            file_path,
-            display_name,
-            job_id,
-            owner_id,
-        )
-    except Exception:
-        _INGEST_ADMISSION.release()
-        _schedule_ingestion_attempt(
-            file_path,
-            display_name,
-            job_id,
-            owner_id,
-            time.time() + INGEST_ADMISSION_RETRY_SECONDS,
-        )
-        return
-    with _INGEST_FUTURES_LOCK:
-        _INGEST_FUTURES.add(future)
-    future.add_done_callback(_forget_future)
-
-
-def _cancel_scheduled_ingestions() -> None:
-    _INGEST_SHUTDOWN.set()
-    _INGEST_SCHEDULER.shutdown(wait=True)
-
-
-def _recover_interrupted_jobs() -> None:
-    for record in _JOB_STORE.recoverable():
-        job_id = str(record["job_id"])
-        owner_id = str(record["owner_id"])
-        display_name = str(record.get("filename") or "upload")
-        doc_id = str(record.get("doc_id") or "")
-        source_path = str(record.get("source_path") or "")
-        attempts = int(record.get("attempts") or 0)
-        registry_record = (
-            _DOCUMENT_STORE.get(owner_id=owner_id, doc_id=doc_id)
-            if doc_id
-            else None
-        )
-        if registry_record is not None:
-            retained_path = str(registry_record.get("source_path") or "")
-            try:
-                _JOB_STORE.update(
-                    job_id,
-                    owner_id,
-                    status="success",
-                    filename=display_name,
-                    source_path=retained_path,
-                    message="Recovered completed document finalization after restart.",
-                    doc_id=doc_id,
-                )
-            except Exception:
-                continue
-            if not bool(registry_record.get("source_retained")):
-                _safe_unlink_upload(source_path)
-            continue
-        candidate = _validated_upload_file(source_path)
-        if attempts >= INGEST_MAX_ATTEMPTS:
-            _persist_failed_job(
-                job_id,
-                owner_id,
-                display_name,
-                source_path,
-                "Interrupted ingestion exhausted its retry limit.",
-            )
-            continue
-        if candidate is None:
-            _persist_failed_job(
-                job_id,
-                owner_id,
-                display_name,
-                source_path,
-                (
-                    "Interrupted ingestion could not resume because its source file "
-                    "was missing, invalid, symlinked, or outside UPLOAD_DIR."
-                ),
-            )
-            continue
-        try:
-            _JOB_STORE.update(
-                job_id,
-                owner_id,
-                status="queued",
-                filename=display_name,
-                source_path=str(candidate),
-                message="Recovered after service restart.",
-                doc_id=doc_id or None,
-            )
-        except Exception:
-            continue
-        _submit_ingestion(str(candidate), display_name, job_id, owner_id)
-
-
-@asynccontextmanager
-async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
-    _INGEST_SHUTDOWN.clear()
-    await run_in_threadpool(_recover_interrupted_jobs)
-    yield
-    _cancel_scheduled_ingestions()
-    _INGEST_EXECUTOR.shutdown(wait=False, cancel_futures=True)
-    _QUERY_EXECUTOR.shutdown(wait=False, cancel_futures=True)
-
-
-app = FastAPI(title="RigorousRAG API", version="4.4.0", lifespan=lifespan)
-app.add_middleware(RequestBodyLimitMiddleware, max_bytes=MAX_REQUEST_BODY_BYTES)
-
-
-@app.middleware("http")
-async def security_headers(request: Request, call_next):
-    request_id = _safe_request_id(request.headers.get("X-Request-ID"))
-    response = await call_next(request)
-    response.headers["X-Request-ID"] = request_id
-    response.headers["X-Content-Type-Options"] = "nosniff"
-    response.headers["X-Frame-Options"] = "DENY"
-    response.headers["Referrer-Policy"] = "no-referrer"
-    response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
-    response.headers["Content-Security-Policy"] = (
-        "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
-        "img-src 'self' data:; connect-src 'self'; font-src 'self'; object-src 'none'; "
-        "base-uri 'self'; frame-ancestors 'none'; form-action 'self'"
-    )
-    if request.url.path.startswith(("/query", "/ingest", "/status", "/docs", "/tool")):
-        response.headers["Cache-Control"] = "no-store"
-    return response
-
-
-async def get_principal(
-    x_api_key: Optional[str] = Header(default=None, alias="X-API-Key"),
-) -> Principal:
-    if not _API_KEY_OWNERS:
-        return Principal(owner_id=_SINGLE_USER_OWNER, authenticated=False)
-    owner_id = _API_KEY_OWNERS.get(x_api_key or "")
-    if not owner_id:
-        raise HTTPException(status_code=401, detail="Invalid or missing API key.")
-    return Principal(owner_id=owner_id, authenticated=True)
-
-
-async def get_rate_limited_principal(
-    principal: Principal = Depends(get_principal),
-) -> Principal:
-    retry_after = _RATE_LIMITER.retry_after(principal.owner_id)
-    if retry_after > 0:
-        raise HTTPException(
-            status_code=429,
-            detail="Rate limit exceeded.",
-            headers={"Retry-After": str(max(1, math.ceil(retry_after)))},
-        )
-    return principal
-
-
-class QueryRequest(BaseModel):
-    query: str = Field(..., min_length=1, max_length=20_000)
-    model: Optional[str] = Field(default=None, max_length=200)
-
-
-class JobStatus(BaseModel):
-    job_id: str = Field(..., min_length=1, max_length=200)
-    status: str = Field(..., min_length=1, max_length=64)
-    filename: str = Field(..., min_length=1, max_length=500)
-    message: Optional[str] = Field(default=None, max_length=2000)
-    doc_id: Optional[str] = Field(default=None, max_length=200)
-
-
-class VisualEntailmentRequest(BaseModel):
-    claim_text: str = Field(..., min_length=1, max_length=10_000)
-    figure_id: str = Field(..., min_length=1, max_length=200)
-    doc_id: str = Field(..., min_length=1, max_length=200)
-
-
-class ProtocolRequest(BaseModel):
-    text: str = Field(..., min_length=1, max_length=30_000)
-    doc_id: Optional[str] = Field(default="", max_length=200)
-
-
-class BibTeXRequest(BaseModel):
-    title: str = Field(..., min_length=1, max_length=1000)
-    authors: Optional[str] = Field(default="", max_length=3000)
-    year: Optional[int] = Field(default=None, ge=1000, le=9999)
-    doi: Optional[str] = Field(default="", max_length=500)
-    journal: Optional[str] = Field(default="", max_length=1000)
-    entry_type: str = Field(default="article", max_length=50)
-
-
-@app.get("/health")
-async def health() -> Dict[str, Any]:
-    return {"status": "ok", "version": app.version}
-
-
-@app.get("/config")
-async def public_config() -> Dict[str, Any]:
-    return {
-        "auth_required": bool(_API_KEY_OWNERS),
-        "allowed_models": sorted(_ALLOWED_MODELS),
-        "default_model": _DEFAULT_MODEL,
-        "max_upload_bytes": DEFAULT_MAX_UPLOAD_BYTES,
-        "max_request_body_bytes": MAX_REQUEST_BODY_BYTES,
-        "retain_source_files": RETAIN_SOURCE_FILES,
-        "retain_uploads": RETAIN_SOURCE_FILES,
-        "requests_per_minute": REQUESTS_PER_MINUTE,
-        "query_workers": QUERY_WORKERS,
-        "query_max_pending": QUERY_MAX_PENDING,
-        "query_timeout_seconds": QUERY_TIMEOUT_SECONDS,
-        "ingest_workers": INGEST_WORKERS,
-        "ingest_max_pending": INGEST_MAX_PENDING,
-        "ingest_max_attempts": INGEST_MAX_ATTEMPTS,
-        "ingest_retry_base_seconds": _JOB_STORE.retry_base_seconds,
-        "ingest_retry_max_seconds": _JOB_STORE.retry_max_seconds,
-        "visual_max_pdf_pages": _DOCUMENT_STORE.visual_max_pdf_pages,
-        "visual_max_render_pixels": _DOCUMENT_STORE.visual_max_render_pixels,
-    }
-
-
-@app.post("/query", response_model=AgentAnswer)
-async def run_query(
-    request: QueryRequest,
-    principal: Principal = Depends(get_rate_limited_principal),
-) -> AgentAnswer:
-    agent = _new_agent(principal.owner_id, request.model)
-    return await _run_research_task(agent.run, request.query)
-
-
-def _save_upload_stream(source: BinaryIO, owner_id: str, suffix: str) -> Path:
-    """Copy one parsed upload through a descriptor-anchored owner directory."""
-
-    try:
-        return store_owner_stream(
-            source,
-            upload_root=UPLOAD_DIR,
-            owner_id=owner_id,
-            suffix=suffix,
-            max_bytes=DEFAULT_MAX_UPLOAD_BYTES,
-        )
-    except UploadStorageError as exc:
-        if "exceeds" in str(exc).lower():
-            raise HTTPException(
-                status_code=413,
-                detail=f"Upload exceeds the {DEFAULT_MAX_UPLOAD_BYTES}-byte limit.",
-            ) from exc
-        raise RuntimeError("Owner upload storage rejected the destination.") from exc
-
-
-async def _save_upload(file: UploadFile, owner_id: str, suffix: str) -> Path:
-    try:
-        return await run_in_threadpool(
-            _save_upload_stream,
-            file.file,
-            owner_id,
-            suffix,
-        )
-    finally:
-        await file.close()
-
-
-@app.post("/ingest", response_model=JobStatus)
-async def ingest_document(
-    file: UploadFile = File(...),
-    principal: Principal = Depends(get_rate_limited_principal),
-) -> JobStatus:
-    suffix = generated_upload_name(file.filename)
-    try:
-        destination = await _save_upload(file, principal.owner_id, suffix)
-    except HTTPException:
-        raise
-    except Exception as exc:
-        raise HTTPException(
-            status_code=503,
-            detail="Upload storage is unavailable.",
-        ) from exc
-    job_id = f"job_{uuid.uuid4().hex}"
-    display_name = mask_metadata_text(
-        Path(file.filename or f"upload{suffix}").name
-    )[:500] or f"upload{suffix}"
-    try:
-        await run_in_threadpool(
-            _JOB_STORE.update,
-            job_id,
-            principal.owner_id,
-            status="queued",
-            filename=display_name,
-            source_path=str(destination),
-            message="Waiting for an ingestion worker.",
-        )
-    except Exception as exc:
-        await run_in_threadpool(_safe_unlink_upload, destination)
-        raise HTTPException(
-            status_code=503,
-            detail="The ingestion queue is unavailable.",
-        ) from exc
-    await run_in_threadpool(
-        _submit_ingestion,
-        str(destination),
-        display_name,
-        job_id,
-        principal.owner_id,
-    )
-    return JobStatus(job_id=job_id, status="queued", filename=display_name)
-
-
-@app.get("/status/{job_id}", response_model=JobStatus)
-async def get_job_status(
-    job_id: str,
-    principal: Principal = Depends(get_principal),
-) -> JobStatus:
-    identifier = _bounded_identifier(job_id, "job_id")
-    entry = await run_in_threadpool(_JOB_STORE.get, identifier, principal.owner_id)
-    if not entry:
-        raise HTTPException(status_code=404, detail="Job not found.")
-    return JobStatus(**entry)
-
-
-def process_ingestion(file_path: str, display_name: str, job_id: str, owner_id: str) -> None:
-    """Claim and process one job; only the winning worker owns source cleanup."""
-
-    path = _validated_upload_file(file_path)
+    path = _implementation._validated_upload_file(file_path)
     if path is None:
-        _persist_failed_job(
+        _implementation._persist_failed_job(
             job_id,
             owner_id,
             display_name,
@@ -641,242 +43,166 @@ def process_ingestion(file_path: str, display_name: str, job_id: str, owner_id: 
             "The ingestion source was missing, invalid, symlinked, or outside UPLOAD_DIR.",
         )
         return
-    if not _JOB_STORE.claim(job_id, owner_id, INGEST_MAX_ATTEMPTS):
+    if not _implementation._JOB_STORE.claim(
+        job_id,
+        owner_id,
+        _implementation.INGEST_MAX_ATTEMPTS,
+    ):
         return
 
-    result = ingest_file(str(path), owner_id=owner_id)
-    if not result.success or result.document is None:
-        _persist_failed_job(
-            job_id,
-            owner_id,
-            display_name,
-            path,
-            result.error or "Document ingestion failed.",
-        )
-        return
-
-    document = result.document
-    document.filename = display_name
-    keep_source = True
     try:
-        agent = _new_agent(owner_id)
-        indexed = index_document(
-            document,
-            owner_id=owner_id,
-            rag=get_rag_layer(),
-            client=agent.client,
-            job_id=job_id,
+        snapshot_context = materialize_ingestion_snapshot(
+            upload_root=_implementation.UPLOAD_DIR,
+            source_path=path,
+            max_bytes=_implementation.DEFAULT_MAX_UPLOAD_BYTES,
         )
-        _JOB_STORE.update(
-            job_id,
-            owner_id,
-            status="finalizing",
-            filename=display_name,
-            source_path=str(path),
-            message="Vector indexing completed; finalizing source lifecycle.",
-            doc_id=document.id,
-        )
-        retained_path = str(path) if RETAIN_SOURCE_FILES else None
-        previous_path = _DOCUMENT_STORE.register(
-            owner_id=owner_id,
-            doc_id=document.id,
-            filename=document.filename,
-            mime_type=document.mime_type,
-            source_path=retained_path,
-        )
-        registry_record = _DOCUMENT_STORE.get(owner_id=owner_id, doc_id=document.id) or {}
-        keep_source = bool(registry_record.get("source_retained"))
-        if previous_path:
-            _safe_unlink_upload(previous_path)
-        _JOB_STORE.update(
-            job_id,
-            owner_id,
-            status="success",
-            filename=display_name,
-            source_path=str(registry_record.get("source_path") or ""),
-            message=f"Indexed {indexed.chunk_count} semantic chunks.",
-            doc_id=document.id,
-        )
-    except Exception as exc:
-        registry_record = _DOCUMENT_STORE.get(owner_id=owner_id, doc_id=document.id)
-        if registry_record is not None:
-            retained_path = str(registry_record.get("source_path") or "")
-            try:
-                _JOB_STORE.update(
-                    job_id,
-                    owner_id,
-                    status="success",
-                    filename=display_name,
-                    source_path=retained_path,
-                    message="Recovered completed document finalization.",
-                    doc_id=document.id,
-                )
-                keep_source = bool(registry_record.get("source_retained"))
-            except Exception:
-                keep_source = True
-        else:
-            internal = _JOB_STORE.get_internal(job_id, owner_id) or {}
-            attempts = int(internal.get("attempts") or 0)
-            if attempts < INGEST_MAX_ATTEMPTS:
-                keep_source = True
-                try:
-                    _JOB_STORE.update(
-                        job_id,
-                        owner_id,
-                        status="queued",
-                        filename=display_name,
-                        source_path=str(path),
-                        message=_internal_failure_message(
-                            "Transient ingestion failure; retry queued", exc
-                        ),
-                        doc_id=document.id,
-                    )
-                    _submit_ingestion(str(path), display_name, job_id, owner_id)
-                except Exception:
-                    pass
-            else:
-                if not _persist_failed_job(
+        with snapshot_context as (snapshot_path, _snapshot_bytes):
+            result = _implementation.ingest_file(
+                str(snapshot_path),
+                owner_id=owner_id,
+            )
+            if not result.success or result.document is None:
+                _implementation._persist_failed_job(
                     job_id,
                     owner_id,
                     display_name,
                     path,
-                    _internal_failure_message("Ingestion failed", exc),
-                ):
-                    keep_source = True
-    finally:
-        if not keep_source:
-            _safe_unlink_upload(path)
+                    result.error or "Document ingestion failed.",
+                )
+                return
 
-
-def _list_documents_for_owner(owner_id: str) -> list[Dict[str, Any]]:
-    """Perform vector initialization, scanning, and registry joins off the event loop."""
-
-    documents = get_rag_layer().list_documents(owner_id=owner_id, limit=1000)
-    for document in documents:
-        record = _DOCUMENT_STORE.get(
-            owner_id=owner_id,
-            doc_id=str(document.get("doc_id") or ""),
+            document = result.document
+            document.filename = display_name
+            keep_source = True
+            try:
+                agent = _implementation._new_agent(owner_id)
+                indexed = _implementation.index_document(
+                    document,
+                    owner_id=owner_id,
+                    rag=_implementation.get_rag_layer(),
+                    client=agent.client,
+                    job_id=job_id,
+                )
+                _implementation._JOB_STORE.update(
+                    job_id,
+                    owner_id,
+                    status="finalizing",
+                    filename=display_name,
+                    source_path=str(path),
+                    message="Vector indexing completed; finalizing source lifecycle.",
+                    doc_id=document.id,
+                )
+                retained_path = str(path) if _implementation.RETAIN_SOURCE_FILES else None
+                previous_path = _implementation._DOCUMENT_STORE.register(
+                    owner_id=owner_id,
+                    doc_id=document.id,
+                    filename=document.filename,
+                    mime_type=document.mime_type,
+                    source_path=retained_path,
+                )
+                registry_record = _implementation._DOCUMENT_STORE.get(
+                    owner_id=owner_id,
+                    doc_id=document.id,
+                ) or {}
+                keep_source = bool(registry_record.get("source_retained"))
+                if previous_path:
+                    _implementation._safe_unlink_upload(previous_path)
+                _implementation._JOB_STORE.update(
+                    job_id,
+                    owner_id,
+                    status="success",
+                    filename=display_name,
+                    source_path=str(registry_record.get("source_path") or ""),
+                    message=f"Indexed {indexed.chunk_count} semantic chunks.",
+                    doc_id=document.id,
+                )
+            except Exception as exc:
+                registry_record = _implementation._DOCUMENT_STORE.get(
+                    owner_id=owner_id,
+                    doc_id=document.id,
+                )
+                if registry_record is not None:
+                    retained_path = str(registry_record.get("source_path") or "")
+                    try:
+                        _implementation._JOB_STORE.update(
+                            job_id,
+                            owner_id,
+                            status="success",
+                            filename=display_name,
+                            source_path=retained_path,
+                            message="Recovered completed document finalization.",
+                            doc_id=document.id,
+                        )
+                        keep_source = bool(registry_record.get("source_retained"))
+                    except Exception:
+                        keep_source = True
+                else:
+                    internal = _implementation._JOB_STORE.get_internal(
+                        job_id,
+                        owner_id,
+                    ) or {}
+                    attempts = int(internal.get("attempts") or 0)
+                    if attempts < _implementation.INGEST_MAX_ATTEMPTS:
+                        keep_source = True
+                        try:
+                            _implementation._JOB_STORE.update(
+                                job_id,
+                                owner_id,
+                                status="queued",
+                                filename=display_name,
+                                source_path=str(path),
+                                message=_implementation._internal_failure_message(
+                                    "Transient ingestion failure; retry queued",
+                                    exc,
+                                ),
+                                doc_id=document.id,
+                            )
+                            _implementation._submit_ingestion(
+                                str(path),
+                                display_name,
+                                job_id,
+                                owner_id,
+                            )
+                        except Exception:
+                            pass
+                    else:
+                        if not _implementation._persist_failed_job(
+                            job_id,
+                            owner_id,
+                            display_name,
+                            path,
+                            _implementation._internal_failure_message(
+                                "Ingestion failed",
+                                exc,
+                            ),
+                        ):
+                            keep_source = True
+            finally:
+                if not keep_source:
+                    _implementation._safe_unlink_upload(path)
+    except UploadStorageError as exc:
+        _implementation._persist_failed_job(
+            job_id,
+            owner_id,
+            display_name,
+            path,
+            _implementation._internal_failure_message(
+                "The ingestion source could not be snapshotted",
+                exc,
+            ),
         )
-        document["source_retained"] = bool((record or {}).get("source_retained"))
-        document["visual_source_available"] = bool(
-            (record or {}).get("visual_source_available")
-        )
-        document["visual_source_verified"] = bool(
-            (record or {}).get("visual_source_verified")
-        )
-    return documents
 
 
-def _delete_document_for_owner(owner_id: str, document_id: str) -> bool:
-    """Delete vectors, registry state, and retained bytes in one worker operation."""
-
-    rag = get_rag_layer()
-    results = rag.collection.get(
-        where={
-            "$and": [
-                {"owner_id": {"$eq": owner_id}},
-                {"doc_id": {"$eq": document_id}},
-            ]
-        },
-        include=["metadatas"],
-        limit=1,
-    )
-    vector_exists = bool(results.get("metadatas") or [])
-    registry_record = _DOCUMENT_STORE.get(
-        owner_id=owner_id,
-        doc_id=document_id,
-    )
-    if not vector_exists and registry_record is None:
-        return False
-    if vector_exists:
-        rag.delete_document(owner_id=owner_id, doc_id=document_id)
-    record = _DOCUMENT_STORE.delete(owner_id=owner_id, doc_id=document_id)
-    _safe_unlink_upload(str((record or registry_record or {}).get("source_path") or ""))
-    return True
-
-
-@app.get("/docs/list")
-async def list_documents(
-    principal: Principal = Depends(get_rate_limited_principal),
-) -> list[Dict[str, Any]]:
-    return await _run_research_task(_list_documents_for_owner, principal.owner_id)
-
-
-@app.delete("/docs/{doc_id}")
-async def delete_document(
-    doc_id: str,
-    principal: Principal = Depends(get_rate_limited_principal),
-) -> Dict[str, str]:
-    document_id = _bounded_identifier(doc_id, "doc_id")
-    deleted = await _run_research_task(
-        _delete_document_for_owner,
-        principal.owner_id,
-        document_id,
-    )
-    if not deleted:
-        raise HTTPException(status_code=404, detail="Document not found.")
-    return {"status": "deleted", "doc_id": document_id}
-
-
-@app.post("/tool/visual-entailment")
-async def direct_visual_entailment(
-    request: VisualEntailmentRequest,
-    principal: Principal = Depends(get_rate_limited_principal),
-) -> Dict[str, Any]:
-    agent = _new_agent(principal.owner_id)
-    raw = await _run_research_task(
-        check_visual_entailment,
-        request.claim_text,
-        request.figure_id,
-        request.doc_id,
-        owner_id=principal.owner_id,
-        client=agent.client,
-        model=agent.model,
-    )
-    return json.loads(raw)
-
-
-@app.post("/tool/protocol")
-async def direct_extract_protocol(
-    request: ProtocolRequest,
-    principal: Principal = Depends(get_rate_limited_principal),
-) -> Dict[str, Any]:
-    agent = _new_agent(principal.owner_id)
-    raw = await _run_research_task(
-        extract_protocol,
-        request.text,
-        request.doc_id or "",
-        client=agent.client,
-        model=agent.model,
-    )
-    return json.loads(raw)
-
-
-@app.post("/tool/bibtex")
-async def direct_bibtex(
-    request: BibTeXRequest,
-    _principal: Principal = Depends(get_rate_limited_principal),
-) -> Dict[str, str]:
-    return {
-        "bibtex": export_to_bibtex(citations=[{
-            "entry_type": request.entry_type,
-            "title": request.title,
-            "authors": request.authors or "Unknown",
-            "year": str(request.year) if request.year else "n.d.",
-            "doi": request.doi or "",
-            "url": f"https://doi.org/{request.doi}" if request.doi else "",
-            "journal": request.journal or "",
-        }])
-    }
-
-
-app.mount("/", StaticFiles(directory="frontend", html=True), name="static")
-
+_implementation._validated_upload_file = _validated_upload_file
+_implementation.process_ingestion = process_ingestion
+_implementation.__doc__ = __doc__
 
 if __name__ == "__main__":
     uvicorn.run(
-        "server:app",
+        _implementation.app,
         host=os.getenv("HOST", "0.0.0.0"),
         port=int(os.getenv("PORT", "8000")),
         reload=False,
     )
+else:
+    sys.modules[__name__] = _implementation
