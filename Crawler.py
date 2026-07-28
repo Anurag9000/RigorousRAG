@@ -177,6 +177,17 @@ class AcademicCrawler:
             canonical_url = normalize_url(page.url) or current_url
             if not is_trusted_domain(canonical_url, self.allowed_domains):
                 continue
+            # Redirect targets are independent crawl identities. Mark them attempted so
+            # a queued canonical target cannot be fetched again in the same run.
+            visited.add(canonical_url)
+            if canonical_url in pages:
+                continue
+            # The original URL's quota and robots result cannot authorize a different
+            # canonical target. Recheck both at the final owner/host/path boundary.
+            if not self._under_domain_quota(canonical_url, domain_counts):
+                continue
+            if canonical_url != current_url and not self._is_allowed_by_robots(canonical_url):
+                continue
             pages[canonical_url] = page
             graph.setdefault(canonical_url, set())
             hostname = _hostname(canonical_url)
