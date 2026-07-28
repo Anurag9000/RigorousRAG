@@ -40,5 +40,8 @@ def test_frontend_understands_durable_jobs_and_visual_source_capability():
     for state in ("queued", "processing", "finalizing", "success", "failed"):
         assert f"{state}:" in script
     assert "source_retained" in script
+    assert "visual_source_available" in script
     assert "Text evidence only" in script
+    assert "Visual PDF eligible; identity and limits verified on use" in script
     assert "Figure tool" in script
+    assert "figureButton.disabled = !visualEligible" in script
