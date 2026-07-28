@@ -10,14 +10,14 @@ import re
 import statistics
 import uuid
 import zipfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import docx
 import fitz
 
 from tools.ingestion_models import DocumentSection, IngestedDocument, IngestionResult
-from tools.security import DEFAULT_MAX_UPLOAD_BYTES
+from tools.security import DEFAULT_MAX_UPLOAD_BYTES, normalize_owner_id
 
 try:
     import pytesseract
@@ -34,6 +34,27 @@ _OCR_MAX_PAGES = max(1, min(int(os.getenv("OCR_MAX_PAGES", "50")), 500))
 _OCR_DPI = max(100, min(int(os.getenv("OCR_DPI", "200")), 400))
 _OCR_TIMEOUT_SECONDS = max(1, min(int(os.getenv("OCR_TIMEOUT_SECONDS", "30")), 300))
 _OCR_MIN_TEXT_CHARS = max(0, min(int(os.getenv("OCR_MIN_TEXT_CHARS", "40")), 2000))
+_MAX_PDF_PAGES = max(1, min(int(os.getenv("MAX_PDF_PAGES", "2000")), 10_000))
+_MAX_PDF_RENDER_PIXELS = max(
+    1_000_000,
+    min(int(os.getenv("MAX_PDF_RENDER_PIXELS", "40000000")), 250_000_000),
+)
+_MAX_EXTRACTED_CHARS = max(
+    100_000,
+    min(int(os.getenv("MAX_EXTRACTED_CHARS", "5000000")), 50_000_000),
+)
+_MAX_DOCX_MEMBERS = max(10, min(int(os.getenv("MAX_DOCX_MEMBERS", "10000")), 100_000))
+_MAX_DOCX_UNCOMPRESSED_BYTES = max(
+    DEFAULT_MAX_UPLOAD_BYTES,
+    min(
+        int(os.getenv("MAX_DOCX_UNCOMPRESSED_BYTES", "200000000")),
+        2_000_000_000,
+    ),
+)
+_MAX_DOCX_COMPRESSION_RATIO = max(
+    10.0,
+    min(float(os.getenv("MAX_DOCX_COMPRESSION_RATIO", "1000")), 100_000.0),
+)
 _EMAIL_RE = re.compile(r"(?<![\w.+-])[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}(?![\w.-])")
 _PHONE_RE = re.compile(r"(?<!\w)(?:\+?\d{1,3}[\s().-]*)?(?:\d[\s().-]*){7,14}\d(?!\w)")
 _ADDRESS_RE = re.compile(
@@ -55,6 +76,10 @@ _SENTENCE_BOUNDARY_RE = re.compile(r"(?<=[.!?])\s+")
 
 class OCRUnavailableError(RuntimeError):
     """Raised when OCR was explicitly enabled but its runtime is unavailable."""
+
+
+class IngestionLimitError(ValueError):
+    """Raised when a document exceeds a configured parser-complexity budget."""
 
 
 def detect_mime_type(file_path: str) -> str:
@@ -191,7 +216,57 @@ def _chunk_text_semantically(text: str, max_chars: int = 1500) -> List[str]:
     return chunks
 
 
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _validate_docx_archive(path: Path) -> None:
+    try:
+        with zipfile.ZipFile(path) as archive:
+            infos = archive.infolist()
+            if len(infos) > _MAX_DOCX_MEMBERS:
+                raise IngestionLimitError(
+                    f"The DOCX contains more than {_MAX_DOCX_MEMBERS} archive members."
+                )
+            names = [info.filename for info in infos]
+            if len(names) != len(set(names)):
+                raise ValueError("The DOCX package contains duplicate archive members.")
+            required = {"[Content_Types].xml", "word/document.xml"}
+            if not required.issubset(set(names)):
+                raise ValueError("The DOCX package is missing required document members.")
+            total_uncompressed = 0
+            total_compressed = 0
+            for info in infos:
+                member = PurePosixPath(info.filename)
+                if member.is_absolute() or ".." in member.parts:
+                    raise ValueError("The DOCX package contains an unsafe archive path.")
+                mode = (info.external_attr >> 16) & 0o170000
+                if mode == 0o120000:
+                    raise ValueError("The DOCX package contains a symbolic-link member.")
+                if info.flag_bits & 0x1:
+                    raise ValueError("Encrypted DOCX archive members are not supported.")
+                total_uncompressed += max(0, int(info.file_size))
+                total_compressed += max(0, int(info.compress_size))
+                if total_uncompressed > _MAX_DOCX_UNCOMPRESSED_BYTES:
+                    raise IngestionLimitError(
+                        "The DOCX uncompressed content exceeds the configured limit."
+                    )
+            ratio = total_uncompressed / max(total_compressed, 1)
+            if ratio > _MAX_DOCX_COMPRESSION_RATIO:
+                raise IngestionLimitError(
+                    "The DOCX compression ratio exceeds the configured safety limit."
+                )
+    except zipfile.BadZipFile as exc:
+        raise ValueError("The DOCX package is malformed.") from exc
+
+
 def _validate_file(path: Path) -> str:
+    if path.is_symlink():
+        raise ValueError("Symbolic-link input files are not supported.")
     if not path.exists() or not path.is_file():
         raise ValueError("The requested input file does not exist.")
     size = path.stat().st_size
@@ -207,19 +282,15 @@ def _validate_file(path: Path) -> str:
             f"Unsupported file type '{suffix or 'none'}'. "
             f"Allowed: {', '.join(sorted(_ALLOWED_SUFFIXES))}."
         )
-    prefix = path.read_bytes()[:8]
+    with path.open("rb") as handle:
+        prefix = handle.read(4096)
     if suffix == ".pdf" and not prefix.startswith(b"%PDF-"):
         raise ValueError("The file extension is .pdf but the content is not a PDF.")
     if suffix == ".docx":
         if not prefix.startswith(b"PK"):
             raise ValueError("The file extension is .docx but the content is not a ZIP package.")
-        try:
-            with zipfile.ZipFile(path) as archive:
-                if "word/document.xml" not in archive.namelist():
-                    raise ValueError("The DOCX package does not contain word/document.xml.")
-        except zipfile.BadZipFile as exc:
-            raise ValueError("The DOCX package is malformed.") from exc
-    if suffix in {".txt", ".md"} and b"\x00" in path.read_bytes()[:4096]:
+        _validate_docx_archive(path)
+    if suffix in {".txt", ".md"} and b"\x00" in prefix:
         raise ValueError("The text file appears to contain binary data.")
     return detect_mime_type(str(path))
 
@@ -277,6 +348,12 @@ def _ocr_page(page: fitz.Page, page_number: int) -> str:
         raise OCRUnavailableError(
             "OCR is enabled but Pillow/pytesseract is unavailable. Install OCR dependencies."
         )
+    width_pixels = max(1.0, float(page.rect.width) * _OCR_DPI / 72.0)
+    height_pixels = max(1.0, float(page.rect.height) * _OCR_DPI / 72.0)
+    if width_pixels * height_pixels > _MAX_PDF_RENDER_PIXELS:
+        raise IngestionLimitError(
+            f"PDF page {page_number} exceeds the configured OCR render-pixel limit."
+        )
     pixmap = page.get_pixmap(dpi=_OCR_DPI, alpha=False)
     try:
         with Image.open(io.BytesIO(pixmap.tobytes("png"))) as image:
@@ -296,10 +373,13 @@ def _ocr_page(page: fitz.Page, page_number: int) -> str:
 def _extract_sections_from_pdf(
     document: fitz.Document,
 ) -> Tuple[List[DocumentSection], Dict[str, List[int]]]:
-    page_payloads: List[
-        Tuple[int, str, List[Tuple[str, float, bool]], bool]
-    ] = []
+    if len(document) > _MAX_PDF_PAGES:
+        raise IngestionLimitError(
+            f"The PDF contains more than the configured {_MAX_PDF_PAGES}-page limit."
+        )
+    page_payloads: List[Tuple[int, str, List[Tuple[str, float, bool]], bool]] = []
     all_sizes: List[float] = []
+    extracted_chars = 0
     ocr_stats: Dict[str, List[int]] = {
         "attempted": [],
         "successful": [],
@@ -332,8 +412,11 @@ def _extract_sections_from_pdf(
                     ocr_stats["empty"].append(page_number)
         tables = _extract_tables_from_page(page) if not used_ocr else []
         if tables:
-            text = f"{text}\n\n" + "\n\n".join(
-                f"[TABLE]\n{table}" for table in tables
+            text = f"{text}\n\n" + "\n\n".join(f"[TABLE]\n{table}" for table in tables)
+        extracted_chars += len(text)
+        if extracted_chars > _MAX_EXTRACTED_CHARS:
+            raise IngestionLimitError(
+                "PDF extraction exceeded the configured text-character limit."
             )
         candidates = _page_heading_candidates(page) if not used_ocr else []
         all_sizes.extend(size for _, size, _ in candidates if size > 0)
@@ -350,10 +433,9 @@ def _extract_sections_from_pdf(
             for text, size, bold in candidates:
                 if median_size and (
                     (bold and size >= median_size) or size >= median_size * 1.25
-                ):
-                    if 3 <= len(text) <= 180:
-                        heading = text
-                        break
+                ) and 3 <= len(text) <= 180:
+                    heading = text
+                    break
         sections.append(
             DocumentSection(
                 title=heading[:500],
@@ -372,10 +454,7 @@ def _ingest_pdf(path: Path) -> IngestionResult:
     try:
         document = fitz.open(path)
     except Exception as exc:
-        return IngestionResult(
-            success=False,
-            error=f"Could not open PDF: {type(exc).__name__}.",
-        )
+        return IngestionResult(success=False, error=f"Could not open PDF: {type(exc).__name__}.")
     try:
         if document.needs_pass:
             return IngestionResult(success=False, error="Encrypted PDFs are not supported.")
@@ -412,6 +491,7 @@ def _ingest_pdf(path: Path) -> IngestionResult:
             warnings.append("Some low-text pages were skipped after the OCR attempt limit.")
         safe_metadata.update(
             {
+                "page_count": len(document),
                 "ocr_enabled": _ENABLE_OCR,
                 "ocr_attempted_count": len(ocr_stats["attempted"]),
                 "ocr_attempted_pages": _csv_pages(ocr_stats["attempted"]),
@@ -436,7 +516,7 @@ def _ingest_pdf(path: Path) -> IngestionResult:
                 metadata=safe_metadata,
             ),
         )
-    except OCRUnavailableError as exc:
+    except (OCRUnavailableError, IngestionLimitError) as exc:
         return IngestionResult(success=False, error=str(exc))
     except Exception as exc:
         return IngestionResult(
@@ -450,67 +530,83 @@ def _ingest_pdf(path: Path) -> IngestionResult:
 def _ingest_docx(path: Path) -> IngestionResult:
     try:
         document = docx.Document(str(path))
+        sections: List[DocumentSection] = []
+        current_title = "Document"
+        current_lines: List[str] = []
+        extracted_chars = 0
+
+        def add_chars(value: str) -> None:
+            nonlocal extracted_chars
+            extracted_chars += len(value)
+            if extracted_chars > _MAX_EXTRACTED_CHARS:
+                raise IngestionLimitError(
+                    "DOCX extraction exceeded the configured text-character limit."
+                )
+
+        def flush() -> None:
+            nonlocal current_lines
+            content = "\n".join(line for line in current_lines if line.strip()).strip()
+            if content:
+                sections.append(DocumentSection(title=current_title[:500], content=content))
+            current_lines = []
+
+        for paragraph in document.paragraphs:
+            text = paragraph.text.strip()
+            if not text:
+                continue
+            add_chars(text)
+            style_name = str(getattr(paragraph.style, "name", "") or "")
+            if style_name.lower().startswith("heading"):
+                flush()
+                current_title = text
+            else:
+                current_lines.append(text)
+        flush()
+        for table_index, table in enumerate(document.tables, start=1):
+            rows = ["\t".join(cell.text.strip() for cell in row.cells) for row in table.rows]
+            table_text = "\n".join(row for row in rows if row.strip()).strip()
+            if table_text:
+                add_chars(table_text)
+                sections.append(
+                    DocumentSection(title=f"Table {table_index}", content=table_text)
+                )
+        text = "\n\n".join(section.content for section in sections).strip()
+        if not text:
+            return IngestionResult(success=False, error="The DOCX contains no extractable text.")
+        properties = document.core_properties
+        metadata: Dict[str, Any] = {}
+        for key in ("author", "subject", "keywords", "comments", "category"):
+            value = getattr(properties, key, None)
+            if value:
+                metadata[key] = str(value)
+        title = str(getattr(properties, "title", "") or "").strip() or None
+        return IngestionResult(
+            success=True,
+            document=IngestedDocument(
+                id="pending",
+                filename=path.name,
+                file_path=str(path),
+                mime_type=_DOCX_MIME,
+                title=title,
+                text=text,
+                sections=sections,
+                metadata=metadata,
+            ),
+        )
+    except IngestionLimitError as exc:
+        return IngestionResult(success=False, error=str(exc))
     except Exception as exc:
         return IngestionResult(
             success=False,
-            error=f"Could not open DOCX: {type(exc).__name__}.",
+            error=f"Could not parse DOCX: {type(exc).__name__}.",
         )
-    sections: List[DocumentSection] = []
-    current_title = "Document"
-    current_lines: List[str] = []
-
-    def flush() -> None:
-        nonlocal current_lines
-        content = "\n".join(line for line in current_lines if line.strip()).strip()
-        if content:
-            sections.append(DocumentSection(title=current_title[:500], content=content))
-        current_lines = []
-
-    for paragraph in document.paragraphs:
-        text = paragraph.text.strip()
-        if not text:
-            continue
-        style_name = str(getattr(paragraph.style, "name", "") or "")
-        if style_name.lower().startswith("heading"):
-            flush()
-            current_title = text
-        else:
-            current_lines.append(text)
-    flush()
-    for table_index, table in enumerate(document.tables, start=1):
-        rows = ["\t".join(cell.text.strip() for cell in row.cells) for row in table.rows]
-        table_text = "\n".join(row for row in rows if row.strip()).strip()
-        if table_text:
-            sections.append(
-                DocumentSection(title=f"Table {table_index}", content=table_text)
-            )
-    text = "\n\n".join(section.content for section in sections).strip()
-    if not text:
-        return IngestionResult(success=False, error="The DOCX contains no extractable text.")
-    properties = document.core_properties
-    metadata: Dict[str, Any] = {}
-    for key in ("author", "subject", "keywords", "comments", "category"):
-        value = getattr(properties, key, None)
-        if value:
-            metadata[key] = str(value)
-    title = str(getattr(properties, "title", "") or "").strip() or None
-    return IngestionResult(
-        success=True,
-        document=IngestedDocument(
-            id="pending",
-            filename=path.name,
-            file_path=str(path),
-            mime_type=_DOCX_MIME,
-            title=title,
-            text=text,
-            sections=sections,
-            metadata=metadata,
-        ),
-    )
 
 
 def _ingest_text(path: Path, mime_type: str) -> IngestionResult:
-    raw = path.read_bytes()
+    try:
+        raw = path.read_bytes()
+    except OSError as exc:
+        return IngestionResult(success=False, error=f"Could not read text file: {type(exc).__name__}.")
     decoded: Optional[str] = None
     for encoding in ("utf-8-sig", "utf-8", "cp1252", "latin-1"):
         try:
@@ -519,13 +615,15 @@ def _ingest_text(path: Path, mime_type: str) -> IngestionResult:
         except UnicodeDecodeError:
             continue
     if decoded is None:
-        return IngestionResult(
-            success=False,
-            error="The text encoding could not be decoded.",
-        )
+        return IngestionResult(success=False, error="The text encoding could not be decoded.")
     text = decoded.strip()
     if not text:
         return IngestionResult(success=False, error="The text document is empty.")
+    if len(text) > _MAX_EXTRACTED_CHARS:
+        return IngestionResult(
+            success=False,
+            error="Text extraction exceeded the configured character limit.",
+        )
     return IngestionResult(
         success=True,
         document=IngestedDocument(
@@ -565,17 +663,37 @@ def _redact_sections(sections: Sequence[DocumentSection]) -> List[DocumentSectio
 def ingest_file(file_path: str, owner_id: str = "default_user") -> IngestionResult:
     path = Path(file_path)
     try:
+        owner = normalize_owner_id(owner_id)
+        initial_stat = path.stat()
         mime_type = _validate_file(path)
+        source_hash = _sha256_file(path)
     except Exception as exc:
         return IngestionResult(success=False, error=str(exc))
-    if path.suffix.lower() == ".pdf":
-        result = _ingest_pdf(path)
-    elif path.suffix.lower() == ".docx":
-        result = _ingest_docx(path)
-    else:
-        result = _ingest_text(path, mime_type)
+    try:
+        if path.suffix.lower() == ".pdf":
+            result = _ingest_pdf(path)
+        elif path.suffix.lower() == ".docx":
+            result = _ingest_docx(path)
+        else:
+            result = _ingest_text(path, mime_type)
+    except Exception as exc:
+        return IngestionResult(
+            success=False,
+            error=f"Document parsing failed: {type(exc).__name__}.",
+        )
     if not result.success or not result.document:
         return result
+
+    try:
+        final_stat = path.stat()
+    except OSError:
+        return IngestionResult(success=False, error="The input file disappeared during parsing.")
+    if (
+        initial_stat.st_size != final_stat.st_size
+        or initial_stat.st_mtime_ns != final_stat.st_mtime_ns
+        or getattr(initial_stat, "st_ino", None) != getattr(final_stat, "st_ino", None)
+    ):
+        return IngestionResult(success=False, error="The input file changed during parsing.")
 
     document = result.document
     redacted_text = redact_text(document.text).strip()
@@ -585,9 +703,9 @@ def ingest_file(file_path: str, owner_id: str = "default_user") -> IngestionResu
             success=False,
             error="No indexable text remained after parsing.",
         )
-    content_hash = hashlib.sha256(redacted_text.encode("utf-8")).hexdigest()
+    redacted_hash = hashlib.sha256(redacted_text.encode("utf-8")).hexdigest()
     stable_id = str(
-        uuid.uuid5(uuid.NAMESPACE_URL, f"rigorousrag:{owner_id}:{content_hash}")
+        uuid.uuid5(uuid.NAMESPACE_URL, f"rigorousrag:{owner}:{source_hash}")
     )
     extracted = extract_academic_metadata(redacted_text)
     document.id = stable_id
@@ -601,10 +719,11 @@ def ingest_file(file_path: str, owner_id: str = "default_user") -> IngestionResu
     document.metadata.update(extracted)
     document.metadata.update(
         {
-            "owner_id": owner_id,
-            "content_sha256": content_hash,
-            "file_size_bytes": path.stat().st_size,
+            "owner_id": owner,
+            "content_sha256": redacted_hash,
+            "file_size_bytes": final_stat.st_size,
             "redaction": "best_effort_regex_masking",
+            "document_identity": "owner_and_source_sha256",
         }
     )
     return IngestionResult(success=True, document=document)
