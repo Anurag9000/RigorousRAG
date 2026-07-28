@@ -21,7 +21,11 @@ else:
     _implementation = importlib.import_module("server_app")
 
 from tools.ingestion_snapshot import materialize_ingestion_snapshot
-from tools.upload_storage import UploadStorageError, validated_owner_file_path
+from tools.upload_storage import (
+    UploadStorageError,
+    read_owner_file,
+    validated_owner_file_path,
+)
 
 
 def _validated_upload_file(path: str | Path | None) -> Optional[Path]:
@@ -107,7 +111,7 @@ def process_ingestion(
             source_path=path,
             max_bytes=_implementation.DEFAULT_MAX_UPLOAD_BYTES,
         )
-        with snapshot_context as (snapshot_path, _snapshot_bytes):
+        with snapshot_context as (snapshot_path, snapshot_bytes):
             result = _implementation.ingest_file(
                 str(snapshot_path),
                 owner_id=owner_id,
@@ -121,6 +125,16 @@ def process_ingestion(
                     result.error or "Document ingestion failed.",
                 )
                 return
+
+            current_source_bytes = _implementation.read_owner_file(
+                _implementation.UPLOAD_DIR,
+                path,
+                max_bytes=_implementation.DEFAULT_MAX_UPLOAD_BYTES,
+            )
+            if current_source_bytes is None or current_source_bytes != snapshot_bytes:
+                raise UploadStorageError(
+                    "The queued upload changed after its immutable snapshot was created."
+                )
 
             document = result.document
             document.filename = display_name
@@ -254,6 +268,7 @@ def process_ingestion(
 
 _implementation._validated_upload_file = _validated_upload_file
 _implementation.materialize_ingestion_snapshot = materialize_ingestion_snapshot
+_implementation.read_owner_file = read_owner_file
 _implementation._retry_or_fail_snapshot = _retry_or_fail_snapshot
 _implementation.process_ingestion = process_ingestion
 _implementation.__doc__ = __doc__
