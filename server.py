@@ -123,11 +123,22 @@ def _submit_ingestion(
 
 
 def _recover_interrupted_jobs() -> None:
-    for record in _JOB_STORE.recoverable(INGEST_MAX_ATTEMPTS):
+    for record in _JOB_STORE.recoverable():
         job_id = str(record["job_id"])
         owner_id = str(record["owner_id"])
         display_name = str(record.get("filename") or "upload")
         source_path = str(record.get("source_path") or "")
+        attempts = int(record.get("attempts") or 0)
+        if attempts >= INGEST_MAX_ATTEMPTS:
+            _JOB_STORE.update(
+                job_id,
+                owner_id,
+                status="failed",
+                filename=display_name,
+                source_path="",
+                message="Interrupted ingestion exhausted its retry limit.",
+            )
+            continue
         candidate = Path(source_path).resolve() if source_path else None
         if candidate is None or not candidate.exists() or not candidate.is_file():
             _JOB_STORE.update(
@@ -345,12 +356,8 @@ def process_ingestion(file_path: str, display_name: str, job_id: str, owner_id: 
     keep_source = False
     try:
         path.relative_to(UPLOAD_DIR)
-        internal = _JOB_STORE.get_internal(job_id, owner_id)
-        if internal is None:
-            raise ValueError("The ingestion job no longer exists.")
-        if int(internal.get("attempts") or 0) >= INGEST_MAX_ATTEMPTS:
-            raise ValueError("The ingestion retry limit was reached.")
-        _JOB_STORE.mark_processing(job_id, owner_id)
+        if not _JOB_STORE.claim(job_id, owner_id, INGEST_MAX_ATTEMPTS):
+            return
         result = ingest_file(str(path), owner_id=owner_id)
         if not result.success or result.document is None:
             raise ValueError(result.error or "Document ingestion failed.")
