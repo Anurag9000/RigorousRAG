@@ -11,26 +11,32 @@ class DummyFuture:
         self.callback = callback
 
 
-class FakeTimer:
-    created = []
+class FakeScheduler:
+    def __init__(self):
+        self.scheduled = {}
+        self.cancelled = []
+        self.shutdown_called = False
 
-    def __init__(self, delay, function, args=()):
-        self.delay = delay
-        self.function = function
-        self.args = args
-        self.daemon = False
-        self.started = False
-        self.cancelled = False
-        FakeTimer.created.append(self)
+    def schedule(self, key, due_at, callback, *args):
+        self.scheduled[key] = (due_at, callback, args)
+        return True
 
-    def start(self):
-        self.started = True
+    def cancel(self, key):
+        self.cancelled.append(key)
+        return self.scheduled.pop(key, None) is not None
 
-    def is_alive(self):
-        return self.started and not self.cancelled
+    def shutdown(self, *, wait=True, timeout=2.0):
+        self.shutdown_called = True
+        self.scheduled.clear()
 
-    def cancel(self):
-        self.cancelled = True
+    def pending_count(self):
+        return len(self.scheduled)
+
+
+class RejectAdmission:
+    def acquire(self, *, blocking):
+        assert blocking is False
+        return False
 
 
 @pytest.fixture
@@ -67,14 +73,14 @@ def _queued_source(module, *, next_attempt_at):
     return source
 
 
-def test_future_retry_uses_one_deduplicated_timer_not_executor(
+def test_future_retry_uses_one_deduplicated_scheduler_entry_not_executor(
     server_module,
     monkeypatch,
 ):
-    FakeTimer.created = []
     source = _queued_source(server_module, next_attempt_at=time.time() + 30)
     submitted = []
-    monkeypatch.setattr(server_module.threading, "Timer", FakeTimer)
+    scheduler = FakeScheduler()
+    monkeypatch.setattr(server_module, "_INGEST_SCHEDULER", scheduler)
     monkeypatch.setattr(
         server_module._INGEST_EXECUTOR,
         "submit",
@@ -85,23 +91,23 @@ def test_future_retry_uses_one_deduplicated_timer_not_executor(
     server_module._submit_ingestion(str(source), "paper.txt", "job-1", "alice")
 
     assert submitted == []
-    assert len(FakeTimer.created) == 1
-    assert FakeTimer.created[0].started is True
-    assert FakeTimer.created[0].delay > 0
+    assert list(scheduler.scheduled) == ["job-1"]
+    assert scheduler.pending_count() == 1
+    assert scheduler.scheduled["job-1"][0] > time.time()
 
 
-def test_timer_release_submits_due_job_once(server_module, monkeypatch):
-    FakeTimer.created = []
+def test_scheduler_release_submits_due_job_once(server_module, monkeypatch):
     source = _queued_source(server_module, next_attempt_at=time.time() + 30)
     submitted = []
-    monkeypatch.setattr(server_module.threading, "Timer", FakeTimer)
+    scheduler = FakeScheduler()
+    monkeypatch.setattr(server_module, "_INGEST_SCHEDULER", scheduler)
     monkeypatch.setattr(
         server_module._INGEST_EXECUTOR,
         "submit",
         lambda *args: submitted.append(args) or DummyFuture(),
     )
     server_module._submit_ingestion(str(source), "paper.txt", "job-1", "alice")
-    timer = FakeTimer.created[0]
+    _due_at, callback, args = scheduler.scheduled["job-1"]
     server_module._JOB_STORE.update(
         "job-1",
         "alice",
@@ -111,20 +117,41 @@ def test_timer_release_submits_due_job_once(server_module, monkeypatch):
         next_attempt_at=0,
     )
 
-    timer.function(*timer.args)
+    callback(*args)
 
     assert len(submitted) == 1
     assert submitted[0][0] is server_module.process_ingestion
-    assert "job-1" not in server_module._INGEST_TIMERS
+    assert "job-1" not in scheduler.scheduled
 
 
-def test_shutdown_cancels_pending_timers(server_module, monkeypatch):
-    FakeTimer.created = []
-    source = _queued_source(server_module, next_attempt_at=time.time() + 30)
-    monkeypatch.setattr(server_module.threading, "Timer", FakeTimer)
+def test_executor_saturation_retries_without_entering_unbounded_queue(
+    server_module,
+    monkeypatch,
+):
+    source = _queued_source(server_module, next_attempt_at=0)
+    submitted = []
+    scheduler = FakeScheduler()
+    monkeypatch.setattr(server_module, "_INGEST_SCHEDULER", scheduler)
+    monkeypatch.setattr(server_module, "_INGEST_ADMISSION", RejectAdmission())
+    monkeypatch.setattr(
+        server_module._INGEST_EXECUTOR,
+        "submit",
+        lambda *args: submitted.append(args) or DummyFuture(),
+    )
+
     server_module._submit_ingestion(str(source), "paper.txt", "job-1", "alice")
+
+    assert submitted == []
+    assert list(scheduler.scheduled) == ["job-1"]
+    assert scheduler.scheduled["job-1"][0] > time.time()
+    assert server_module._JOB_STORE.get("job-1", "alice")["status"] == "queued"
+
+
+def test_shutdown_stops_central_scheduler(server_module, monkeypatch):
+    scheduler = FakeScheduler()
+    monkeypatch.setattr(server_module, "_INGEST_SCHEDULER", scheduler)
 
     server_module._cancel_scheduled_ingestions()
 
-    assert FakeTimer.created[0].cancelled is True
-    assert server_module._INGEST_TIMERS == {}
+    assert scheduler.shutdown_called is True
+    assert server_module._INGEST_SHUTDOWN.is_set()
