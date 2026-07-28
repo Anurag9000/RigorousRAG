@@ -1,4 +1,4 @@
-"""ASGI request-size enforcement before multipart or JSON body parsing."""
+"""ASGI request-size enforcement and narrow public tool error translation."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ class RequestBodyTooLarge(Exception):
 
 
 class RequestBodyLimitMiddleware:
-    """Reject oversized HTTP bodies before framework parsers allocate the full input."""
+    """Enforce body ceilings and one owner-safe visual lookup failure boundary."""
 
     def __init__(self, app: ASGIApp, max_bytes: int) -> None:
         self.app = app
@@ -45,24 +45,38 @@ class RequestBodyLimitMiddleware:
             return None
         return parsed_values[0]
 
-    async def _reject(self, send: ASGISend) -> None:
-        body = json.dumps(
-            {"detail": f"Request body exceeds the {self.max_bytes}-byte limit."},
-            separators=(",", ":"),
-        ).encode("utf-8")
+    @staticmethod
+    async def _json_error(
+        send: ASGISend,
+        *,
+        status: int,
+        detail: str,
+        close: bool = False,
+    ) -> None:
+        body = json.dumps({"detail": detail}, separators=(",", ":")).encode("utf-8")
+        headers = [
+            (b"content-type", b"application/json"),
+            (b"content-length", str(len(body)).encode("ascii")),
+            (b"cache-control", b"no-store"),
+        ]
+        if close:
+            headers.append((b"connection", b"close"))
         await send(
             {
                 "type": "http.response.start",
-                "status": 413,
-                "headers": [
-                    (b"content-type", b"application/json"),
-                    (b"content-length", str(len(body)).encode("ascii")),
-                    (b"cache-control", b"no-store"),
-                    (b"connection", b"close"),
-                ],
+                "status": status,
+                "headers": headers,
             }
         )
         await send({"type": "http.response.body", "body": body, "more_body": False})
+
+    async def _reject(self, send: ASGISend) -> None:
+        await self._json_error(
+            send,
+            status=413,
+            detail=f"Request body exceeds the {self.max_bytes}-byte limit.",
+            close=True,
+        )
 
     async def __call__(
         self,
@@ -115,3 +129,17 @@ class RequestBodyLimitMiddleware:
                     "body": b"",
                     "more_body": False,
                 })
+        except ValueError:
+            # The visual tool's only uncaught ValueError is owner-scoped document
+            # metadata absence. Translate it without exposing vector/backend details.
+            if (
+                not response_started
+                and str(scope.get("path") or "") == "/tool/visual-entailment"
+            ):
+                await self._json_error(
+                    send,
+                    status=404,
+                    detail="Document not found.",
+                )
+                return
+            raise
