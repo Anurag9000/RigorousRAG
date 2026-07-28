@@ -120,6 +120,70 @@ def test_post_body_is_not_replayed_after_302_redirect(monkeypatch):
     assert session.trust_env is True
 
 
+def test_cross_origin_redirect_strips_api_keys_and_tokens(monkeypatch):
+    _public_dns(monkeypatch)
+    redirect = FakeResponse(
+        status=302,
+        headers={"Location": "https://other.example/final"},
+        url="https://example.com/start",
+        chunks=(),
+    )
+    final = FakeResponse(url="https://other.example/final", chunks=(b"ok",))
+    session = FakeSession([redirect, final])
+
+    safe_download(
+        "https://example.com/start",
+        headers={
+            "Authorization": "Bearer secret",
+            "X-API-KEY": "provider-secret",
+            "X-Custom-Token": "another-secret",
+            "Accept": "text/plain",
+        },
+        session=session,
+    )
+
+    first_headers = session.calls[0]["headers"]
+    second_headers = session.calls[1]["headers"]
+    assert first_headers["Authorization"] == "Bearer secret"
+    assert "Authorization" not in second_headers
+    assert "X-API-KEY" not in second_headers
+    assert "X-Custom-Token" not in second_headers
+    assert second_headers["Accept"] == "text/plain"
+
+
+def test_cross_origin_307_does_not_replay_post_body(monkeypatch):
+    _public_dns(monkeypatch)
+    redirect = FakeResponse(
+        status=307,
+        headers={"Location": "https://other.example/final"},
+        url="https://example.com/start",
+        chunks=(),
+    )
+    session = FakeSession([redirect])
+
+    with pytest.raises(SecurityError, match="may not replay"):
+        safe_download(
+            "https://example.com/start",
+            method="POST",
+            data=b"secret-request-body",
+            session=session,
+        )
+
+    assert len(session.calls) == 1
+    assert redirect.closed is True
+
+
+def test_caller_cannot_override_host_or_hop_by_hop_headers(monkeypatch):
+    _public_dns(monkeypatch)
+    for header in ("Host", "Content-Length", "Transfer-Encoding", "Connection"):
+        with pytest.raises(SecurityError, match="not allowed"):
+            safe_download(
+                "https://example.com",
+                headers={header: "attacker-controlled"},
+                session=FakeSession([]),
+            )
+
+
 def test_remote_method_allowlist_rejects_connect(monkeypatch):
     _public_dns(monkeypatch)
     with pytest.raises(SecurityError, match="not allowed"):
