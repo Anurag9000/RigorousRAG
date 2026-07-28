@@ -1,4 +1,5 @@
 import json
+import threading
 import time
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -29,7 +30,9 @@ def test_single_tool_timeout_returns_without_waiting_for_worker(monkeypatch):
 
     monkeypatch.setattr(agent, "_execute_tool", slow_execution)
     started = time.monotonic()
-    results = agent._execute_tools([tool_call("fetch_page", '{"url":"https://example.com"}')])
+    results = agent._execute_tools(
+        [tool_call("fetch_page", '{"url":"https://example.com"}')]
+    )
     elapsed = time.monotonic() - started
 
     assert elapsed < 0.25
@@ -59,12 +62,91 @@ def test_tool_calls_reuse_process_wide_executor(monkeypatch):
         ),
     )
 
-    first = agent._execute_tools([tool_call("fetch_page", '{"url":"https://example.com"}')])
-    second = agent._execute_tools([tool_call("fetch_page", '{"url":"https://example.com"}', "call-2")])
+    first = agent._execute_tools(
+        [tool_call("fetch_page", '{"url":"https://example.com"}')]
+    )
+    second = agent._execute_tools(
+        [tool_call("fetch_page", '{"url":"https://example.com"}', "call-2")]
+    )
 
     assert first[0].success and second[0].success
     assert len(submitted) == 2
     assert search_agent._TOOL_EXECUTOR is executor
+
+
+def test_timed_out_running_tool_holds_admission_until_actual_completion(monkeypatch):
+    admission = threading.BoundedSemaphore(1)
+    release_worker = threading.Event()
+    worker_finished = threading.Event()
+    agent = SearchAgent(owner_id="alice", tool_timeout=1.0)
+    agent.tool_timeout = 0.02
+    monkeypatch.setattr(search_agent, "_TOOL_ADMISSION", admission)
+
+    def slow_execution(call):
+        release_worker.wait(1.0)
+        worker_finished.set()
+        return ToolExecution(
+            tool_call_id=call.id,
+            tool_name=call.function.name,
+            content="late",
+        )
+
+    monkeypatch.setattr(agent, "_execute_tool", slow_execution)
+    first = agent._execute_tools(
+        [tool_call("fetch_page", '{"url":"https://example.com"}', "slow")]
+    )
+    assert first[0].error_type == "TimeoutError"
+
+    second = agent._execute_tools(
+        [tool_call("fetch_page", '{"url":"https://example.com"}', "blocked")]
+    )
+    assert second[0].error_type == "ExecutorUnavailable"
+
+    release_worker.set()
+    assert worker_finished.wait(1.0)
+    deadline = time.monotonic() + 1.0
+    acquired = False
+    while time.monotonic() < deadline:
+        acquired = admission.acquire(blocking=False)
+        if acquired:
+            break
+        time.sleep(0.01)
+    assert acquired is True
+    admission.release()
+
+    monkeypatch.setattr(
+        agent,
+        "_execute_tool",
+        lambda call: ToolExecution(
+            tool_call_id=call.id,
+            tool_name=call.function.name,
+            content="ok",
+        ),
+    )
+    third = agent._execute_tools(
+        [tool_call("fetch_page", '{"url":"https://example.com"}', "after")]
+    )
+    assert third[0].success is True
+
+
+def test_executor_submit_failure_releases_admission(monkeypatch):
+    admission = threading.BoundedSemaphore(1)
+    agent = SearchAgent(owner_id="alice")
+
+    class BrokenExecutor:
+        def submit(self, *_args, **_kwargs):
+            raise RuntimeError("closed")
+
+    monkeypatch.setattr(search_agent, "_TOOL_ADMISSION", admission)
+    monkeypatch.setattr(search_agent, "_TOOL_EXECUTOR", BrokenExecutor())
+
+    result = agent._execute_tools(
+        [tool_call("fetch_page", '{"url":"https://example.com"}')]
+    )
+
+    assert result[0].error_type == "ExecutorUnavailable"
+    assert admission.acquire(blocking=False) is True
+    admission.release()
 
 
 def test_runtime_schema_rejects_unknown_arguments_before_dispatch(monkeypatch):
