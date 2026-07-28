@@ -192,47 +192,23 @@ class JobStore:
         *,
         now: Optional[float] = None,
     ) -> bool:
-        """Atomically claim one due queued job; safe across threads and processes.
-
-        Production callers wait for a persisted retry deadline. Tests and reconciliation
-        checks may pass ``now`` to inspect the gate deterministically without sleeping.
-        """
+        """Atomically claim one due queued job without occupying a worker while delayed."""
 
         owner = normalize_owner_id(owner_id)
         limit = max(1, int(max_attempts))
-        fixed_now = float(now) if now is not None else None
-        while True:
-            current_time = time.time() if fixed_now is None else fixed_now
-            with self._lock, self._connect() as connection:
-                row = connection.execute(
-                    """
-                    SELECT status, attempts, next_attempt_at
-                    FROM jobs WHERE job_id=? AND owner_id=?
-                    """,
-                    (job_id, owner),
-                ).fetchone()
-            if row is None or str(row["status"]) != "queued":
-                return False
-            if int(row["attempts"] or 0) >= limit:
-                return False
-            delay = float(row["next_attempt_at"] or 0.0) - current_time
-            if delay > 0:
-                if fixed_now is not None:
-                    return False
-                time.sleep(delay)
-                continue
-            with self._lock, self._connect() as connection:
-                cursor = connection.execute(
-                    """
-                    UPDATE jobs
-                    SET status='processing', attempts=attempts + 1,
-                        next_attempt_at=0, message=NULL, updated_at=?
-                    WHERE job_id=? AND owner_id=? AND status='queued'
-                      AND attempts < ? AND next_attempt_at <= ?
-                    """,
-                    (current_time, job_id, owner, limit, current_time),
-                )
-                return cursor.rowcount == 1
+        current_time = time.time() if now is None else float(now)
+        with self._lock, self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE jobs
+                SET status='processing', attempts=attempts + 1,
+                    next_attempt_at=0, message=NULL, updated_at=?
+                WHERE job_id=? AND owner_id=? AND status='queued'
+                  AND attempts < ? AND next_attempt_at <= ?
+                """,
+                (current_time, job_id, owner, limit, current_time),
+            )
+            return cursor.rowcount == 1
 
     def get(self, job_id: str, owner_id: str) -> Optional[Dict[str, Any]]:
         """Return only fields safe for the owner-facing API."""
