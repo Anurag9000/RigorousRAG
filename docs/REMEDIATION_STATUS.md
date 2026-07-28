@@ -27,7 +27,7 @@ The remediation branch audits and changes every product surface identified in th
 | Authentication incompatible with frontend | Resolved in code | Browser sends `X-API-Key`, reads `/config`, and never supplies tenant identity. |
 | False redaction/privacy guarantee | Corrected and mitigated | Full text, OCR output, sections, titles, filenames, metadata, summaries, job-facing strings, and scientific result mappings are masked. Diagnostic paths, URI credentials, common secret parameters, and sensitive mapping keys are removed. Documentation states masking is best effort. |
 | Source paths leaked into vectors | Resolved | Paths exist only in the private owner-scoped registry/queue and are excluded from Chroma, citations, manifests, and public job payloads. |
-| Source lifecycle broke visual tools | Resolved with bounded capability | Retention is explicit; actual file availability is validated dynamically; visual lookup verifies current bytes against the owner/content document ID and enforces PDF page, render-pixel, and exact encoded-payload limits; deletion removes vectors, registry, and source. |
+| Source lifecycle broke visual tools | Resolved with bounded capability | Retention is explicit; actual file availability is validated dynamically; visual lookup verifies current bytes against the owner/content document ID and enforces PDF page, true preallocation geometry, actual rendered-pixel, and exact encoded-payload limits; deletion removes vectors, registry, and source. |
 
 ## High-severity findings
 
@@ -49,7 +49,7 @@ The remediation branch audits and changes every product surface identified in th
 | One large document hides the library | Resolved in continuation | Document listing paginates chunks until the requested distinct-document count or a configured scan ceiling. |
 | Retrieval outage represented as no evidence | Resolved in continuation | Total Chroma failure raises unavailable rather than returning an empty result. Fallback warnings distinguish outage from no match. |
 | Debate judge lacks original evidence | Resolved | Original evidence is included for advocate, skeptic, and judge. |
-| Incorrect/unbounded figure selection | Substantially remediated | Exact selectable caption text is located; only owner/content-matching retained PDFs under configured page/render limits reach the caption-adjacent renderer; actual rendered pixels and exact base64 payload bytes are capped. Scanned captions and complex multi-panel localization remain limitations. |
+| Incorrect/unbounded figure selection | Substantially remediated | Exact selectable caption text is located; only owner/content-matching retained PDFs under the page budget and the renderer’s fixed worst-case 565-point 2× preallocation geometry reach rendering; actual rendered pixels and exact base64 payload bytes are capped. Scanned captions and complex multi-panel localization remain limitations. |
 | Scientific output leaks diagnostic metadata | Resolved in continuation | Every scientific result passes through recursive value/key sanitization before JSON serialization; key collisions are preserved with deterministic bounded suffixes. |
 | Empty-evidence comparisons/matrices | Resolved | Required-document evidence gaps stop synthesis. Matrix work is capped and consolidated into one bounded call. |
 | Web domain bypass/unbounded provider call | Resolved | Parsed hostname boundaries; Serper uses the shared peer-validated bounded downloader; provider errors are generic. |
@@ -106,7 +106,7 @@ Functionality added because it directly closes audited gaps:
 17. Server-side evidence registry and bounded response models.
 18. Runtime tool-schema validation and bounded tool execution/admission.
 19. Connected-peer SSRF validation and safe cross-origin redirect semantics.
-20. Exact visual page, pixel, and encoded-payload ceilings.
+20. Exact visual page, fixed preallocation-geometry, actual-pixel, and encoded-payload ceilings.
 21. Recursive scientific-result value/key sanitization.
 22. Dependency-aware container readiness.
 23. Bounded pseudonymous rotating telemetry.
@@ -139,7 +139,7 @@ These are disclosed rather than falsely marked complete:
 ### Statically inspected and contract-tested in source
 
 - The remediation and continuation passes re-read changed public contracts and exact commit diffs through the GitHub connector.
-- Regression tests now target tenant isolation, request-body ceilings, query/direct-route overload and deadline behavior, tool admission/timeouts, peer-validated networking, redirect secrets, total download deadlines, parser/archive complexity, source identity, retained-source mutation, visual page/render/encoded-byte limits, scientific output sanitization, vector rollback, paginated listing, retrieval outages, queue migration/backoff, centralized delayed scheduling, ingestion admission, source reconciliation, bounded models, telemetry rotation, OCR, scientific fail-closed behavior, frontend safety, and deployment configuration.
+- Regression tests now target tenant isolation, request-body ceilings, query/direct-route overload and deadline behavior, tool admission/timeouts, peer-validated networking, redirect secrets, total download deadlines, parser/archive complexity, source identity, retained-source mutation, visual page/preallocation/render/encoded-byte limits, scientific output sanitization, vector rollback, paginated listing, retrieval outages, queue migration/backoff, centralized delayed scheduling, ingestion admission, source reconciliation, bounded models, telemetry rotation, OCR, scientific fail-closed behavior, frontend safety, and deployment configuration.
 - Runtime artifacts remain ignored and committed stale artifacts were removed.
 
 ### Executable verification still required
@@ -152,4 +152,4 @@ The branch defines checks for:
 - pytest with branch coverage and an initial 50% floor;
 - Docker image build including Tesseract.
 
-The available remediation environment could not clone/download and execute the branch, and GitHub Actions had not produced a workflow run for earlier exact heads through the available connector. Therefore this PR remains draft and is not merge-ready until checks run against the exact current head and every failure is corrected. Coverage targets must rise from measured results, not fabricated claims.
+The available remediation environment could not clone/download and execute the branch, and GitHub Actions has not produced a workflow run for the exact current head through the available connector. Therefore this PR remains draft and is not merge-ready until checks run against the exact current head and every failure is corrected. Coverage targets must rise from measured results, not fabricated claims.
