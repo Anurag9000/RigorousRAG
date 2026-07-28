@@ -14,7 +14,7 @@ import uuid
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, AsyncIterator, Dict, Optional
+from typing import Any, AsyncIterator, Callable, Dict, Optional, TypeVar
 
 import uvicorn
 from fastapi import Depends, FastAPI, File, Header, HTTPException, Request, UploadFile
@@ -43,6 +43,8 @@ from tools.security import (
     normalize_owner_id,
     parse_api_key_owners,
 )
+
+T = TypeVar("T")
 
 UPLOAD_DIR = Path(os.getenv("UPLOAD_DIR", "uploads")).resolve()
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
@@ -162,6 +164,32 @@ def _safe_request_id(raw_value: Optional[str]) -> str:
 
 def _internal_failure_message(prefix: str, exc: BaseException) -> str:
     return f"{prefix} ({type(exc).__name__})."
+
+
+async def _run_research_task(
+    function: Callable[..., T],
+    *args: Any,
+    **kwargs: Any,
+) -> T:
+    """Run one expensive research operation under shared admission and deadline."""
+
+    future = _QUERY_EXECUTOR.submit(function, *args, **kwargs)
+    if future is None:
+        raise HTTPException(
+            status_code=503,
+            detail="The research executor is at capacity.",
+            headers={"Retry-After": "1"},
+        )
+    try:
+        return await asyncio.wait_for(
+            asyncio.wrap_future(future),
+            timeout=QUERY_TIMEOUT_SECONDS,
+        )
+    except asyncio.TimeoutError as exc:
+        raise HTTPException(
+            status_code=504,
+            detail="The research operation exceeded the server time limit.",
+        ) from exc
 
 
 def _validated_upload_file(path: str | Path | None) -> Optional[Path]:
@@ -511,23 +539,7 @@ async def run_query(
     principal: Principal = Depends(get_rate_limited_principal),
 ) -> AgentAnswer:
     agent = _new_agent(principal.owner_id, request.model)
-    future = _QUERY_EXECUTOR.submit(agent.run, request.query)
-    if future is None:
-        raise HTTPException(
-            status_code=503,
-            detail="The research query executor is at capacity.",
-            headers={"Retry-After": "1"},
-        )
-    try:
-        return await asyncio.wait_for(
-            asyncio.wrap_future(future),
-            timeout=QUERY_TIMEOUT_SECONDS,
-        )
-    except asyncio.TimeoutError as exc:
-        raise HTTPException(
-            status_code=504,
-            detail="The research query exceeded the server time limit.",
-        ) from exc
+    return await _run_research_task(agent.run, request.query)
 
 
 async def _save_upload(file: UploadFile, destination: Path) -> int:
@@ -794,7 +806,7 @@ async def direct_visual_entailment(
     principal: Principal = Depends(get_rate_limited_principal),
 ) -> Dict[str, Any]:
     agent = _new_agent(principal.owner_id)
-    raw = await run_in_threadpool(
+    raw = await _run_research_task(
         check_visual_entailment,
         request.claim_text,
         request.figure_id,
@@ -812,7 +824,7 @@ async def direct_extract_protocol(
     principal: Principal = Depends(get_rate_limited_principal),
 ) -> Dict[str, Any]:
     agent = _new_agent(principal.owner_id)
-    raw = await run_in_threadpool(
+    raw = await _run_research_task(
         extract_protocol,
         request.text,
         request.doc_id or "",
