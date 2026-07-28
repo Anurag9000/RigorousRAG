@@ -1,7 +1,8 @@
 """Single-thread keyed deadline scheduler for crash-persistent job queues.
 
-The durable database remains the authority for whether work is actually due.  This
-helper only avoids one ``threading.Timer`` per delayed job inside one process.
+The durable database remains the authority for whether work is actually due. This
+helper avoids one ``threading.Timer`` per delayed job inside one process and starts
+no background thread until the first callback is scheduled.
 """
 
 from __future__ import annotations
@@ -32,7 +33,17 @@ class DueScheduler:
         self._current: Dict[str, int] = {}
         self._sequence = itertools.count(1)
         self._shutdown = False
-        self._thread = threading.Thread(target=self._run, name=name, daemon=True)
+        self._thread_name = name
+        self._thread: Optional[threading.Thread] = None
+
+    def _ensure_thread_locked(self) -> None:
+        if self._thread is not None and self._thread.is_alive():
+            return
+        self._thread = threading.Thread(
+            target=self._run,
+            name=self._thread_name,
+            daemon=True,
+        )
         self._thread.start()
 
     def schedule(
@@ -57,6 +68,7 @@ class DueScheduler:
         with self._condition:
             if self._shutdown:
                 return False
+            self._ensure_thread_locked()
             sequence = next(self._sequence)
             self._current[identifier] = sequence
             heapq.heappush(
@@ -80,6 +92,12 @@ class DueScheduler:
         with self._condition:
             return len(self._current)
 
+    def thread_started(self) -> bool:
+        """Expose scheduler liveness for diagnostics and deterministic tests."""
+
+        with self._condition:
+            return bool(self._thread is not None and self._thread.is_alive())
+
     def shutdown(self, *, wait: bool = True, timeout: Optional[float] = 2.0) -> None:
         """Cancel pending callbacks and stop the scheduler thread."""
 
@@ -89,8 +107,13 @@ class DueScheduler:
                 self._current.clear()
                 self._heap.clear()
                 self._condition.notify_all()
-        if wait and threading.current_thread() is not self._thread:
-            self._thread.join(timeout=timeout)
+            thread = self._thread
+        if (
+            wait
+            and thread is not None
+            and threading.current_thread() is not thread
+        ):
+            thread.join(timeout=timeout)
 
     def _discard_stale_locked(self) -> None:
         while self._heap:
