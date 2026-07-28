@@ -50,7 +50,6 @@ os.environ["MAX_PENDING_TOOL_TASKS"] = str(max(_PENDING_TOOLS, _TOOL_WORKERS))
 
 import search_agent_legacy as _implementation
 
-from tools.privacy import mask_metadata_text
 from tools.security import normalize_owner_id
 
 _original_validate_schema_value = _implementation._validate_schema_value
@@ -68,6 +67,20 @@ def _safe_text(value: Any, *, limit: int, default: str = "") -> str:
     return rendered[:limit]
 
 
+def _safe_getattr(value: Any, name: str, default: Any = None) -> Any:
+    try:
+        return getattr(value, name, default)
+    except Exception:
+        return default
+
+
+def _safe_bool(value: Any, default: bool = False) -> bool:
+    try:
+        return bool(value)
+    except Exception:
+        return default
+
+
 def _clean_identifier(value: Any, *, default: str) -> str:
     rendered = _safe_text(value, limit=_MAX_IDENTIFIER_CHARS, default=default)
     rendered = " ".join(
@@ -77,10 +90,12 @@ def _clean_identifier(value: Any, *, default: str) -> str:
 
 
 def _optional_provider_value(value: Any, label: str) -> Optional[str]:
-    if value in (None, ""):
+    if value is None:
         return None
     if not isinstance(value, str):
         raise ValueError(f"{label} must be a string.")
+    if value == "":
+        return None
     rendered = value.strip()
     if len(rendered) > _MAX_PROVIDER_FIELD_CHARS:
         raise ValueError(
@@ -157,15 +172,15 @@ class _SafeToolCall:
 
 def _sanitize_tool_call(raw_call: Any, index: int) -> _SafeToolCall:
     call_id = _clean_identifier(
-        getattr(raw_call, "id", None),
+        _safe_getattr(raw_call, "id"),
         default=f"call-{index + 1}",
     )
-    function = getattr(raw_call, "function", None)
+    function = _safe_getattr(raw_call, "function")
     name = _clean_identifier(
-        getattr(function, "name", None),
+        _safe_getattr(function, "name"),
         default="unknown",
     )
-    raw_arguments = getattr(function, "arguments", None)
+    raw_arguments = _safe_getattr(function, "arguments")
     arguments = (
         raw_arguments
         if isinstance(raw_arguments, str)
@@ -180,18 +195,21 @@ def _sanitize_tool_call(raw_call: Any, index: int) -> _SafeToolCall:
 
 
 def _bounded_tool_calls(raw_calls: Any, maximum: int) -> Tuple[List[_SafeToolCall], bool]:
-    if raw_calls in (None, []):
+    limit = _strict_int(maximum, "maximum", minimum=0, maximum=64)
+    if raw_calls is None:
+        return [], False
+    if isinstance(raw_calls, list) and not raw_calls:
         return [], False
     if isinstance(raw_calls, (str, bytes, bytearray)):
         return [], True
     try:
-        values = list(itertools.islice(iter(raw_calls), maximum + 1))
-    except TypeError:
+        values = list(itertools.islice(iter(raw_calls), limit + 1))
+    except Exception:
         return [], True
-    overflow = len(values) > maximum
+    overflow = len(values) > limit
     return [
         _sanitize_tool_call(call, index)
-        for index, call in enumerate(values[:maximum])
+        for index, call in enumerate(values[:limit])
     ], overflow
 
 
@@ -214,10 +232,8 @@ class ToolExecution(_original_tool_execution):
             elapsed = 0.0
         if not math.isfinite(elapsed):
             elapsed = 0.0
-        if citations is None:
+        if citations is None or isinstance(citations, (str, bytes, bytearray)):
             bounded_citations: List[Any] = []
-        elif isinstance(citations, (str, bytes, bytearray)):
-            bounded_citations = []
         else:
             try:
                 bounded_citations = [
@@ -228,7 +244,7 @@ class ToolExecution(_original_tool_execution):
                     )
                     if isinstance(citation, _implementation.Citation)
                 ]
-            except TypeError:
+            except Exception:
                 bounded_citations = []
         super().__init__(
             tool_call_id=_clean_identifier(tool_call_id, default="unknown"),
@@ -238,10 +254,10 @@ class ToolExecution(_original_tool_execution):
                 limit=_implementation._MAX_TOOL_RESULT_CHARS + 1000,
             ),
             citations=bounded_citations,
-            success=bool(success),
+            success=_safe_bool(success),
             error_type=(
                 _clean_identifier(error_type, default="Error")
-                if error_type
+                if error_type is not None
                 else None
             ),
             duration=max(elapsed, 0.0),
@@ -346,21 +362,21 @@ class SearchAgent(_implementation.SearchAgent):
                     temperature=0.1,
                     max_tokens=self.max_response_tokens,
                 )
-                choices = getattr(response, "choices", None)
+                choices = _safe_getattr(response, "choices")
                 if not isinstance(choices, Sequence) or isinstance(
                     choices, (str, bytes, bytearray)
                 ) or not choices:
                     raise ValueError("The model provider returned no usable choice.")
-                message = getattr(choices[0], "message", None)
+                message = _safe_getattr(choices[0], "message")
                 if message is None:
                     raise ValueError("The model provider returned no usable message.")
                 content = _safe_text(
-                    getattr(message, "content", "") or "",
+                    _safe_getattr(message, "content", "") or "",
                     limit=_implementation._MAX_FINAL_ANSWER_CHARS,
                 )
                 remaining = max(self.max_tool_calls - total_tool_calls, 0)
                 tool_calls, overflow = _bounded_tool_calls(
-                    getattr(message, "tool_calls", None),
+                    _safe_getattr(message, "tool_calls"),
                     remaining,
                 )
                 if overflow:
@@ -432,7 +448,7 @@ class SearchAgent(_implementation.SearchAgent):
                     or warnings[-1] != "The evidence-source budget was reached."
                 ):
                     warnings.append("The evidence-source budget was reached.")
-                if overflow or total_tool_calls >= self.max_tool_calls:
+                if overflow:
                     break
 
             if not final_text:
@@ -529,10 +545,7 @@ class SearchAgent(_implementation.SearchAgent):
                 ),
             )
         except Exception:
-            return _safe_text(
-                raw,
-                limit=_implementation._MAX_TOOL_RESULT_CHARS,
-            ), []
+            return "Scientific tool returned an invalid response.", []
         if not isinstance(parsed, dict):
             return "Scientific tool returned an invalid response.", []
         citation_payloads = parsed.pop("citations", [])
@@ -587,7 +600,7 @@ class SearchAgent(_implementation.SearchAgent):
                 iter(incoming),
                 _implementation._MAX_EVIDENCE_SOURCES,
             )
-        except TypeError:
+        except Exception:
             return []
         selected: List[_implementation.Citation] = []
         for citation in values:
