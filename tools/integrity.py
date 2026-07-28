@@ -1,17 +1,19 @@
 """Compatibility shim over the scientific-integrity implementation.
 
 The legacy implementation remains byte-for-byte preserved in ``integrity_legacy``.
-This module normalizes visual budgets before import and replaces only retained-PDF
-access so verification and rendering consume one descriptor-anchored byte snapshot.
+This module normalizes visual budgets, bounds direct comparison iterables, and
+replaces retained-PDF access so verification and rendering consume one immutable
+byte snapshot.
 """
 
 from __future__ import annotations
 
 import base64
+import itertools
 import math
 import re
 import sys
-from typing import Any, Optional, Tuple
+from typing import Any, Iterable, List, Optional, Tuple
 
 import fitz
 
@@ -32,6 +34,39 @@ for _name, _default, _minimum, _maximum in (
 
 from tools import integrity_legacy as _implementation
 from tools.security import DEFAULT_MAX_UPLOAD_BYTES
+
+_original_compare_papers = _implementation.compare_papers
+_original_generate_comparison_matrix = _implementation.generate_comparison_matrix
+
+
+def _bounded_values(
+    values: Iterable[Any],
+    label: str,
+    *,
+    max_items: int,
+    max_length: int,
+) -> List[str]:
+    if isinstance(values, (str, bytes, bytearray)):
+        raise ValueError(f"{label} must be an array, not a string.")
+    try:
+        iterator = iter(values)
+    except TypeError as exc:
+        raise ValueError(f"{label} must be an iterable.") from exc
+    raw_values = list(itertools.islice(iterator, max_items + 1))
+    if len(raw_values) > max_items:
+        raise ValueError(f"{label} supports at most {max_items} items.")
+    bounded: List[str] = []
+    for raw in raw_values:
+        value = str(raw or "").strip()
+        if not value:
+            continue
+        if len(value) > max_length:
+            raise ValueError(
+                f"Each {label} item may contain at most {max_length} characters."
+            )
+        if value not in bounded:
+            bounded.append(value)
+    return bounded
 
 
 def _extract_figure_region(pdf_bytes: bytes, figure_id: str) -> Tuple[str, int, str]:
@@ -242,7 +277,64 @@ def check_visual_entailment(
     return _implementation._json(response)
 
 
+def compare_papers(
+    doc_ids: Iterable[Any],
+    query: str,
+    *,
+    owner_id: str = "default_user",
+    client: Optional[Any] = None,
+    model: str = "gpt-4o",
+) -> str:
+    documents = _bounded_values(
+        doc_ids,
+        "doc_ids",
+        max_items=10,
+        max_length=200,
+    )
+    question = str(query or "").strip()
+    if not question or len(question) > 10_000:
+        raise ValueError("query must contain between 1 and 10,000 characters.")
+    return _original_compare_papers(
+        documents,
+        question,
+        owner_id=owner_id,
+        client=client,
+        model=model,
+    )
+
+
+def generate_comparison_matrix(
+    doc_ids: Iterable[Any],
+    metrics: Iterable[Any],
+    *,
+    owner_id: str = "default_user",
+    client: Optional[Any] = None,
+    model: str = "gpt-4o",
+) -> str:
+    documents = _bounded_values(
+        doc_ids,
+        "doc_ids",
+        max_items=10,
+        max_length=200,
+    )
+    bounded_metrics = _bounded_values(
+        metrics,
+        "metrics",
+        max_items=12,
+        max_length=500,
+    )
+    return _original_generate_comparison_matrix(
+        documents,
+        bounded_metrics,
+        owner_id=owner_id,
+        client=client,
+        model=model,
+    )
+
+
 _implementation._extract_figure_region = _extract_figure_region
 _implementation.check_visual_entailment = check_visual_entailment
+_implementation.compare_papers = compare_papers
+_implementation.generate_comparison_matrix = generate_comparison_matrix
 _implementation.__doc__ = __doc__
 sys.modules[__name__] = _implementation
