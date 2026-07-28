@@ -1,4 +1,4 @@
-"""Batch document ingestion CLI using the same service as the API."""
+"""Batch document ingestion CLI using the same services as the API."""
 
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ except ImportError:  # pragma: no cover
     OpenAI = None  # type: ignore[assignment]
 
 from tools.document_service import ingest_and_index
+from tools.document_store import get_document_store
 from tools.rag import get_rag_layer
 from tools.security import normalize_owner_id
 
@@ -64,6 +65,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("-o", "--output", default="ingestion_manifest.json")
     parser.add_argument("--owner-id", default=os.getenv("SINGLE_USER_OWNER_ID", "default_user"))
     parser.add_argument(
+        "--retain-sources",
+        action="store_true",
+        help=(
+            "Copy source files into the private owner-scoped store so figure tools can "
+            "use them. The manifest never contains the retained path."
+        ),
+    )
+    parser.add_argument(
         "--include-redacted-text",
         action="store_true",
         help="Include redacted full text and sections in the output manifest.",
@@ -88,10 +97,12 @@ def main() -> int:
 
     rag = get_rag_layer()
     client = _llm_client()
+    document_store = get_document_store()
     manifest = []
     failures = 0
     for path in files:
         print(f"Ingesting {path} ...", end=" ", flush=True)
+        retained_copy: Optional[Path] = None
         try:
             indexed = ingest_and_index(
                 str(path),
@@ -100,15 +111,35 @@ def main() -> int:
                 client=client,
             )
             document = indexed.document
+            if args.retain_sources:
+                retained_copy = document_store.copy_source(
+                    owner_id=owner_id,
+                    source_path=path,
+                )
+            previous_path = document_store.register(
+                owner_id=owner_id,
+                doc_id=document.id,
+                filename=document.filename,
+                mime_type=document.mime_type,
+                source_path=retained_copy,
+            )
+            if previous_path:
+                document_store.remove_source(previous_path)
             payload = document.model_dump(
                 mode="json",
                 exclude_none=True,
                 exclude=set() if args.include_redacted_text else {"text", "sections"},
             )
             payload["chunk_count"] = indexed.chunk_count
+            payload["source_retained"] = bool(retained_copy)
             manifest.append(payload)
-            print(f"OK ({indexed.chunk_count} chunks)")
+            print(
+                f"OK ({indexed.chunk_count} chunks, "
+                f"{'source retained' if retained_copy else 'text evidence only'})"
+            )
         except Exception as exc:
+            if retained_copy is not None:
+                document_store.remove_source(retained_copy)
             failures += 1
             print(f"FAILED ({exc})")
             if args.fail_fast:
