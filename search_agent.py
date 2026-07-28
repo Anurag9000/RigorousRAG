@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
@@ -88,11 +89,16 @@ _MAX_CONCURRENT_TOOL_WORKERS = max(
     1,
     min(int(os.getenv("MAX_CONCURRENT_TOOL_WORKERS", "32")), 256),
 )
+_MAX_PENDING_TOOL_TASKS = max(
+    _MAX_CONCURRENT_TOOL_WORKERS,
+    min(int(os.getenv("MAX_PENDING_TOOL_TASKS", "64")), 4096),
+)
 _MAX_FINAL_ANSWER_CHARS = 100_000
 _TOOL_EXECUTOR = ThreadPoolExecutor(
     max_workers=_MAX_CONCURRENT_TOOL_WORKERS,
     thread_name_prefix="rigorousrag-tool",
 )
+_TOOL_ADMISSION = threading.BoundedSemaphore(_MAX_PENDING_TOOL_TASKS)
 
 SYSTEM_PROMPT = """You are RigorousRAG, an evidence-oriented academic research agent.
 
@@ -112,7 +118,6 @@ Return the final response as JSON with one required string field:
 {"answer": "answer with inline [n] markers"}
 The server, not you, constructs the authoritative citation list.
 """
-
 _MARKER_RE = re.compile(r"\[(\d+)\]")
 
 
@@ -137,7 +142,18 @@ def _safe_failure_text(error_type: str) -> str:
     return "Tool execution failed. Treat this tool result as unavailable."
 
 
-def _validate_schema_value(value: Any, schema: Mapping[str, Any], path: str, depth: int = 0) -> None:
+def _release_tool_admission(_future: Future[Any]) -> None:
+    """Release a process-wide tool slot only after the underlying future finishes."""
+
+    _TOOL_ADMISSION.release()
+
+
+def _validate_schema_value(
+    value: Any,
+    schema: Mapping[str, Any],
+    path: str,
+    depth: int = 0,
+) -> None:
     if depth > 8:
         raise ValueError(f"{path} exceeds the maximum schema nesting depth.")
     alternatives = schema.get("anyOf") or schema.get("oneOf")
@@ -154,7 +170,12 @@ def _validate_schema_value(value: Any, schema: Mapping[str, Any], path: str, dep
     if isinstance(expected, list):
         for candidate in expected:
             try:
-                _validate_schema_value(value, {**schema, "type": candidate}, path, depth + 1)
+                _validate_schema_value(
+                    value,
+                    {**schema, "type": candidate},
+                    path,
+                    depth + 1,
+                )
                 return
             except ValueError:
                 continue
@@ -168,7 +189,9 @@ def _validate_schema_value(value: Any, schema: Mapping[str, Any], path: str, dep
             _MAX_TOOL_ARGUMENT_CHARS,
         )
         if not minimum <= len(value) <= maximum:
-            raise ValueError(f"{path} must contain between {minimum} and {maximum} characters.")
+            raise ValueError(
+                f"{path} must contain between {minimum} and {maximum} characters."
+            )
         if "enum" in schema and value not in schema["enum"]:
             raise ValueError(f"{path} is not an allowed value.")
         return
@@ -194,7 +217,9 @@ def _validate_schema_value(value: Any, schema: Mapping[str, Any], path: str, dep
         maximum = min(int(schema.get("maxItems", 100)), 100)
         minimum = int(schema.get("minItems", 0))
         if not minimum <= len(value) <= maximum:
-            raise ValueError(f"{path} must contain between {minimum} and {maximum} items.")
+            raise ValueError(
+                f"{path} must contain between {minimum} and {maximum} items."
+            )
         item_schema = schema.get("items", {})
         for index, item in enumerate(value):
             _validate_schema_value(item, item_schema, f"{path}[{index}]", depth + 1)
@@ -210,13 +235,20 @@ def _validate_schema_value(value: Any, schema: Mapping[str, Any], path: str, dep
         if schema.get("additionalProperties") is False:
             extras = sorted(set(value) - set(properties))
             if extras:
-                raise ValueError(f"{path} contains unsupported fields: {', '.join(extras)}.")
+                raise ValueError(
+                    f"{path} contains unsupported fields: {', '.join(extras)}."
+                )
         if len(value) > 100:
             raise ValueError(f"{path} contains too many fields.")
         for key, item in value.items():
             child_schema = properties.get(key)
             if child_schema is not None:
-                _validate_schema_value(item, child_schema, f"{path}.{key}", depth + 1)
+                _validate_schema_value(
+                    item,
+                    child_schema,
+                    f"{path}.{key}",
+                    depth + 1,
+                )
         return
     if expected == "null":
         if value is not None:
@@ -249,7 +281,9 @@ class SearchAgent:
         self.max_turns = max(1, min(max_turns, 20))
         self.max_tool_calls = max(1, min(max_tool_calls, 64))
         self.tool_timeout = max(1.0, min(float(tool_timeout), 300.0))
-        configured_tokens = max_response_tokens or int(os.getenv("MAX_RESPONSE_TOKENS", "2000"))
+        configured_tokens = max_response_tokens or int(
+            os.getenv("MAX_RESPONSE_TOKENS", "2000")
+        )
         self.max_response_tokens = max(128, min(int(configured_tokens), 16_000))
         self.client = None
         if OpenAI is not None and (self.api_key or self.base_url):
@@ -359,7 +393,8 @@ class SearchAgent:
                         error_type=execution.error_type,
                     )
                 if len(evidence) >= _MAX_EVIDENCE_SOURCES and (
-                    not warnings or warnings[-1] != "The evidence-source budget was reached."
+                    not warnings
+                    or warnings[-1] != "The evidence-source budget was reached."
                 ):
                     warnings.append("The evidence-source budget was reached.")
 
@@ -423,11 +458,15 @@ class SearchAgent:
                 n_results=3,
             ))
         except Exception as exc:
-            failures.append(f"Uploaded-document retrieval unavailable ({type(exc).__name__}).")
+            failures.append(
+                f"Uploaded-document retrieval unavailable ({type(exc).__name__})."
+            )
         try:
             evidence.extend(search_internal(query, limit=3))
         except Exception as exc:
-            failures.append(f"Academic-index retrieval unavailable ({type(exc).__name__}).")
+            failures.append(
+                f"Academic-index retrieval unavailable ({type(exc).__name__})."
+            )
         relabelled: List[Citation] = []
         seen: Dict[Tuple[str, str, str], str] = {}
         self._register_citations(evidence, relabelled, seen)
@@ -458,9 +497,7 @@ class SearchAgent:
         future_map: Dict[Future[ToolExecution], Tuple[int, Any]] = {}
         executions: List[Optional[ToolExecution]] = [None] * len(tool_calls)
         for index, call in enumerate(tool_calls):
-            try:
-                future = _TOOL_EXECUTOR.submit(self._execute_tool, call)
-            except RuntimeError:
+            if not _TOOL_ADMISSION.acquire(blocking=False):
                 executions[index] = ToolExecution(
                     tool_call_id=call.id,
                     tool_name=call.function.name,
@@ -469,6 +506,19 @@ class SearchAgent:
                     error_type="ExecutorUnavailable",
                 )
                 continue
+            try:
+                future = _TOOL_EXECUTOR.submit(self._execute_tool, call)
+            except Exception:
+                _TOOL_ADMISSION.release()
+                executions[index] = ToolExecution(
+                    tool_call_id=call.id,
+                    tool_name=call.function.name,
+                    content=_safe_failure_text("ExecutorUnavailable"),
+                    success=False,
+                    error_type="ExecutorUnavailable",
+                )
+                continue
+            future.add_done_callback(_release_tool_admission)
             future_map[future] = (index, call)
         if future_map:
             done, pending = wait(list(future_map), timeout=self.tool_timeout)
@@ -533,7 +583,11 @@ class SearchAgent:
                 duration=time.monotonic() - started,
             )
 
-    def _dispatch(self, tool_name: str, arguments: Dict[str, Any]) -> Tuple[str, List[Citation]]:
+    def _dispatch(
+        self,
+        tool_name: str,
+        arguments: Dict[str, Any],
+    ) -> Tuple[str, List[Citation]]:
         if tool_name == "web_search":
             return "Public search results retrieved.", web_search(**arguments)
         if tool_name == "search_handbook":
@@ -568,9 +622,15 @@ class SearchAgent:
                 source_id=page.url,
             )]
 
-        scoped = {"owner_id": self.owner_id, "client": self.client, "model": self.model}
+        scoped = {
+            "owner_id": self.owner_id,
+            "client": self.client,
+            "model": self.model,
+        }
         if tool_name == "check_visual_entailment":
-            return self._content_with_embedded_citations(check_visual_entailment(**arguments, **scoped))
+            return self._content_with_embedded_citations(
+                check_visual_entailment(**arguments, **scoped)
+            )
         if tool_name == "extract_protocol":
             return self._content_with_embedded_citations(
                 extract_protocol(**arguments, client=self.client, model=self.model)
@@ -580,7 +640,9 @@ class SearchAgent:
                 run_scientific_debate(**arguments, client=self.client, model=self.model)
             )
         if tool_name == "compare_papers":
-            return self._content_with_embedded_citations(compare_papers(**arguments, **scoped))
+            return self._content_with_embedded_citations(
+                compare_papers(**arguments, **scoped)
+            )
         if tool_name == "generate_comparison_matrix":
             return self._content_with_embedded_citations(
                 generate_comparison_matrix(**arguments, **scoped)
@@ -658,9 +720,14 @@ class SearchAgent:
         return selected
 
     @staticmethod
-    def _citations_used_by_answer(answer: str, evidence: Sequence[Citation]) -> List[Citation]:
+    def _citations_used_by_answer(
+        answer: str,
+        evidence: Sequence[Citation],
+    ) -> List[Citation]:
         used = {f"[{value}]" for value in _MARKER_RE.findall(answer or "")}
-        return [citation for citation in evidence if citation.label in used][:_MAX_EVIDENCE_SOURCES]
+        return [
+            citation for citation in evidence if citation.label in used
+        ][:_MAX_EVIDENCE_SOURCES]
 
     def _expansion_model(self) -> str:
         configured = os.getenv("RETRIEVAL_EXPANSION_MODEL")
