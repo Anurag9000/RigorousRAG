@@ -139,6 +139,7 @@ def process_ingestion(
             document = result.document
             document.filename = display_name
             keep_source = True
+            indexed = None
             try:
                 agent = _implementation._new_agent(owner_id)
                 indexed = _implementation.index_document(
@@ -186,7 +187,7 @@ def process_ingestion(
                     owner_id=owner_id,
                     doc_id=document.id,
                 )
-                if registry_record is not None:
+                if indexed is not None and registry_record is not None:
                     retained_path = str(registry_record.get("source_path") or "")
                     try:
                         _implementation._JOB_STORE.update(
