@@ -1,9 +1,8 @@
 """Compatibility entrypoint over the FastAPI service implementation.
 
-`server_app` preserves the complete route/application implementation. This shim
-normalizes service-critical configuration before importing that implementation,
-then replaces parser-facing ingestion and recovery so every unfinished operation is
-replayed idempotently from immutable descriptor-anchored bytes.
+``server_app`` preserves the route/application implementation. This shim validates
+service configuration and storage paths before importing it, then replaces ingestion
+and recovery with immutable descriptor-anchored, idempotently replayed processing.
 """
 
 from __future__ import annotations
@@ -12,6 +11,7 @@ import importlib
 import math
 import os
 import sys
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -52,6 +52,21 @@ def _normalize_float_env(
     return value
 
 
+def _safe_state_path(name: str, default: str) -> Path:
+    raw = os.getenv(name, default)
+    if not isinstance(raw, str) or not raw or len(raw) > 4096 or "\x00" in raw:
+        raise RuntimeError(f"{name} is invalid or too long.")
+    candidate = Path(raw)
+    if not candidate.is_absolute():
+        candidate = Path.cwd() / candidate
+    absolute = Path(os.path.abspath(candidate))
+    for component in (absolute, *absolute.parents):
+        if component.is_symlink():
+            raise RuntimeError(f"{name} may not contain symbolic-link components.")
+    os.environ[name] = str(absolute)
+    return absolute
+
+
 def _normalize_service_environment() -> None:
     integer_specs = {
         "MAX_UPLOAD_BYTES": (50_000_000, 1, 1_000_000_000),
@@ -69,7 +84,7 @@ def _normalize_service_environment() -> None:
         "MAX_EVIDENCE_SOURCES": (100, 1, 500),
         "MAX_CONCURRENT_TOOL_WORKERS": (32, 1, 256),
         "MAX_PENDING_TOOL_TASKS": (64, 1, 4096),
-        "MAX_RESPONSE_TOKENS": (4000, 256, 32_000),
+        "MAX_RESPONSE_TOKENS": (2000, 128, 16_000),
         "MAX_CHUNKS_PER_DOCUMENT": (10_000, 100, 100_000),
         "DOCUMENT_LIST_SCAN_BATCH": (500, 50, 5000),
         "MAX_DOCUMENT_LIST_SCAN_CHUNKS": (100_000, 50, 1_000_000),
@@ -90,13 +105,15 @@ def _normalize_service_environment() -> None:
         "WEB_SEARCH_MAX_RESULT_CANDIDATES": (30, 10, 100),
         "PORT": (8000, 1, 65_535),
     }
-    for name, (default, minimum, maximum) in integer_specs.items():
-        _normalize_integer_env(
+    normalized = {
+        name: _normalize_integer_env(
             name,
             default,
             minimum=minimum,
             maximum=maximum,
         )
+        for name, (default, minimum, maximum) in integer_specs.items()
+    }
     float_specs = {
         "REMOTE_REQUEST_TIMEOUT_SECONDS": (15.0, 0.1, 300.0),
         "QUERY_TIMEOUT_SECONDS": (120.0, 1.0, 900.0),
@@ -110,7 +127,20 @@ def _normalize_service_environment() -> None:
             minimum=minimum,
             maximum=maximum,
         )
-    upload_limit = int(os.environ["MAX_UPLOAD_BYTES"])
+
+    os.environ["QUERY_MAX_PENDING"] = str(
+        max(normalized["QUERY_MAX_PENDING"], normalized["QUERY_WORKERS"])
+    )
+    os.environ["INGEST_MAX_PENDING"] = str(
+        max(normalized["INGEST_MAX_PENDING"], normalized["INGEST_WORKERS"])
+    )
+    os.environ["MAX_PENDING_TOOL_TASKS"] = str(
+        max(
+            normalized["MAX_PENDING_TOOL_TASKS"],
+            normalized["MAX_CONCURRENT_TOOL_WORKERS"],
+        )
+    )
+    upload_limit = normalized["MAX_UPLOAD_BYTES"]
     request_default = min(upload_limit + 1_048_576, 1_000_000_000)
     _normalize_integer_env(
         "MAX_REQUEST_BODY_BYTES",
@@ -118,9 +148,14 @@ def _normalize_service_environment() -> None:
         minimum=upload_limit,
         maximum=1_000_000_000,
     )
-    raw_upload_root = Path(os.getenv("UPLOAD_DIR", "uploads"))
-    if raw_upload_root.is_symlink():
-        raise RuntimeError("UPLOAD_DIR may not be a symbolic link.")
+    for name, default in (
+        ("UPLOAD_DIR", "uploads"),
+        ("JOB_DB_PATH", "data/jobs.sqlite3"),
+        ("DOCUMENT_DB_PATH", "data/documents.sqlite3"),
+        ("CHROMA_PATH", "rag_storage"),
+        ("CLASSIC_STORAGE_DIR", "data"),
+    ):
+        _safe_state_path(name, default)
 
 
 _normalize_service_environment()
@@ -142,6 +177,13 @@ def _validated_upload_file(path: str | Path | None) -> Optional[Path]:
     return validated_owner_file_path(_implementation.UPLOAD_DIR, path)
 
 
+def _safe_attempt_count(value: object) -> int:
+    try:
+        return max(0, min(int(value), 1_000_000))
+    except (TypeError, ValueError, OverflowError):
+        return 0
+
+
 def _retry_or_fail_job(
     *,
     job_id: str,
@@ -153,7 +195,7 @@ def _retry_or_fail_job(
     failure_prefix: str,
 ) -> None:
     internal = _implementation._JOB_STORE.get_internal(job_id, owner_id) or {}
-    attempts = int(internal.get("attempts") or 0)
+    attempts = _safe_attempt_count(internal.get("attempts"))
     if attempts < _implementation.INGEST_MAX_ATTEMPTS:
         try:
             _implementation._JOB_STORE.update(
@@ -172,6 +214,19 @@ def _retry_or_fail_job(
             )
             return
         except Exception:
+            # The durable queued row remains recoverable after restart. Try to retain
+            # in-process liveness without converting a transient admission failure into
+            # a false terminal state.
+            try:
+                _implementation._schedule_ingestion_attempt(
+                    str(path),
+                    display_name,
+                    job_id,
+                    owner_id,
+                    time.time() + _implementation.INGEST_ADMISSION_RETRY_SECONDS,
+                )
+            except Exception:
+                pass
             return
     _implementation._persist_failed_job(
         job_id,
@@ -205,11 +260,11 @@ def _recover_interrupted_jobs() -> None:
     """Replay every unfinished job from its durable source after restart."""
 
     for record in _implementation._JOB_STORE.recoverable():
-        job_id = str(record["job_id"])
-        owner_id = str(record["owner_id"])
-        display_name = str(record.get("filename") or "upload")
+        job_id = str(record.get("job_id") or "")
+        owner_id = str(record.get("owner_id") or "")
+        display_name = str(record.get("filename") or "upload")[:500]
         source_path = str(record.get("source_path") or "")
-        attempts = int(record.get("attempts") or 0)
+        attempts = _safe_attempt_count(record.get("attempts"))
         if attempts >= _implementation.INGEST_MAX_ATTEMPTS:
             _implementation._persist_failed_job(
                 job_id,
@@ -328,7 +383,9 @@ def process_ingestion(
                     message="Vector indexing completed; finalizing source lifecycle.",
                     doc_id=document.id,
                 )
-                retained_path = str(path) if _implementation.RETAIN_SOURCE_FILES else None
+                retained_path = (
+                    str(path) if _implementation.RETAIN_SOURCE_FILES else None
+                )
                 previous_path = _implementation._DOCUMENT_STORE.register(
                     owner_id=owner_id,
                     doc_id=document.id,
@@ -341,8 +398,12 @@ def process_ingestion(
                     doc_id=document.id,
                 )
                 if registry_record is None:
-                    raise RuntimeError("Document registry did not return the committed row.")
-                registry_keeps_source = bool(registry_record.get("source_retained"))
+                    raise RuntimeError(
+                        "Document registry did not return the committed row."
+                    )
+                registry_keeps_source = bool(
+                    registry_record.get("source_retained")
+                )
                 if previous_path:
                     _implementation._safe_unlink_upload(previous_path)
                 _implementation._JOB_STORE.update(
