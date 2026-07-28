@@ -90,8 +90,17 @@ class StorageManager(_original_storage_manager):
             info = os.fstat(descriptor)
             if not stat.S_ISREG(info.st_mode):
                 return None
+            current = os.stat(path, follow_symlinks=False)
+            valid_identity = (
+                stat.S_ISREG(current.st_mode)
+                and current.st_dev == info.st_dev
+                and current.st_ino == info.st_ino
+            )
+            if not valid_identity:
+                return None
             if info.st_size < 0 or info.st_size > self.max_snapshot_file_bytes:
                 raise ValueError("Persisted JSON exceeds the configured byte limit.")
+
             data = bytearray()
             while True:
                 remaining = self.max_snapshot_file_bytes + 1 - len(data)
@@ -103,13 +112,14 @@ class StorageManager(_original_storage_manager):
                 data.extend(chunk)
             if len(data) > self.max_snapshot_file_bytes:
                 raise ValueError("Persisted JSON exceeds the configured byte limit.")
-            current = os.stat(path, follow_symlinks=False)
-            valid_identity = (
-                stat.S_ISREG(current.st_mode)
-                and current.st_dev == info.st_dev
-                and current.st_ino == info.st_ino
-            )
-            if not valid_identity:
+
+            after = os.stat(path, follow_symlinks=False)
+            if not (
+                stat.S_ISREG(after.st_mode)
+                and after.st_dev == info.st_dev
+                and after.st_ino == info.st_ino
+            ):
+                valid_identity = False
                 return None
             return json.loads(
                 bytes(data).decode("utf-8"),
