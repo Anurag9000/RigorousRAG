@@ -1,3 +1,4 @@
+import os
 import time
 from pathlib import Path
 
@@ -48,25 +49,28 @@ def test_job_id_cannot_be_reassigned_across_owners(tmp_path):
         store.update("job-1", "bob", status="queued", filename="b.txt")
 
 
-def test_recoverable_includes_interrupted_jobs_and_not_completed_jobs(tmp_path):
+def test_recoverable_includes_queued_processing_and_finalizing_only(tmp_path):
     store = JobStore(tmp_path / "jobs.sqlite3")
     source = tmp_path / "source.txt"
     source.write_text("evidence", encoding="utf-8")
-    store.update(
-        "queued",
-        "alice",
-        status="queued",
-        filename="a.txt",
-        source_path=str(source),
-    )
-    store.update(
-        "done",
-        "alice",
-        status="success",
-        filename="b.txt",
-        source_path="",
-    )
-    assert [record["job_id"] for record in store.recoverable()] == ["queued"]
+    for job_id, status in (
+        ("queued", "queued"),
+        ("processing", "processing"),
+        ("finalizing", "finalizing"),
+        ("done", "success"),
+        ("failed", "failed"),
+    ):
+        store.update(
+            job_id,
+            "alice",
+            status=status,
+            filename=f"{job_id}.txt",
+            source_path=str(source) if status not in {"success", "failed"} else "",
+            doc_id="doc-1" if status == "finalizing" else None,
+        )
+    records = {record["job_id"]: record for record in store.recoverable()}
+    assert set(records) == {"queued", "processing", "finalizing"}
+    assert records["finalizing"]["doc_id"] == "doc-1"
 
 
 def test_atomic_claim_enforces_attempt_limit(tmp_path):
@@ -91,7 +95,7 @@ def test_atomic_claim_enforces_attempt_limit(tmp_path):
     assert store.claim("job-1", "alice", max_attempts=1) is False
 
 
-def test_document_store_is_owner_scoped_and_keeps_paths_out_of_public_vectors(tmp_path):
+def test_document_store_is_owner_scoped_and_keeps_paths_private(tmp_path):
     upload_root = tmp_path / "uploads"
     source = upload_root / "alice" / "source.pdf"
     source.parent.mkdir(parents=True)
@@ -125,6 +129,27 @@ def test_document_store_rejects_sources_outside_upload_root(tmp_path):
             filename="paper.pdf",
             mime_type="application/pdf",
             source_path=outside,
+        )
+
+
+def test_document_store_rejects_symlinked_sources(tmp_path):
+    upload_root = tmp_path / "uploads"
+    target = upload_root / "alice" / "target.pdf"
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b"%PDF-test")
+    link = upload_root / "alice" / "link.pdf"
+    try:
+        os.symlink(target, link)
+    except OSError:
+        pytest.skip("Symlinks are unavailable on this platform.")
+    store = DocumentStore(tmp_path / "documents.sqlite3", upload_root)
+    with pytest.raises(ValueError, match="symbolic"):
+        store.register(
+            owner_id="alice",
+            doc_id="doc-1",
+            filename="paper.pdf",
+            mime_type="application/pdf",
+            source_path=link,
         )
 
 
