@@ -80,6 +80,33 @@ class DocumentStore:
                 "ON documents(owner_id, updated_at)"
             )
 
+    def ping(self) -> bool:
+        """Return whether the registry database can complete a trivial read."""
+
+        try:
+            with self._lock, self._connect() as connection:
+                row = connection.execute("SELECT 1 AS ok").fetchone()
+            return bool(row and int(row["ok"]) == 1)
+        except sqlite3.Error:
+            return False
+
+    def _resolve_source_path(self, source_path: str | Path | None) -> Optional[Path]:
+        """Resolve one existing regular source without following a symbolic link."""
+
+        if source_path in (None, ""):
+            return None
+        unresolved = Path(source_path)
+        if unresolved.is_symlink():
+            return None
+        candidate = unresolved.resolve()
+        try:
+            candidate.relative_to(self.upload_root)
+        except ValueError:
+            return None
+        if not candidate.exists() or not candidate.is_file():
+            return None
+        return candidate
+
     def _validated_source_path(self, source_path: str | Path | None) -> Optional[str]:
         if source_path in (None, ""):
             return None
@@ -145,17 +172,8 @@ class DocumentStore:
     def remove_source(self, source_path: str | Path | None) -> bool:
         """Remove one retained regular file without following a symlink."""
 
-        if source_path in (None, ""):
-            return False
-        unresolved = Path(source_path)
-        if unresolved.is_symlink():
-            return False
-        candidate = unresolved.resolve()
-        try:
-            candidate.relative_to(self.upload_root)
-        except ValueError:
-            return False
-        if not candidate.exists() or not candidate.is_file():
+        candidate = self._resolve_source_path(source_path)
+        if candidate is None:
             return False
         candidate.unlink(missing_ok=True)
         return True
@@ -170,18 +188,9 @@ class DocumentStore:
             ).fetchall()
         paths: Set[Path] = set()
         for row in rows:
-            raw_path = str(row["source_path"] or "")
-            if not raw_path:
-                continue
-            unresolved = Path(raw_path)
-            if unresolved.is_symlink():
-                continue
-            candidate = unresolved.resolve()
-            try:
-                candidate.relative_to(self.upload_root)
-            except ValueError:
-                continue
-            paths.add(candidate)
+            candidate = self._resolve_source_path(str(row["source_path"] or ""))
+            if candidate is not None:
+                paths.add(candidate)
         return paths
 
     def cleanup_orphans(
@@ -305,6 +314,8 @@ class DocumentStore:
         return previous if previous and previous != validated_path else None
 
     def get(self, *, owner_id: str, doc_id: str) -> Optional[Dict[str, Any]]:
+        """Return a record with source capability validated against the filesystem."""
+
         owner = normalize_owner_id(owner_id)
         with self._lock, self._connect() as connection:
             row = connection.execute(
@@ -315,24 +326,18 @@ class DocumentStore:
                 """,
                 (owner, doc_id),
             ).fetchone()
-        return dict(row) if row is not None else None
+        if row is None:
+            return None
+        record = dict(row)
+        source = self._resolve_source_path(record.get("source_path"))
+        record["source_path"] = str(source) if source is not None else None
+        record["source_retained"] = 1 if source is not None else 0
+        return record
 
     def source_path(self, *, owner_id: str, doc_id: str) -> Optional[Path]:
         record = self.get(owner_id=owner_id, doc_id=doc_id)
         raw_path = str((record or {}).get("source_path") or "")
-        if not raw_path:
-            return None
-        unresolved = Path(raw_path)
-        if unresolved.is_symlink():
-            return None
-        candidate = unresolved.resolve()
-        try:
-            candidate.relative_to(self.upload_root)
-        except ValueError:
-            return None
-        if not candidate.exists() or not candidate.is_file():
-            return None
-        return candidate
+        return Path(raw_path) if raw_path else None
 
     def delete(self, *, owner_id: str, doc_id: str) -> Optional[Dict[str, Any]]:
         owner = normalize_owner_id(owner_id)
