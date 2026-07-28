@@ -123,5 +123,5 @@ class IngestionResult(BaseModel):
         if self.success and self.error is not None:
             raise ValueError("Successful ingestion may not include an error.")
         if not self.success and self.error is None:
-            self.error = "Document ingestion failed."
+            object.__setattr__(self, "error", "Document ingestion failed.")
         return self
