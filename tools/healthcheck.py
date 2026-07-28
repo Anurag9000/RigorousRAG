@@ -8,6 +8,7 @@ storage directories through create/fsync/delete cycles.
 from __future__ import annotations
 
 import json
+import math
 import os
 import sqlite3
 import tempfile
@@ -27,7 +28,20 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 def _has_symlink_component(path: Path) -> bool:
     absolute = path.absolute()
-    return any(candidate.is_symlink() for candidate in (absolute, *absolute.parents))
+    try:
+        return any(candidate.is_symlink() for candidate in (absolute, *absolute.parents))
+    except OSError:
+        return True
+
+
+def _finite_timeout(value: object, default: float = 3.0) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError, OverflowError):
+        parsed = default
+    if not math.isfinite(parsed) or parsed <= 0:
+        parsed = default
+    return max(0.1, min(parsed, 60.0))
 
 
 def check_http(url: str, timeout: float = 3.0) -> bool:
@@ -47,7 +61,7 @@ def check_http(url: str, timeout: float = 3.0) -> bool:
             headers={"Accept": "application/json"},
             method="GET",
         )
-        with opener.open(request, timeout=max(0.1, float(timeout))) as response:
+        with opener.open(request, timeout=_finite_timeout(timeout)) as response:
             if response.status != 200:
                 return False
             raw = response.read(_MAX_HTTP_BYTES + 1)
@@ -99,10 +113,11 @@ def check_writable_directory(path: str | Path) -> bool:
 
 
 def run_checks() -> Dict[str, bool]:
+    timeout = _finite_timeout(os.getenv("HEALTHCHECK_TIMEOUT_SECONDS", "3"))
     return {
         "http": check_http(
             os.getenv("HEALTHCHECK_URL", "http://127.0.0.1:8000/health"),
-            timeout=float(os.getenv("HEALTHCHECK_TIMEOUT_SECONDS", "3")),
+            timeout=timeout,
         ),
         "jobs": check_sqlite(os.getenv("JOB_DB_PATH", "data/jobs.sqlite3")),
         "documents": check_sqlite(
