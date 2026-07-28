@@ -53,6 +53,10 @@ _AUTHOR_LINE_RE = re.compile(r"^(?:authors?|by)\s*[:—-]\s*(.+)$", re.IGNORECAS
 _SENTENCE_BOUNDARY_RE = re.compile(r"(?<=[.!?])\s+")
 
 
+class OCRUnavailableError(RuntimeError):
+    """Raised when OCR was explicitly enabled but its runtime is unavailable."""
+
+
 def detect_mime_type(file_path: str) -> str:
     suffix = Path(file_path).suffix.lower()
     if suffix == ".pdf":
@@ -267,40 +271,65 @@ def _page_heading_candidates(page: fitz.Page) -> List[Tuple[str, float, bool]]:
 
 
 def _ocr_page(page: fitz.Page, page_number: int) -> str:
-    if not _ENABLE_OCR or page_number > _OCR_MAX_PAGES:
+    if not _ENABLE_OCR:
         return ""
     if pytesseract is None or Image is None:
-        raise RuntimeError(
+        raise OCRUnavailableError(
             "OCR is enabled but Pillow/pytesseract is unavailable. Install OCR dependencies."
         )
     pixmap = page.get_pixmap(dpi=_OCR_DPI, alpha=False)
-    with Image.open(io.BytesIO(pixmap.tobytes("png"))) as image:
-        text = pytesseract.image_to_string(
-            image,
-            config="--psm 3",
-            timeout=_OCR_TIMEOUT_SECONDS,
-        )
+    try:
+        with Image.open(io.BytesIO(pixmap.tobytes("png"))) as image:
+            text = pytesseract.image_to_string(
+                image,
+                config="--psm 3",
+                timeout=_OCR_TIMEOUT_SECONDS,
+            )
+    except Exception as exc:
+        not_found_type = getattr(pytesseract, "TesseractNotFoundError", ())
+        if not_found_type and isinstance(exc, not_found_type):
+            raise OCRUnavailableError("The Tesseract executable is unavailable.") from exc
+        raise
     return "\n".join(line.rstrip() for line in text.splitlines()).strip()
 
 
 def _extract_sections_from_pdf(
     document: fitz.Document,
-) -> Tuple[List[DocumentSection], List[int]]:
+) -> Tuple[List[DocumentSection], Dict[str, List[int]]]:
     page_payloads: List[
         Tuple[int, str, List[Tuple[str, float, bool]], bool]
     ] = []
     all_sizes: List[float] = []
-    ocr_pages: List[int] = []
+    ocr_stats: Dict[str, List[int]] = {
+        "attempted": [],
+        "successful": [],
+        "empty": [],
+        "failed": [],
+        "skipped_limit": [],
+    }
     for page_index, page in enumerate(document):
         page_number = page_index + 1
         text = page.get_text("text", sort=True).strip()
         used_ocr = False
-        if len(re.sub(r"\s+", "", text)) < _OCR_MIN_TEXT_CHARS:
-            ocr_text = _ocr_page(page, page_number)
-            if ocr_text:
-                text = ocr_text
-                used_ocr = True
-                ocr_pages.append(page_number)
+        low_text = len(re.sub(r"\s+", "", text)) < _OCR_MIN_TEXT_CHARS
+        if low_text and _ENABLE_OCR:
+            if len(ocr_stats["attempted"]) >= _OCR_MAX_PAGES:
+                ocr_stats["skipped_limit"].append(page_number)
+            else:
+                ocr_stats["attempted"].append(page_number)
+                try:
+                    ocr_text = _ocr_page(page, page_number)
+                except OCRUnavailableError:
+                    raise
+                except Exception:
+                    ocr_stats["failed"].append(page_number)
+                    ocr_text = ""
+                if ocr_text:
+                    text = ocr_text
+                    used_ocr = True
+                    ocr_stats["successful"].append(page_number)
+                elif page_number not in ocr_stats["failed"]:
+                    ocr_stats["empty"].append(page_number)
         tables = _extract_tables_from_page(page) if not used_ocr else []
         if tables:
             text = f"{text}\n\n" + "\n\n".join(
@@ -332,7 +361,11 @@ def _extract_sections_from_pdf(
                 page_number=page_number,
             )
         )
-    return sections, ocr_pages
+    return sections, ocr_stats
+
+
+def _csv_pages(values: Sequence[int]) -> str:
+    return ",".join(str(value) for value in values)
 
 
 def _ingest_pdf(path: Path) -> IngestionResult:
@@ -346,16 +379,18 @@ def _ingest_pdf(path: Path) -> IngestionResult:
     try:
         if document.needs_pass:
             return IngestionResult(success=False, error="Encrypted PDFs are not supported.")
-        sections, ocr_pages = _extract_sections_from_pdf(document)
+        sections, ocr_stats = _extract_sections_from_pdf(document)
         text = "\n\n".join(section.content for section in sections).strip()
         if not text:
             if _ENABLE_OCR and (pytesseract is None or Image is None):
                 error = "The PDF requires OCR, but OCR dependencies are unavailable."
-            elif _ENABLE_OCR and len(document) > _OCR_MAX_PAGES:
+            elif _ENABLE_OCR and ocr_stats["skipped_limit"]:
                 error = (
-                    "No text was extracted within the configured OCR page limit "
+                    "No text was extracted within the configured OCR-attempt limit "
                     f"({_OCR_MAX_PAGES})."
                 )
+            elif _ENABLE_OCR and ocr_stats["failed"]:
+                error = "OCR failed on every attempted low-text page."
             elif _ENABLE_OCR:
                 error = "OCR completed but produced no indexable text."
             else:
@@ -368,11 +403,24 @@ def _ingest_pdf(path: Path) -> IngestionResult:
             for key, value in metadata.items()
             if isinstance(value, (str, int, float, bool)) and value not in (None, "")
         }
+        warnings: List[str] = []
+        if ocr_stats["empty"]:
+            warnings.append("OCR returned no text for some attempted pages.")
+        if ocr_stats["failed"]:
+            warnings.append("OCR failed or timed out for some attempted pages.")
+        if ocr_stats["skipped_limit"]:
+            warnings.append("Some low-text pages were skipped after the OCR attempt limit.")
         safe_metadata.update(
             {
                 "ocr_enabled": _ENABLE_OCR,
-                "ocr_page_count": len(ocr_pages),
-                "ocr_pages": ",".join(str(page) for page in ocr_pages),
+                "ocr_attempted_count": len(ocr_stats["attempted"]),
+                "ocr_attempted_pages": _csv_pages(ocr_stats["attempted"]),
+                "ocr_page_count": len(ocr_stats["successful"]),
+                "ocr_pages": _csv_pages(ocr_stats["successful"]),
+                "ocr_empty_pages": _csv_pages(ocr_stats["empty"]),
+                "ocr_failed_pages": _csv_pages(ocr_stats["failed"]),
+                "ocr_skipped_limit_pages": _csv_pages(ocr_stats["skipped_limit"]),
+                "extraction_warnings": " ".join(warnings),
             }
         )
         return IngestionResult(
@@ -388,7 +436,7 @@ def _ingest_pdf(path: Path) -> IngestionResult:
                 metadata=safe_metadata,
             ),
         )
-    except RuntimeError as exc:
+    except OCRUnavailableError as exc:
         return IngestionResult(success=False, error=str(exc))
     except Exception as exc:
         return IngestionResult(
