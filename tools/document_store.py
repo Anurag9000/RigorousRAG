@@ -1,8 +1,8 @@
 """Truthful and path-safe retained-source registry boundary.
 
 The complete SQLite implementation remains in ``document_store_legacy``. This module
-makes verification flags truthful and prevents registry/upload roots from being
-silently redirected through final-path symbolic links.
+normalizes registry budgets, makes verification flags truthful, and prevents
+registry/upload roots from being silently redirected through final-path symlinks.
 """
 
 from __future__ import annotations
@@ -12,6 +12,7 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from tools.config import bounded_int_env
 from tools import document_store_legacy as _implementation
 
 _original_document_store = _implementation.DocumentStore
@@ -24,14 +25,30 @@ def _lexical_absolute(path: str | Path) -> Path:
     return Path(os.path.abspath(candidate))
 
 
+def _normalize_registry_environment() -> None:
+    for name, default, minimum, maximum in (
+        ("ORPHAN_GRACE_SECONDS", 3600, 60, 31_536_000),
+        ("VISUAL_MAX_PDF_PAGES", 500, 1, 5000),
+        ("VISUAL_MAX_RENDER_PIXELS", 2_000_000, 1_000_000, 100_000_000),
+    ):
+        bounded_int_env(
+            name,
+            default,
+            minimum=minimum,
+            maximum=maximum,
+            write_back=True,
+        )
+
+
 class DocumentStore(_original_document_store):
-    """Registry with truthful visual flags and non-symlinked storage roots."""
+    """Registry with bounded budgets, truthful flags, and safe storage roots."""
 
     def __init__(
         self,
         path: str | Path | None = None,
         upload_root: str | Path | None = None,
     ) -> None:
+        _normalize_registry_environment()
         raw_path = Path(path or os.getenv("DOCUMENT_DB_PATH", "data/documents.sqlite3"))
         raw_root = Path(upload_root or os.getenv("UPLOAD_DIR", "uploads"))
         if raw_path.is_symlink():
@@ -89,6 +106,7 @@ def get_document_store(
     path: str | Path | None = None,
     upload_root: str | Path | None = None,
 ) -> DocumentStore:
+    _normalize_registry_environment()
     raw_path = Path(path or os.getenv("DOCUMENT_DB_PATH", "data/documents.sqlite3"))
     raw_root = Path(upload_root or os.getenv("UPLOAD_DIR", "uploads"))
     if raw_path.is_symlink():
