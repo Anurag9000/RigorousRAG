@@ -7,7 +7,7 @@ import sqlite3
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 from tools.privacy import mask_metadata_text
 from tools.security import normalize_owner_id
@@ -199,3 +199,21 @@ class JobStore:
                 """
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def active_source_paths(self) -> Set[Path]:
+        """Return source paths referenced by unfinished jobs for orphan protection."""
+
+        with self._lock, self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT source_path FROM jobs
+                WHERE status IN ('queued', 'processing', 'finalizing')
+                  AND source_path IS NOT NULL
+                """
+            ).fetchall()
+        paths: Set[Path] = set()
+        for row in rows:
+            raw_path = str(row["source_path"] or "")
+            if raw_path:
+                paths.add(Path(raw_path).resolve())
+        return paths
