@@ -186,14 +186,15 @@ class JobStore:
         return dict(row) if row is not None else None
 
     def recoverable(self) -> List[Dict[str, Any]]:
-        """Return every queued/interrupted job for startup reconciliation."""
+        """Return queued, interrupted, and finalizing jobs for reconciliation."""
 
         with self._lock, self._connect() as connection:
             rows = connection.execute(
                 """
-                SELECT job_id, owner_id, status, filename, source_path, attempts
+                SELECT job_id, owner_id, status, filename, doc_id,
+                       source_path, attempts
                 FROM jobs
-                WHERE status IN ('queued', 'processing')
+                WHERE status IN ('queued', 'processing', 'finalizing')
                 ORDER BY created_at ASC
                 """
             ).fetchall()
