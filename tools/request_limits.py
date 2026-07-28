@@ -5,7 +5,9 @@ from __future__ import annotations
 import json
 from typing import Any, Awaitable, Callable, Dict
 
-ASGIApp = Callable[[Dict[str, Any], Callable[..., Awaitable[Dict[str, Any]]], Callable[..., Awaitable[None]]], Awaitable[None]]
+ASGIReceive = Callable[..., Awaitable[Dict[str, Any]]]
+ASGISend = Callable[..., Awaitable[None]]
+ASGIApp = Callable[[Dict[str, Any], ASGIReceive, ASGISend], Awaitable[None]]
 
 
 class RequestBodyTooLarge(Exception):
@@ -23,17 +25,27 @@ class RequestBodyLimitMiddleware:
 
     @staticmethod
     def _content_length(scope: Dict[str, Any]) -> int | None:
-        for name, value in scope.get("headers", []):
-            if name.lower() != b"content-length":
-                continue
+        values = [
+            value
+            for name, value in scope.get("headers", [])
+            if name.lower() == b"content-length"
+        ]
+        if not values:
+            return None
+        parsed_values = []
+        for value in values:
             try:
                 parsed = int(value.decode("ascii"))
             except (UnicodeDecodeError, ValueError):
                 return None
-            return parsed if parsed >= 0 else None
-        return None
+            if parsed < 0:
+                return None
+            parsed_values.append(parsed)
+        if len(set(parsed_values)) != 1:
+            return None
+        return parsed_values[0]
 
-    async def _reject(self, send: Callable[..., Awaitable[None]]) -> None:
+    async def _reject(self, send: ASGISend) -> None:
         body = json.dumps(
             {"detail": f"Request body exceeds the {self.max_bytes}-byte limit."},
             separators=(",", ":"),
@@ -46,6 +58,7 @@ class RequestBodyLimitMiddleware:
                     (b"content-type", b"application/json"),
                     (b"content-length", str(len(body)).encode("ascii")),
                     (b"cache-control", b"no-store"),
+                    (b"connection", b"close"),
                 ],
             }
         )
@@ -54,8 +67,8 @@ class RequestBodyLimitMiddleware:
     async def __call__(
         self,
         scope: Dict[str, Any],
-        receive: Callable[..., Awaitable[Dict[str, Any]]],
-        send: Callable[..., Awaitable[None]],
+        receive: ASGIReceive,
+        send: ASGISend,
     ) -> None:
         if scope.get("type") != "http":
             await self.app(scope, receive, send)
@@ -67,6 +80,7 @@ class RequestBodyLimitMiddleware:
 
         received = 0
         response_started = False
+        response_complete = False
 
         async def limited_receive() -> Dict[str, Any]:
             nonlocal received
@@ -78,9 +92,14 @@ class RequestBodyLimitMiddleware:
             return message
 
         async def tracked_send(message: Dict[str, Any]) -> None:
-            nonlocal response_started
+            nonlocal response_started, response_complete
             if message.get("type") == "http.response.start":
                 response_started = True
+            elif (
+                message.get("type") == "http.response.body"
+                and not message.get("more_body", False)
+            ):
+                response_complete = True
             await send(message)
 
         try:
@@ -88,3 +107,11 @@ class RequestBodyLimitMiddleware:
         except RequestBodyTooLarge:
             if not response_started:
                 await self._reject(send)
+            elif not response_complete:
+                # ASGI status/headers cannot be replaced after response start. Finish the
+                # response explicitly instead of leaving the connection hanging.
+                await send({
+                    "type": "http.response.body",
+                    "body": b"",
+                    "more_body": False,
+                })
