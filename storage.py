@@ -8,9 +8,10 @@ import math
 import os
 import threading
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Set, Tuple
 
 from Crawler import Page
 from Indexer import InvertedIndex
@@ -41,6 +42,7 @@ class StorageManager:
         self.index_path = self.base_dir / "index.json"
         self.pagerank_path = self.base_dir / "pagerank.json"
         self.snapshot_manifest_path = self.base_dir / "snapshot_manifest.json"
+        self.snapshot_lock_path = self.base_dir / ".snapshot.lock"
         self.max_snapshot_file_bytes = max(
             1_000_000,
             min(
@@ -74,6 +76,54 @@ class StorageManager:
             pass
         finally:
             os.close(descriptor)
+
+    @contextmanager
+    def _snapshot_guard(self) -> Iterator[None]:
+        """Serialize manifest reads, publication, and old-generation cleanup.
+
+        The process-local lock protects threads even on platforms where advisory file
+        locks are process-scoped. The file lock protects separate service/CLI
+        processes that share the classic storage directory.
+        """
+
+        with self._lock:
+            if self.snapshot_lock_path.is_symlink():
+                raise OSError("Snapshot lock path cannot be a symbolic link.")
+            flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
+            descriptor = os.open(self.snapshot_lock_path, flags, 0o600)
+            handle = os.fdopen(descriptor, "r+b", closefd=True)
+            lock_kind = ""
+            try:
+                if os.name == "nt":  # pragma: no cover - exercised on Windows CI/users
+                    import msvcrt
+
+                    handle.seek(0, os.SEEK_END)
+                    if handle.tell() == 0:
+                        handle.write(b"\0")
+                        handle.flush()
+                        os.fsync(handle.fileno())
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+                    lock_kind = "windows"
+                else:
+                    import fcntl
+
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+                    lock_kind = "posix"
+                yield
+            finally:
+                try:
+                    if lock_kind == "windows":  # pragma: no cover - Windows only
+                        import msvcrt
+
+                        handle.seek(0)
+                        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                    elif lock_kind == "posix":
+                        import fcntl
+
+                        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                finally:
+                    handle.close()
 
     def _quarantine(self, path: Path) -> None:
         if not path.exists():
@@ -325,6 +375,12 @@ class StorageManager:
     ) -> Tuple[CrawlState, Optional[InvertedIndex], Dict[str, float]]:
         """Load one fully verified generation, or legacy files before first migration."""
 
+        with self._snapshot_guard():
+            return self._load_snapshot_locked()
+
+    def _load_snapshot_locked(
+        self,
+    ) -> Tuple[CrawlState, Optional[InvertedIndex], Dict[str, float]]:
         manifest_existed = self.snapshot_manifest_path.exists()
         manifest = self._read_json(self.snapshot_manifest_path)
         if manifest is None:
@@ -392,6 +448,15 @@ class StorageManager:
     ) -> str:
         """Write generation files first and atomically publish their manifest last."""
 
+        with self._snapshot_guard():
+            return self._save_snapshot_locked(state, index, pagerank)
+
+    def _save_snapshot_locked(
+        self,
+        state: CrawlState,
+        index: InvertedIndex,
+        pagerank: Dict[str, float],
+    ) -> str:
         page_urls = set(state.pages)
         if not set(index.documents).issubset(page_urls):
             raise ValueError("Index documents must be a subset of persisted crawl pages.")
@@ -430,24 +495,23 @@ class StorageManager:
             },
         }
 
-        with self._lock:
-            for key in self._SNAPSHOT_KEYS:
-                self._write_bytes(self.base_dir / names[key], encoded[key])
-            # This atomic replace is the cross-file commit point. Before it, the old
-            # manifest remains authoritative and the new files are merely unreferenced.
-            self._write_json(self.snapshot_manifest_path, manifest)
-            current_names = set(names.values())
-            for pattern in (
-                "crawl_state.*.json",
-                "index.*.json",
-                "pagerank.*.json",
-            ):
-                for candidate in self.base_dir.glob(pattern):
-                    if candidate.name in current_names or candidate.is_symlink():
-                        continue
-                    try:
-                        candidate.unlink()
-                    except OSError:
-                        pass
-            self._fsync_directory()
+        for key in self._SNAPSHOT_KEYS:
+            self._write_bytes(self.base_dir / names[key], encoded[key])
+        # This atomic replace is the cross-file commit point. Before it, the old
+        # manifest remains authoritative and the new files are merely unreferenced.
+        self._write_json(self.snapshot_manifest_path, manifest)
+        current_names = set(names.values())
+        for pattern in (
+            "crawl_state.*.json",
+            "index.*.json",
+            "pagerank.*.json",
+        ):
+            for candidate in self.base_dir.glob(pattern):
+                if candidate.name in current_names or candidate.is_symlink():
+                    continue
+                try:
+                    candidate.unlink()
+                except OSError:
+                    pass
+        self._fsync_directory()
         return generation
