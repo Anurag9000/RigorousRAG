@@ -20,6 +20,14 @@ class JobStore:
         self.path = Path(path or os.getenv("JOB_DB_PATH", "data/jobs.sqlite3")).resolve()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.ttl_seconds = max(int(ttl_seconds), 60)
+        self.retry_base_seconds = max(
+            0.1,
+            float(os.getenv("INGEST_RETRY_BASE_SECONDS", "2")),
+        )
+        self.retry_max_seconds = max(
+            self.retry_base_seconds,
+            float(os.getenv("INGEST_RETRY_MAX_SECONDS", "30")),
+        )
         self._lock = threading.RLock()
         self._initialise()
 
@@ -92,6 +100,10 @@ class JobStore:
             )
             return max(cursor.rowcount, 0)
 
+    def _retry_delay(self, attempts: int) -> float:
+        exponent = max(int(attempts) - 1, 0)
+        return min(self.retry_max_seconds, self.retry_base_seconds * (2**exponent))
+
     def update(self, job_id: str, owner_id: str, **fields: Any) -> None:
         """Create or update a job without allowing cross-owner ID reuse."""
 
@@ -118,20 +130,27 @@ class JobStore:
         next_attempt_value = fields.get("next_attempt_at")
         with self._lock, self._connect() as connection:
             existing = connection.execute(
-                "SELECT owner_id, attempts, source_path, next_attempt_at "
+                "SELECT owner_id, status, attempts, source_path, next_attempt_at "
                 "FROM jobs WHERE job_id=?",
                 (identifier,),
             ).fetchone()
             if existing is not None and str(existing["owner_id"]) != owner:
                 raise PermissionError("A job ID cannot be reassigned to a different owner.")
             attempts = int(existing["attempts"] or 0) if existing else 0
+            previous_status = str(existing["status"] or "") if existing else ""
             if source_path_value is None and existing is not None:
                 source_path = str(existing["source_path"] or "") or None
             if next_attempt_value is None and existing is not None:
                 next_attempt_at = float(existing["next_attempt_at"] or 0.0)
             else:
                 next_attempt_at = max(0.0, float(next_attempt_value or 0.0))
-            if status != "queued":
+            if (
+                status == "queued"
+                and next_attempt_value is None
+                and previous_status in {"processing", "finalizing"}
+            ):
+                next_attempt_at = now + self._retry_delay(attempts)
+            elif status != "queued":
                 next_attempt_at = 0.0
             connection.execute(
                 """
@@ -173,23 +192,47 @@ class JobStore:
         *,
         now: Optional[float] = None,
     ) -> bool:
-        """Atomically claim one due queued job; safe across threads and processes."""
+        """Atomically claim one due queued job; safe across threads and processes.
+
+        Production callers wait for a persisted retry deadline. Tests and reconciliation
+        checks may pass ``now`` to inspect the gate deterministically without sleeping.
+        """
 
         owner = normalize_owner_id(owner_id)
         limit = max(1, int(max_attempts))
-        current_time = time.time() if now is None else float(now)
-        with self._lock, self._connect() as connection:
-            cursor = connection.execute(
-                """
-                UPDATE jobs
-                SET status='processing', attempts=attempts + 1,
-                    next_attempt_at=0, message=NULL, updated_at=?
-                WHERE job_id=? AND owner_id=? AND status='queued'
-                  AND attempts < ? AND next_attempt_at <= ?
-                """,
-                (current_time, job_id, owner, limit, current_time),
-            )
-            return cursor.rowcount == 1
+        fixed_now = float(now) if now is not None else None
+        while True:
+            current_time = time.time() if fixed_now is None else fixed_now
+            with self._lock, self._connect() as connection:
+                row = connection.execute(
+                    """
+                    SELECT status, attempts, next_attempt_at
+                    FROM jobs WHERE job_id=? AND owner_id=?
+                    """,
+                    (job_id, owner),
+                ).fetchone()
+            if row is None or str(row["status"]) != "queued":
+                return False
+            if int(row["attempts"] or 0) >= limit:
+                return False
+            delay = float(row["next_attempt_at"] or 0.0) - current_time
+            if delay > 0:
+                if fixed_now is not None:
+                    return False
+                time.sleep(delay)
+                continue
+            with self._lock, self._connect() as connection:
+                cursor = connection.execute(
+                    """
+                    UPDATE jobs
+                    SET status='processing', attempts=attempts + 1,
+                        next_attempt_at=0, message=NULL, updated_at=?
+                    WHERE job_id=? AND owner_id=? AND status='queued'
+                      AND attempts < ? AND next_attempt_at <= ?
+                    """,
+                    (current_time, job_id, owner, limit, current_time),
+                )
+                return cursor.rowcount == 1
 
     def get(self, job_id: str, owner_id: str) -> Optional[Dict[str, Any]]:
         """Return only fields safe for the owner-facing API."""
