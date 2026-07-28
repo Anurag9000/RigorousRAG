@@ -3,7 +3,6 @@ import threading
 
 import pytest
 
-import tools.rag as rag_module
 from tools.rag import RAGLayer
 
 
@@ -37,15 +36,14 @@ def _layer(collection=None):
     return layer
 
 
-def test_add_document_bounds_infinite_section_iterables(monkeypatch):
-    monkeypatch.setattr(rag_module, "_MAX_SECTIONS", 3, raising=False)
+def test_add_document_bounds_infinite_section_iterables():
     layer = _layer()
 
     def infinite_sections():
         while True:
             yield {"title": "Empty", "content": ""}
 
-    with pytest.raises(ValueError, match="at most 3 semantic sections"):
+    with pytest.raises(ValueError, match="at most 10000 semantic sections"):
         layer.add_document(
             "doc-1",
             None,
@@ -133,7 +131,7 @@ def test_direct_query_and_document_identifiers_are_bounded():
     layer = _layer()
 
     with pytest.raises(ValueError, match="RAG queries"):
-        layer.query("q" * (rag_module._MAX_QUERY_CHARS + 1), owner_id="alice")
+        layer.query("q" * 20_001, owner_id="alice")
     with pytest.raises(ValueError, match="doc_id"):
         layer.add_document("d" * 201, "text", {"owner_id": "alice"})
     with pytest.raises(ValueError, match="doc_id"):
