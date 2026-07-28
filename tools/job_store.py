@@ -28,7 +28,7 @@ _MAX_JOB_ID_CHARS = 200
 _MAX_OWNER_SAFE_PATH_CHARS = 4000
 
 
-def _lexical_absolute(value: str | os.PathLike[str], label: str) -> Path:
+def _absolute_without_resolution(value: str | os.PathLike[str], label: str) -> Path:
     if not isinstance(value, (str, os.PathLike)):
         raise ValueError(f"{label} must be a filesystem path.")
     rendered = os.fspath(value)
@@ -37,10 +37,16 @@ def _lexical_absolute(value: str | os.PathLike[str], label: str) -> Path:
     candidate = Path(rendered)
     if not candidate.is_absolute():
         candidate = Path.cwd() / candidate
-    absolute = Path(os.path.abspath(candidate))
+    return Path(os.path.abspath(candidate))
+
+
+def _safe_database_path(value: str | os.PathLike[str]) -> Path:
+    absolute = _absolute_without_resolution(value, "JOB_DB_PATH")
     for component in (absolute, *absolute.parents):
         if component.is_symlink():
-            raise ValueError(f"{label} may not contain symbolic-link components.")
+            raise ValueError(
+                "JOB_DB_PATH may not contain symbolic-link components."
+            )
     return absolute
 
 
@@ -77,6 +83,16 @@ def _bounded_integer(
     return numeric
 
 
+def _saturating_nonnegative_integer(value: Any, maximum: int) -> int:
+    if isinstance(value, bool):
+        return 0
+    try:
+        numeric = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return 0
+    return max(0, min(numeric, maximum))
+
+
 def _finite_timestamp(value: Any, label: str, *, minimum: float = 0.0) -> float:
     try:
         numeric = float(value)
@@ -111,14 +127,15 @@ class JobStore:
         selected = path if path is not None else os.getenv(
             "JOB_DB_PATH", "data/jobs.sqlite3"
         )
-        self.path = _lexical_absolute(selected, "JOB_DB_PATH")
+        self.path = _safe_database_path(selected)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.ttl_seconds = _bounded_integer(
-            ttl_seconds,
-            "ttl_seconds",
-            minimum=60,
-            maximum=31_536_000,
-        )
+        if isinstance(ttl_seconds, bool):
+            raise ValueError("ttl_seconds must be an integer.")
+        try:
+            raw_ttl = int(ttl_seconds)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("ttl_seconds must be an integer.") from exc
+        self.ttl_seconds = max(60, min(raw_ttl, 31_536_000))
         self.retry_base_seconds = bounded_float_env(
             "INGEST_RETRY_BASE_SECONDS",
             2.0,
@@ -138,7 +155,7 @@ class JobStore:
         self._initialise()
 
     def _ensure_database_path(self) -> None:
-        _lexical_absolute(self.path, "JOB_DB_PATH")
+        _safe_database_path(self.path)
         if not self.path.parent.exists() or not self.path.parent.is_dir():
             raise OSError("JOB_DB_PATH parent must remain a directory.")
         if self.path.exists():
@@ -210,11 +227,7 @@ class JobStore:
             return False
 
     def prune(self, now: Optional[float] = None) -> int:
-        current_time = (
-            time.time()
-            if now is None
-            else _finite_timestamp(now, "now")
-        )
+        current_time = time.time() if now is None else _finite_timestamp(now, "now")
         cutoff = current_time - self.ttl_seconds
         with self._lock, self._connect() as connection:
             cursor = connection.execute(
@@ -225,12 +238,7 @@ class JobStore:
             return max(cursor.rowcount, 0)
 
     def _retry_delay(self, attempts: int) -> float:
-        count = _bounded_integer(
-            attempts,
-            "attempts",
-            minimum=0,
-            maximum=1_000_000,
-        )
+        count = _saturating_nonnegative_integer(attempts, 1_000_000)
         exponent = min(max(count - 1, 0), 60)
         return min(
             self.retry_max_seconds,
@@ -251,8 +259,6 @@ class JobStore:
             )
 
     def update(self, job_id: str, owner_id: str, **fields: Any) -> None:
-        """Create or update a job without owner reassignment or inferred completion."""
-
         owner = normalize_owner_id(owner_id)
         identifier = _job_identifier(job_id)
         now = time.time()
@@ -261,9 +267,7 @@ class JobStore:
             raise ValueError("status must be a string.")
         status = raw_status.strip().lower()
         filename = _safe_public_text(
-            fields.get("filename"),
-            limit=500,
-            default="upload",
+            fields.get("filename"), limit=500, default="upload"
         ) or "upload"
         raw_message = fields.get("message")
         message = (
@@ -290,7 +294,7 @@ class JobStore:
         source_path = None
         if source_path_value not in (None, ""):
             source_path = str(
-                _lexical_absolute(source_path_value, "source_path")
+                _absolute_without_resolution(source_path_value, "source_path")
             )
             if len(source_path) > _MAX_OWNER_SAFE_PATH_CHARS:
                 raise ValueError("source_path exceeds the 4,000-character limit.")
@@ -307,12 +311,7 @@ class JobStore:
                     "A job ID cannot be reassigned to a different owner."
                 )
             attempts = (
-                _bounded_integer(
-                    existing["attempts"] or 0,
-                    "stored attempts",
-                    minimum=0,
-                    maximum=1_000_000,
-                )
+                _saturating_nonnegative_integer(existing["attempts"] or 0, 1_000_000)
                 if existing
                 else 0
             )
@@ -339,16 +338,8 @@ class JobStore:
             elif status != "queued":
                 next_attempt_at = 0.0
 
-            stored_doc_id = (
-                requested_doc_id
-                if status in {"finalizing", "success"}
-                else None
-            )
-            if (
-                status in {"finalizing", "success"}
-                and stored_doc_id is None
-                and existing
-            ):
+            stored_doc_id = requested_doc_id if status in {"finalizing", "success"} else None
+            if status in {"finalizing", "success"} and stored_doc_id is None and existing:
                 existing_doc_id = str(existing["doc_id"] or "").strip()
                 stored_doc_id = existing_doc_id or None
             if status in {"finalizing", "success"} and stored_doc_id is None:
@@ -402,11 +393,7 @@ class JobStore:
             minimum=1,
             maximum=1_000_000,
         )
-        current_time = (
-            time.time()
-            if now is None
-            else _finite_timestamp(now, "now")
-        )
+        current_time = time.time() if now is None else _finite_timestamp(now, "now")
         with self._lock, self._connect() as connection:
             cursor = connection.execute(
                 """
@@ -432,11 +419,7 @@ class JobStore:
             ).fetchone()
         return dict(row) if row is not None else None
 
-    def get_internal(
-        self,
-        job_id: str,
-        owner_id: str,
-    ) -> Optional[Dict[str, Any]]:
+    def get_internal(self, job_id: str, owner_id: str) -> Optional[Dict[str, Any]]:
         owner = normalize_owner_id(owner_id)
         identifier = _job_identifier(job_id)
         with self._lock, self._connect() as connection:
@@ -482,7 +465,7 @@ class JobStore:
             if not isinstance(raw_path, str) or not raw_path:
                 continue
             try:
-                paths.add(_lexical_absolute(raw_path, "source_path"))
+                paths.add(_absolute_without_resolution(raw_path, "source_path"))
             except ValueError:
                 continue
         return paths
