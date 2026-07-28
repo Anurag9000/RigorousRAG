@@ -43,6 +43,7 @@ from tools.security import (
     normalize_owner_id,
     parse_api_key_owners,
 )
+from tools.upload_storage import UploadStorageError, remove_owner_file, store_owner_stream
 
 T = TypeVar("T")
 
@@ -211,13 +212,9 @@ def _validated_upload_file(path: str | Path | None) -> Optional[Path]:
 
 
 def _safe_unlink_upload(path: str | Path | None) -> bool:
-    """Delete one regular non-symlink file only when contained by UPLOAD_DIR."""
+    """Delete one owner-scoped regular upload through descriptor-relative lookup."""
 
-    candidate = _validated_upload_file(path)
-    if candidate is None:
-        return False
-    candidate.unlink(missing_ok=True)
-    return True
+    return remove_owner_file(UPLOAD_DIR, path)
 
 
 def _persist_failed_job(
@@ -542,35 +539,34 @@ async def run_query(
     return await _run_research_task(agent.run, request.query)
 
 
-def _save_upload_stream(source: BinaryIO, destination: Path) -> int:
-    """Copy one parsed upload to durable storage without blocking the event loop."""
+def _save_upload_stream(source: BinaryIO, owner_id: str, suffix: str) -> Path:
+    """Copy one parsed upload through a descriptor-anchored owner directory."""
 
-    total = 0
-    source.seek(0)
     try:
-        with destination.open("xb") as handle:
-            while True:
-                chunk = source.read(1024 * 1024)
-                if not chunk:
-                    break
-                total += len(chunk)
-                if total > DEFAULT_MAX_UPLOAD_BYTES:
-                    raise HTTPException(
-                        status_code=413,
-                        detail=f"Upload exceeds the {DEFAULT_MAX_UPLOAD_BYTES}-byte limit.",
-                    )
-                handle.write(chunk)
-            handle.flush()
-            os.fsync(handle.fileno())
-        return total
-    except Exception:
-        destination.unlink(missing_ok=True)
-        raise
+        return store_owner_stream(
+            source,
+            upload_root=UPLOAD_DIR,
+            owner_id=owner_id,
+            suffix=suffix,
+            max_bytes=DEFAULT_MAX_UPLOAD_BYTES,
+        )
+    except UploadStorageError as exc:
+        if "exceeds" in str(exc).lower():
+            raise HTTPException(
+                status_code=413,
+                detail=f"Upload exceeds the {DEFAULT_MAX_UPLOAD_BYTES}-byte limit.",
+            ) from exc
+        raise RuntimeError("Owner upload storage rejected the destination.") from exc
 
 
-async def _save_upload(file: UploadFile, destination: Path) -> int:
+async def _save_upload(file: UploadFile, owner_id: str, suffix: str) -> Path:
     try:
-        return await run_in_threadpool(_save_upload_stream, file.file, destination)
+        return await run_in_threadpool(
+            _save_upload_stream,
+            file.file,
+            owner_id,
+            suffix,
+        )
     finally:
         await file.close()
 
@@ -581,10 +577,15 @@ async def ingest_document(
     principal: Principal = Depends(get_rate_limited_principal),
 ) -> JobStatus:
     suffix = generated_upload_name(file.filename)
-    owner_dir = UPLOAD_DIR / principal.owner_id
-    await run_in_threadpool(owner_dir.mkdir, parents=True, exist_ok=True)
-    destination = owner_dir / f"{uuid.uuid4().hex}{suffix}"
-    await _save_upload(file, destination)
+    try:
+        destination = await _save_upload(file, principal.owner_id, suffix)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Upload storage is unavailable.",
+        ) from exc
     job_id = f"job_{uuid.uuid4().hex}"
     display_name = mask_metadata_text(
         Path(file.filename or f"upload{suffix}").name
