@@ -448,7 +448,7 @@ def process_ingestion(file_path: str, display_name: str, job_id: str, owner_id: 
 
     document = result.document
     document.filename = display_name
-    keep_source = False
+    keep_source = True
     try:
         agent = _new_agent(owner_id)
         indexed = index_document(
@@ -504,8 +504,6 @@ def process_ingestion(file_path: str, display_name: str, job_id: str, owner_id: 
                 )
                 keep_source = bool(registry_record.get("source_retained"))
             except Exception:
-                # Preserve the upload so startup reconciliation can finish the stale
-                # finalizing job without losing a source that may be required.
                 keep_source = True
         else:
             internal = _JOB_STORE.get_internal(job_id, owner_id) or {}
