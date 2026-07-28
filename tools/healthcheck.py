@@ -1,8 +1,8 @@
 """Dependency-light process and persistence readiness checks.
 
 The probe intentionally does not import ``server`` or initialize the embedding model.
-It verifies that the HTTP process responds, both SQLite registries are readable, and
-runtime storage directories accept a create/fsync/delete cycle.
+It verifies a small loopback HTTP response, both SQLite registries, and runtime
+storage directories through create/fsync/delete cycles.
 """
 
 from __future__ import annotations
@@ -10,26 +10,60 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
-import sys
 import tempfile
 import urllib.request
 from pathlib import Path
 from typing import Dict
+from urllib.parse import urlparse
+
+_MAX_HTTP_BYTES = 64 * 1024
+_LOCAL_HOSTS = {"127.0.0.1", "::1", "localhost", "localhost.localdomain"}
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def _has_symlink_component(path: Path) -> bool:
+    absolute = path.absolute()
+    return any(candidate.is_symlink() for candidate in (absolute, *absolute.parents))
 
 
 def check_http(url: str, timeout: float = 3.0) -> bool:
+    parsed = urlparse(str(url or "").strip())
+    hostname = (parsed.hostname or "").rstrip(".").lower()
+    if parsed.scheme.lower() not in {"http", "https"} or hostname not in _LOCAL_HOSTS:
+        return False
+    if parsed.username or parsed.password:
+        return False
     try:
-        with urllib.request.urlopen(url, timeout=timeout) as response:  # noqa: S310
+        opener = urllib.request.build_opener(
+            urllib.request.ProxyHandler({}),
+            _NoRedirect(),
+        )
+        request = urllib.request.Request(
+            parsed._replace(fragment="").geturl(),
+            headers={"Accept": "application/json"},
+            method="GET",
+        )
+        with opener.open(request, timeout=max(0.1, float(timeout))) as response:
             if response.status != 200:
                 return False
-            payload = json.load(response)
+            raw = response.read(_MAX_HTTP_BYTES + 1)
+        if len(raw) > _MAX_HTTP_BYTES:
+            return False
+        payload = json.loads(raw.decode("utf-8"))
         return isinstance(payload, dict) and payload.get("status") == "ok"
     except Exception:
         return False
 
 
 def check_sqlite(path: str | Path) -> bool:
-    database = Path(path).resolve()
+    raw_database = Path(path)
+    if _has_symlink_component(raw_database):
+        return False
+    database = raw_database.resolve()
     if not database.exists() or not database.is_file():
         return False
     try:
@@ -42,7 +76,10 @@ def check_sqlite(path: str | Path) -> bool:
 
 
 def check_writable_directory(path: str | Path) -> bool:
-    directory = Path(path).resolve()
+    raw_directory = Path(path)
+    if _has_symlink_component(raw_directory):
+        return False
+    directory = raw_directory.resolve()
     if not directory.exists() or not directory.is_dir():
         return False
     probe_path: Path | None = None
