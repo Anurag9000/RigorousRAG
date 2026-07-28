@@ -9,7 +9,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 RUN groupadd --system rigorousrag \
-    && useradd --system --gid rigorousrag --create-home --home-dir /home/rigorousrag rigorousrag
+    && useradd --system --gid rigorousrag --create-home --home-dir /home/rigorousrag rigorousrag \
+    && apt-get update \
+    && apt-get install --yes --no-install-recommends tesseract-ocr \
+    && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt /app/requirements.txt
 RUN python -m pip install --upgrade pip \
