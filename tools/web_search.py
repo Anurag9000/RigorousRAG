@@ -9,17 +9,22 @@ from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field
 
+from tools.config import bounded_int_env
 from tools.models import Citation
 from tools.security import hostname_matches, safe_download, validate_public_url
 
 _SERPER_ENDPOINT = "https://google.serper.dev/search"
-_SERPER_MAX_RESPONSE_BYTES = max(
-    10_000,
-    min(int(os.getenv("SERPER_MAX_RESPONSE_BYTES", "2000000")), 20_000_000),
+_SERPER_MAX_RESPONSE_BYTES = bounded_int_env(
+    "SERPER_MAX_RESPONSE_BYTES",
+    2_000_000,
+    minimum=10_000,
+    maximum=20_000_000,
 )
-_MAX_RESULT_CANDIDATES = max(
-    10,
-    min(int(os.getenv("WEB_SEARCH_MAX_RESULT_CANDIDATES", "30")), 100),
+_MAX_RESULT_CANDIDATES = bounded_int_env(
+    "WEB_SEARCH_MAX_RESULT_CANDIDATES",
+    30,
+    minimum=10,
+    maximum=100,
 )
 
 
@@ -46,6 +51,14 @@ class WebSearchError(RuntimeError):
     pass
 
 
+def _bounded_limit(value: object) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("limit must be an integer.") from exc
+    return max(1, min(parsed, 10))
+
+
 def web_search(
     query: str,
     allowed_domains: Optional[List[str]] = None,
@@ -57,13 +70,19 @@ def web_search(
         return []
     if len(query) > 2000:
         raise ValueError("Web-search queries may contain at most 2,000 characters.")
-    domains = [str(value).strip()[:253] for value in (allowed_domains or []) if str(value).strip()]
+    domains = [
+        str(value).strip()[:253]
+        for value in (allowed_domains or [])
+        if str(value).strip()
+    ]
     if len(domains) > 50:
         raise ValueError("At most 50 allowed domains may be supplied.")
-    api_key = os.getenv("SERPER_API_KEY")
+    api_key = str(os.getenv("SERPER_API_KEY") or "").strip()
     if not api_key:
         raise WebSearchError("Web search is unavailable because SERPER_API_KEY is not configured.")
-    limit = max(1, min(int(limit), 10))
+    if len(api_key) > 4096:
+        raise WebSearchError("The configured web-search provider key is invalid.")
+    requested = _bounded_limit(limit)
     try:
         downloaded = safe_download(
             _SERPER_ENDPOINT,
@@ -73,7 +92,7 @@ def web_search(
                 "Content-Type": "application/json",
                 "Accept": "application/json",
             },
-            json_body={"q": query, "num": limit},
+            json_body={"q": query, "num": requested},
             timeout=15,
             max_bytes=_SERPER_MAX_RESPONSE_BYTES,
             allowed_content_types={"application/json"},
@@ -96,8 +115,6 @@ def web_search(
             continue
         parsed = urlparse(link)
         hostname = parsed.hostname or ""
-        # Apply the caller's hostname restriction before public-address resolution so
-        # irrelevant provider results cannot consume DNS work.
         if domains and (not hostname or not hostname_matches(hostname, domains)):
             continue
         try:
@@ -114,6 +131,6 @@ def web_search(
                 source_id=public_url,
             )
         )
-        if len(citations) >= limit:
+        if len(citations) >= requested:
             break
     return citations
