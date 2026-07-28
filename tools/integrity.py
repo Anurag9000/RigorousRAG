@@ -1,7 +1,8 @@
 """Evidence-aware scientific analysis tools.
 
-These tools fail closed when source evidence is unavailable. They are analytical
-assistants, not substitutes for expert review or experimental replication.
+These helpers fail closed when evidence is unavailable.  Retrieved content and
+model output are never treated as proof; callers must still inspect primary
+sources and obtain expert review where appropriate.
 """
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 import fitz
 from pydantic import BaseModel, Field, ValidationError
 
+from tools.document_store import get_document_store
 from tools.models import Citation
 from tools.rag import Chunk, get_rag_layer
 
@@ -72,8 +74,8 @@ VISUAL_ENTAILMENT_TOOL_DEF = {
     "function": {
         "name": "check_visual_entailment",
         "description": (
-            "Check whether a specific figure in an uploaded PDF supports a claim. "
-            "Requires the exact document ID and figure label."
+            "Check whether a specific figure in an owner-scoped uploaded PDF supports "
+            "a claim. Requires the exact document ID and figure label."
         ),
         "parameters": {
             "type": "object",
@@ -87,7 +89,6 @@ VISUAL_ENTAILMENT_TOOL_DEF = {
         },
     },
 }
-
 PROTOCOL_EXTRACTION_TOOL_DEF = {
     "type": "function",
     "function": {
@@ -104,14 +105,13 @@ PROTOCOL_EXTRACTION_TOOL_DEF = {
         },
     },
 }
-
 DEBATE_TOOL_DEF = {
     "type": "function",
     "function": {
         "name": "run_scientific_debate",
         "description": (
-            "Produce an advocate, skeptic, and judge analysis grounded only in "
-            "the supplied evidence context."
+            "Produce an advocate, skeptic, and judge analysis grounded only in the "
+            "supplied evidence context."
         ),
         "parameters": {
             "type": "object",
@@ -124,7 +124,6 @@ DEBATE_TOOL_DEF = {
         },
     },
 }
-
 COMPARISON_TOOL_DEF = {
     "type": "function",
     "function": {
@@ -141,7 +140,6 @@ COMPARISON_TOOL_DEF = {
         },
     },
 }
-
 MATRIX_TOOL_DEF = {
     "type": "function",
     "function": {
@@ -158,7 +156,6 @@ MATRIX_TOOL_DEF = {
         },
     },
 }
-
 CONFLICT_TOOL_DEF = {
     "type": "function",
     "function": {
@@ -175,7 +172,6 @@ CONFLICT_TOOL_DEF = {
         },
     },
 }
-
 LIMITATIONS_TOOL_DEF = {
     "type": "function",
     "function": {
@@ -242,8 +238,7 @@ def _parse_json_object(raw: str) -> Dict[str, Any]:
 
 
 def _document_metadata(doc_id: str, owner_id: str) -> Dict[str, Any]:
-    rag = get_rag_layer()
-    results = rag.collection.get(
+    results = get_rag_layer().collection.get(
         where={
             "$and": [
                 {"owner_id": {"$eq": owner_id}},
@@ -256,7 +251,9 @@ def _document_metadata(doc_id: str, owner_id: str) -> Dict[str, Any]:
     metadatas = results.get("metadatas") or []
     if not metadatas:
         raise ValueError("The requested document was not found for this owner.")
-    return dict(metadatas[0] or {})
+    metadata = dict(metadatas[0] or {})
+    metadata.pop("storage_path", None)
+    return metadata
 
 
 def _document_citation(
@@ -281,11 +278,13 @@ def _document_citation(
 
 
 def _extract_figure_region(pdf_path: str, figure_id: str) -> Tuple[str, int, str]:
-    """Render a caption-adjacent region rather than selecting an arbitrary image."""
+    """Render the region immediately above an exact caption match."""
 
     path = Path(pdf_path)
     if path.suffix.lower() != ".pdf":
         raise ValueError("Visual entailment currently supports PDF documents only.")
+    if not path.exists() or not path.is_file():
+        raise ValueError("The retained PDF source file is missing.")
     document = fitz.open(path)
     try:
         if document.needs_pass:
@@ -293,21 +292,24 @@ def _extract_figure_region(pdf_path: str, figure_id: str) -> Tuple[str, int, str
         needle = (figure_id or "").strip()
         if not needle:
             raise ValueError("figure_id is required.")
+        candidates = [needle]
+        compact = re.sub(r"\s+", " ", needle.replace(".", "")).strip()
+        if compact and compact not in candidates:
+            candidates.append(compact)
         for page_index, page in enumerate(document):
-            rectangles = page.search_for(needle)
-            if not rectangles:
-                alternate = needle.replace(".", "")
-                if alternate != needle:
-                    rectangles = page.search_for(alternate)
+            rectangles = []
+            for candidate in candidates:
+                rectangles = page.search_for(candidate)
+                if rectangles:
+                    break
             if not rectangles:
                 continue
             caption = rectangles[0]
             page_rect = page.rect
             height = min(max(page_rect.height * 0.48, 220), 520)
-            top = max(page_rect.y0, caption.y0 - height)
             clip = fitz.Rect(
                 page_rect.x0,
-                top,
+                max(page_rect.y0, caption.y0 - height),
                 page_rect.x1,
                 min(page_rect.y1, caption.y1 + 45),
             )
@@ -323,8 +325,8 @@ def _extract_figure_region(pdf_path: str, figure_id: str) -> Tuple[str, int, str
             ).strip()
             return encoded, page_index + 1, caption_text[:2000]
         raise ValueError(
-            "The figure label was not found as selectable text. "
-            "Provide the exact caption label or an OCR-enabled PDF."
+            "The figure label was not found as selectable text. Provide the exact "
+            "caption label or enable OCR before ingestion."
         )
     finally:
         document.close()
@@ -340,20 +342,25 @@ def check_visual_entailment(
     model: str = "gpt-4o",
 ) -> str:
     metadata = _document_metadata(doc_id, owner_id)
-    storage_path = str(metadata.get("storage_path") or "")
-    if not storage_path:
+    source_path = get_document_store().source_path(owner_id=owner_id, doc_id=doc_id)
+    if source_path is None:
         return _json(
             VisualEntailmentResult(
                 claim_text=claim_text,
                 figure_id=figure_id,
                 verdict=EntailmentVerdict.INSUFFICIENT,
-                rationale="The indexed document has no retained owner-scoped PDF path.",
+                rationale=(
+                    "No retained owner-scoped PDF source is available. Re-ingest with "
+                    "RETAIN_SOURCE_FILES=true to use visual entailment."
+                ),
                 confidence=1.0,
                 evidence_note="No image could be extracted.",
             ).model_dump()
         )
     try:
-        image_b64, page_number, caption_text = _extract_figure_region(storage_path, figure_id)
+        image_b64, page_number, caption_text = _extract_figure_region(
+            str(source_path), figure_id
+        )
     except Exception as exc:
         return _json(
             VisualEntailmentResult(
@@ -382,50 +389,56 @@ def check_visual_entailment(
             page_number=page_number,
             evidence_note=caption_text or None,
         )
-        payload = result.model_dump()
-        payload["citations"] = [citation.model_dump(exclude_none=True)]
-        return _json(payload)
-    prompt = (
-        "Evaluate only whether the supplied figure region supports the claim. "
-        "Return JSON with claim_text, figure_id, verdict "
-        "(supports|contradicts|insufficient|uncertain), rationale, confidence. "
-        "Do not infer details that are not visible. Caption text: "
-        f"{caption_text[:2000]}"
-    )
-    user_content = [
-        {"type": "text", "text": f"Claim: {claim_text}\nFigure label: {figure_id}\n{prompt}"},
-        {
-            "type": "image_url",
-            "image_url": {"url": f"data:image/png;base64,{image_b64}", "detail": "high"},
-        },
-    ]
-    try:
-        raw = _completion(
-            client,
-            model=model,
-            system="You are a conservative scientific figure reviewer.",
-            user=user_content,
-            max_tokens=700,
-            json_mode=True,
+    else:
+        prompt = (
+            "Evaluate only whether the supplied figure region supports the claim. "
+            "Return JSON with claim_text, figure_id, verdict "
+            "(supports|contradicts|insufficient|uncertain), rationale, confidence. "
+            "Do not infer details that are not visible. Caption text: "
+            f"{caption_text[:2000]}"
         )
-        parsed = _parse_json_object(raw)
-        parsed.update({
-            "claim_text": claim_text,
-            "figure_id": figure_id,
-            "page_number": page_number,
-            "evidence_note": caption_text or None,
-        })
-        result = VisualEntailmentResult(**parsed)
-    except Exception as exc:
-        result = VisualEntailmentResult(
-            claim_text=claim_text,
-            figure_id=figure_id,
-            verdict=EntailmentVerdict.UNCERTAIN,
-            rationale=f"Vision analysis failed: {type(exc).__name__}.",
-            confidence=0.0,
-            page_number=page_number,
-            evidence_note=caption_text or None,
-        )
+        user_content = [
+            {
+                "type": "text",
+                "text": f"Claim: {claim_text}\nFigure label: {figure_id}\n{prompt}",
+            },
+            {
+                "type": "image_url",
+                "image_url": {
+                    "url": f"data:image/png;base64,{image_b64}",
+                    "detail": "high",
+                },
+            },
+        ]
+        try:
+            raw = _completion(
+                client,
+                model=model,
+                system="You are a conservative scientific figure reviewer.",
+                user=user_content,
+                max_tokens=700,
+                json_mode=True,
+            )
+            parsed = _parse_json_object(raw)
+            parsed.update(
+                {
+                    "claim_text": claim_text,
+                    "figure_id": figure_id,
+                    "page_number": page_number,
+                    "evidence_note": caption_text or None,
+                }
+            )
+            result = VisualEntailmentResult(**parsed)
+        except Exception as exc:
+            result = VisualEntailmentResult(
+                claim_text=claim_text,
+                figure_id=figure_id,
+                verdict=EntailmentVerdict.UNCERTAIN,
+                rationale=f"Vision analysis failed: {type(exc).__name__}.",
+                confidence=0.0,
+                page_number=page_number,
+                evidence_note=caption_text or None,
+            )
     payload = result.model_dump()
     payload["citations"] = [citation.model_dump(exclude_none=True)]
     return _json(payload)
@@ -433,31 +446,36 @@ def check_visual_entailment(
 
 def _fallback_protocol(text: str, doc_id: str) -> Protocol:
     steps: List[ProtocolStep] = []
+    action_pattern = re.compile(
+        r"\b(add|mix|incubat|wash|centrifug|heat|cool|transfer|measure|"
+        r"dilut|prepare|collect|filter|dry|stir|pipett|resuspend)\w*\b",
+        flags=re.IGNORECASE,
+    )
     for sentence in re.split(r"(?<=[.;])\s+|\n+", text or ""):
         sentence = sentence.strip(" -\t")
-        if len(sentence) < 8:
-            continue
-        has_action = bool(re.search(
-            r"\b(add|mix|incubat|wash|centrifug|heat|cool|transfer|measure|"
-            r"dilut|prepare|collect|filter|dry|stir|pipett|resuspend)\w*\b",
-            sentence,
-            flags=re.IGNORECASE,
-        ))
-        if not has_action:
+        if len(sentence) < 8 or not action_pattern.search(sentence):
             continue
         temperature = next(
             iter(re.findall(r"-?\d+(?:\.\d+)?\s*°?\s*[CFK]\b", sentence, re.I)),
             None,
         )
         duration = next(
-            iter(re.findall(
-                r"\b\d+(?:\.\d+)?\s*(?:s|sec|seconds?|min|minutes?|h|hours?)\b",
-                sentence,
-                re.I,
-            )),
+            iter(
+                re.findall(
+                    r"\b\d+(?:\.\d+)?\s*(?:s|sec|seconds?|min|minutes?|h|hours?)\b",
+                    sentence,
+                    re.I,
+                )
+            ),
             None,
         )
-        steps.append(ProtocolStep(description=sentence[:1000], temperature=temperature, time=duration))
+        steps.append(
+            ProtocolStep(
+                description=sentence[:1000],
+                temperature=temperature,
+                time=duration,
+            )
+        )
         if len(steps) >= 100:
             break
     warnings = []
@@ -479,8 +497,8 @@ def extract_protocol(
     client: Optional[Any] = None,
     model: str = "gpt-4o",
 ) -> str:
-    text = (text or "").strip()
-    if not text:
+    source = (text or "").strip()
+    if not source:
         return _json(
             Protocol(
                 steps=[],
@@ -489,7 +507,7 @@ def extract_protocol(
             ).model_dump()
         )
     if client is None:
-        return _json(_fallback_protocol(text, doc_id).model_dump())
+        return _json(_fallback_protocol(source, doc_id).model_dump())
     try:
         raw = _completion(
             client,
@@ -499,7 +517,7 @@ def extract_protocol(
                 "with steps (description, temperature, time, reagent, notes), metadata, "
                 "and warnings. Never fill missing details from general knowledge."
             ),
-            user=text[:30_000],
+            user=source[:30_000],
             max_tokens=1800,
             json_mode=True,
         )
@@ -511,7 +529,7 @@ def extract_protocol(
         }
         return _json(Protocol(**parsed).model_dump())
     except Exception:
-        return _json(_fallback_protocol(text, doc_id).model_dump())
+        return _json(_fallback_protocol(source, doc_id).model_dump())
 
 
 def run_scientific_debate(
@@ -528,7 +546,9 @@ def run_scientific_debate(
             DebateResult(
                 verdict="insufficient evidence",
                 key_issues=["No evidence context was supplied."],
-                recommended_followups=["Retrieve primary sources before debating the claim."],
+                recommended_followups=[
+                    "Retrieve primary sources before debating the claim."
+                ],
                 uncertainty="No evidence basis.",
             ).model_dump()
         )
@@ -536,7 +556,9 @@ def run_scientific_debate(
         return _json(
             DebateResult(
                 verdict="model unavailable",
-                key_issues=["A language-model client is required for the structured debate."],
+                key_issues=[
+                    "A language-model client is required for the structured debate."
+                ],
                 supporting_evidence=[context[:1500]],
                 recommended_followups=["Review the supplied context manually."],
                 uncertainty="No automated synthesis was performed.",
@@ -546,8 +568,8 @@ def run_scientific_debate(
         client,
         model=model,
         system=(
-            "Act as an advocate. Use only the supplied evidence. Identify the "
-            "strongest support, explicitly noting missing evidence."
+            "Act as an advocate. Use only the supplied evidence. Identify the strongest "
+            "support and explicitly note missing evidence."
         ),
         user=f"Claim: {claim}\n\nEvidence:\n{context[:24_000]}",
         max_tokens=900,
@@ -556,8 +578,8 @@ def run_scientific_debate(
         client,
         model=model,
         system=(
-            "Act as a skeptical reviewer. Use only the original evidence and the "
-            "advocate argument. Identify alternative explanations, bias, and gaps."
+            "Act as a skeptical reviewer. Use only the original evidence and advocate "
+            "argument. Identify alternative explanations, bias, and gaps."
         ),
         user=(
             f"Claim: {claim}\n\nOriginal evidence:\n{context[:18_000]}"
@@ -566,13 +588,13 @@ def run_scientific_debate(
         max_tokens=900,
     )
     try:
-        judge_raw = _completion(
+        raw = _completion(
             client,
             model=model,
             system=(
-                "Act as an impartial scientific judge. Return JSON with verdict, "
-                "key_issues, supporting_evidence, recommended_followups, uncertainty. "
-                "The original evidence is authoritative; generated arguments are not evidence."
+                "Act as an impartial scientific judge. Return JSON with verdict, key_issues, "
+                "supporting_evidence, recommended_followups, uncertainty. The original "
+                "evidence is authoritative; generated arguments are not evidence."
             ),
             user=(
                 f"Claim: {claim}\n\nOriginal evidence:\n{context[:18_000]}"
@@ -581,7 +603,7 @@ def run_scientific_debate(
             max_tokens=1200,
             json_mode=True,
         )
-        result = DebateResult(**_parse_json_object(judge_raw))
+        result = DebateResult(**_parse_json_object(raw))
     except Exception as exc:
         result = DebateResult(
             verdict="uncertain",
@@ -602,8 +624,12 @@ def _retrieve_document_evidence(
     owner_id: str,
     n_results: int = 4,
 ) -> Tuple[List[Chunk], List[Citation]]:
-    rag = get_rag_layer()
-    chunks = rag.query(query, n_results=n_results, owner_id=owner_id, doc_id=doc_id)
+    chunks = get_rag_layer().query(
+        query,
+        n_results=n_results,
+        owner_id=owner_id,
+        doc_id=doc_id,
+    )
     citations: List[Citation] = []
     for index, chunk in enumerate(chunks):
         metadata = chunk.metadata or {}
@@ -627,6 +653,43 @@ def _retrieve_document_evidence(
     return chunks, citations
 
 
+def _collect_document_contexts(
+    doc_ids: Sequence[str],
+    query: str,
+    *,
+    owner_id: str,
+    n_results: int,
+) -> Tuple[List[str], List[Citation], List[str]]:
+    contexts: List[str] = []
+    all_citations: List[Citation] = []
+    gaps: List[str] = []
+    label_counter = 1
+    for doc_id in doc_ids:
+        chunks, citations = _retrieve_document_evidence(
+            doc_id,
+            query,
+            owner_id=owner_id,
+            n_results=n_results,
+        )
+        if not chunks:
+            gaps.append(doc_id)
+            continue
+        labelled: List[Citation] = []
+        for citation in citations:
+            citation.label = f"[{label_counter}]"
+            label_counter += 1
+            labelled.append(citation)
+            all_citations.append(citation)
+        contexts.append(
+            f"DOCUMENT {doc_id}\n"
+            + "\n\n".join(
+                f"{citation.label} {citation.quote or citation.snippet or ''}"
+                for citation in labelled
+            )
+        )
+    return contexts, all_citations, gaps
+
+
 def compare_papers(
     doc_ids: Sequence[str],
     query: str,
@@ -638,64 +701,49 @@ def compare_papers(
     unique_ids = list(dict.fromkeys(str(value) for value in doc_ids if str(value).strip()))
     if not 2 <= len(unique_ids) <= 10:
         raise ValueError("compare_papers requires between 2 and 10 unique document IDs.")
-    all_citations: List[Citation] = []
-    contexts: List[str] = []
-    gaps: List[str] = []
-    label_counter = 1
-    for doc_id in unique_ids:
-        chunks, citations = _retrieve_document_evidence(doc_id, query, owner_id=owner_id, n_results=4)
-        if not chunks:
-            gaps.append(doc_id)
-            continue
-        relabelled = []
-        for citation in citations:
-            citation.label = f"[{label_counter}]"
-            label_counter += 1
-            all_citations.append(citation)
-            relabelled.append(citation)
-        contexts.append(
-            f"DOCUMENT {doc_id}\n"
-            + "\n\n".join(
-                f"{citation.label} {citation.quote or citation.snippet or ''}"
-                for citation in relabelled
-            )
-        )
+    contexts, citations, gaps = _collect_document_contexts(
+        unique_ids,
+        query,
+        owner_id=owner_id,
+        n_results=4,
+    )
     if gaps:
         payload = ComparisonResult(
-            summary="Comparison was not generated because evidence was missing for one or more documents.",
+            summary=(
+                "Comparison was not generated because evidence was missing for one or "
+                "more documents."
+            ),
             evidence_gaps=gaps,
         ).model_dump()
-        payload["citations"] = [item.model_dump(exclude_none=True) for item in all_citations]
+        payload["citations"] = [item.model_dump(exclude_none=True) for item in citations]
         return _json(payload)
     if client is None:
         payload = ComparisonResult(
-            summary="Evidence was retrieved, but no model is configured for narrative synthesis.",
-            evidence_gaps=[],
+            summary="Evidence was retrieved, but no model is configured for narrative synthesis."
         ).model_dump()
         payload["evidence"] = contexts
-        payload["citations"] = [item.model_dump(exclude_none=True) for item in all_citations]
+        payload["citations"] = [item.model_dump(exclude_none=True) for item in citations]
         return _json(payload)
-    raw = _completion(
-        client,
-        model=model,
-        system=(
-            "Compare the supplied documents using only labelled evidence. Return JSON "
-            "with consistencies, conflicts, trends, summary, evidence_gaps. Cite labels "
-            "inside every substantive item. Do not compare missing facts."
-        ),
-        user=f"Comparison question: {query}\n\n" + "\n\n".join(contexts)[:45_000],
-        max_tokens=1800,
-        json_mode=True,
-    )
     try:
+        raw = _completion(
+            client,
+            model=model,
+            system=(
+                "Compare the supplied documents using only labelled evidence. Return JSON "
+                "with consistencies, conflicts, trends, summary, evidence_gaps. Cite labels "
+                "inside every substantive item. Do not compare missing facts."
+            ),
+            user=f"Comparison question: {query}\n\n" + "\n\n".join(contexts)[:45_000],
+            max_tokens=1800,
+            json_mode=True,
+        )
         result = ComparisonResult(**_parse_json_object(raw))
     except (ValidationError, ValueError, json.JSONDecodeError):
         result = ComparisonResult(
-            summary="The comparison model returned an invalid structured response.",
-            evidence_gaps=[],
+            summary="The comparison model returned an invalid structured response."
         )
     payload = result.model_dump()
-    payload["citations"] = [item.model_dump(exclude_none=True) for item in all_citations]
+    payload["citations"] = [item.model_dump(exclude_none=True) for item in citations]
     return _json(payload)
 
 
@@ -713,64 +761,60 @@ def generate_comparison_matrix(
         raise ValueError("The matrix supports 1-10 documents.")
     if not 1 <= len(unique_metrics) <= 12:
         raise ValueError("The matrix supports 1-12 metrics.")
-    all_citations: List[Citation] = []
-    evidence_blocks: List[str] = []
-    gaps: List[str] = []
-    label_counter = 1
-    query = " ; ".join(unique_metrics)
-    for doc_id in unique_docs:
-        chunks, citations = _retrieve_document_evidence(
-            doc_id,
-            query,
-            owner_id=owner_id,
-            n_results=min(8, len(unique_metrics) + 2),
-        )
-        if not chunks:
-            gaps.append(doc_id)
-            continue
-        labelled_lines = []
-        for citation in citations:
-            citation.label = f"[{label_counter}]"
-            label_counter += 1
-            all_citations.append(citation)
-            labelled_lines.append(f"{citation.label} {citation.quote or citation.snippet or ''}")
-        evidence_blocks.append(f"DOCUMENT {doc_id}\n" + "\n".join(labelled_lines))
-    if gaps:
-        return _json({
-            "markdown": "",
-            "evidence_gaps": gaps,
-            "error": "Matrix generation stopped because one or more documents had no evidence.",
-            "citations": [item.model_dump(exclude_none=True) for item in all_citations],
-        })
-    if client is None:
-        return _json({
-            "markdown": "",
-            "evidence_gaps": [],
-            "error": "Evidence was retrieved, but no model is configured to extract matrix values.",
-            "evidence": evidence_blocks,
-            "citations": [item.model_dump(exclude_none=True) for item in all_citations],
-        })
-    raw = _completion(
-        client,
-        model=model,
-        system=(
-            "Build one Markdown comparison table from labelled evidence. Rows are the "
-            "requested metrics and columns are document IDs. Every non-missing value "
-            "must include at least one [n] citation. Use 'Not reported' when absent. "
-            "Return JSON with markdown and evidence_gaps."
-        ),
-        user=(
-            f"Documents: {unique_docs}\nMetrics: {unique_metrics}\n\n"
-            + "\n\n".join(evidence_blocks)[:45_000]
-        ),
-        max_tokens=2000,
-        json_mode=True,
+    contexts, citations, gaps = _collect_document_contexts(
+        unique_docs,
+        " ; ".join(unique_metrics),
+        owner_id=owner_id,
+        n_results=min(8, len(unique_metrics) + 2),
     )
+    if gaps:
+        return _json(
+            {
+                "markdown": "",
+                "evidence_gaps": gaps,
+                "error": (
+                    "Matrix generation stopped because one or more documents had no evidence."
+                ),
+                "citations": [item.model_dump(exclude_none=True) for item in citations],
+            }
+        )
+    if client is None:
+        return _json(
+            {
+                "markdown": "",
+                "evidence_gaps": [],
+                "error": (
+                    "Evidence was retrieved, but no model is configured to extract matrix values."
+                ),
+                "evidence": contexts,
+                "citations": [item.model_dump(exclude_none=True) for item in citations],
+            }
+        )
     try:
+        raw = _completion(
+            client,
+            model=model,
+            system=(
+                "Build one Markdown comparison table from labelled evidence. Rows are the "
+                "requested metrics and columns are document IDs. Every non-missing value "
+                "must include at least one [n] citation. Use 'Not reported' when absent. "
+                "Return JSON with markdown and evidence_gaps."
+            ),
+            user=(
+                f"Documents: {unique_docs}\nMetrics: {unique_metrics}\n\n"
+                + "\n\n".join(contexts)[:45_000]
+            ),
+            max_tokens=2000,
+            json_mode=True,
+        )
         parsed = _parse_json_object(raw)
     except Exception:
-        parsed = {"markdown": "", "evidence_gaps": [], "error": "The matrix model returned invalid JSON."}
-    parsed["citations"] = [item.model_dump(exclude_none=True) for item in all_citations]
+        parsed = {
+            "markdown": "",
+            "evidence_gaps": [],
+            "error": "The matrix model returned invalid JSON.",
+        }
+    parsed["citations"] = [item.model_dump(exclude_none=True) for item in citations]
     return _json(parsed)
 
 
@@ -781,42 +825,52 @@ def detect_conflicts(
     client: Optional[Any] = None,
     model: str = "gpt-4o",
 ) -> str:
-    context = (context or "").strip()
-    if not context:
-        return _json({
-            "topic": topic,
-            "conflicts": [],
-            "synthesis": "No evidence context was supplied.",
-            "evidence_gaps": ["context"],
-        })
+    source = (context or "").strip()
+    if not source:
+        return _json(
+            {
+                "topic": topic,
+                "conflicts": [],
+                "synthesis": "No evidence context was supplied.",
+                "evidence_gaps": ["context"],
+            }
+        )
     if client is None:
-        return _json({
-            "topic": topic,
-            "conflicts": [],
-            "synthesis": "No model is configured; no automated conflict inference was performed.",
-            "evidence_excerpt": context[:3000],
-        })
-    raw = _completion(
-        client,
-        model=model,
-        system=(
-            "Identify only direct, evidence-visible contradictions. Return JSON with "
-            "topic, conflicts (claim_a, claim_b, source_a, source_b, conflict_type), "
-            "synthesis, and evidence_gaps. Do not label different populations or "
-            "conditions as contradictions without explaining the distinction."
-        ),
-        user=f"Topic: {topic}\n\nEvidence:\n{context[:35_000]}",
-        max_tokens=1600,
-        json_mode=True,
-    )
+        return _json(
+            {
+                "topic": topic,
+                "conflicts": [],
+                "synthesis": (
+                    "No model is configured; no automated conflict inference was performed."
+                ),
+                "evidence_excerpt": source[:3000],
+            }
+        )
     try:
+        raw = _completion(
+            client,
+            model=model,
+            system=(
+                "Identify only direct, evidence-visible contradictions. Return JSON with "
+                "topic, conflicts (claim_a, claim_b, source_a, source_b, conflict_type), "
+                "synthesis, and evidence_gaps. Do not label different populations or "
+                "conditions as contradictions without explaining the distinction."
+            ),
+            user=f"Topic: {topic}\n\nEvidence:\n{source[:35_000]}",
+            max_tokens=1600,
+            json_mode=True,
+        )
         return _json(_parse_json_object(raw))
     except Exception:
-        return _json({
-            "topic": topic,
-            "conflicts": [],
-            "synthesis": "The conflict-analysis model returned invalid structured output.",
-        })
+        return _json(
+            {
+                "topic": topic,
+                "conflicts": [],
+                "synthesis": (
+                    "The conflict-analysis model returned invalid structured output."
+                ),
+            }
+        )
 
 
 def extract_limitations(
@@ -838,12 +892,14 @@ def extract_limitations(
         )
         source_text = "\n\n".join(chunk.text for chunk in chunks)
     if not source_text:
-        return _json({
-            "doc_id": doc_id,
-            "limitations": [],
-            "recommendation": "No limitation evidence was supplied or retrieved.",
-            "citations": [],
-        })
+        return _json(
+            {
+                "doc_id": doc_id,
+                "limitations": [],
+                "recommendation": "No limitation evidence was supplied or retrieved.",
+                "citations": [],
+            }
+        )
     if client is None:
         explicit = [
             sentence.strip()
@@ -855,32 +911,36 @@ def extract_limitations(
                 flags=re.IGNORECASE,
             )
         ][:30]
-        return _json({
-            "doc_id": doc_id,
-            "limitations": explicit,
-            "recommendation": "Review the cited passages manually.",
-            "extraction_method": "explicit_phrase_filter",
-            "citations": [item.model_dump(exclude_none=True) for item in citations],
-        })
-    raw = _completion(
-        client,
-        model=model,
-        system=(
-            "Extract only explicit limitations, caveats, exclusions, scope constraints, "
-            "and threats to validity. Return JSON with doc_id, limitations, recommendation. "
-            "Do not infer generic limitations absent from the text."
-        ),
-        user=source_text[:35_000],
-        max_tokens=1400,
-        json_mode=True,
-    )
+        return _json(
+            {
+                "doc_id": doc_id,
+                "limitations": explicit,
+                "recommendation": "Review the cited passages manually.",
+                "extraction_method": "explicit_phrase_filter",
+                "citations": [item.model_dump(exclude_none=True) for item in citations],
+            }
+        )
     try:
+        raw = _completion(
+            client,
+            model=model,
+            system=(
+                "Extract only explicit limitations, caveats, exclusions, scope constraints, "
+                "and threats to validity. Return JSON with doc_id, limitations, recommendation. "
+                "Do not infer generic limitations absent from the text."
+            ),
+            user=source_text[:35_000],
+            max_tokens=1400,
+            json_mode=True,
+        )
         parsed = _parse_json_object(raw)
     except Exception:
         parsed = {
             "doc_id": doc_id,
             "limitations": [],
-            "recommendation": "The limitations model returned invalid structured output.",
+            "recommendation": (
+                "The limitations model returned invalid structured output."
+            ),
         }
     parsed["doc_id"] = doc_id
     parsed["citations"] = [item.model_dump(exclude_none=True) for item in citations]
