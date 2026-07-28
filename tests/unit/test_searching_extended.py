@@ -14,7 +14,7 @@ def make_engine(tmp_path):
     )
 
 
-def test_build_filters_graph_to_fetched_pages(tmp_path):
+def test_build_filters_graph_and_commits_one_snapshot(tmp_path):
     engine = make_engine(tmp_path)
     pages = {
         "https://a.test/": Page(
@@ -31,6 +31,15 @@ def test_build_filters_graph_to_fetched_pages(tmp_path):
     assert engine.build() == 1
     assert engine.state.graph == {"https://a.test/": set()}
     assert set(engine.pagerank_scores) == {"https://a.test/"}
+    assert engine.storage.snapshot_manifest_path.exists()
+    assert not engine.storage.crawl_path.exists()
+    assert not engine.storage.index_path.exists()
+    assert not engine.storage.pagerank_path.exists()
+
+    reloaded = make_engine(tmp_path)
+    assert set(reloaded.pages) == {"https://a.test/"}
+    assert set(reloaded.index.documents) == {"https://a.test/"}
+    assert reloaded.pagerank_scores == {"https://a.test/": 1.0}
 
 
 def test_query_snippet_centres_first_matching_term(tmp_path):
