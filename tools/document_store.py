@@ -7,6 +7,7 @@ source file used by visual tools.
 
 from __future__ import annotations
 
+import math
 import os
 import sqlite3
 import threading
@@ -36,6 +37,18 @@ class DocumentStore:
         self.orphan_grace_seconds = max(
             int(os.getenv("ORPHAN_GRACE_SECONDS", "3600")),
             60,
+        )
+        self.visual_max_pdf_pages = max(
+            1,
+            min(int(os.getenv("VISUAL_MAX_PDF_PAGES", "500")), 5000),
+        )
+        self.visual_max_render_pixels = max(
+            1_000_000,
+            min(int(os.getenv("VISUAL_MAX_RENDER_PIXELS", "12000000")), 100_000_000),
+        )
+        self.visual_clip_height_points = max(
+            100.0,
+            min(float(os.getenv("VISUAL_CLIP_HEIGHT_POINTS", "565")), 2000.0),
         )
         self.last_cleanup_deleted = 0
         self.last_cleanup_errors: List[str] = []
@@ -106,6 +119,46 @@ class DocumentStore:
         if not candidate.exists() or not candidate.is_file():
             return None
         return candidate
+
+    def _visual_pdf_is_safe(self, candidate: Path) -> bool:
+        """Fail closed when a retained PDF exceeds visual-analysis complexity limits."""
+
+        if candidate.suffix.lower() != ".pdf":
+            return True
+        try:
+            import fitz
+        except ImportError:
+            return False
+        try:
+            document = fitz.open(candidate)
+        except Exception:
+            return False
+        try:
+            page_count = int(document.page_count)
+            if document.needs_pass or not 1 <= page_count <= self.visual_max_pdf_pages:
+                return False
+            for page_index in range(page_count):
+                try:
+                    rect = document.load_page(page_index).rect
+                    width = float(rect.width)
+                    height = float(rect.height)
+                except Exception:
+                    return False
+                if (
+                    not math.isfinite(width)
+                    or not math.isfinite(height)
+                    or width <= 0
+                    or height <= 0
+                ):
+                    return False
+                clip_height = min(height, self.visual_clip_height_points)
+                render_width = math.ceil(width * 2.0)
+                render_height = math.ceil(clip_height * 2.0)
+                if render_width * render_height > self.visual_max_render_pixels:
+                    return False
+            return True
+        finally:
+            document.close()
 
     def _validated_source_path(self, source_path: str | Path | None) -> Optional[str]:
         if source_path in (None, ""):
@@ -332,12 +385,17 @@ class DocumentStore:
         source = self._resolve_source_path(record.get("source_path"))
         record["source_path"] = str(source) if source is not None else None
         record["source_retained"] = 1 if source is not None else 0
+        record["visual_source_available"] = bool(
+            source is not None and self._visual_pdf_is_safe(source)
+        )
         return record
 
     def source_path(self, *, owner_id: str, doc_id: str) -> Optional[Path]:
         record = self.get(owner_id=owner_id, doc_id=doc_id)
         raw_path = str((record or {}).get("source_path") or "")
-        return Path(raw_path) if raw_path else None
+        if not raw_path or not bool((record or {}).get("visual_source_available")):
+            return None
+        return Path(raw_path)
 
     def delete(self, *, owner_id: str, doc_id: str) -> Optional[Dict[str, Any]]:
         owner = normalize_owner_id(owner_id)
