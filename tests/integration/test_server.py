@@ -139,6 +139,88 @@ def test_upload_uses_generated_name_and_durable_owner_scoped_queue(
     assert internal["source_path"] == str(stored[0].resolve())
 
 
+def test_startup_recovery_submits_valid_job_and_cleans_exhausted_source(
+    server_module,
+    monkeypatch,
+):
+    owner_dir = server_module.UPLOAD_DIR / "alice"
+    owner_dir.mkdir(parents=True, exist_ok=True)
+    valid = owner_dir / "valid.txt"
+    exhausted = owner_dir / "exhausted.txt"
+    valid.write_text("valid", encoding="utf-8")
+    exhausted.write_text("exhausted", encoding="utf-8")
+    server_module._JOB_STORE.update(
+        "valid-job",
+        "alice",
+        status="queued",
+        filename="valid.txt",
+        source_path=str(valid),
+    )
+    server_module._JOB_STORE.update(
+        "exhausted-job",
+        "alice",
+        status="queued",
+        filename="exhausted.txt",
+        source_path=str(exhausted),
+    )
+    assert server_module._JOB_STORE.claim("exhausted-job", "alice", 1) is True
+    monkeypatch.setattr(server_module, "INGEST_MAX_ATTEMPTS", 1)
+    submitted = []
+    monkeypatch.setattr(
+        server_module,
+        "_submit_ingestion",
+        lambda *args: submitted.append(args),
+    )
+
+    server_module._recover_interrupted_jobs()
+
+    assert submitted == [(str(valid.resolve()), "valid.txt", "valid-job", "alice")]
+    assert server_module._JOB_STORE.get("valid-job", "alice")["status"] == "queued"
+    exhausted_status = server_module._JOB_STORE.get("exhausted-job", "alice")
+    assert exhausted_status and exhausted_status["status"] == "failed"
+    assert not exhausted.exists()
+
+
+def test_document_delete_cleans_vectors_registry_and_retained_source(
+    server_module,
+    monkeypatch,
+):
+    source = server_module.UPLOAD_DIR / "alice" / "paper.pdf"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_bytes(b"%PDF-test")
+    server_module._DOCUMENT_STORE.register(
+        owner_id="alice",
+        doc_id="doc-1",
+        filename="paper.pdf",
+        mime_type="application/pdf",
+        source_path=source,
+    )
+
+    class FakeCollection:
+        def get(self, **_kwargs):
+            return {"metadatas": [{"doc_id": "doc-1", "owner_id": "alice"}]}
+
+    class FakeRag:
+        def __init__(self):
+            self.collection = FakeCollection()
+            self.deleted = []
+
+        def delete_document(self, *, owner_id, doc_id):
+            self.deleted.append((owner_id, doc_id))
+
+    fake_rag = FakeRag()
+    monkeypatch.setattr(server_module, "get_rag_layer", lambda: fake_rag)
+    with TestClient(server_module.app) as client:
+        response = client.delete(
+            "/docs/doc-1",
+            headers={"X-API-Key": "alice-key"},
+        )
+    assert response.status_code == 200
+    assert fake_rag.deleted == [("alice", "doc-1")]
+    assert not source.exists()
+    assert server_module._DOCUMENT_STORE.get(owner_id="alice", doc_id="doc-1") is None
+
+
 def test_model_override_is_allowlisted(server_module):
     with TestClient(server_module.app) as client:
         response = client.post(
