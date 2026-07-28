@@ -2,8 +2,8 @@
 
 `server_app` preserves the complete route/application implementation. This shim
 replaces parser-facing ingestion and recovery so queued uploads are consumed from
-immutable descriptor-anchored byte snapshots and incomplete jobs cannot be promoted
-from unrelated pre-existing registry state.
+immutable descriptor-anchored byte snapshots and every unfinished job is replayed
+idempotently rather than inferred successful from ambiguous registry state.
 """
 
 from __future__ import annotations
@@ -82,42 +82,15 @@ def _retry_or_fail_snapshot(
 
 
 def _recover_interrupted_jobs() -> None:
-    """Reconcile durable jobs without promoting work that never reached finalization."""
+    """Replay every unfinished job from its durable source after restart."""
 
     for record in _implementation._JOB_STORE.recoverable():
         job_id = str(record["job_id"])
         owner_id = str(record["owner_id"])
-        status = str(record.get("status") or "")
         display_name = str(record.get("filename") or "upload")
-        doc_id = str(record.get("doc_id") or "")
         source_path = str(record.get("source_path") or "")
         attempts = int(record.get("attempts") or 0)
 
-        registry_record = None
-        if status == "finalizing" and doc_id:
-            registry_record = _implementation._DOCUMENT_STORE.get(
-                owner_id=owner_id,
-                doc_id=doc_id,
-            )
-        if registry_record is not None:
-            retained_path = str(registry_record.get("source_path") or "")
-            try:
-                _implementation._JOB_STORE.update(
-                    job_id,
-                    owner_id,
-                    status="success",
-                    filename=display_name,
-                    source_path=retained_path,
-                    message="Recovered completed document finalization after restart.",
-                    doc_id=doc_id,
-                )
-            except Exception:
-                continue
-            if not bool(registry_record.get("source_retained")):
-                _implementation._safe_unlink_upload(source_path)
-            continue
-
-        candidate = _implementation._validated_upload_file(source_path)
         if attempts >= _implementation.INGEST_MAX_ATTEMPTS:
             _implementation._persist_failed_job(
                 job_id,
@@ -127,6 +100,7 @@ def _recover_interrupted_jobs() -> None:
                 "Interrupted ingestion exhausted its retry limit.",
             )
             continue
+        candidate = _implementation._validated_upload_file(source_path)
         if candidate is None:
             _implementation._persist_failed_job(
                 job_id,
@@ -147,7 +121,6 @@ def _recover_interrupted_jobs() -> None:
                 filename=display_name,
                 source_path=str(candidate),
                 message="Recovered after service restart.",
-                doc_id=doc_id or None,
             )
         except Exception:
             continue
@@ -300,7 +273,6 @@ def process_ingestion(
                                     "Transient ingestion failure; retry queued",
                                     exc,
                                 ),
-                                doc_id=document.id,
                             )
                             _implementation._submit_ingestion(
                                 str(path),
