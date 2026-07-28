@@ -10,7 +10,7 @@ import re
 import socket
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, Mapping, Optional, TypeAlias
+from typing import Any, Dict, Iterable, Mapping, Optional, TypeAlias
 from urllib.parse import urljoin, urlparse
 
 import requests
@@ -20,11 +20,12 @@ IPAddress: TypeAlias = ipaddress.IPv4Address | ipaddress.IPv6Address
 DEFAULT_MAX_DOWNLOAD_BYTES = int(os.getenv("MAX_REMOTE_DOWNLOAD_BYTES", str(5_000_000)))
 DEFAULT_MAX_UPLOAD_BYTES = int(os.getenv("MAX_UPLOAD_BYTES", str(50_000_000)))
 DEFAULT_REQUEST_TIMEOUT = float(os.getenv("REMOTE_REQUEST_TIMEOUT_SECONDS", "15"))
-MAX_REDIRECTS = int(os.getenv("MAX_REMOTE_REDIRECTS", "4"))
+MAX_REDIRECTS = max(0, min(int(os.getenv("MAX_REMOTE_REDIRECTS", "4")), 20))
 
 _OWNER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 _ALLOWED_UPLOAD_SUFFIXES = {".pdf", ".docx", ".txt", ".md"}
 _REDIRECT_CODES = {301, 302, 303, 307, 308}
+_ALLOWED_REMOTE_METHODS = {"GET", "HEAD", "POST"}
 
 
 class SecurityError(ValueError):
@@ -156,6 +157,51 @@ def hostname_matches(hostname: str, allowed_domains: Iterable[str]) -> bool:
     return False
 
 
+def _socket_from_response(response: requests.Response) -> Any:
+    """Best-effort extraction of the connected socket from urllib3/httplib layers."""
+
+    raw = getattr(response, "raw", None)
+    candidates = [
+        getattr(getattr(raw, "_connection", None), "sock", None),
+        getattr(getattr(raw, "connection", None), "sock", None),
+        getattr(
+            getattr(
+                getattr(getattr(raw, "_original_response", None), "fp", None),
+                "raw",
+                None,
+            ),
+            "_sock",
+            None,
+        ),
+        getattr(
+            getattr(
+                getattr(getattr(raw, "_fp", None), "fp", None),
+                "raw",
+                None,
+            ),
+            "_sock",
+            None,
+        ),
+    ]
+    return next((candidate for candidate in candidates if candidate is not None), None)
+
+
+def _validate_connected_peer(response: requests.Response) -> IPAddress:
+    """Validate the actual connected peer, closing the DNS-rebinding TOCTOU gap."""
+
+    sock = _socket_from_response(response)
+    if sock is None:
+        raise SecurityError("Could not verify the connected remote address.")
+    try:
+        peer_host = sock.getpeername()[0]
+        address = ipaddress.ip_address(peer_host)
+    except (OSError, ValueError, TypeError, IndexError) as exc:
+        raise SecurityError("Could not verify the connected remote address.") from exc
+    if not _is_public_address(address):
+        raise SecurityError("The connected remote address is private, local, or reserved.")
+    return address
+
+
 def safe_download(
     url: str,
     *,
@@ -172,64 +218,90 @@ def safe_download(
 
     if max_bytes <= 0:
         raise ValueError("max_bytes must be positive.")
+    if timeout <= 0:
+        raise ValueError("timeout must be positive.")
+    current_method = method.upper().strip()
+    if current_method not in _ALLOWED_REMOTE_METHODS:
+        raise SecurityError(f"Remote method '{current_method or 'empty'}' is not allowed.")
     current_url = validate_public_url(url)
+    current_data = data
+    current_json = json_body
     owned_session = session is None
     http = session or requests.Session()
-    if owned_session:
-        http.trust_env = False
+    previous_trust_env = getattr(http, "trust_env", False)
+    http.trust_env = False
     try:
         for _ in range(MAX_REDIRECTS + 1):
             response = http.request(
-                method=method,
+                method=current_method,
                 url=current_url,
                 headers=dict(headers or {}),
-                data=data,
-                json=json_body,
+                data=current_data,
+                json=current_json,
                 timeout=timeout,
                 allow_redirects=False,
                 stream=True,
             )
-            if response.status_code in _REDIRECT_CODES:
-                location = response.headers.get("Location")
-                response.close()
-                if not location:
-                    raise SecurityError("Redirect response did not include a Location header.")
-                current_url = validate_public_url(urljoin(current_url, location))
-                continue
-            response.raise_for_status()
-            content_type = response.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
-            if allowed_content_types:
-                allowed = {value.lower() for value in allowed_content_types}
-                if content_type and content_type not in allowed:
-                    response.close()
-                    raise SecurityError(f"Unsupported remote content type '{content_type}'.")
-            raw_length = response.headers.get("Content-Length")
-            if raw_length:
-                try:
-                    declared_length = int(raw_length)
-                except ValueError:
-                    declared_length = 0
-                if declared_length > max_bytes:
-                    response.close()
-                    raise SecurityError(f"Remote response exceeds the {max_bytes}-byte limit.")
-            body = bytearray()
-            for chunk in response.iter_content(chunk_size=64 * 1024):
-                if not chunk:
+            try:
+                _validate_connected_peer(response)
+                if response.status_code in _REDIRECT_CODES:
+                    location = response.headers.get("Location")
+                    if not location:
+                        raise SecurityError(
+                            "Redirect response did not include a Location header."
+                        )
+                    current_url = validate_public_url(urljoin(current_url, location))
+                    if response.status_code in {301, 302, 303} and current_method not in {
+                        "GET",
+                        "HEAD",
+                    }:
+                        current_method = "GET"
+                        current_data = None
+                        current_json = None
                     continue
-                body.extend(chunk)
-                if len(body) > max_bytes:
-                    response.close()
-                    raise SecurityError(f"Remote response exceeds the {max_bytes}-byte limit.")
-            final_url = validate_public_url(response.url or current_url)
-            result = DownloadedResponse(
-                final_url=final_url,
-                status_code=response.status_code,
-                headers=dict(response.headers),
-                content=bytes(body),
-            )
-            response.close()
-            return result
+                response.raise_for_status()
+                content_type = (
+                    response.headers.get("Content-Type", "")
+                    .split(";", 1)[0]
+                    .strip()
+                    .lower()
+                )
+                if allowed_content_types:
+                    allowed = {value.lower() for value in allowed_content_types}
+                    if content_type and content_type not in allowed:
+                        raise SecurityError(
+                            f"Unsupported remote content type '{content_type}'."
+                        )
+                raw_length = response.headers.get("Content-Length")
+                if raw_length:
+                    try:
+                        declared_length = int(raw_length)
+                    except ValueError:
+                        declared_length = 0
+                    if declared_length > max_bytes:
+                        raise SecurityError(
+                            f"Remote response exceeds the {max_bytes}-byte limit."
+                        )
+                body = bytearray()
+                for chunk in response.iter_content(chunk_size=64 * 1024):
+                    if not chunk:
+                        continue
+                    body.extend(chunk)
+                    if len(body) > max_bytes:
+                        raise SecurityError(
+                            f"Remote response exceeds the {max_bytes}-byte limit."
+                        )
+                final_url = validate_public_url(response.url or current_url)
+                return DownloadedResponse(
+                    final_url=final_url,
+                    status_code=response.status_code,
+                    headers=dict(response.headers),
+                    content=bytes(body),
+                )
+            finally:
+                response.close()
         raise SecurityError(f"Remote URL exceeded the {MAX_REDIRECTS}-redirect limit.")
     finally:
+        http.trust_env = previous_trust_env
         if owned_session:
             http.close()
