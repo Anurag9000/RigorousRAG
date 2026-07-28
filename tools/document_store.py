@@ -124,7 +124,7 @@ class DocumentStore:
         """Fail closed when a retained PDF exceeds visual-analysis complexity limits."""
 
         if candidate.suffix.lower() != ".pdf":
-            return True
+            return False
         try:
             import fitz
         except ImportError:
@@ -366,8 +366,14 @@ class DocumentStore:
         previous = str(existing["source_path"]) if existing and existing["source_path"] else None
         return previous if previous and previous != validated_path else None
 
-    def get(self, *, owner_id: str, doc_id: str) -> Optional[Dict[str, Any]]:
-        """Return a record with source capability validated against the filesystem."""
+    def get(
+        self,
+        *,
+        owner_id: str,
+        doc_id: str,
+        verify_visual: bool = False,
+    ) -> Optional[Dict[str, Any]]:
+        """Return current source capability; expensive PDF checks are opt-in."""
 
         owner = normalize_owner_id(owner_id)
         with self._lock, self._connect() as connection:
@@ -383,15 +389,27 @@ class DocumentStore:
             return None
         record = dict(row)
         source = self._resolve_source_path(record.get("source_path"))
+        visual_candidate = bool(source is not None and source.suffix.lower() == ".pdf")
         record["source_path"] = str(source) if source is not None else None
         record["source_retained"] = 1 if source is not None else 0
+        record["visual_source_verified"] = bool(verify_visual and visual_candidate)
         record["visual_source_available"] = bool(
-            source is not None and self._visual_pdf_is_safe(source)
+            visual_candidate
+            and (not verify_visual or self._visual_pdf_is_safe(source))
         )
         return record
 
+    def retained_source_path(self, *, owner_id: str, doc_id: str) -> Optional[Path]:
+        """Return a valid retained source without performing visual-analysis checks."""
+
+        record = self.get(owner_id=owner_id, doc_id=doc_id, verify_visual=False)
+        raw_path = str((record or {}).get("source_path") or "")
+        return Path(raw_path) if raw_path else None
+
     def source_path(self, *, owner_id: str, doc_id: str) -> Optional[Path]:
-        record = self.get(owner_id=owner_id, doc_id=doc_id)
+        """Return an owner-scoped retained PDF only after visual safety verification."""
+
+        record = self.get(owner_id=owner_id, doc_id=doc_id, verify_visual=True)
         raw_path = str((record or {}).get("source_path") or "")
         if not raw_path or not bool((record or {}).get("visual_source_available")):
             return None
