@@ -17,20 +17,31 @@ class BoundedExecutor:
         max_pending: int,
         thread_name_prefix: str,
     ) -> None:
-        workers = max(1, int(max_workers))
-        pending = max(workers, int(max_pending))
+        try:
+            workers = int(max_workers)
+            pending = int(max_pending)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("Executor limits must be integers.") from exc
+        workers = max(1, min(workers, 256))
+        pending = max(workers, min(pending, 100_000))
+        prefix = str(thread_name_prefix or "bounded-worker").strip()[:100]
         self.max_workers = workers
         self.max_pending = pending
         self._executor = ThreadPoolExecutor(
             max_workers=workers,
-            thread_name_prefix=thread_name_prefix,
+            thread_name_prefix=prefix or "bounded-worker",
         )
         self._admission = threading.BoundedSemaphore(pending)
         self._lock = threading.Lock()
         self._shutdown = False
+        self._inflight = 0
 
     def _release(self, _future: Future[Any]) -> None:
-        self._admission.release()
+        with self._lock:
+            if self._inflight <= 0:
+                return
+            self._inflight -= 1
+            self._admission.release()
 
     def submit(
         self,
@@ -52,6 +63,7 @@ class BoundedExecutor:
             except Exception:
                 self._admission.release()
                 return None
+            self._inflight += 1
         future.add_done_callback(self._release)
         return future
 
@@ -65,14 +77,10 @@ class BoundedExecutor:
             if self._shutdown:
                 return
             self._shutdown = True
-        self._executor.shutdown(wait=wait, cancel_futures=cancel_futures)
+        self._executor.shutdown(wait=bool(wait), cancel_futures=bool(cancel_futures))
 
     def available_slots(self) -> int:
-        """Return an approximate diagnostic count without changing admission state."""
+        """Return a diagnostic count without consuming admission permits."""
 
-        acquired = 0
-        while self._admission.acquire(blocking=False):
-            acquired += 1
-        for _ in range(acquired):
-            self._admission.release()
-        return acquired
+        with self._lock:
+            return max(self.max_pending - self._inflight, 0)
