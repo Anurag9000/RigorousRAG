@@ -1,5 +1,6 @@
 import pytest
 
+import tools.bib as bib
 from tools.bib import export_to_bibtex
 
 
@@ -109,6 +110,75 @@ def test_direct_fields_are_bounded_before_escape_and_key_hashing():
     assert len(output) < 9000
 
 
-def test_noniterable_citations_are_rejected():
-    with pytest.raises(ValueError, match="citations must be an iterable"):
-        export_to_bibtex(None)
+def test_credentials_paths_and_pii_are_masked_before_bibtex_escape():
+    output = export_to_bibtex([
+        {
+            "entry_type": "misc",
+            "title": "Contact analyst@example.com at /private/report.txt",
+            "authors": "alice@example.com",
+            "url": "https://alice:password@example.test/paper?api_key=secret",
+        }
+    ])
+
+    assert "analyst@example.com" not in output
+    assert "alice@example.com" not in output
+    assert "/private" not in output
+    assert "password" not in output
+    assert "api_key=secret" not in output
+    assert "REDACTED" in output
+
+
+def test_unsupported_or_hostile_field_values_fall_back_without_stringification():
+    class Hostile:
+        def __bool__(self):
+            raise RuntimeError("do not call bool")
+
+        def __str__(self):
+            raise RuntimeError("private /secret/path")
+
+    output = export_to_bibtex([
+        {
+            "entry_type": Hostile(),
+            "title": Hostile(),
+            "authors": Hostile(),
+            "year": True,
+            "journal": {"nested": "value"},
+        }
+    ])
+
+    assert output.startswith("@misc{")
+    assert "title = {Untitled}" in output
+    assert "author = {Unknown}" in output
+    assert "year = {n.d.}" in output
+    assert "private" not in output
+
+
+def test_string_collections_and_noniterable_citations_are_rejected():
+    for value in (None, "citation text", b"citation bytes"):
+        with pytest.raises(ValueError, match="citations must be an iterable"):
+            export_to_bibtex(value)
+
+
+def test_iterator_failure_is_wrapped_without_private_details():
+    class BrokenIterator:
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            raise RuntimeError("private iterator path /secret/state")
+
+    with pytest.raises(ValueError, match="iteration failed") as captured:
+        export_to_bibtex(BrokenIterator())
+    assert "private iterator" not in str(captured.value)
+
+
+def test_total_output_ceiling_stops_before_oversized_entry(monkeypatch):
+    monkeypatch.setattr(bib, "_MAX_OUTPUT_CHARS", 200)
+
+    output = export_to_bibtex([
+        {"entry_type": "misc", "title": "x" * 1000},
+        {"entry_type": "misc", "title": "small"},
+    ])
+
+    assert output == ""
+    assert len(output) <= 200
