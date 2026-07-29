@@ -84,15 +84,29 @@ def _canonical_domain(value: Any) -> str:
     if not isinstance(value, str):
         raise ValueError("Allowed domains must be strings.")
     rendered = value.strip().rstrip(".").lower()
-    if not rendered or len(rendered) > 253 or any(character.isspace() for character in rendered):
+    if (
+        not rendered
+        or len(rendered) > 253
+        or any(character.isspace() for character in rendered)
+    ):
         raise ValueError("Allowed domains must be valid hostnames.")
     try:
         parsed = urlparse(rendered if "://" in rendered else f"https://{rendered}")
         hostname = parsed.hostname or ""
         ascii_host = hostname.encode("idna").decode("ascii").lower()
+        port = parsed.port
     except (ValueError, UnicodeError):
         raise ValueError("Allowed domains must be valid hostnames.")
-    if parsed.username is not None or parsed.password is not None or parsed.path not in {"", "/"}:
+    if (
+        parsed.scheme.lower() not in {"http", "https"}
+        or parsed.username is not None
+        or parsed.password is not None
+        or port is not None
+        or parsed.path not in {"", "/"}
+        or parsed.params
+        or parsed.query
+        or parsed.fragment
+    ):
         raise ValueError("Allowed domains must contain hostnames only.")
     labels = ascii_host.split(".")
     if not labels or any(not _HOST_LABEL_RE.fullmatch(label) for label in labels):
