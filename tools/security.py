@@ -99,6 +99,7 @@ _MAX_HEADER_VALUE_CHARS = 8192
 _MAX_RESPONSE_HEADERS = 200
 _MAX_DNS_ADDRESSES = 64
 _INJECTED_SESSION_ENV_LOCK = threading.RLock()
+_MISSING = object()
 
 
 class SecurityError(ValueError):
@@ -189,7 +190,9 @@ def parse_api_key_owners() -> Dict[str, str]:
             continue
         key = _api_key(raw_key.strip())
         if len(result) >= _MAX_API_KEYS:
-            raise RuntimeError(f"ALLOWED_API_KEYS may contain at most {_MAX_API_KEYS} keys.")
+            raise RuntimeError(
+                f"ALLOWED_API_KEYS may contain at most {_MAX_API_KEYS} keys."
+            )
         digest = hashlib.sha256(key.encode("utf-8")).hexdigest()[:20]
         result[key] = f"api-{digest}"
     return result
@@ -250,7 +253,11 @@ def _resolved_addresses(hostname: str, port: int) -> set[IPAddress]:
 
 
 def _is_public_address(address: IPAddress) -> bool:
-    return bool(address.is_global and not address.is_multicast and not address.is_unspecified)
+    return bool(
+        address.is_global
+        and not address.is_multicast
+        and not address.is_unspecified
+    )
 
 
 def validate_public_url(url: str) -> str:
@@ -274,7 +281,9 @@ def validate_public_url(url: str) -> str:
         raise SecurityError("The URL must contain a valid hostname.")
     if parsed.username is not None or parsed.password is not None:
         raise SecurityError("Credentials embedded in URLs are not allowed.")
-    if hostname in {"localhost", "localhost.localdomain"} or hostname.endswith(".localhost"):
+    if hostname in {"localhost", "localhost.localdomain"} or hostname.endswith(
+        ".localhost"
+    ):
         raise SecurityError("Localhost destinations are not allowed.")
     selected_port = port or (443 if scheme == "https" else 80)
     try:
@@ -282,12 +291,16 @@ def validate_public_url(url: str) -> str:
     except ValueError:
         addresses = _resolved_addresses(hostname, selected_port)
     if any(not _is_public_address(address) for address in addresses):
-        raise SecurityError("Private, local, reserved, and link-local destinations are blocked.")
+        raise SecurityError(
+            "Private, local, reserved, and link-local destinations are blocked."
+        )
     rendered_host = f"[{hostname}]" if ":" in hostname else hostname
     netloc = rendered_host
     if port is not None:
         netloc = f"{rendered_host}:{port}"
-    return urlunparse((scheme, netloc, parsed.path, parsed.params, parsed.query, ""))
+    return urlunparse(
+        (scheme, netloc, parsed.path, parsed.params, parsed.query, "")
+    )
 
 
 def hostname_matches(hostname: str, allowed_domains: Iterable[str]) -> bool:
@@ -320,28 +333,40 @@ def _origin(url: str) -> tuple[str, str, int]:
     return scheme, _canonical_hostname(parsed.hostname or ""), port
 
 
-def _sanitize_request_headers(headers: Optional[Mapping[str, str]]) -> Dict[str, str]:
+def _sanitize_request_headers(
+    headers: Optional[Mapping[str, str]],
+) -> Dict[str, str]:
     if headers is None:
         return {}
     if not isinstance(headers, Mapping):
         raise SecurityError("Remote request headers must be a mapping.")
     if len(headers) > _MAX_REQUEST_HEADERS:
-        raise SecurityError(f"At most {_MAX_REQUEST_HEADERS} request headers are allowed.")
+        raise SecurityError(
+            f"At most {_MAX_REQUEST_HEADERS} request headers are allowed."
+        )
     sanitized: Dict[str, str] = {}
     for raw_name, raw_value in headers.items():
         if not isinstance(raw_name, str) or not isinstance(raw_value, str):
-            raise SecurityError("Remote request header names and values must be strings.")
+            raise SecurityError(
+                "Remote request header names and values must be strings."
+            )
         name = raw_name.strip()
         value = raw_value.strip()
         lowered = name.lower()
         if not _HEADER_NAME_RE.fullmatch(name):
-            raise SecurityError("Remote request header names contain invalid characters.")
+            raise SecurityError(
+                "Remote request header names contain invalid characters."
+            )
         if lowered in _FORBIDDEN_CALLER_HEADERS:
             raise SecurityError(f"Caller-controlled header '{name}' is not allowed.")
         if len(value) > _MAX_HEADER_VALUE_CHARS:
-            raise SecurityError("Remote request header values exceed the size limit.")
+            raise SecurityError(
+                "Remote request header values exceed the size limit."
+            )
         if "\r" in value or "\n" in value or "\x00" in value:
-            raise SecurityError("Remote request headers may not contain control characters.")
+            raise SecurityError(
+                "Remote request headers may not contain control characters."
+            )
         sanitized[name] = value
     return sanitized
 
@@ -361,11 +386,15 @@ def _strip_cross_origin_secrets(headers: Mapping[str, str]) -> Dict[str, str]:
     return result
 
 
-def _sanitize_content_types(values: Optional[Iterable[str]]) -> Optional[set[str]]:
+def _sanitize_content_types(
+    values: Optional[Iterable[str]],
+) -> Optional[set[str]]:
     if values is None:
         return None
     if isinstance(values, (str, bytes, bytearray)):
-        raise SecurityError("allowed_content_types must be an iterable of MIME types.")
+        raise SecurityError(
+            "allowed_content_types must be an iterable of MIME types."
+        )
     try:
         raw_values = list(itertools.islice(iter(values), 101))
     except Exception as exc:
@@ -378,7 +407,9 @@ def _sanitize_content_types(values: Optional[Iterable[str]]) -> Optional[set[str
             raise SecurityError("Allowed content types must be strings.")
         value = raw_value.split(";", 1)[0].strip().lower()
         if not _CONTENT_TYPE_RE.fullmatch(value):
-            raise SecurityError("Allowed content types must be valid MIME types.")
+            raise SecurityError(
+                "Allowed content types must be valid MIME types."
+            )
         allowed.add(value)
     if not allowed:
         raise SecurityError("At least one allowed content type is required.")
@@ -401,7 +432,9 @@ def _request_body(
                 separators=(",", ":"),
             ).encode("utf-8")
         except (TypeError, ValueError, RecursionError) as exc:
-            raise SecurityError("json_body is not a supported JSON value.") from exc
+            raise SecurityError(
+                "json_body is not a supported JSON value."
+            ) from exc
         headers.setdefault("Content-Type", "application/json")
     elif data is None:
         encoded = None
@@ -412,7 +445,9 @@ def _request_body(
     else:
         raise SecurityError("Remote request data must be bytes or text.")
     if encoded is not None and len(encoded) > MAX_REMOTE_REQUEST_BODY_BYTES:
-        raise SecurityError("Remote request body exceeds the configured byte limit.")
+        raise SecurityError(
+            "Remote request body exceeds the configured byte limit."
+        )
     return encoded, None
 
 
@@ -440,7 +475,10 @@ def _socket_from_response(response: requests.Response) -> Any:
             None,
         ),
     ]
-    return next((candidate for candidate in candidates if candidate is not None), None)
+    return next(
+        (candidate for candidate in candidates if candidate is not None),
+        None,
+    )
 
 
 def _validate_connected_peer(response: requests.Response) -> IPAddress:
@@ -453,9 +491,13 @@ def _validate_connected_peer(response: requests.Response) -> IPAddress:
         peer_host = sock.getpeername()[0]
         address = ipaddress.ip_address(str(peer_host).split("%", 1)[0])
     except (OSError, ValueError, TypeError, IndexError) as exc:
-        raise SecurityError("Could not verify the connected remote address.") from exc
+        raise SecurityError(
+            "Could not verify the connected remote address."
+        ) from exc
     if not _is_public_address(address):
-        raise SecurityError("The connected remote address is private, local, or reserved.")
+        raise SecurityError(
+            "The connected remote address is private, local, or reserved."
+        )
     return address
 
 
@@ -497,8 +539,85 @@ def _positive_timeout(value: Any) -> float:
     except (TypeError, ValueError, OverflowError) as exc:
         raise ValueError("timeout must be numeric.") from exc
     if not math.isfinite(numeric) or not 0.1 <= numeric <= 300.0:
-        raise ValueError("timeout must be finite and between 0.1 and 300 seconds.")
+        raise ValueError(
+            "timeout must be finite and between 0.1 and 300 seconds."
+        )
     return numeric
+
+
+def _empty_session_value(name: str) -> Any:
+    if name == "trust_env":
+        return False
+    if name == "headers":
+        return requests.structures.CaseInsensitiveDict()
+    if name == "cookies":
+        return requests.cookies.RequestsCookieJar()
+    if name in {"proxies", "params"}:
+        return {}
+    if name == "hooks":
+        return requests.hooks.default_hooks()
+    if name == "verify":
+        return True
+    if name in {"auth", "cert"}:
+        return None
+    raise KeyError(name)
+
+
+def _neutralize_injected_session(http: Any) -> Dict[str, Any]:
+    """Temporarily remove ambient authority while retaining transport adapters."""
+
+    state: Dict[str, Any] = {}
+    changed: list[str] = []
+    for name in (
+        "trust_env",
+        "proxies",
+        "auth",
+        "headers",
+        "cookies",
+        "params",
+        "hooks",
+        "verify",
+        "cert",
+    ):
+        try:
+            previous = getattr(http, name, _MISSING)
+        except Exception as exc:
+            _restore_injected_session(http, state, changed)
+            raise SecurityError(
+                "Injected HTTP session state could not be inspected safely."
+            ) from exc
+        if previous is _MISSING:
+            continue
+        state[name] = previous
+        try:
+            setattr(http, name, _empty_session_value(name))
+        except Exception as exc:
+            _restore_injected_session(http, state, changed)
+            raise SecurityError(
+                "Injected HTTP session state could not be isolated safely."
+            ) from exc
+        changed.append(name)
+    return state
+
+
+def _restore_injected_session(
+    http: Any,
+    state: Mapping[str, Any],
+    names: Optional[Iterable[str]] = None,
+) -> None:
+    restore_names = list(names if names is not None else state.keys())
+    failed = False
+    for name in reversed(restore_names):
+        if name not in state:
+            continue
+        try:
+            setattr(http, name, state[name])
+        except Exception:
+            failed = True
+    if failed:
+        raise SecurityError(
+            "Injected HTTP session state could not be restored safely."
+        )
 
 
 def safe_download(
@@ -515,32 +634,47 @@ def safe_download(
 ) -> DownloadedResponse:
     """Download one bounded public resource with an end-to-end time budget."""
 
-    response_limit = _positive_integer(max_bytes, "max_bytes", 1_000_000_000)
+    response_limit = _positive_integer(
+        max_bytes,
+        "max_bytes",
+        1_000_000_000,
+    )
     timeout_value = _positive_timeout(timeout)
     if not isinstance(method, str):
         raise SecurityError("Remote request methods must be strings.")
     current_method = method.upper().strip()
     if current_method not in _ALLOWED_REMOTE_METHODS:
-        raise SecurityError(f"Remote method '{current_method or 'empty'}' is not allowed.")
+        raise SecurityError(
+            f"Remote method '{current_method or 'empty'}' is not allowed."
+        )
     current_url = validate_public_url(url)
     current_headers = _sanitize_request_headers(headers)
-    current_data, current_json = _request_body(data, json_body, current_headers)
+    current_data, current_json = _request_body(
+        data,
+        json_body,
+        current_headers,
+    )
     allowed = _sanitize_content_types(allowed_content_types)
     deadline = time.monotonic() + timeout_value
     owned_session = session is None
     http = session or requests.Session()
     injected_lock_acquired = False
-    previous_trust_env = False
+    injected_state: Dict[str, Any] = {}
+    restore_error: Optional[BaseException] = None
     if not owned_session:
         _INJECTED_SESSION_ENV_LOCK.acquire()
         injected_lock_acquired = True
     try:
-        previous_trust_env = bool(getattr(http, "trust_env", False))
-        http.trust_env = False
+        if owned_session:
+            http.trust_env = False
+        else:
+            injected_state = _neutralize_injected_session(http)
         for _ in range(MAX_REDIRECTS + 1):
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                raise SecurityError("Remote request exceeded the configured time limit.")
+                raise SecurityError(
+                    "Remote request exceeded the configured time limit."
+                )
             response = http.request(
                 method=current_method,
                 url=current_url,
@@ -560,23 +694,34 @@ def safe_download(
                         raise SecurityError(
                             "Redirect response did not include a valid Location header."
                         )
-                    next_url = validate_public_url(urljoin(current_url, location))
+                    next_url = validate_public_url(
+                        urljoin(current_url, location)
+                    )
                     cross_origin = _origin(next_url) != _origin(current_url)
                     if cross_origin:
-                        current_headers = _strip_cross_origin_secrets(current_headers)
-                        if status_code in {307, 308} and current_method not in {"GET", "HEAD"}:
+                        current_headers = _strip_cross_origin_secrets(
+                            current_headers
+                        )
+                        if (
+                            status_code in {307, 308}
+                            and current_method not in {"GET", "HEAD"}
+                        ):
                             raise SecurityError(
                                 "Cross-origin redirects may not replay a request body."
                             )
                     current_url = next_url
-                    if status_code in {301, 302, 303} and current_method not in {"GET", "HEAD"}:
+                    if (
+                        status_code in {301, 302, 303}
+                        and current_method not in {"GET", "HEAD"}
+                    ):
                         current_method = "GET"
                         current_data = None
                         current_json = None
                         current_headers = {
                             name: value
                             for name, value in current_headers.items()
-                            if name.lower() not in {"content-type", "content-encoding"}
+                            if name.lower()
+                            not in {"content-type", "content-encoding"}
                         }
                     continue
                 response.raise_for_status()
@@ -597,20 +742,33 @@ def safe_download(
                     except (TypeError, ValueError, OverflowError):
                         declared_length = -1
                     if declared_length > response_limit:
-                        raise SecurityError("Remote response exceeds the byte limit.")
+                        raise SecurityError(
+                            "Remote response exceeds the byte limit."
+                        )
                 chunks: list[bytes] = []
                 total = 0
-                for raw_chunk in response.iter_content(chunk_size=64 * 1024):
+                for raw_chunk in response.iter_content(
+                    chunk_size=64 * 1024
+                ):
                     if time.monotonic() > deadline:
-                        raise SecurityError("Remote request exceeded the configured time limit.")
+                        raise SecurityError(
+                            "Remote request exceeded the configured time limit."
+                        )
                     if not raw_chunk:
                         continue
-                    if not isinstance(raw_chunk, (bytes, bytearray, memoryview)):
-                        raise SecurityError("Remote response chunks must contain bytes.")
+                    if not isinstance(
+                        raw_chunk,
+                        (bytes, bytearray, memoryview),
+                    ):
+                        raise SecurityError(
+                            "Remote response chunks must contain bytes."
+                        )
                     chunk = bytes(raw_chunk)
                     total += len(chunk)
                     if total > response_limit:
-                        raise SecurityError("Remote response exceeds the byte limit.")
+                        raise SecurityError(
+                            "Remote response exceeds the byte limit."
+                        )
                     chunks.append(chunk)
                 return DownloadedResponse(
                     final_url=current_url,
@@ -622,10 +780,11 @@ def safe_download(
                 response.close()
         raise SecurityError("Remote request exceeded the redirect limit.")
     finally:
-        try:
-            http.trust_env = previous_trust_env
-        except Exception:
-            pass
+        if not owned_session and injected_state:
+            try:
+                _restore_injected_session(http, injected_state)
+            except BaseException as exc:
+                restore_error = exc
         if owned_session:
             try:
                 http.close()
@@ -633,3 +792,5 @@ def safe_download(
                 pass
         if injected_lock_acquired:
             _INJECTED_SESSION_ENV_LOCK.release()
+        if restore_error is not None:
+            raise restore_error
