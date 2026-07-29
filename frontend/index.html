@@ -133,7 +133,7 @@
       <div class="upload-list" id="upload-list" aria-live="polite"></div>
     </section>
     <section class="tab-pane" id="tab-docs">
-      <div class="section"><input class="field" id="doc-search" placeholder="Filter documents" aria-label="Filter documents"></div>
+      <div class="section"><input class="field" id="doc-search" maxlength="500" placeholder="Filter documents" aria-label="Filter documents"></div>
       <div class="doc-list" id="doc-list"><div class="empty">No documents loaded.</div></div>
     </section>
     <section class="tab-pane" id="tab-citations">
@@ -148,7 +148,7 @@
       <span class="top-title">Evidence-oriented academic research</span>
       <select class="field" id="model-select" aria-label="Model" style="width:auto"></select>
       <div class="auth-box" id="auth-box">
-        <input class="field" type="password" id="api-key-input" autocomplete="off" placeholder="API key" aria-label="API key">
+        <input class="field" type="password" id="api-key-input" maxlength="4096" autocomplete="off" placeholder="API key" aria-label="API key">
         <button class="btn small" id="save-api-key" type="button">Use key</button>
       </div>
       <button class="btn small" id="clear-history" type="button">Clear</button>
@@ -171,7 +171,7 @@
     </nav>
     <section class="input-area">
       <div class="input-row">
-        <textarea class="field" id="query-input" placeholder="Ask a research question… Shift+Enter for a newline"></textarea>
+        <textarea class="field" id="query-input" maxlength="20000" placeholder="Ask a research question… Shift+Enter for a newline"></textarea>
         <button class="btn primary" id="send-btn" type="button">Send</button>
       </div>
     </section>
@@ -186,36 +186,37 @@
       <button class="tab" type="button" data-tab-group="tools" data-tab="bibtex" aria-selected="false">BibTeX</button>
     </div>
     <section class="tool-pane active" id="tool-entailment">
-      <label class="label" for="ve-claim">Claim</label><textarea class="field" id="ve-claim" rows="3"></textarea>
-      <label class="label" for="ve-figure">Exact figure label</label><input class="field" id="ve-figure" placeholder="Figure 3B">
-      <label class="label" for="ve-docid">Document ID</label><input class="field" id="ve-docid">
+      <label class="label" for="ve-claim">Claim</label><textarea class="field" id="ve-claim" maxlength="10000" rows="3"></textarea>
+      <label class="label" for="ve-figure">Exact figure label</label><input class="field" id="ve-figure" maxlength="200" placeholder="Figure 3B">
+      <label class="label" for="ve-docid">Document ID</label><input class="field" id="ve-docid" maxlength="200">
       <button class="btn primary" id="run-entailment" type="button" style="margin-top:.6rem">Check visual evidence</button>
       <div class="tool-result" id="ve-result" hidden></div>
     </section>
     <section class="tool-pane" id="tool-protocol">
-      <label class="label" for="proto-text">Methods text</label><textarea class="field" id="proto-text" rows="9"></textarea>
-      <label class="label" for="proto-docid">Document ID for traceability</label><input class="field" id="proto-docid">
+      <label class="label" for="proto-text">Methods text</label><textarea class="field" id="proto-text" maxlength="30000" rows="9"></textarea>
+      <label class="label" for="proto-docid">Document ID for traceability</label><input class="field" id="proto-docid" maxlength="200">
       <button class="btn primary" id="run-protocol" type="button" style="margin-top:.6rem">Extract explicit steps</button>
       <div class="tool-result" id="proto-result" hidden></div>
     </section>
     <section class="tool-pane" id="tool-debate">
-      <label class="label" for="debate-claim">Claim</label><textarea class="field" id="debate-claim" rows="4"></textarea>
-      <label class="label" for="debate-evidence">Evidence context</label><textarea class="field" id="debate-evidence" rows="8"></textarea>
+      <label class="label" for="debate-claim">Claim</label><textarea class="field" id="debate-claim" maxlength="10000" rows="4"></textarea>
+      <label class="label" for="debate-evidence">Evidence context</label><textarea class="field" id="debate-evidence" maxlength="30000" rows="8"></textarea>
       <button class="btn primary" id="run-debate" type="button" style="margin-top:.6rem">Send to agent</button>
       <p class="privacy-note">The judge is instructed to treat original evidence as authoritative and generated arguments as analysis only.</p>
     </section>
     <section class="tool-pane" id="tool-bibtex">
-      <label class="label" for="bib-title">Title</label><input class="field" id="bib-title">
-      <label class="label" for="bib-authors">Authors</label><input class="field" id="bib-authors">
-      <label class="label" for="bib-year">Year</label><input class="field" id="bib-year" type="number" min="1000" max="9999">
-      <label class="label" for="bib-journal">Journal or venue</label><input class="field" id="bib-journal">
-      <label class="label" for="bib-doi">DOI</label><input class="field" id="bib-doi">
+      <label class="label" for="bib-title">Title</label><input class="field" id="bib-title" maxlength="1000">
+      <label class="label" for="bib-authors">Authors</label><input class="field" id="bib-authors" maxlength="3000">
+      <label class="label" for="bib-year">Year</label><input class="field" id="bib-year" type="number" min="0" max="9999">
+      <label class="label" for="bib-journal">Journal or venue</label><input class="field" id="bib-journal" maxlength="1000">
+      <label class="label" for="bib-doi">DOI</label><input class="field" id="bib-doi" maxlength="500">
       <button class="btn primary" id="run-bibtex" type="button" style="margin-top:.6rem">Generate BibTeX</button>
       <button class="btn" id="copy-bibtex" type="button" style="margin-top:.35rem">Copy</button>
       <div class="tool-result" id="bib-result" hidden></div>
     </section>
   </aside>
   <div id="sidebar-overlay"></div>
+  <script src="preload.js" defer></script>
   <script src="app.js" defer></script>
   <script src="lifecycle.js" defer></script>
 </body>
