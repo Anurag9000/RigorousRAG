@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 import json
 from typing import Any, Awaitable, Callable, Dict
 
@@ -10,35 +11,80 @@ ASGISend = Callable[..., Awaitable[None]]
 ASGIApp = Callable[[Dict[str, Any], ASGIReceive, ASGISend], Awaitable[None]]
 
 _MISSING_VISUAL_DOCUMENT_ERROR = "The requested document was not found for this owner."
+_MAX_REQUEST_BODY_BYTES = 1_000_000_000
+_MAX_HEADER_FIELDS = 1000
 
 
 class RequestBodyTooLarge(Exception):
     """Raised internally when a streamed request crosses the configured ceiling."""
 
 
+class InvalidRequestBody(Exception):
+    """Raised internally for malformed ASGI request-body messages."""
+
+
+def _positive_integer(value: Any) -> int:
+    if isinstance(value, bool):
+        raise ValueError("max_bytes must be an integer.")
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("max_bytes must be an integer.") from exc
+    if isinstance(value, float) and not value.is_integer():
+        raise ValueError("max_bytes must be an integer.")
+    if not 1 <= parsed <= _MAX_REQUEST_BODY_BYTES:
+        raise ValueError(
+            f"max_bytes must be between 1 and {_MAX_REQUEST_BODY_BYTES}."
+        )
+    return parsed
+
+
 class RequestBodyLimitMiddleware:
     """Enforce body ceilings and one owner-safe visual lookup failure boundary."""
 
     def __init__(self, app: ASGIApp, max_bytes: int) -> None:
+        if not callable(app):
+            raise TypeError("app must be callable.")
         self.app = app
-        self.max_bytes = int(max_bytes)
-        if self.max_bytes <= 0:
-            raise ValueError("max_bytes must be positive.")
+        self.max_bytes = _positive_integer(max_bytes)
 
     @staticmethod
     def _content_length(scope: Dict[str, Any]) -> int | None:
-        values = [
-            value
-            for name, value in scope.get("headers", [])
-            if name.lower() == b"content-length"
-        ]
+        if not isinstance(scope, dict):
+            return None
+        try:
+            headers = scope.get("headers", [])
+        except Exception:
+            return None
+        if isinstance(headers, (str, bytes, bytearray)):
+            return None
+        try:
+            fields = list(
+                itertools.islice(iter(headers), _MAX_HEADER_FIELDS + 1)
+            )
+        except Exception:
+            return None
+        if len(fields) > _MAX_HEADER_FIELDS:
+            return None
+        values: list[bytes] = []
+        for field in fields:
+            if not isinstance(field, (tuple, list)) or len(field) != 2:
+                return None
+            name, value = field
+            if not isinstance(name, bytes) or not isinstance(value, bytes):
+                return None
+            if name.lower() == b"content-length":
+                values.append(value)
         if not values:
             return None
-        parsed_values = []
+        parsed_values: list[int] = []
         for value in values:
             try:
-                parsed = int(value.decode("ascii"))
-            except (UnicodeDecodeError, ValueError):
+                decoded = value.decode("ascii")
+                if not decoded or decoded.strip() != decoded:
+                    return None
+                parsed = int(decoded)
+            except (UnicodeDecodeError, ValueError, OverflowError):
                 return None
             if parsed < 0:
                 return None
@@ -55,7 +101,11 @@ class RequestBodyLimitMiddleware:
         detail: str,
         close: bool = False,
     ) -> None:
-        body = json.dumps({"detail": detail}, separators=(",", ":")).encode("utf-8")
+        body = json.dumps(
+            {"detail": detail},
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode("utf-8")
         headers = [
             (b"content-type", b"application/json"),
             (b"content-length", str(len(body)).encode("ascii")),
@@ -70,7 +120,13 @@ class RequestBodyLimitMiddleware:
                 "headers": headers,
             }
         )
-        await send({"type": "http.response.body", "body": body, "more_body": False})
+        await send(
+            {
+                "type": "http.response.body",
+                "body": body,
+                "more_body": False,
+            }
+        )
 
     async def _reject(self, send: ASGISend) -> None:
         await self._json_error(
@@ -80,13 +136,31 @@ class RequestBodyLimitMiddleware:
             close=True,
         )
 
+    @staticmethod
+    async def _finish_started_response(send: ASGISend) -> None:
+        await send(
+            {
+                "type": "http.response.body",
+                "body": b"",
+                "more_body": False,
+            }
+        )
+
     async def __call__(
         self,
         scope: Dict[str, Any],
         receive: ASGIReceive,
         send: ASGISend,
     ) -> None:
-        if scope.get("type") != "http":
+        if not isinstance(scope, dict):
+            raise TypeError("ASGI scope must be a dictionary.")
+        if not callable(receive) or not callable(send):
+            raise TypeError("ASGI receive and send must be callable.")
+        try:
+            scope_type = scope.get("type")
+        except Exception as exc:
+            raise TypeError("ASGI scope could not be inspected.") from exc
+        if scope_type != "http":
             await self.app(scope, receive, send)
             return
         declared = self._content_length(scope)
@@ -100,22 +174,50 @@ class RequestBodyLimitMiddleware:
 
         async def limited_receive() -> Dict[str, Any]:
             nonlocal received
-            message = await receive()
-            if message.get("type") == "http.request":
-                received += len(message.get("body", b""))
+            try:
+                message = await receive()
+            except RequestBodyTooLarge:
+                raise
+            if not isinstance(message, dict):
+                raise InvalidRequestBody
+            try:
+                message_type = message.get("type")
+            except Exception as exc:
+                raise InvalidRequestBody from exc
+            if message_type == "http.request":
+                try:
+                    body = message.get("body", b"")
+                    more_body = message.get("more_body", False)
+                except Exception as exc:
+                    raise InvalidRequestBody from exc
+                if not isinstance(body, bytes) or not isinstance(more_body, bool):
+                    raise InvalidRequestBody
+                received += len(body)
                 if received > self.max_bytes:
                     raise RequestBodyTooLarge
             return message
 
         async def tracked_send(message: Dict[str, Any]) -> None:
             nonlocal response_started, response_complete
-            if message.get("type") == "http.response.start":
+            if not isinstance(message, dict):
+                raise TypeError("ASGI response messages must be dictionaries.")
+            try:
+                message_type = message.get("type")
+            except Exception as exc:
+                raise TypeError("ASGI response message could not be inspected.") from exc
+            if message_type == "http.response.start":
                 response_started = True
-            elif (
-                message.get("type") == "http.response.body"
-                and not message.get("more_body", False)
-            ):
-                response_complete = True
+            elif message_type == "http.response.body":
+                try:
+                    more_body = message.get("more_body", False)
+                except Exception as exc:
+                    raise TypeError(
+                        "ASGI response body message could not be inspected."
+                    ) from exc
+                if not isinstance(more_body, bool):
+                    raise TypeError("ASGI response more_body must be a boolean.")
+                if not more_body:
+                    response_complete = True
             await send(message)
 
         try:
@@ -124,21 +226,33 @@ class RequestBodyLimitMiddleware:
             if not response_started:
                 await self._reject(send)
             elif not response_complete:
-                # ASGI status/headers cannot be replaced after response start. Finish the
-                # response explicitly instead of leaving the connection hanging.
-                await send({
-                    "type": "http.response.body",
-                    "body": b"",
-                    "more_body": False,
-                })
+                await self._finish_started_response(send)
+        except InvalidRequestBody:
+            if not response_started:
+                await self._json_error(
+                    send,
+                    status=400,
+                    detail="Malformed request body.",
+                    close=True,
+                )
+            elif not response_complete:
+                await self._finish_started_response(send)
         except ValueError as exc:
             # Translate only the exact owner-scoped metadata absence sentinel. Other
-            # ValueErrors—including invalid JSON or programming defects—must remain visible
+            # ValueErrors—including invalid JSON or programming defects—remain visible
             # to the normal server error boundary.
+            arguments = exc.args
+            path = scope.get("path")
+            exact_missing = (
+                len(arguments) == 1
+                and isinstance(arguments[0], str)
+                and arguments[0] == _MISSING_VISUAL_DOCUMENT_ERROR
+            )
             if (
                 not response_started
-                and str(scope.get("path") or "") == "/tool/visual-entailment"
-                and str(exc) == _MISSING_VISUAL_DOCUMENT_ERROR
+                and isinstance(path, str)
+                and path == "/tool/visual-entailment"
+                and exact_missing
             ):
                 await self._json_error(
                     send,
