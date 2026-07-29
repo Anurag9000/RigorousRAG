@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import itertools
 import re
-from typing import Any, Dict, Iterable, List, Tuple
+from typing import Any, Dict, List, Tuple
 
 from tools.models import AgentAnswer, Citation
 
