@@ -37,7 +37,32 @@ def _reject_json_constant(value: str) -> None:
     raise ValueError(f"Non-standard JSON constant '{value}' is not allowed.")
 
 
+def _contains_ascii_control(value: str) -> bool:
+    return any(ord(character) < 32 or ord(character) == 127 for character in value)
+
+
 def _text(
+    value: Any,
+    label: str,
+    *,
+    maximum: int,
+    allow_empty: bool = False,
+) -> str:
+    """Bound scientific prose while preserving intentional newlines and tabs."""
+
+    if not isinstance(value, str):
+        raise ValueError(f"{label} must be a string.")
+    rendered = value.strip()
+    if "\x00" in rendered:
+        raise ValueError(f"{label} contains an invalid null character.")
+    if len(rendered) > maximum:
+        raise ValueError(f"{label} may contain at most {maximum:,} characters.")
+    if not rendered and not allow_empty:
+        raise ValueError(f"{label} is required.")
+    return rendered
+
+
+def _identifier(
     value: Any,
     label: str,
     *,
@@ -47,7 +72,7 @@ def _text(
     if not isinstance(value, str):
         raise ValueError(f"{label} must be a string.")
     rendered = value.strip()
-    if "\x00" in rendered:
+    if _contains_ascii_control(rendered):
         raise ValueError(f"{label} contains invalid control characters.")
     if len(rendered) > maximum:
         raise ValueError(f"{label} may contain at most {maximum:,} characters.")
@@ -57,7 +82,7 @@ def _text(
 
 
 def _model(value: Any) -> str:
-    return _text(value, "model", maximum=200)
+    return _identifier(value, "model", maximum=200)
 
 
 def _owner(value: Any) -> str:
@@ -84,7 +109,11 @@ def _values(
         raise ValueError(f"{label} supports at most {maximum_items} items.")
     bounded: List[str] = []
     for raw in raw_values:
-        value = _text(raw, f"{label} item", maximum=maximum_chars)
+        value = _identifier(
+            raw,
+            f"{label} item",
+            maximum=maximum_chars,
+        )
         if value not in bounded:
             bounded.append(value)
     if len(bounded) < minimum_items:
@@ -111,7 +140,7 @@ def _parse_json_object(raw: str) -> Dict[str, Any]:
 
 
 def _extract_figure_region(pdf_bytes: bytes, figure_id: str):
-    bounded_figure = _text(figure_id, "figure_id", maximum=200)
+    bounded_figure = _identifier(figure_id, "figure_id", maximum=200)
     try:
         return _original_extract_figure_region(pdf_bytes, bounded_figure)
     except ValueError as exc:
@@ -134,8 +163,8 @@ def check_visual_entailment(
 ) -> str:
     return _original_check_visual_entailment(
         _text(claim_text, "claim_text", maximum=10_000),
-        _text(figure_id, "figure_id", maximum=200),
-        _text(doc_id, "doc_id", maximum=200),
+        _identifier(figure_id, "figure_id", maximum=200),
+        _identifier(doc_id, "doc_id", maximum=200),
         owner_id=_owner(owner_id),
         client=client,
         model=_model(model),
@@ -203,7 +232,7 @@ def extract_protocol(
 ) -> str:
     return _original_extract_protocol(
         _text(text, "text", maximum=30_000, allow_empty=True),
-        _text(doc_id, "doc_id", maximum=200, allow_empty=True),
+        _identifier(doc_id, "doc_id", maximum=200, allow_empty=True),
         client=client,
         model=_model(model),
     )
@@ -248,7 +277,7 @@ def extract_limitations(
     model: str = "gpt-4o",
 ) -> str:
     return _original_extract_limitations(
-        _text(doc_id, "doc_id", maximum=200),
+        _identifier(doc_id, "doc_id", maximum=200),
         _text(text, "text", maximum=35_000, allow_empty=True),
         owner_id=_owner(owner_id),
         client=client,
