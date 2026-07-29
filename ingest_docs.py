@@ -10,7 +10,7 @@ import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, List, Optional
+from typing import Any, Iterable, Iterator, List, Optional
 
 try:
     from openai import OpenAI
@@ -30,16 +30,16 @@ _MAX_PATH_CHARS = 4096
 _MAX_VECTOR_ROWS = 100_000
 _VECTOR_BATCH_SIZE = 128
 _MAX_MANIFEST_BYTES = 50_000_000
+_MAX_VECTOR_TEXT_CHARS = 50_000_000
+_MAX_VECTOR_METADATA_ITEMS = 2000
 
 
 def _lexical_absolute(value: str | os.PathLike[str]) -> Path:
     if not isinstance(value, (str, os.PathLike)):
         raise ValueError("Paths must be strings or path-like values.")
     rendered = os.fspath(value)
-    if not isinstance(rendered, str) or not rendered or len(rendered) > _MAX_PATH_CHARS:
+    if not rendered or len(rendered) > _MAX_PATH_CHARS or "\x00" in rendered:
         raise ValueError("A path is invalid or too long.")
-    if "\x00" in rendered:
-        raise ValueError("A path contains an invalid null character.")
     candidate = Path(rendered)
     if not candidate.is_absolute():
         candidate = Path.cwd() / candidate
@@ -67,26 +67,39 @@ def _regular_supported_file(path: Path) -> bool:
     return stat.S_ISREG(info.st_mode) and path.suffix.lower() in _ALLOWED_SUFFIXES
 
 
-def _directory_files(directory: Path, recursive: bool) -> Iterable[Path]:
+def _directory_files(directory: Path, recursive: bool) -> Iterator[Path]:
+    """Yield directory files without materializing an unbounded directory listing."""
+
     stack = [directory]
+    inspected = 0
+    inspection_limit = max(_MAX_INPUT_FILES * 20, _MAX_INPUT_FILES)
     while stack:
         current = stack.pop()
         try:
             if _has_symlink_component(current):
                 continue
-            entries = list(os.scandir(current))
+            scanner = os.scandir(current)
         except (OSError, ValueError):
             continue
-        for entry in entries:
-            try:
-                if entry.is_symlink():
-                    continue
-                if entry.is_file(follow_symlinks=False):
-                    yield _lexical_absolute(entry.path)
-                elif recursive and entry.is_dir(follow_symlinks=False):
-                    stack.append(_lexical_absolute(entry.path))
-            except (OSError, ValueError):
-                continue
+        try:
+            with scanner as entries:
+                for entry in entries:
+                    inspected += 1
+                    if inspected > inspection_limit:
+                        raise ValueError(
+                            "Directory traversal exceeded the bounded entry-inspection limit."
+                        )
+                    try:
+                        if entry.is_symlink():
+                            continue
+                        if entry.is_file(follow_symlinks=False):
+                            yield _lexical_absolute(entry.path)
+                        elif recursive and entry.is_dir(follow_symlinks=False):
+                            stack.append(_lexical_absolute(entry.path))
+                    except (OSError, ValueError):
+                        continue
+        except OSError:
+            continue
 
 
 def _collect_files(
@@ -97,9 +110,9 @@ def _collect_files(
     if not isinstance(paths, list):
         raise ValueError("paths must be a list.")
     if len(paths) > _MAX_INPUT_FILES:
-        raise ValueError(
-            f"At most {_MAX_INPUT_FILES} input paths may be supplied."
-        )
+        raise ValueError(f"At most {_MAX_INPUT_FILES} input paths may be supplied.")
+    if any(not isinstance(path, str) for path in paths):
+        raise ValueError("Every input path must be a string.")
     if not isinstance(recursive, bool):
         raise ValueError("recursive must be a boolean.")
     excluded = _lexical_absolute(output_path) if output_path is not None else None
@@ -110,7 +123,7 @@ def _collect_files(
         except ValueError:
             continue
         if _regular_supported_file(path):
-            candidates = [path]
+            candidates: Iterable[Path] = (path,)
         else:
             try:
                 info = os.stat(path, follow_symlinks=False)
@@ -133,15 +146,13 @@ def _collect_files(
 
 
 def _provider_value(name: str) -> Optional[str]:
+    if not isinstance(name, str) or not name or len(name) > 200:
+        raise ValueError("Provider setting names must be valid strings.")
     raw = os.getenv(name)
     if raw in (None, ""):
         return None
-    if not isinstance(raw, str):
-        raise ValueError(f"{name} must be a string.")
     value = raw.strip()
-    if len(value) > 4096 or any(
-        character in value for character in ("\x00", "\r", "\n")
-    ):
+    if len(value) > 4096 or any(character in value for character in ("\x00", "\r", "\n")):
         raise ValueError(f"{name} is invalid.")
     return value or None
 
@@ -181,6 +192,7 @@ def _capture_generation(rag: Any, owner_id: str, doc_id: str) -> _VectorGenerati
     result = rag.collection.get(
         where=_vector_filter(owner_id, doc_id),
         include=["documents", "metadatas"],
+        limit=_MAX_VECTOR_ROWS + 1,
     )
     if not isinstance(result, dict):
         raise RuntimeError("The vector backend returned an invalid snapshot.")
@@ -200,7 +212,12 @@ def _capture_generation(rag: Any, owner_id: str, doc_id: str) -> _VectorGenerati
     for vector_id, text, metadata in zip(ids, documents, metadatas):
         if not isinstance(vector_id, str) or not vector_id or len(vector_id) > 1000:
             raise RuntimeError("The prior vector generation contains an invalid ID.")
-        if not isinstance(text, str) or not isinstance(metadata, dict):
+        if (
+            not isinstance(text, str)
+            or len(text) > _MAX_VECTOR_TEXT_CHARS
+            or not isinstance(metadata, dict)
+            or len(metadata) > _MAX_VECTOR_METADATA_ITEMS
+        ):
             raise RuntimeError("The prior vector generation contains invalid rows.")
         if metadata.get("owner_id") != owner_id or metadata.get("doc_id") != doc_id:
             raise RuntimeError("The prior vector generation violates owner scope.")
@@ -234,9 +251,7 @@ def _restore_generation(
                 errors.append(f"restore:{type(exc).__name__}")
                 break
     if errors:
-        raise RuntimeError(
-            "Vector rollback was incomplete: " + ", ".join(errors)
-        )
+        raise RuntimeError("Vector rollback was incomplete: " + ", ".join(errors))
 
 
 def _atomic_manifest(path: Path, manifest: list[dict[str, Any]]) -> None:
@@ -387,11 +402,7 @@ def main() -> int:
             payload = document.model_dump(
                 mode="json",
                 exclude_none=True,
-                exclude=(
-                    set()
-                    if args.include_redacted_text
-                    else {"text", "sections"}
-                ),
+                exclude=(set() if args.include_redacted_text else {"text", "sections"}),
             )
             payload["chunk_count"] = indexed.chunk_count
             payload["source_retained"] = retained_copy is not None
@@ -407,9 +418,7 @@ def main() -> int:
             cleanup_pending = False
             if previous_path:
                 try:
-                    cleanup_pending = (
-                        document_store.remove_source(previous_path) is not True
-                    )
+                    cleanup_pending = document_store.remove_source(previous_path) is not True
                 except Exception:
                     cleanup_pending = True
             if cleanup_pending:
@@ -428,12 +437,7 @@ def main() -> int:
                         pass
                 if indexed is not None and document is not None and previous is not None:
                     try:
-                        _restore_generation(
-                            rag,
-                            owner_id,
-                            document.id,
-                            previous,
-                        )
+                        _restore_generation(rag, owner_id, document.id, previous)
                     except Exception:
                         pass
             failures += 1
@@ -444,7 +448,7 @@ def main() -> int:
     if output_path is not None:
         try:
             _atomic_manifest(output_path, manifest)
-            print(f"Manifest written to {output_path.name}")
+            print(f"Manifest written to {mask_metadata_text(output_path.name)[:500]}")
         except Exception:
             print("The ingestion manifest could not be published.", file=sys.stderr)
             failures += 1
