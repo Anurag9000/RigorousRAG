@@ -240,13 +240,16 @@ def test_delete_document_ignores_cross_owner_vector_metadata(server_module, monk
     assert deleted == []
 
 
-def test_recovery_reconciles_committed_registry_before_requeue(
+def test_recovery_replays_even_when_an_older_registry_row_exists(
     server_module,
     monkeypatch,
 ):
+    source = server_module.UPLOAD_DIR / "alice" / "source.pdf"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_bytes(b"%PDF-1.4\n")
     updates = []
     submissions = []
-    unlinks = []
+    registry_reads = []
     monkeypatch.setattr(
         server_module._JOB_STORE,
         "recoverable",
@@ -254,9 +257,10 @@ def test_recovery_reconciles_committed_registry_before_requeue(
             {
                 "job_id": "job-1",
                 "owner_id": "alice",
+                "status": "finalizing",
                 "filename": "paper.pdf",
                 "doc_id": "doc-1",
-                "source_path": "/uploads/alice/source.pdf",
+                "source_path": str(source),
                 "attempts": 1,
             }
         ],
@@ -269,9 +273,9 @@ def test_recovery_reconciles_committed_registry_before_requeue(
     monkeypatch.setattr(
         server_module._DOCUMENT_STORE,
         "get",
-        lambda **_kwargs: {
-            "source_path": "",
-            "source_retained": False,
+        lambda **kwargs: registry_reads.append(kwargs) or {
+            "source_path": str(source),
+            "source_retained": True,
         },
     )
     monkeypatch.setitem(
@@ -279,15 +283,23 @@ def test_recovery_reconciles_committed_registry_before_requeue(
         "_submit_ingestion",
         lambda *args: submissions.append(args),
     )
-    monkeypatch.setattr(
-        server_module,
-        "_safe_unlink_upload",
-        lambda path: unlinks.append(path) or True,
-    )
 
     server_module._recover_interrupted_jobs()
 
-    assert updates[0][1]["status"] == "success"
-    assert updates[0][1]["doc_id"] == "doc-1"
-    assert submissions == []
-    assert unlinks == ["/uploads/alice/source.pdf"]
+    assert updates[0][1]["status"] == "queued"
+    assert updates[0][1]["source_path"] == str(source)
+    assert submissions == [(str(source), "paper.pdf", "job-1", "alice")]
+    assert registry_reads == []
+    assert source.exists()
+
+
+def test_same_retained_source_is_not_treated_as_stale_replacement(server_module):
+    current = server_module.UPLOAD_DIR / "alice" / "source.pdf"
+    current.parent.mkdir(parents=True, exist_ok=True)
+    current.write_bytes(b"%PDF-1.4\n")
+    other = server_module.UPLOAD_DIR / "alice" / "other.pdf"
+    other.write_bytes(b"%PDF-1.4\n")
+
+    assert server_module._same_retained_source(str(current), current) is True
+    assert server_module._same_retained_source(str(other), current) is False
+    assert server_module._same_retained_source("", current) is False
