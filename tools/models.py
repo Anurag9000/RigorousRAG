@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 import math
 from typing import Any, Dict, List, Literal, Optional
 from urllib.parse import urlsplit, urlunsplit
@@ -28,6 +29,8 @@ SourceType = Literal[
 
 _MAX_METADATA_DEPTH = 6
 _MAX_METADATA_ITEMS = 100
+_MAX_CITATIONS = 100
+_MAX_WARNINGS = 100
 
 
 def _safe_text(value: Any, *, limit: int) -> str:
@@ -125,7 +128,9 @@ def _safe_citation_url(value: Any) -> str:
             raise ValueError("Local citation URLs may not contain credentials.")
         if not parsed.netloc and not parsed.path.strip("/"):
             raise ValueError("Local citation URLs must identify a source.")
-        return urlunsplit((scheme, parsed.netloc, parsed.path, parsed.query, parsed.fragment))[:4096]
+        return urlunsplit(
+            (scheme, parsed.netloc, parsed.path, parsed.query, parsed.fragment)
+        )[:4096]
     hostname = parsed.hostname
     if not hostname:
         raise ValueError("Public citation URLs must contain a hostname.")
@@ -133,7 +138,23 @@ def _safe_citation_url(value: Any) -> str:
     netloc = rendered_host
     if port is not None:
         netloc = f"{rendered_host}:{port}"
-    return urlunsplit((scheme, netloc, parsed.path, parsed.query, parsed.fragment))[:4096]
+    return urlunsplit(
+        (scheme, netloc, parsed.path, parsed.query, parsed.fragment)
+    )[:4096]
+
+
+def _bounded_iterable(value: Any, label: str, maximum: int) -> list[Any]:
+    if value is None:
+        return []
+    if isinstance(value, (str, bytes, bytearray)):
+        raise ValueError(f"{label} must be a list.")
+    try:
+        values = list(itertools.islice(iter(value), maximum + 1))
+    except Exception as exc:
+        raise ValueError(f"{label} must be iterable.") from exc
+    if len(values) > maximum:
+        raise ValueError(f"{label} may contain at most {maximum} items.")
+    return values
 
 
 class Citation(BaseModel):
@@ -233,8 +254,8 @@ class AgentAnswer(BaseModel):
     model_config = ConfigDict(validate_assignment=True, extra="forbid")
 
     answer: str = Field(..., min_length=1, max_length=100_000)
-    citations: List[Citation] = Field(default_factory=list, max_length=100)
-    warnings: List[str] = Field(default_factory=list, max_length=100)
+    citations: List[Citation] = Field(default_factory=list, max_length=_MAX_CITATIONS)
+    warnings: List[str] = Field(default_factory=list, max_length=_MAX_WARNINGS)
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("answer", mode="before")
@@ -245,13 +266,18 @@ class AgentAnswer(BaseModel):
             raise ValueError("Agent answers may not be empty.")
         return bounded
 
+    @field_validator("citations", mode="before")
+    @classmethod
+    def bound_citation_iterable(cls, values: Any) -> list[Any]:
+        return _bounded_iterable(values, "citations", _MAX_CITATIONS)
+
     @field_validator("citations")
     @classmethod
     def deduplicate_citations(cls, values: List[Citation]) -> List[Citation]:
         selected: List[Citation] = []
         labels: set[str] = set()
         identities: set[tuple[str, str, str]] = set()
-        for citation in values[:100]:
+        for citation in values:
             identity = (
                 citation.source_id or citation.url,
                 citation.doc_id or "",
@@ -267,16 +293,9 @@ class AgentAnswer(BaseModel):
     @field_validator("warnings", mode="before")
     @classmethod
     def bound_warnings(cls, values: Any) -> List[str]:
-        if values is None:
-            return []
-        if isinstance(values, (str, bytes, bytearray)):
-            raise ValueError("warnings must be a list of strings.")
-        try:
-            raw_values = list(values)
-        except Exception as exc:
-            raise ValueError("warnings must be iterable.") from exc
+        raw_values = _bounded_iterable(values, "warnings", _MAX_WARNINGS)
         bounded: List[str] = []
-        for value in raw_values[:100]:
+        for value in raw_values:
             text = _safe_text(value, limit=2000)
             if text:
                 bounded.append(text)
