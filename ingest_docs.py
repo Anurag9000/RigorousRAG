@@ -34,11 +34,19 @@ _MAX_VECTOR_TEXT_CHARS = 50_000_000
 _MAX_VECTOR_METADATA_ITEMS = 2000
 
 
+def _contains_ascii_control(value: str) -> bool:
+    return any(ord(character) < 32 or ord(character) == 127 for character in value)
+
+
 def _lexical_absolute(value: str | os.PathLike[str]) -> Path:
     if not isinstance(value, (str, os.PathLike)):
         raise ValueError("Paths must be strings or path-like values.")
     rendered = os.fspath(value)
-    if not rendered or len(rendered) > _MAX_PATH_CHARS or "\x00" in rendered:
+    if (
+        not rendered
+        or len(rendered) > _MAX_PATH_CHARS
+        or _contains_ascii_control(rendered)
+    ):
         raise ValueError("A path is invalid or too long.")
     candidate = Path(rendered)
     if not candidate.is_absolute():
@@ -152,7 +160,7 @@ def _provider_value(name: str) -> Optional[str]:
     if raw in (None, ""):
         return None
     value = raw.strip()
-    if len(value) > 4096 or any(character in value for character in ("\x00", "\r", "\n")):
+    if len(value) > 4096 or _contains_ascii_control(value):
         raise ValueError(f"{name} is invalid.")
     return value or None
 
@@ -210,7 +218,12 @@ def _capture_generation(rag: Any, owner_id: str, doc_id: str) -> _VectorGenerati
     clean_documents: List[str] = []
     clean_metadatas: List[dict[str, Any]] = []
     for vector_id, text, metadata in zip(ids, documents, metadatas):
-        if not isinstance(vector_id, str) or not vector_id or len(vector_id) > 1000:
+        if (
+            not isinstance(vector_id, str)
+            or not vector_id
+            or len(vector_id) > 1000
+            or _contains_ascii_control(vector_id)
+        ):
             raise RuntimeError("The prior vector generation contains an invalid ID.")
         if (
             not isinstance(text, str)
