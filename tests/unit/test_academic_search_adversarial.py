@@ -51,14 +51,17 @@ def test_provider_key_is_trimmed_before_header_use(monkeypatch):
     assert download.call_args.kwargs["headers"]["x-api-key"] == "provider-key"
 
 
-def test_hostile_paper_mapping_becomes_generic_provider_structure_failure():
+def test_hostile_paper_mapping_is_skipped_without_exception_leak():
     class BrokenPaper(dict):
         def get(self, *_args, **_kwargs):
             raise RuntimeError("private provider detail")
 
     with patch(
         "tools.academic_search.safe_download",
-        return_value=_payload([BrokenPaper()]),
+        return_value=SimpleNamespace(content=b"{}"),
+    ), patch(
+        "tools.academic_search._strict_provider_json",
+        return_value={"data": [BrokenPaper()]},
     ):
         assert academic_search("query") == []
 
@@ -72,19 +75,19 @@ def test_hostile_author_and_external_id_collections_do_not_leak():
         def items(self):
             raise RuntimeError("private metadata detail")
 
+    paper = {
+        "title": "Paper",
+        "paperId": "paper-1",
+        "url": "https://example.test/paper",
+        "authors": BrokenAuthors(),
+        "externalIds": BrokenExternalIds(),
+    }
     with patch(
         "tools.academic_search.safe_download",
-        return_value=_payload(
-            [
-                {
-                    "title": "Paper",
-                    "paperId": "paper-1",
-                    "url": "https://example.test/paper",
-                    "authors": BrokenAuthors(),
-                    "externalIds": BrokenExternalIds(),
-                }
-            ]
-        ),
+        return_value=SimpleNamespace(content=b"{}"),
+    ), patch(
+        "tools.academic_search._strict_provider_json",
+        return_value={"data": [paper]},
     ):
         results = academic_search("query")
 
