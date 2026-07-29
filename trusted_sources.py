@@ -1,23 +1,86 @@
-"""Curated list of trusted academic, governmental, and educational sources."""
+"""Curated and validated academic, governmental, and educational crawl seeds."""
 
 from __future__ import annotations
 
+import itertools
 from dataclasses import dataclass
-from typing import Dict, Iterable, List, Set
+from types import MappingProxyType
+from typing import Any, Iterable, Mapping, Tuple
+from urllib.parse import urlparse, urlunparse
+
+_MAX_CATEGORIES = 100
+_MAX_SEEDS_PER_CATEGORY = 1000
+_MAX_TOTAL_SEEDS = 10_000
+_MAX_URL_CHARS = 4096
+
+
+def _validated_seed(value: Any) -> str:
+    if not isinstance(value, str):
+        raise ValueError("Trusted source seeds must be strings.")
+    rendered = value.strip()
+    if (
+        not rendered
+        or len(rendered) > _MAX_URL_CHARS
+        or any(ord(character) < 32 or ord(character) == 127 for character in rendered)
+    ):
+        raise ValueError("Trusted source seeds must contain valid bounded URLs.")
+    try:
+        parsed = urlparse(rendered)
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError("Trusted source seeds must contain valid URLs.") from exc
+    if parsed.scheme.lower() != "https":
+        raise ValueError("Trusted source seeds must use HTTPS.")
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError("Trusted source seeds may not contain credentials.")
+    hostname = (parsed.hostname or "").rstrip(".").lower()
+    if not hostname or any(character.isspace() for character in hostname):
+        raise ValueError("Trusted source seeds must contain valid hostnames.")
+    try:
+        ascii_host = hostname.encode("idna").decode("ascii").lower()
+    except UnicodeError as exc:
+        raise ValueError("Trusted source seeds must contain valid hostnames.") from exc
+    rendered_host = f"[{ascii_host}]" if ":" in ascii_host else ascii_host
+    netloc = rendered_host if port is None else f"{rendered_host}:{port}"
+    return urlunparse(("https", netloc, parsed.path or "/", "", parsed.query, ""))
 
 
 @dataclass(frozen=True)
 class SourceCategory:
     name: str
     description: str
-    seeds: List[str]
+    seeds: Tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.name, str) or not self.name.strip() or len(self.name) > 200:
+            raise ValueError("Source-category names must contain 1-200 characters.")
+        if not isinstance(self.description, str) or len(self.description) > 2000:
+            raise ValueError(
+                "Source-category descriptions must contain at most 2,000 characters."
+            )
+        if not isinstance(self.seeds, tuple):
+            raise ValueError("Source-category seeds must be an immutable tuple.")
+        if len(self.seeds) > _MAX_SEEDS_PER_CATEGORY:
+            raise ValueError(
+                f"Source categories may contain at most {_MAX_SEEDS_PER_CATEGORY} seeds."
+            )
+        normalized = tuple(_validated_seed(seed) for seed in self.seeds)
+        if len(normalized) != len(set(normalized)):
+            raise ValueError("Source-category seeds must be unique after normalization.")
+        object.__setattr__(self, "name", self.name.strip())
+        object.__setattr__(self, "description", self.description.strip())
+        object.__setattr__(self, "seeds", normalized)
 
 
-CATEGORIES: List[SourceCategory] = [
-    SourceCategory(
-        name="Reference & Encyclopedias",
-        description="General knowledge resources vetted for editorial oversight.",
-        seeds=[
+def _category(name: str, description: str, seeds: tuple[str, ...]) -> SourceCategory:
+    return SourceCategory(name=name, description=description, seeds=seeds)
+
+
+CATEGORIES: Tuple[SourceCategory, ...] = (
+    _category(
+        "Reference & Encyclopedias",
+        "General knowledge resources vetted for editorial oversight.",
+        (
             "https://www.wikipedia.org",
             "https://en.wikipedia.org",
             "https://www.britannica.com",
@@ -28,12 +91,12 @@ CATEGORIES: List[SourceCategory] = [
             "https://plato.stanford.edu",
             "https://iep.utm.edu",
             "https://www.loc.gov",
-        ],
+        ),
     ),
-    SourceCategory(
-        name="Academic Journals & Publishers",
-        description="Peer-reviewed publishers and aggregators.",
-        seeds=[
+    _category(
+        "Academic Journals & Publishers",
+        "Peer-reviewed publishers and aggregators.",
+        (
             "https://www.nature.com",
             "https://www.sciencedirect.com",
             "https://link.springer.com",
@@ -49,24 +112,24 @@ CATEGORIES: List[SourceCategory] = [
             "https://www.rsc.org/journals-books-databases",
             "https://dl.acm.org",
             "https://ieeexplore.ieee.org",
-        ],
+        ),
     ),
-    SourceCategory(
-        name="Preprint Servers & Scholarly Networks",
-        description="Open access repositories for early research dissemination.",
-        seeds=[
+    _category(
+        "Preprint Servers & Scholarly Networks",
+        "Open access repositories for early research dissemination.",
+        (
             "https://arxiv.org",
             "https://www.biorxiv.org",
             "https://www.medrxiv.org",
             "https://osf.io/preprints",
             "https://hal.science",
             "https://www.researchgate.net",
-        ],
+        ),
     ),
-    SourceCategory(
-        name="Education & Open Courseware",
-        description="Structured learning materials from universities and education platforms.",
-        seeds=[
+    _category(
+        "Education & Open Courseware",
+        "Structured learning materials from universities and education platforms.",
+        (
             "https://ocw.mit.edu",
             "https://www.khanacademy.org",
             "https://www.edx.org",
@@ -78,12 +141,12 @@ CATEGORIES: List[SourceCategory] = [
             "https://www.carnegielearning.com",
             "https://cs50.harvard.edu",
             "https://www.ted.com/topics/education",
-        ],
+        ),
     ),
-    SourceCategory(
-        name="Medical & Health Authorities",
-        description="Evidence-based medical information and clinical guidance.",
-        seeds=[
+    _category(
+        "Medical & Health Authorities",
+        "Evidence-based medical information and clinical guidance.",
+        (
             "https://www.who.int",
             "https://www.cdc.gov",
             "https://www.nih.gov",
@@ -97,12 +160,12 @@ CATEGORIES: List[SourceCategory] = [
             "https://www.cochranelibrary.com",
             "https://pubmed.ncbi.nlm.nih.gov",
             "https://clinicaltrials.gov",
-        ],
+        ),
     ),
-    SourceCategory(
-        name="Government & Official Statistics",
-        description="Official data portals, statistical agencies, and government research.",
-        seeds=[
+    _category(
+        "Government & Official Statistics",
+        "Official data portals, statistical agencies, and government research.",
+        (
             "https://www.usa.gov",
             "https://data.gov",
             "https://www.whitehouse.gov",
@@ -127,12 +190,12 @@ CATEGORIES: List[SourceCategory] = [
             "https://www.imf.org",
             "https://www.oecd.org",
             "https://www.un.org",
-        ],
+        ),
     ),
-    SourceCategory(
-        name="Science & Technology Agencies",
-        description="National laboratories and agencies publishing technical research.",
-        seeds=[
+    _category(
+        "Science & Technology Agencies",
+        "National laboratories and agencies publishing technical research.",
+        (
             "https://www.nasa.gov",
             "https://science.nasa.gov",
             "https://www.jpl.nasa.gov",
@@ -145,12 +208,12 @@ CATEGORIES: List[SourceCategory] = [
             "https://www.jaxa.jp",
             "https://www.noaa.gov",
             "https://www.usgs.gov",
-        ],
+        ),
     ),
-    SourceCategory(
-        name="Libraries & Archives",
-        description="Digital library collections and archives.",
-        seeds=[
+    _category(
+        "Libraries & Archives",
+        "Digital library collections and archives.",
+        (
             "https://www.gutenberg.org",
             "https://www.hathitrust.org",
             "https://www.archives.gov",
@@ -161,12 +224,12 @@ CATEGORIES: List[SourceCategory] = [
             "https://www.si.edu/collections",
             "https://library.si.edu",
             "https://www.loc.gov/collections",
-        ],
+        ),
     ),
-    SourceCategory(
-        name="Data Portals & Repositories",
-        description="Curated datasets for academic and policy research.",
-        seeds=[
+    _category(
+        "Data Portals & Repositories",
+        "Curated datasets for academic and policy research.",
+        (
             "https://ourworldindata.org",
             "https://datahub.io",
             "https://catalog.data.gov",
@@ -178,21 +241,26 @@ CATEGORIES: List[SourceCategory] = [
             "https://zenodo.org",
             "https://figshare.com",
             "https://datadryad.org",
-        ],
+        ),
     ),
-    SourceCategory(
-        name="Fact-Checking & Verification",
-        description="Fact-checked journalism and verification resources.",
-        seeds=[
+    _category(
+        "Fact-Checking & Verification",
+        "Fact-checked journalism and verification resources.",
+        (
             "https://www.reuters.com",
             "https://www.apnews.com/apfactcheck",
             "https://www.factcheck.org",
             "https://www.politifact.com",
             "https://www.snopes.com",
             "https://www.bbc.com/news/reality_check",
-        ],
+        ),
     ),
-]
+)
+
+if len(CATEGORIES) > _MAX_CATEGORIES:
+    raise ValueError(f"At most {_MAX_CATEGORIES} source categories are supported.")
+if len({category.name for category in CATEGORIES}) != len(CATEGORIES):
+    raise ValueError("Source-category names must be unique.")
 
 
 def iter_all_seed_urls() -> Iterable[str]:
@@ -200,26 +268,44 @@ def iter_all_seed_urls() -> Iterable[str]:
         yield from category.seeds
 
 
-ALL_TRUSTED_SEEDS: List[str] = sorted(set(iter_all_seed_urls()))
+ALL_TRUSTED_SEEDS: Tuple[str, ...] = tuple(
+    sorted(dict.fromkeys(iter_all_seed_urls()))
+)
+if len(ALL_TRUSTED_SEEDS) > _MAX_TOTAL_SEEDS:
+    raise ValueError(f"At most {_MAX_TOTAL_SEEDS} trusted seeds are supported.")
 
 
-def derive_domain_suffixes(urls: Iterable[str]) -> Set[str]:
-    from urllib.parse import urlparse
-
-    suffixes: Set[str] = set()
-    for raw_url in urls:
-        parsed = urlparse(raw_url)
-        host = parsed.netloc.lower()
-        if not host:
+def derive_domain_suffixes(urls: Iterable[str]) -> frozenset[str]:
+    if isinstance(urls, (str, bytes, bytearray)):
+        raise ValueError("urls must be an iterable of HTTPS seed URLs.")
+    try:
+        candidates = list(
+            itertools.islice(iter(urls), _MAX_TOTAL_SEEDS + 1)
+        )
+    except Exception as exc:
+        raise ValueError("urls must be iterable.") from exc
+    if len(candidates) > _MAX_TOTAL_SEEDS:
+        raise ValueError(f"At most {_MAX_TOTAL_SEEDS} URLs may be inspected.")
+    suffixes: set[str] = set()
+    for raw_url in candidates:
+        seed = _validated_seed(raw_url)
+        hostname = (urlparse(seed).hostname or "").rstrip(".").lower()
+        if not hostname:
             continue
-        suffixes.add(host)
-        if host.startswith("www."):
-            suffixes.add(host[4:])
-    return suffixes
+        suffixes.add(hostname)
+        if hostname.startswith("www."):
+            suffixes.add(hostname[4:])
+    return frozenset(suffixes)
 
 
-ALL_TRUSTED_DOMAINS: Set[str] = derive_domain_suffixes(ALL_TRUSTED_SEEDS)
+ALL_TRUSTED_DOMAINS: frozenset[str] = derive_domain_suffixes(
+    ALL_TRUSTED_SEEDS
+)
+
+_CATEGORY_MAP: Mapping[str, Tuple[str, ...]] = MappingProxyType(
+    {category.name: category.seeds for category in CATEGORIES}
+)
 
 
-def category_map() -> Dict[str, List[str]]:
-    return {category.name: category.seeds for category in CATEGORIES}
+def category_map() -> Mapping[str, Tuple[str, ...]]:
+    return _CATEGORY_MAP
