@@ -1,3 +1,4 @@
+import itertools
 import json
 import math
 
@@ -30,6 +31,24 @@ def test_non_finite_answer_metadata_is_normalized_to_null():
     assert "NaN" not in json.dumps(payload, allow_nan=False)
 
 
+def test_nested_metadata_lists_preserve_bounded_structures():
+    answer = AgentAnswer(
+        answer="grounded",
+        metadata={
+            "values": [
+                {"score": 1.0, "path": "/private/state.json"},
+                ["analyst@example.com", {"finite": 2}],
+            ]
+        },
+    )
+
+    values = answer.metadata["values"]
+    assert values[0]["score"] == 1.0
+    assert values[0]["path"] == "[REDACTED_PATH]"
+    assert values[1][0] == "[REDACTED_EMAIL]"
+    assert values[1][1] == {"finite": 2}
+
+
 def test_non_finite_citation_metadata_is_json_safe():
     citation = Citation(
         label="[1]",
@@ -54,6 +73,35 @@ def test_whitespace_only_public_fields_are_rejected():
         Citation(label="[ ]", title="Evidence", url="https://example.test")
 
 
+def test_citation_url_schemes_and_page_numbers_are_strict():
+    for url in (
+        "file:///private/evidence.pdf",
+        "javascript:alert(1)",
+        "doi:10.1000/test",
+        "https:///missing-host",
+        "local://",
+    ):
+        with pytest.raises(ValidationError):
+            Citation(label="[1]", title="Evidence", url=url)
+
+    with pytest.raises(ValidationError, match="page_number"):
+        Citation(
+            label="[1]",
+            title="Evidence",
+            url="local://doc-1",
+            page_number=True,
+        )
+
+    citation = Citation(
+        label="[1]",
+        title="Evidence",
+        url="local://doc-1",
+        page_number=2,
+    )
+    assert citation.url == "local://doc-1"
+    assert citation.page_number == 2
+
+
 def test_public_citation_fields_redact_credentials_paths_and_pii():
     citation = Citation(
         label="[1]",
@@ -70,6 +118,7 @@ def test_public_citation_fields_redact_credentials_paths_and_pii():
     assert "alice" not in payload["url"]
     assert "password" not in payload["url"]
     assert "api_key=secret" not in payload["url"]
+    assert "@" not in payload["url"].split("/", 3)[2]
     assert "/var/lib" not in serialized
     assert "10 Main Street" not in serialized
     assert "192.168.1.20" not in serialized
@@ -86,6 +135,78 @@ def test_metadata_and_warning_truncation_is_explicit():
     assert len(payload["warnings"]) == 100
     assert len(payload["metadata"]) == 101
     assert payload["metadata"]["__truncated_items__"] is True
+
+
+def test_citation_and_warning_iterables_are_bounded_before_materialization():
+    citation = Citation(
+        label="[1]",
+        title="Evidence",
+        url="local://doc-1",
+    )
+
+    with pytest.raises(ValidationError, match="at most 100"):
+        AgentAnswer(
+            answer="grounded",
+            citations=itertools.repeat(citation),
+        )
+    with pytest.raises(ValidationError, match="at most 100"):
+        AgentAnswer(
+            answer="grounded",
+            warnings=itertools.repeat("warning"),
+        )
+    with pytest.raises(ValidationError, match="must be a list"):
+        AgentAnswer(answer="grounded", citations="not-a-list")
+    with pytest.raises(ValidationError, match="must be a list"):
+        AgentAnswer(answer="grounded", warnings="not-a-list")
+
+
+def test_duplicate_labels_and_duplicate_evidence_are_removed():
+    first = Citation(
+        label="[1]",
+        title="First",
+        url="local://doc-1",
+        source_id="chunk-1",
+        quote="evidence",
+    )
+    duplicate_label = Citation(
+        label="[1]",
+        title="Second",
+        url="local://doc-2",
+        source_id="chunk-2",
+        quote="other",
+    )
+    duplicate_evidence = Citation(
+        label="[2]",
+        title="First copy",
+        url="local://doc-1",
+        source_id="chunk-1",
+        quote="evidence",
+    )
+
+    answer = AgentAnswer(
+        answer="grounded",
+        citations=[first, duplicate_label, duplicate_evidence],
+    )
+
+    assert answer.citations == [first]
+
+
+def test_assignment_validation_prevents_post_construction_bypass():
+    citation = Citation(
+        label="[1]",
+        title="Evidence",
+        url="local://doc-1",
+    )
+    answer = AgentAnswer(answer="grounded")
+
+    with pytest.raises(ValidationError):
+        citation.url = "file:///private/evidence.pdf"
+    with pytest.raises(ValidationError):
+        citation.page_number = True
+    with pytest.raises(ValidationError):
+        answer.answer = "   "
+    with pytest.raises(ValidationError):
+        answer.warnings = ["warning"] * 101
 
 
 def test_hostile_metadata_object_is_serialized_safely():
