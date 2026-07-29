@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import ipaddress
 import itertools
+import re
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, Iterable, Mapping, Tuple
@@ -12,6 +14,33 @@ _MAX_CATEGORIES = 100
 _MAX_SEEDS_PER_CATEGORY = 1000
 _MAX_TOTAL_SEEDS = 10_000
 _MAX_URL_CHARS = 4096
+_HOST_LABEL_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
+
+
+def _canonical_hostname(value: Any) -> str:
+    if not isinstance(value, str) or not value or len(value) > 253:
+        return ""
+    if any(character.isspace() or ord(character) < 33 for character in value):
+        return ""
+    candidate = value.rstrip(".").lower()
+    try:
+        ipaddress.ip_address(candidate)
+    except ValueError:
+        pass
+    else:
+        return ""
+    try:
+        ascii_host = candidate.encode("idna").decode("ascii").lower()
+    except (UnicodeError, ValueError):
+        return ""
+    labels = ascii_host.split(".")
+    if (
+        len(ascii_host) > 253
+        or len(labels) < 2
+        or any(not _HOST_LABEL_RE.fullmatch(label) for label in labels)
+    ):
+        return ""
+    return ascii_host
 
 
 def _validated_seed(value: Any) -> str:
@@ -33,16 +62,14 @@ def _validated_seed(value: Any) -> str:
         raise ValueError("Trusted source seeds must use HTTPS.")
     if parsed.username is not None or parsed.password is not None:
         raise ValueError("Trusted source seeds may not contain credentials.")
-    hostname = (parsed.hostname or "").rstrip(".").lower()
-    if not hostname or any(character.isspace() for character in hostname):
-        raise ValueError("Trusted source seeds must contain valid hostnames.")
-    try:
-        ascii_host = hostname.encode("idna").decode("ascii").lower()
-    except UnicodeError as exc:
-        raise ValueError("Trusted source seeds must contain valid hostnames.") from exc
-    rendered_host = f"[{ascii_host}]" if ":" in ascii_host else ascii_host
-    netloc = rendered_host if port is None else f"{rendered_host}:{port}"
-    return urlunparse(("https", netloc, parsed.path or "/", "", parsed.query, ""))
+    if port not in (None, 443):
+        raise ValueError("Trusted source seeds may use only the default HTTPS port 443.")
+    if parsed.fragment:
+        raise ValueError("Trusted source seeds may not contain fragments.")
+    hostname = _canonical_hostname(parsed.hostname or "")
+    if not hostname:
+        raise ValueError("Trusted source seeds must contain valid DNS hostnames.")
+    return urlunparse(("https", hostname, parsed.path or "/", "", parsed.query, ""))
 
 
 @dataclass(frozen=True)
@@ -54,9 +81,13 @@ class SourceCategory:
     def __post_init__(self) -> None:
         if not isinstance(self.name, str) or not self.name.strip() or len(self.name) > 200:
             raise ValueError("Source-category names must contain 1-200 characters.")
-        if not isinstance(self.description, str) or len(self.description) > 2000:
+        if (
+            not isinstance(self.description, str)
+            or not self.description.strip()
+            or len(self.description) > 2000
+        ):
             raise ValueError(
-                "Source-category descriptions must contain at most 2,000 characters."
+                "Source-category descriptions must contain 1-2,000 characters."
             )
         if not isinstance(self.seeds, tuple):
             raise ValueError("Source-category seeds must be an immutable tuple.")
@@ -268,9 +299,7 @@ def iter_all_seed_urls() -> Iterable[str]:
         yield from category.seeds
 
 
-ALL_TRUSTED_SEEDS: Tuple[str, ...] = tuple(
-    sorted(dict.fromkeys(iter_all_seed_urls()))
-)
+ALL_TRUSTED_SEEDS: Tuple[str, ...] = tuple(sorted(dict.fromkeys(iter_all_seed_urls())))
 if len(ALL_TRUSTED_SEEDS) > _MAX_TOTAL_SEEDS:
     raise ValueError(f"At most {_MAX_TOTAL_SEEDS} trusted seeds are supported.")
 
@@ -279,9 +308,7 @@ def derive_domain_suffixes(urls: Iterable[str]) -> frozenset[str]:
     if isinstance(urls, (str, bytes, bytearray)):
         raise ValueError("urls must be an iterable of HTTPS seed URLs.")
     try:
-        candidates = list(
-            itertools.islice(iter(urls), _MAX_TOTAL_SEEDS + 1)
-        )
+        candidates = list(itertools.islice(iter(urls), _MAX_TOTAL_SEEDS + 1))
     except Exception as exc:
         raise ValueError("urls must be iterable.") from exc
     if len(candidates) > _MAX_TOTAL_SEEDS:
@@ -289,7 +316,7 @@ def derive_domain_suffixes(urls: Iterable[str]) -> frozenset[str]:
     suffixes: set[str] = set()
     for raw_url in candidates:
         seed = _validated_seed(raw_url)
-        hostname = (urlparse(seed).hostname or "").rstrip(".").lower()
+        hostname = urlparse(seed).hostname or ""
         if not hostname:
             continue
         suffixes.add(hostname)
@@ -298,9 +325,7 @@ def derive_domain_suffixes(urls: Iterable[str]) -> frozenset[str]:
     return frozenset(suffixes)
 
 
-ALL_TRUSTED_DOMAINS: frozenset[str] = derive_domain_suffixes(
-    ALL_TRUSTED_SEEDS
-)
+ALL_TRUSTED_DOMAINS: frozenset[str] = derive_domain_suffixes(ALL_TRUSTED_SEEDS)
 
 _CATEGORY_MAP: Mapping[str, Tuple[str, ...]] = MappingProxyType(
     {category.name: category.seeds for category in CATEGORIES}
