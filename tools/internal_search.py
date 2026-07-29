@@ -29,7 +29,11 @@ def _absolute_without_resolving(path: str | os.PathLike[str]) -> Path:
     if not isinstance(path, (str, os.PathLike)):
         raise ValueError("CLASSIC_STORAGE_DIR must be a filesystem path.")
     rendered = os.fspath(path)
-    if not rendered or len(rendered) > _MAX_STORAGE_PATH_CHARS or "\x00" in rendered:
+    if (
+        not rendered
+        or len(rendered) > _MAX_STORAGE_PATH_CHARS
+        or any(ord(character) < 32 or ord(character) == 127 for character in rendered)
+    ):
         raise ValueError("CLASSIC_STORAGE_DIR is invalid or too long.")
     candidate = Path(rendered)
     if not candidate.is_absolute():
@@ -94,7 +98,13 @@ def _read_manifest(manifest: Path) -> Optional[dict[str, Any]]:
                     ValueError(f"Non-standard JSON constant {value}")
                 ),
             )
-        except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError, RecursionError):
+        except (
+            UnicodeDecodeError,
+            json.JSONDecodeError,
+            TypeError,
+            ValueError,
+            RecursionError,
+        ):
             return None
         return parsed if isinstance(parsed, dict) else None
     finally:
@@ -201,8 +211,10 @@ def search_internal(query: str, limit: int = 5) -> List[Citation]:
     bounded_query = query.strip()
     if not bounded_query:
         return []
-    if len(bounded_query) > 2000:
-        raise ValueError("Internal-search queries may contain at most 2,000 characters.")
+    if len(bounded_query) > 2000 or "\x00" in bounded_query:
+        raise ValueError(
+            "Internal-search queries may contain at most 2,000 valid characters."
+        )
     requested = _bounded_limit(limit)
     hits = get_engine().search(bounded_query, limit=requested)
     if isinstance(hits, (str, bytes, bytearray)):
