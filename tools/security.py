@@ -601,6 +601,8 @@ def safe_download(
                 chunks: list[bytes] = []
                 total = 0
                 for raw_chunk in response.iter_content(chunk_size=64 * 1024):
+                    if time.monotonic() > deadline:
+                        raise SecurityError("Remote request exceeded the configured time limit.")
                     if not raw_chunk:
                         continue
                     if not isinstance(raw_chunk, (bytes, bytearray, memoryview)):
@@ -610,8 +612,6 @@ def safe_download(
                     if total > response_limit:
                         raise SecurityError("Remote response exceeds the byte limit.")
                     chunks.append(chunk)
-                    if time.monotonic() > deadline:
-                        raise SecurityError("Remote request exceeded the configured time limit.")
                 return DownloadedResponse(
                     final_url=current_url,
                     status_code=status_code,
