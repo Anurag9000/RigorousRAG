@@ -37,6 +37,8 @@ jobs:
       ENABLE_OCR: "false"
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
@@ -46,7 +48,11 @@ jobs:
       - name: Verify dependency consistency
         run: python -m pip check
       - name: Check patch whitespace
-        run: git diff --check HEAD^
+        shell: bash
+        run: |
+          base_ref="${{ github.base_ref || 'main' }}"
+          merge_base="$(git merge-base HEAD "origin/${base_ref}")"
+          git diff --check "${merge_base}...HEAD"
       - name: Compile Python
         run: python -m compileall -q .
       - name: Fatal lint checks
