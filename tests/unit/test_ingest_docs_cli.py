@@ -2,7 +2,6 @@ import argparse
 import json
 import os
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -118,29 +117,16 @@ def test_main_writes_privacy_safe_text_only_manifest(tmp_path):
 
     assert code == 0
     payload = json.loads(output.read_text(encoding="utf-8"))
-    assert payload == [
-        {
-            "id": "doc-1",
-            "filename": "paper.txt",
-            "mime_type": "text/plain",
-            "created_at": payload[0]["created_at"],
-            "text": "evidence" if "text" in payload[0] else None,
-            "metadata": {},
-            "chunk_count": 3,
-            "source_retained": False,
-        }
-    ] if "text" in payload[0] else [
-        {
-            "id": "doc-1",
-            "filename": "paper.txt",
-            "mime_type": "text/plain",
-            "created_at": payload[0]["created_at"],
-            "metadata": {},
-            "chunk_count": 3,
-            "source_retained": False,
-        }
-    ]
+    assert len(payload) == 1
+    assert payload[0]["id"] == "doc-1"
+    assert payload[0]["filename"] == "paper.txt"
+    assert payload[0]["mime_type"] == "text/plain"
+    assert payload[0]["metadata"] == {}
+    assert payload[0]["chunk_count"] == 3
+    assert payload[0]["source_retained"] is False
+    assert "created_at" in payload[0]
     assert "file_path" not in payload[0]
+    assert "text" not in payload[0]
     assert "sections" not in payload[0]
     store.copy_source.assert_not_called()
     store.register.assert_called_once_with(
@@ -183,6 +169,31 @@ def test_main_retains_private_copy_without_manifest_path(tmp_path):
     assert str(retained) not in json.dumps(payload)
     store.copy_source.assert_called_once_with(owner_id="alice", source_path=path)
     store.remove_source.assert_called_once_with(str(old))
+
+
+def test_previous_source_cleanup_failure_is_nonterminal_and_visible(tmp_path):
+    path = tmp_path / "paper.txt"
+    path.write_text("evidence", encoding="utf-8")
+    output = tmp_path / "manifest.json"
+    document, result = _success(path)
+    rag = _rag()
+    store = MagicMock()
+    store.register.return_value = "/private/old-source.txt"
+    store.remove_source.side_effect = RuntimeError("cleanup failed")
+
+    with patch("ingest_docs.parse_args", return_value=_args(path, output)), patch(
+        "ingest_docs.get_rag_layer", return_value=rag
+    ), patch("ingest_docs.get_document_store", return_value=store), patch(
+        "ingest_docs._llm_client", return_value=None
+    ), patch("ingest_docs.ingest_file", return_value=result), patch(
+        "ingest_docs.index_document",
+        return_value=IndexedDocument(document=document, chunk_count=3),
+    ):
+        assert main() == 0
+
+    payload = json.loads(output.read_text(encoding="utf-8"))
+    assert payload[0]["replacement_cleanup_pending"] is True
+    assert "/private" not in json.dumps(payload)
 
 
 def test_registry_failure_restores_prior_vector_generation(tmp_path):
