@@ -54,8 +54,9 @@ def test_internal_path_is_bounded_excluded_and_assignment_validated():
     assert document.file_path.endswith("updated.txt")
     with pytest.raises(ValidationError):
         _document(file_path="x" * 4097)
-    with pytest.raises(ValidationError):
-        document.file_path = "bad\x00path"
+    for value in ("bad\x00path", "bad\npath", "bad\rpath", "bad\x7fpath"):
+        with pytest.raises(ValidationError):
+            document.file_path = value
 
 
 def test_required_identifiers_mime_and_text_are_strict():
@@ -63,8 +64,14 @@ def test_required_identifiers_mime_and_text_are_strict():
         ("id", object()),
         ("id", ""),
         ("id", "bad\x00id"),
+        ("id", "bad\nid"),
+        ("id", "bad\rid"),
+        ("id", "bad\x7fid"),
         ("file_path", object()),
         ("file_path", "bad\x00path"),
+        ("file_path", "bad\npath"),
+        ("file_path", "bad\rpath"),
+        ("file_path", "bad\x7fpath"),
         ("mime_type", object()),
         ("mime_type", "text/plain; charset=utf-8"),
         ("mime_type", "not-a-mime"),
