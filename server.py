@@ -59,7 +59,12 @@ def _normalize_float_env(
 
 def _safe_state_path(name: str, default: str) -> Path:
     raw = os.getenv(name, default)
-    if not isinstance(raw, str) or not raw or len(raw) > 4096 or "\x00" in raw:
+    if (
+        not isinstance(raw, str)
+        or not raw
+        or len(raw) > 4096
+        or any(ord(character) < 32 or ord(character) == 127 for character in raw)
+    ):
         raise RuntimeError(f"{name} is invalid or too long.")
     candidate = Path(raw)
     if not candidate.is_absolute():
@@ -400,7 +405,6 @@ def _submit_ingestion(
         except Exception:
             pass
         return
-
     with _implementation._INGEST_FUTURES_LOCK:
         _implementation._INGEST_FUTURES.add(future)
     try:
