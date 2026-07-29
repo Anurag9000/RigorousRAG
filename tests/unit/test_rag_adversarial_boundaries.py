@@ -3,7 +3,6 @@ from unittest.mock import patch
 
 import pytest
 
-import tools.rag as rag_module
 from tools.rag import RAGLayer
 
 
@@ -132,8 +131,9 @@ def test_provider_query_generators_fall_back_without_truthiness_or_iteration_lea
             raise RuntimeError("private provider iterator")
 
     layer = _layer()
+    base_class = RAGLayer.__mro__[1]
     with patch.object(
-        rag_module._implementation.RAGLayer,
+        base_class,
         "generate_expanded_queries",
         return_value=BrokenGenerated(),
     ):
@@ -145,8 +145,9 @@ def test_provider_query_generators_fall_back_without_truthiness_or_iteration_lea
 
 def test_non_string_hyde_response_falls_back_to_original_query():
     layer = _layer()
+    base_class = RAGLayer.__mro__[1]
     with patch.object(
-        rag_module._implementation.RAGLayer,
+        base_class,
         "generate_hyde_query",
         return_value=object(),
     ):
