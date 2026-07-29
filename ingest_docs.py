@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import itertools
 import json
 import os
 import stat
@@ -97,11 +96,15 @@ def _collect_files(
 ) -> List[Path]:
     if not isinstance(paths, list):
         raise ValueError("paths must be a list.")
+    if len(paths) > _MAX_INPUT_FILES:
+        raise ValueError(
+            f"At most {_MAX_INPUT_FILES} input paths may be supplied."
+        )
     if not isinstance(recursive, bool):
         raise ValueError("recursive must be a boolean.")
     excluded = _lexical_absolute(output_path) if output_path is not None else None
     collected: dict[str, Path] = {}
-    for raw in paths[:_MAX_INPUT_FILES + 1]:
+    for raw in paths:
         try:
             path = _lexical_absolute(raw)
         except ValueError:
@@ -136,7 +139,9 @@ def _provider_value(name: str) -> Optional[str]:
     if not isinstance(raw, str):
         raise ValueError(f"{name} must be a string.")
     value = raw.strip()
-    if len(value) > 4096 or any(character in value for character in ("\x00", "\r", "\n")):
+    if len(value) > 4096 or any(
+        character in value for character in ("\x00", "\r", "\n")
+    ):
         raise ValueError(f"{name} is invalid.")
     return value or None
 
@@ -316,12 +321,24 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _strict_flags(args: argparse.Namespace) -> None:
+    for name in (
+        "recursive",
+        "retain_sources",
+        "include_redacted_text",
+        "fail_fast",
+    ):
+        if not isinstance(getattr(args, name, None), bool):
+            raise ValueError(f"{name} must be a boolean.")
+
+
 def main() -> int:
     args = parse_args()
     try:
+        _strict_flags(args)
         owner_id = normalize_owner_id(args.owner_id)
         output_path = _lexical_absolute(args.output) if args.output else None
-        files = _collect_files(args.paths, bool(args.recursive), output_path)
+        files = _collect_files(args.paths, args.recursive, output_path)
     except Exception:
         print("Invalid batch-ingestion arguments or paths.", file=sys.stderr)
         return 2
@@ -387,10 +404,14 @@ def main() -> int:
                 source_path=retained_copy,
             )
             registry_committed = True
-            cleanup_pending = bool(
-                previous_path
-                and not document_store.remove_source(previous_path)
-            )
+            cleanup_pending = False
+            if previous_path:
+                try:
+                    cleanup_pending = (
+                        document_store.remove_source(previous_path) is not True
+                    )
+                except Exception:
+                    cleanup_pending = True
             if cleanup_pending:
                 payload["replacement_cleanup_pending"] = True
             manifest.append(payload)
