@@ -35,6 +35,8 @@ def test_source_category_validates_name_description_and_seed_tuple():
     with pytest.raises(ValueError, match="names"):
         SourceCategory(name="", description="description", seeds=())
     with pytest.raises(ValueError, match="descriptions"):
+        SourceCategory(name="Name", description="", seeds=())
+    with pytest.raises(ValueError, match="descriptions"):
         SourceCategory(name="Name", description="x" * 2001, seeds=())
     with pytest.raises(ValueError, match="immutable tuple"):
         SourceCategory(
@@ -50,13 +52,20 @@ def test_source_category_validates_name_description_and_seed_tuple():
         )
 
 
-def test_seed_validation_rejects_credentials_controls_and_non_https():
+def test_seed_validation_rejects_credentials_controls_non_https_and_bad_hosts():
     invalid = (
         "http://example.test",
         "ftp://example.test",
         "https://alice:password@example.test",
         "https://example.test/path\r\nInjected: yes",
         "https:///missing-host",
+        "https://not a hostname.test/",
+        "https://example..test/",
+        "https://-bad.example.test/",
+        "https://127.0.0.1/",
+        "https://[2606:4700:4700::1111]/",
+        "https://example.test:8443/",
+        "https://example.test/path#fragment",
         object(),
     )
     for seed in invalid:
@@ -66,6 +75,16 @@ def test_seed_validation_rejects_credentials_controls_and_non_https():
                 description="description",
                 seeds=(seed,),
             )
+
+
+def test_default_https_port_is_normalized_away():
+    category = SourceCategory(
+        name="Name",
+        description="description",
+        seeds=("https://Sub.Example.test:443/path",),
+    )
+
+    assert category.seeds == ("https://sub.example.test/path",)
 
 
 def test_domain_derivation_uses_hostnames_not_netloc_credentials_or_ports():
