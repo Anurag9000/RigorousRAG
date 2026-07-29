@@ -54,7 +54,11 @@ RAG_SEARCH_TOOL_DEF = {
 _MAX_CITATIONS = 50
 
 
-def _text(
+def _contains_ascii_control(value: str) -> bool:
+    return any(ord(character) < 32 or ord(character) == 127 for character in value)
+
+
+def _prose(
     value: Any,
     label: str,
     *,
@@ -64,17 +68,27 @@ def _text(
     if not isinstance(value, str):
         raise ValueError(f"{label} must be a string.")
     rendered = value.strip()
-    if (
-        "\x00" in rendered
-        or "\r" in rendered
-        or "\n" in rendered
-        or len(rendered) > maximum
-    ):
+    if "\x00" in rendered or len(rendered) > maximum:
         raise ValueError(
             f"{label} may contain at most {maximum:,} valid characters."
         )
     if not rendered and not allow_empty:
         raise ValueError(f"{label} is required.")
+    return rendered
+
+
+def _identifier(value: Any, label: str, *, maximum: int) -> str:
+    if not isinstance(value, str):
+        raise ValueError(f"{label} must be a string.")
+    rendered = value.strip()
+    if (
+        not rendered
+        or len(rendered) > maximum
+        or _contains_ascii_control(rendered)
+    ):
+        raise ValueError(
+            f"{label} must contain 1-{maximum} valid characters."
+        )
     return rendered
 
 
@@ -141,7 +155,7 @@ def search_uploaded_docs(
 ) -> List[Citation]:
     """Retrieve evidence with mandatory owner and document provenance checks."""
 
-    retrieval_query = _text(query, "query", maximum=10_000, allow_empty=True)
+    retrieval_query = _prose(query, "query", maximum=10_000, allow_empty=True)
     if not retrieval_query:
         return []
     if not isinstance(owner_id, str):
@@ -149,12 +163,12 @@ def search_uploaded_docs(
     owner = normalize_owner_id(owner_id)
     document_id = None
     if doc_id is not None:
-        document_id = _text(doc_id, "doc_id", maximum=200)
+        document_id = _identifier(doc_id, "doc_id", maximum=200)
     if not isinstance(use_hyde, bool):
         raise ValueError("use_hyde must be a boolean.")
     if not isinstance(use_multi_query, bool):
         raise ValueError("use_multi_query must be a boolean.")
-    model = _text(expansion_model, "expansion_model", maximum=200)
+    model = _identifier(expansion_model, "expansion_model", maximum=200)
     requested = _integer(
         n_results,
         "n_results",
@@ -202,7 +216,7 @@ def search_uploaded_docs(
         if (
             not actual_doc_id
             or len(actual_doc_id) > 200
-            or any(character in actual_doc_id for character in ("\x00", "\r", "\n"))
+            or _contains_ascii_control(actual_doc_id)
         ):
             continue
         if document_id is not None and actual_doc_id != document_id:
@@ -230,7 +244,7 @@ def search_uploaded_docs(
         if (
             not chunk_id
             or len(chunk_id) > 500
-            or any(character in chunk_id for character in ("\x00", "\r", "\n"))
+            or _contains_ascii_control(chunk_id)
         ):
             continue
         title = (
