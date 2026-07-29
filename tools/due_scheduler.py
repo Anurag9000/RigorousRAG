@@ -255,7 +255,7 @@ class DueScheduler:
                     candidate = self._heap[0]
                     current = self._wall_time()
                     if current is None:
-                        self._condition.wait(timeout=1.0)
+                        self._condition.wait(timeout=0.05)
                         continue
                     delay = candidate.due_at - current
                     if delay > 0:
