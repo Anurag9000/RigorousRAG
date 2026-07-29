@@ -4,7 +4,9 @@
 
 ### Single-user mode
 
-When neither `API_KEY_OWNERS_JSON` nor `ALLOWED_API_KEYS` is set, every request is assigned the server-controlled `SINGLE_USER_OWNER_ID`. This mode is suitable only for a trusted local workstation or otherwise isolated service.
+When neither `API_KEY_OWNERS_JSON` nor `ALLOWED_API_KEYS` is set, every request is assigned the server-controlled `SINGLE_USER_OWNER_ID`. This mode is suitable only for a trusted local workstation or otherwise isolated service. Docker Compose therefore publishes the API on `127.0.0.1` by default through `RIGOROUSRAG_BIND_ADDRESS`.
+
+Do not change the bind address to `0.0.0.0` until authenticated multi-user mode, TLS termination, firewall policy, and reverse-proxy trust rules have been deliberately configured. The application container does not enable Uvicorn proxy-header trust by default.
 
 ### Authenticated multi-user mode
 
@@ -104,6 +106,18 @@ This is crash recovery for one shared host/filesystem/database. It is not a dist
 
 Chroma is not a cross-database transaction participant with SQLite. Compensating restoration substantially reduces mixed-generation states but cannot provide a formal distributed transaction guarantee.
 
+## Classic crawl/index persistence boundary
+
+- The configured `CLASSIC_STORAGE_DIR` is interpreted lexically, rejects NULs and symbolic-link components, and is bound to its initial device/inode identity.
+- Every operation revalidates the complete root ancestry and root identity, so replacing either the root or a parent with a symlink fails closed.
+- On POSIX, JSON members, atomic temporary writes, quarantine moves, and the `.snapshot.lock` file are opened or replaced relative to an identity-checked root directory descriptor.
+- On Windows, the compatibility path performs pre/post root-identity validation around the existing atomic pathname operations because descriptor-relative APIs are incomplete.
+- Persisted JSON reads require bounded UTF-8 regular files and reject non-standard constants such as `NaN` and `Infinity`.
+- Crawl state, sparse index, and PageRank are published as immutable generation members; the manifest is written last as the commit point.
+- Manifest reads, publication, and old-generation cleanup are serialized across processes.
+
+These controls defend against accidental corruption and path redirection by an unprivileged process sharing writable state. They do not protect against a privileged host process that can mutate files, descriptors, or process memory.
+
 ## OCR boundary
 
 OCR is disabled by default. When enabled:
@@ -164,7 +178,7 @@ The browser application:
 - represents `queued`, `processing`, `finalizing`, `success`, and `failed` states;
 - distinguishes retained PDF eligibility from verification performed when a visual action is invoked.
 
-Deploy behind HTTPS. Add HSTS and environment-specific ingress controls at the reverse proxy.
+Docker Compose binds to loopback by default. For any non-loopback deployment, use authenticated multi-user mode and place the service behind an HTTPS reverse proxy with explicit trusted-proxy configuration, HSTS, request limits, and ingress controls.
 
 ## API and operational boundaries
 
@@ -173,6 +187,7 @@ Deploy behind HTTPS. Add HSTS and environment-specific ingress controls at the r
 - The container readiness probe verifies HTTP liveness, both SQLite registries, and create/fsync/delete access to upload and vector volumes without initializing the embedding model.
 - Telemetry stores query SHA-256/length and owner SHA-256, not raw query text or plaintext owner ID.
 - Telemetry events are recursively bounded, JSONL files rotate at a configured size, and logging failure never fails a user request.
+- The Compose service runs with a read-only root filesystem, no added Linux capabilities, `no-new-privileges`, bounded `/tmp`, a PID ceiling, and explicit writable volumes.
 
 The readiness probe does not prove that the embedding model can download or that every Chroma query will succeed. Operational monitoring should exercise representative retrieval separately.
 
