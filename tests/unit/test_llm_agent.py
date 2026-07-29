@@ -1,3 +1,4 @@
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -26,8 +27,13 @@ def test_extractive_fallback_aligns_contexts_by_url_not_position():
 def test_openai_summary_uses_aligned_source_list():
     hits = [hit(1, "https://a.test", "A")]
     contexts = [{"url": "https://a.test", "text": "A evidence"}]
-    response = MagicMock()
-    response.choices[0].message.content = "Supported [1]."
+    response = SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(content="Supported [1].")
+            )
+        ]
+    )
     with patch("llm_agent.OpenAI") as client_class:
         client_class.return_value.chat.completions.create.return_value = response
         agent = LLMAgent(api_key="test")
@@ -47,6 +53,24 @@ def test_provider_failure_returns_extractive_evidence():
     result = agent.summarise("q", hits, contexts)
     assert "retrieved evidence" in result.summary.lower()
     assert result.warning
+
+
+def test_generator_evidence_survives_provider_failure():
+    def hits():
+        yield hit(1, "https://a.test", "A")
+
+    def contexts():
+        yield {"url": "https://a.test", "text": "A evidence"}
+
+    agent = LLMAgent(api_key=None)
+    agent.openai_client = MagicMock()
+    agent.openai_client.chat.completions.create.side_effect = RuntimeError("failed")
+    agent.ollama_client = None
+
+    result = agent.summarise("q", hits(), contexts())
+
+    assert "A evidence" in result.summary
+    assert result.sources == ["[1] A — https://a.test"]
 
 
 def test_query_limit_fails_before_provider_calls():
@@ -128,6 +152,23 @@ def test_hit_and_context_iterables_are_bounded():
         CitationSummary("summary", infinite_sources())
 
 
+def test_hostile_iterables_and_truthiness_fail_safely():
+    class HostileSources:
+        def __bool__(self):
+            raise RuntimeError("truthiness must not be used")
+
+        def __iter__(self):
+            yield "source"
+
+    class BrokenIterable:
+        def __iter__(self):
+            raise RuntimeError("private iterator detail")
+
+    assert CitationSummary("summary", HostileSources()).sources == ["source"]
+    with pytest.raises(ValueError, match="safely iterable"):
+        llm_agent._align_hits_and_contexts(BrokenIterable(), [])
+
+
 def test_malformed_timeout_falls_back_and_provider_values_are_bounded(monkeypatch):
     monkeypatch.setenv("LEGACY_LLM_TIMEOUT_SECONDS", "nan")
     monkeypatch.setattr(llm_agent, "OpenAI", None)
@@ -140,6 +181,41 @@ def test_malformed_timeout_falls_back_and_provider_values_are_bounded(monkeypatc
         LLMAgent(api_key="x" * 4097)
     with pytest.raises(ValueError, match="control characters"):
         LLMAgent(base_url="http://localhost\r\nInjected: yes")
+
+
+def test_provider_and_model_values_require_strings(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("OLLAMA_HOST", raising=False)
+    monkeypatch.setattr(llm_agent, "OpenAI", None)
+    monkeypatch.setattr(llm_agent, "ollama", None)
+
+    with pytest.raises(ValueError, match="api_key must be a string"):
+        LLMAgent(api_key=object())
+    with pytest.raises(ValueError, match="Model names must be strings"):
+        LLMAgent(model=object())
+    with pytest.raises(ValueError, match="Model names must be strings"):
+        LLMAgent(ollama_model=object())
+
+
+def test_non_string_provider_content_falls_back_to_extractive_evidence():
+    hits = [hit(1, "https://a.test", "A")]
+    contexts = [{"url": "https://a.test", "text": "A evidence"}]
+    response = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content=object()))]
+    )
+    agent = LLMAgent(api_key=None)
+    agent.openai_client = SimpleNamespace(
+        chat=SimpleNamespace(
+            completions=SimpleNamespace(create=lambda **_kwargs: response)
+        )
+    )
+    agent.ollama_client = None
+
+    result = agent.summarise("q", hits, contexts)
+
+    assert "A evidence" in result.summary
+    assert result.warning
 
 
 def test_summary_masks_credentials_and_local_paths():
