@@ -62,7 +62,7 @@ See [Goals and Architecture](docs/GOALS_AND_ARCHITECTURE.md), [Security Model](d
 - Every redirect is revalidated, the connected peer IP is checked, environment proxies are disabled, and credentials or POST bodies cannot leak across hostile cross-origin redirects.
 - Parser, OCR, vector, request, executor, tool, evidence, telemetry, and response sizes are bounded.
 - Timed-out running query/tool threads retain admission until they actually finish.
-- Ingestion uses durable retry deadlines, atomic claims, one centralized scheduler, bounded executor admission, and startup reconciliation.
+- Ingestion uses durable retry deadlines, atomic claims, one centralized scheduler, bounded executor admission, and replay-only startup recovery.
 - Vector replacement uses compensating rollback if a batched write fails.
 - Retrieved, OCR, webpage, and provider text is treated as untrusted evidence rather than instructions.
 - The model cannot define authoritative citation objects.
@@ -173,7 +173,7 @@ Set `RETAIN_SOURCE_FILES=false` when source retention is prohibited. Text retrie
 9. persist `finalizing` before committing the private source registry;
 10. publish `success`, or persist a bounded exponential retry/failure transition.
 
-SQLite stores retry deadlines. One lazily started heap/condition scheduler manages all delayed jobs. When executor admission is saturated, durable jobs remain queued and retry later. Startup reconciliation reschedules interrupted work, promotes already-registered finalizing documents without re-indexing, and fails exhausted or invalid-source jobs explicitly. Duplicate workers cannot both claim the same job.
+SQLite stores retry deadlines. One lazily started heap/condition scheduler manages all delayed jobs. When executor admission is saturated, durable jobs remain queued and retry later. Startup reconciliation replays every unfinished job from its durable source, fails exhausted or invalid-source jobs explicitly, and never treats a pre-existing deterministic document registry row as a job-specific commit token. Replays remain idempotent and do not delete the current retained source when re-registration returns the same path. Duplicate workers cannot both claim the same job.
 
 This is single-host crash recovery. Distributed or high-scale deployments should replace process-local schedulers/executors and SQLite stores with dedicated shared infrastructure.
 
