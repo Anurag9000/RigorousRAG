@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import itertools
+import re
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -19,23 +21,77 @@ from tools.privacy import mask_metadata_text, sanitize_metadata_dict
 _MAX_DOCUMENT_TEXT_CHARS = 50_000_000
 _MAX_SECTIONS = 10_000
 _MAX_METADATA_ITEMS = 1000
+_MIME_RE = re.compile(r"^[A-Za-z0-9!#$&^_.+-]{1,127}/[A-Za-z0-9!#$&^_.+-]{1,127}$")
+
+
+def _safe_text(value: Any, *, limit: int, default: str = "") -> str:
+    if isinstance(value, str):
+        rendered = value
+    else:
+        try:
+            rendered = str(value)
+        except Exception:
+            rendered = default
+    return rendered[:limit]
+
+
+def _required_text(value: Any, label: str, *, limit: int) -> str:
+    if not isinstance(value, str):
+        raise ValueError(f"{label} must be a string.")
+    bounded = value.strip()
+    if not bounded or len(bounded) > limit or "\x00" in bounded:
+        raise ValueError(f"{label} must contain 1-{limit} valid characters.")
+    return bounded
+
+
+def _bounded_sections(value: Any) -> List[Any]:
+    if value is None:
+        return []
+    if isinstance(value, (str, bytes, bytearray)):
+        raise ValueError("sections must be a list of document sections.")
+    try:
+        sections = list(itertools.islice(iter(value), _MAX_SECTIONS + 1))
+    except Exception as exc:
+        raise ValueError("sections must be iterable.") from exc
+    if len(sections) > _MAX_SECTIONS:
+        raise ValueError(f"sections may contain at most {_MAX_SECTIONS} items.")
+    return sections
 
 
 class DocumentSection(BaseModel):
-    model_config = ConfigDict(validate_assignment=True)
+    model_config = ConfigDict(validate_assignment=True, extra="forbid")
 
     title: str = Field(..., min_length=1, max_length=500)
     content: str = Field(..., min_length=1, max_length=_MAX_DOCUMENT_TEXT_CHARS)
     page_number: Optional[int] = Field(default=None, ge=1, le=1_000_000)
 
-    @field_validator("title")
+    @field_validator("title", mode="before")
     @classmethod
-    def mask_section_title(cls, value: str) -> str:
-        return mask_metadata_text(str(value or "")).strip()[:500] or "Untitled section"
+    def mask_section_title(cls, value: Any) -> str:
+        bounded = mask_metadata_text(
+            _safe_text(value, limit=500, default="Untitled section")
+        ).strip()
+        return bounded or "Untitled section"
+
+    @field_validator("content", mode="before")
+    @classmethod
+    def validate_content(cls, value: Any) -> str:
+        if not isinstance(value, str):
+            raise ValueError("Section content must be a string.")
+        if not value or len(value) > _MAX_DOCUMENT_TEXT_CHARS or "\x00" in value:
+            raise ValueError("Section content must contain valid non-empty text.")
+        return value
+
+    @field_validator("page_number", mode="before")
+    @classmethod
+    def reject_boolean_page_numbers(cls, value: Any) -> Any:
+        if isinstance(value, bool):
+            raise ValueError("page_number must be an integer.")
+        return value
 
 
 class IngestedDocument(BaseModel):
-    model_config = ConfigDict(validate_assignment=True)
+    model_config = ConfigDict(validate_assignment=True, extra="forbid")
 
     id: str = Field(
         ...,
@@ -63,30 +119,64 @@ class IngestedDocument(BaseModel):
     sections: List[DocumentSection] = Field(default_factory=list, max_length=_MAX_SECTIONS)
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
-    @field_validator("id", "file_path", "mime_type")
+    @field_validator("id", mode="before")
     @classmethod
-    def strip_required_identifiers(cls, value: str) -> str:
-        bounded = str(value or "").strip()
-        if not bounded:
-            raise ValueError("Required ingestion identifiers may not be empty.")
-        return bounded
+    def validate_document_id(cls, value: Any) -> str:
+        return _required_text(value, "id", limit=200)
 
-    @field_validator("filename")
+    @field_validator("file_path", mode="before")
     @classmethod
-    def mask_filename(cls, value: str) -> str:
-        return mask_metadata_text(str(value or "")).strip()[:500] or "document"
+    def validate_private_path(cls, value: Any) -> str:
+        return _required_text(value, "file_path", limit=4096)
 
-    @field_validator("title")
+    @field_validator("mime_type", mode="before")
     @classmethod
-    def mask_title(cls, value: Optional[str]) -> Optional[str]:
+    def validate_mime_type(cls, value: Any) -> str:
+        mime_type = _required_text(value, "mime_type", limit=200).lower()
+        if not _MIME_RE.fullmatch(mime_type):
+            raise ValueError("mime_type must be a valid type/subtype value.")
+        return mime_type
+
+    @field_validator("filename", mode="before")
+    @classmethod
+    def mask_filename(cls, value: Any) -> str:
+        bounded = mask_metadata_text(
+            _safe_text(value, limit=500, default="document")
+        ).strip()
+        return bounded or "document"
+
+    @field_validator("title", mode="before")
+    @classmethod
+    def mask_title(cls, value: Any) -> Optional[str]:
         if value is None:
             return None
-        return mask_metadata_text(str(value)).strip()[:1000] or None
+        return mask_metadata_text(_safe_text(value, limit=1000)).strip() or None
 
-    @field_validator("metadata")
+    @field_validator("text", mode="before")
     @classmethod
-    def mask_metadata_assignment(cls, value: Dict[str, Any]) -> Dict[str, Any]:
-        sanitized = sanitize_metadata_dict(value if isinstance(value, dict) else {})
+    def validate_document_text(cls, value: Any) -> str:
+        if not isinstance(value, str):
+            raise ValueError("Document text must be a string.")
+        if len(value) > _MAX_DOCUMENT_TEXT_CHARS or "\x00" in value:
+            raise ValueError("Document text exceeds the valid text boundary.")
+        return value
+
+    @field_validator("sections", mode="before")
+    @classmethod
+    def bound_section_iterable(cls, value: Any) -> List[Any]:
+        return _bounded_sections(value)
+
+    @field_validator("created_at")
+    @classmethod
+    def normalize_created_at(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("created_at must include timezone information.")
+        return value.astimezone(timezone.utc)
+
+    @field_validator("metadata", mode="before")
+    @classmethod
+    def mask_metadata_assignment(cls, value: Any) -> Dict[str, Any]:
+        sanitized = sanitize_metadata_dict(value)
         bounded: Dict[str, Any] = {}
         for index, (key, item) in enumerate(sanitized.items()):
             if index >= _MAX_METADATA_ITEMS:
@@ -95,24 +185,44 @@ class IngestedDocument(BaseModel):
             bounded[str(key)[:500]] = item
         return bounded
 
+    @model_validator(mode="after")
+    def validate_aggregate_section_text(self) -> "IngestedDocument":
+        total = 0
+        for section in self.sections:
+            total += len(section.content)
+            if total > _MAX_DOCUMENT_TEXT_CHARS:
+                raise ValueError(
+                    "Aggregate semantic section text exceeds the document character limit."
+                )
+        return self
+
     @field_serializer("metadata")
     def mask_serialized_metadata(self, value: Dict[str, Any]) -> Dict[str, Any]:
         return self.mask_metadata_assignment(value)
 
 
 class IngestionResult(BaseModel):
-    model_config = ConfigDict(validate_assignment=True)
+    model_config = ConfigDict(validate_assignment=True, extra="forbid")
 
     success: bool
     document: Optional[IngestedDocument] = None
     error: Optional[str] = Field(default=None, max_length=2000)
 
-    @field_validator("error")
+    @field_validator("success", mode="before")
     @classmethod
-    def mask_error(cls, value: Optional[str]) -> Optional[str]:
+    def validate_success(cls, value: Any) -> bool:
+        if not isinstance(value, bool):
+            raise ValueError("success must be a boolean.")
+        return value
+
+    @field_validator("error", mode="before")
+    @classmethod
+    def mask_error(cls, value: Any) -> Optional[str]:
         if value is None:
             return None
-        return mask_metadata_text(str(value)).strip()[:2000] or None
+        return mask_metadata_text(
+            _safe_text(value, limit=2000, default="Document ingestion failed.")
+        ).strip() or None
 
     @model_validator(mode="after")
     def validate_consistency(self) -> "IngestionResult":
