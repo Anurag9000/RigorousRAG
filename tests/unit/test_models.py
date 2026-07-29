@@ -73,12 +73,18 @@ def test_whitespace_only_public_fields_are_rejected():
         Citation(label="[ ]", title="Evidence", url="https://example.test")
 
 
-def test_citation_url_schemes_and_page_numbers_are_strict():
+def test_citation_url_schemes_hostnames_and_page_numbers_are_strict():
     for url in (
         "file:///private/evidence.pdf",
         "javascript:alert(1)",
         "doi:10.1000/test",
         "https:///missing-host",
+        "https://not a hostname.test/evidence",
+        "https://example..test/evidence",
+        "https://-bad.example.test/evidence",
+        "https://singlelabel/evidence",
+        "http://127.0.0.1/evidence",
+        "http://[::1]/evidence",
         "local://",
     ):
         with pytest.raises(ValidationError):
@@ -122,6 +128,16 @@ def test_public_citation_fields_redact_credentials_paths_and_pii():
     assert "/var/lib" not in serialized
     assert "10 Main Street" not in serialized
     assert "192.168.1.20" not in serialized
+
+
+def test_public_ipv6_and_default_url_components_are_normalized():
+    citation = Citation(
+        label="[1]",
+        title="Evidence",
+        url="https://[2606:4700:4700::1111]:443/paper",
+    )
+
+    assert citation.url == "https://[2606:4700:4700::1111]:443/paper"
 
 
 def test_metadata_and_warning_truncation_is_explicit():
