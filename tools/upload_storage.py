@@ -24,6 +24,10 @@ class UploadStorageError(ValueError):
     """Raised when local upload storage violates an ownership or path invariant."""
 
 
+def _contains_ascii_control(value: str) -> bool:
+    return any(ord(character) < 32 or ord(character) == 127 for character in value)
+
+
 def _positive_limit(value: object) -> int:
     if isinstance(value, bool):
         raise UploadStorageError("max_bytes must be an integer.")
@@ -44,7 +48,11 @@ def _absolute_lexical_path(value: str | os.PathLike[str], label: str) -> Path:
     if not isinstance(value, (str, os.PathLike)):
         raise UploadStorageError(f"{label} must be a filesystem path.")
     rendered = os.fspath(value)
-    if not rendered or len(rendered) > _MAX_LOCAL_PATH_CHARS or "\x00" in rendered:
+    if (
+        not rendered
+        or len(rendered) > _MAX_LOCAL_PATH_CHARS
+        or _contains_ascii_control(rendered)
+    ):
         raise UploadStorageError(f"{label} is invalid or too long.")
     candidate = Path(rendered)
     if not candidate.is_absolute():
@@ -157,7 +165,7 @@ def _relative_owner_file(
         owner = normalize_owner_id(owner)
     except ValueError:
         return None
-    if Path(filename).name != filename or "\x00" in filename:
+    if Path(filename).name != filename or _contains_ascii_control(filename):
         return None
     return root, owner, filename
 
