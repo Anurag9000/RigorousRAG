@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import itertools
 import json
 import os
+from collections.abc import Mapping
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote, urlencode
 
@@ -12,10 +14,13 @@ from pydantic import BaseModel, Field
 from tools.models import Citation
 from tools.security import safe_download
 
-_SEMANTIC_SCHOLAR_ENDPOINT = "https://api.semanticscholar.org/graph/v1/paper/search"
+_SEMANTIC_SCHOLAR_ENDPOINT = (
+    "https://api.semanticscholar.org/graph/v1/paper/search"
+)
 _MAX_RESPONSE_BYTES = 5_000_000
 _MAX_PROVIDER_CANDIDATES = 50
 _MAX_AUTHORS = 100
+_MAX_EXTERNAL_IDS = 100
 
 
 class AcademicSearchInput(BaseModel):
@@ -45,7 +50,9 @@ def _bounded_query(query: Any) -> str:
     if not value:
         return ""
     if len(value) > 2000 or "\x00" in value:
-        raise ValueError("Academic-search queries may contain at most 2,000 valid characters.")
+        raise ValueError(
+            "Academic-search queries may contain at most 2,000 valid characters."
+        )
     return value
 
 
@@ -83,15 +90,23 @@ def _provider_key() -> Optional[str]:
     raw = os.getenv("SEMANTIC_SCHOLAR_API_KEY", "")
     if not raw:
         return None
+    value = raw.strip()
     if (
-        len(raw) > 4096
-        or any(character in raw for character in ("\x00", "\r", "\n"))
+        not value
+        or len(value) > 4096
+        or any(character in value for character in ("\x00", "\r", "\n"))
     ):
-        raise AcademicSearchError("The configured scholarly-search provider key is invalid.")
-    return raw
+        raise AcademicSearchError(
+            "The configured scholarly-search provider key is invalid."
+        )
+    return value
 
 
 def _strict_provider_json(content: bytes) -> Dict[str, Any]:
+    if not isinstance(content, bytes):
+        raise AcademicSearchError(
+            "The scholarly-search provider returned invalid JSON."
+        )
     try:
         payload = json.loads(
             content.decode("utf-8"),
@@ -99,7 +114,12 @@ def _strict_provider_json(content: bytes) -> Dict[str, Any]:
                 ValueError(f"Non-standard JSON constant {value}")
             ),
         )
-    except (UnicodeDecodeError, json.JSONDecodeError, ValueError, RecursionError) as exc:
+    except (
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+        ValueError,
+        RecursionError,
+    ) as exc:
         raise AcademicSearchError(
             "The scholarly-search provider returned invalid JSON."
         ) from exc
@@ -110,32 +130,56 @@ def _strict_provider_json(content: bytes) -> Dict[str, Any]:
     return payload
 
 
+def _safe_get(value: object, key: str, default: object = None) -> object:
+    if not isinstance(value, Mapping):
+        return default
+    try:
+        return value.get(key, default)
+    except Exception:
+        return default
+
+
 def _authors(value: Any) -> str:
     if not isinstance(value, list):
         return ""
     names: List[str] = []
-    for author in value[:_MAX_AUTHORS]:
-        if not isinstance(author, dict):
-            continue
-        name = author.get("name")
-        if isinstance(name, str):
-            bounded = name.strip()[:300]
-            if bounded:
-                names.append(bounded)
+    try:
+        candidates = itertools.islice(iter(value), _MAX_AUTHORS)
+    except Exception:
+        return ""
+    try:
+        for author in candidates:
+            name = _safe_get(author, "name")
+            if isinstance(name, str):
+                bounded = name.strip()[:300]
+                if bounded and bounded not in names:
+                    names.append(bounded)
+    except Exception:
+        return ""
     return ", ".join(names)[:3000]
 
 
 def _metadata(value: Any) -> Dict[str, Any]:
-    if not isinstance(value, dict):
+    if not isinstance(value, Mapping):
         return {}
     metadata: Dict[str, Any] = {}
-    for index, (key, item) in enumerate(value.items()):
-        if index >= 100 or not isinstance(key, str):
-            break
-        if isinstance(item, bool) or item is None or isinstance(item, int):
-            metadata[key[:200]] = item
-        elif isinstance(item, str):
-            metadata[key[:200]] = item[:1000]
+    try:
+        items = itertools.islice(value.items(), _MAX_EXTERNAL_IDS)
+    except Exception:
+        return {}
+    try:
+        for key, item in items:
+            if not isinstance(key, str):
+                continue
+            bounded_key = key[:200]
+            if isinstance(item, bool) or item is None:
+                metadata[bounded_key] = item
+            elif isinstance(item, int) and abs(item) <= 10**100:
+                metadata[bounded_key] = item
+            elif isinstance(item, str):
+                metadata[bounded_key] = item[:1000]
+    except Exception:
+        return {}
     return metadata
 
 
@@ -161,7 +205,9 @@ def academic_search(
         "fields": "title,abstract,authors,year,venue,url,externalIds,paperId",
     }
     if start_year is not None or end_year is not None:
-        params["year"] = f"{start_year or ''}-{end_year or ''}"
+        start_text = "" if start_year is None else str(start_year)
+        end_text = "" if end_year is None else str(end_year)
+        params["year"] = f"{start_text}-{end_text}"
     headers = {"Accept": "application/json"}
     api_key = _provider_key()
     if api_key:
@@ -188,54 +234,70 @@ def academic_search(
             "The scholarly-search provider returned an invalid result structure."
         )
     citations: List[Citation] = []
-    for paper in papers[:_MAX_PROVIDER_CANDIDATES]:
-        if not isinstance(paper, dict):
-            continue
-        title = paper.get("title")
-        if not isinstance(title, str) or not title.strip():
-            continue
-        year = paper.get("year")
-        if isinstance(year, bool) or not isinstance(year, int) or not 0 <= year <= 9999:
-            year = None
-        if start_year is not None and (year is None or year < start_year):
-            continue
-        if end_year is not None and (year is None or year > end_year):
-            continue
-        paper_id = paper.get("paperId")
-        raw_url = paper.get("url")
-        if isinstance(raw_url, str) and raw_url.strip():
-            url = raw_url.strip()[:4096]
-        elif isinstance(paper_id, str) and paper_id.strip():
-            url = (
-                "https://www.semanticscholar.org/paper/"
-                + quote(paper_id.strip()[:500], safe="")
-            )
-        else:
-            continue
-        abstract = paper.get("abstract")
-        snippet = abstract.strip()[:4000] if isinstance(abstract, str) else None
-        venue = paper.get("venue")
-        venue_text = venue.strip()[:500] if isinstance(venue, str) else None
-        metadata = {
-            "year": year,
-            "venue": venue_text,
-            "authors": _authors(paper.get("authors")),
-            "external_ids": _metadata(paper.get("externalIds")),
-        }
-        try:
-            citations.append(
-                Citation(
+    try:
+        candidates = itertools.islice(iter(papers), _MAX_PROVIDER_CANDIDATES)
+    except Exception as exc:
+        raise AcademicSearchError(
+            "The scholarly-search provider returned an invalid result structure."
+        ) from exc
+    try:
+        for paper in candidates:
+            title = _safe_get(paper, "title")
+            if not isinstance(title, str) or not title.strip():
+                continue
+            year = _safe_get(paper, "year")
+            if (
+                isinstance(year, bool)
+                or not isinstance(year, int)
+                or not 0 <= year <= 9999
+            ):
+                year = None
+            if start_year is not None and (year is None or year < start_year):
+                continue
+            if end_year is not None and (year is None or year > end_year):
+                continue
+            paper_id = _safe_get(paper, "paperId")
+            raw_url = _safe_get(paper, "url")
+            if isinstance(raw_url, str) and raw_url.strip():
+                url = raw_url.strip()[:4096]
+            elif isinstance(paper_id, str) and paper_id.strip():
+                url = (
+                    "https://www.semanticscholar.org/paper/"
+                    + quote(paper_id.strip()[:500], safe="")
+                )
+            else:
+                continue
+            abstract = _safe_get(paper, "abstract")
+            snippet = abstract.strip()[:4000] if isinstance(abstract, str) else None
+            venue = _safe_get(paper, "venue")
+            venue_text = venue.strip()[:500] if isinstance(venue, str) else None
+            metadata = {
+                "year": year,
+                "venue": venue_text,
+                "authors": _authors(_safe_get(paper, "authors")),
+                "external_ids": _metadata(_safe_get(paper, "externalIds")),
+            }
+            try:
+                citation = Citation(
                     label=f"[{len(citations) + 1}]",
                     title=title.strip()[:500],
                     url=url,
-                    source_type="web_search",
+                    source_type="academic_index",
                     snippet=snippet or None,
-                    source_id=(paper_id.strip()[:500] if isinstance(paper_id, str) else url),
+                    source_id=(
+                        paper_id.strip()[:500]
+                        if isinstance(paper_id, str)
+                        else url
+                    ),
                     metadata=metadata,
                 )
-            )
-        except Exception:
-            continue
-        if len(citations) >= requested:
-            break
+            except Exception:
+                continue
+            citations.append(citation)
+            if len(citations) >= requested:
+                break
+    except Exception as exc:
+        raise AcademicSearchError(
+            "The scholarly-search provider returned an invalid result structure."
+        ) from exc
     return citations
