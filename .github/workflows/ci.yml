@@ -49,10 +49,21 @@ jobs:
         run: python -m pip check
       - name: Check patch whitespace
         shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          BEFORE_SHA: ${{ github.event.before }}
         run: |
-          base_ref="${{ github.base_ref || 'main' }}"
-          merge_base="$(git merge-base HEAD "origin/${base_ref}")"
-          git diff --check "${merge_base}...HEAD"
+          if [[ "${EVENT_NAME}" == "pull_request" ]]; then
+            comparison_base="$(git merge-base HEAD "origin/${BASE_REF}")"
+          elif [[ "${EVENT_NAME}" == "push" && -n "${BEFORE_SHA}" && ! "${BEFORE_SHA}" =~ ^0+$ ]]; then
+            comparison_base="${BEFORE_SHA}"
+          elif git rev-parse HEAD^ >/dev/null 2>&1; then
+            comparison_base="HEAD^"
+          else
+            comparison_base="$(git rev-list --max-parents=0 HEAD)"
+          fi
+          git diff --check "${comparison_base}...HEAD"
       - name: Compile Python
         run: python -m compileall -q .
       - name: Fatal lint checks
