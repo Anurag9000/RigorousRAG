@@ -35,11 +35,15 @@ def _safe_text(value: Any, *, limit: int, default: str = "") -> str:
     return rendered[:limit]
 
 
+def _contains_ascii_control(value: str) -> bool:
+    return any(ord(character) < 32 or ord(character) == 127 for character in value)
+
+
 def _required_text(value: Any, label: str, *, limit: int) -> str:
     if not isinstance(value, str):
         raise ValueError(f"{label} must be a string.")
     bounded = value.strip()
-    if not bounded or len(bounded) > limit or "\x00" in bounded:
+    if not bounded or len(bounded) > limit or _contains_ascii_control(bounded):
         raise ValueError(f"{label} must contain 1-{limit} valid characters.")
     return bounded
 
