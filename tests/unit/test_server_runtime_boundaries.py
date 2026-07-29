@@ -187,8 +187,8 @@ def test_callback_registration_failure_releases_slot_and_reschedules(
         "submit",
         lambda *_args: future,
     )
-    monkeypatch.setattr(
-        server_module,
+    monkeypatch.setitem(
+        server_module._submit_ingestion.__globals__,
         "_schedule_ingestion_attempt",
         lambda *args: scheduled.append(args),
     )
@@ -274,8 +274,8 @@ def test_recovery_reconciles_committed_registry_before_requeue(
             "source_retained": False,
         },
     )
-    monkeypatch.setattr(
-        server_module,
+    monkeypatch.setitem(
+        server_module._recover_interrupted_jobs.__globals__,
         "_submit_ingestion",
         lambda *args: submissions.append(args),
     )
