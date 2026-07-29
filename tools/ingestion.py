@@ -56,7 +56,11 @@ def _source_path(value: Any) -> Path:
     if not isinstance(value, (str, os.PathLike)):
         raise ValueError("file_path must be a filesystem path.")
     rendered = os.fspath(value)
-    if not rendered or len(rendered) > _MAX_PATH_CHARS or "\x00" in rendered:
+    if (
+        not rendered
+        or len(rendered) > _MAX_PATH_CHARS
+        or any(ord(character) < 32 or ord(character) == 127 for character in rendered)
+    ):
         raise ValueError("file_path is invalid or too long.")
     candidate = Path(rendered)
     if not candidate.is_absolute():
