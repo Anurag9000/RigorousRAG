@@ -32,6 +32,10 @@ def _safe_text(value: Any, *, limit: int, default: str = "") -> str:
     return rendered[:limit]
 
 
+def _contains_ascii_control(value: str) -> bool:
+    return any(ord(character) < 32 or ord(character) == 127 for character in value)
+
+
 def _bounded_integer(value: Any, label: str, minimum: int, maximum: int) -> int:
     if isinstance(value, bool):
         raise ValueError(f"{label} must be an integer.")
@@ -60,28 +64,29 @@ def _positive_byte_limit(value: Any) -> int:
     return min(numeric, 1_000_000_000)
 
 
-def _model_name(value: Any) -> str:
+def _bounded_identifier(value: Any, label: str, maximum: int) -> str:
     if not isinstance(value, str):
-        raise ValueError("summary model must be a string.")
-    model = value.strip()
+        raise ValueError(f"{label} must be a string.")
+    rendered = value.strip()
     if (
-        not model
-        or len(model) > _MAX_MODEL_CHARS
-        or any(character in model for character in ("\x00", "\r", "\n"))
+        not rendered
+        or len(rendered) > maximum
+        or _contains_ascii_control(rendered)
     ):
-        raise ValueError("summary model must contain 1-200 valid characters.")
-    return model
+        raise ValueError(
+            f"{label} must contain 1-{maximum} valid characters."
+        )
+    return rendered
+
+
+def _model_name(value: Any) -> str:
+    return _bounded_identifier(value, "summary model", _MAX_MODEL_CHARS)
 
 
 def _job_id(value: Optional[str]) -> Optional[str]:
     if value in (None, ""):
         return None
-    if not isinstance(value, str):
-        raise ValueError("job_id must be a string.")
-    identifier = value.strip()
-    if not identifier or len(identifier) > _MAX_JOB_ID_CHARS or "\x00" in identifier:
-        raise ValueError("job_id must contain 1-200 valid characters.")
-    return identifier
+    return _bounded_identifier(value, "job_id", _MAX_JOB_ID_CHARS)
 
 
 @dataclass(frozen=True)
@@ -130,7 +135,11 @@ def _validated_source_path(value: str | os.PathLike[str]) -> Path:
     if not isinstance(value, (str, os.PathLike)):
         raise ValueError("The source path is unavailable or invalid.")
     rendered = os.fspath(value)
-    if not rendered or len(rendered) > _MAX_PATH_CHARS or "\x00" in rendered:
+    if (
+        not rendered
+        or len(rendered) > _MAX_PATH_CHARS
+        or _contains_ascii_control(rendered)
+    ):
         raise ValueError("The source path is unavailable or invalid.")
     candidate = Path(rendered)
     if not candidate.is_absolute():
