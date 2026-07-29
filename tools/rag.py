@@ -84,6 +84,10 @@ def _safe_getattr(value: object, name: str, default: object = None) -> object:
         return default
 
 
+def _contains_ascii_control(value: str) -> bool:
+    return any(ord(character) < 32 or ord(character) == 127 for character in value)
+
+
 def _bounded_identifier(value: Any, label: str, *, limit: int = 200) -> str:
     if not isinstance(value, str):
         raise ValueError(f"{label} must be a string.")
@@ -91,7 +95,7 @@ def _bounded_identifier(value: Any, label: str, *, limit: int = 200) -> str:
     if (
         not result
         or len(result) > limit
-        or any(character in result for character in ("\x00", "\r", "\n"))
+        or _contains_ascii_control(result)
     ):
         raise ValueError(
             f"{label} must contain between 1 and {limit} valid characters."
@@ -155,7 +159,7 @@ def _clean_metadata(metadata: Dict[str, Any]) -> Dict[str, str | int | float | b
         if (
             not key
             or len(key) > 200
-            or any(character in key for character in ("\x00", "\r", "\n"))
+            or _contains_ascii_control(key)
         ):
             raise ValueError(
                 "Vector metadata keys must contain 1-200 valid characters."
@@ -248,10 +252,13 @@ def _absolute_storage_path(value: Any) -> str:
     if not isinstance(value, (str, os.PathLike)):
         raise ValueError("persist_directory must be a filesystem path.")
     rendered = os.fspath(value)
-    if not isinstance(rendered, str) or not rendered or len(rendered) > 4096:
+    if (
+        not isinstance(rendered, str)
+        or not rendered
+        or len(rendered) > 4096
+        or _contains_ascii_control(rendered)
+    ):
         raise ValueError("persist_directory is invalid or too long.")
-    if "\x00" in rendered:
-        raise ValueError("persist_directory contains an invalid null character.")
     raw = Path(rendered)
     if not raw.is_absolute():
         raw = Path.cwd() / raw
@@ -286,6 +293,8 @@ def _result_metadata(value: Any) -> Dict[str, Any]:
             if not isinstance(raw_key, str):
                 continue
             key = raw_key[:200]
+            if not key or _contains_ascii_control(key):
+                continue
             if isinstance(item, bool) or item is None:
                 cleaned[key] = item
             elif isinstance(item, int):
@@ -514,7 +523,11 @@ class RAGLayer(_implementation.RAGLayer):
                 if not isinstance(raw_id, str):
                     continue
                 chunk_id = raw_id.strip()
-                if not chunk_id or len(chunk_id) > _MAX_RESULT_ID_CHARS:
+                if (
+                    not chunk_id
+                    or len(chunk_id) > _MAX_RESULT_ID_CHARS
+                    or _contains_ascii_control(chunk_id)
+                ):
                     continue
                 metadata = _result_metadata(
                     metas[index] if index < len(metas) else {}
@@ -613,6 +626,7 @@ class RAGLayer(_implementation.RAGLayer):
                 if (
                     not doc_id_value
                     or len(doc_id_value) > 200
+                    or _contains_ascii_control(doc_id_value)
                     or doc_id_value in seen
                 ):
                     continue
