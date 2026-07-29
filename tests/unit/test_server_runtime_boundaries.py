@@ -107,11 +107,13 @@ def test_future_callback_releases_admission_exactly_once(server_module, monkeypa
 
 
 def test_safe_due_at_rejects_nonfinite_and_caps_remote_future(server_module):
+    runtime_globals = server_module._submit_ingestion.__globals__
+    safe_due_at = runtime_globals["_safe_due_at"]
     now = 100.0
-    assert server_module._safe_due_at(float("nan"), now) == 0.0
-    assert server_module._safe_due_at(float("inf"), now) == 0.0
-    assert server_module._safe_due_at(-1, now) == 0.0
-    bounded = server_module._safe_due_at(10**100, now)
+    assert safe_due_at(float("nan"), now) == 0.0
+    assert safe_due_at(float("inf"), now) == 0.0
+    assert safe_due_at(-1, now) == 0.0
+    bounded = safe_due_at(10**100, now)
     assert math.isfinite(bounded)
     assert bounded <= now + max(
         server_module._JOB_STORE.retry_max_seconds,
@@ -294,12 +296,14 @@ def test_recovery_replays_even_when_an_older_registry_row_exists(
 
 
 def test_same_retained_source_is_not_treated_as_stale_replacement(server_module):
+    runtime_globals = server_module.process_ingestion.__globals__
+    same_retained_source = runtime_globals["_same_retained_source"]
     current = server_module.UPLOAD_DIR / "alice" / "source.pdf"
     current.parent.mkdir(parents=True, exist_ok=True)
     current.write_bytes(b"%PDF-1.4\n")
     other = server_module.UPLOAD_DIR / "alice" / "other.pdf"
     other.write_bytes(b"%PDF-1.4\n")
 
-    assert server_module._same_retained_source(str(current), current) is True
-    assert server_module._same_retained_source(str(other), current) is False
-    assert server_module._same_retained_source("", current) is False
+    assert same_retained_source(str(current), current) is True
+    assert same_retained_source(str(other), current) is False
+    assert same_retained_source("", current) is False
