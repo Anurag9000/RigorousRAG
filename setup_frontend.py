@@ -8,6 +8,7 @@ read-only verification and never mutates the repository.
 
 from __future__ import annotations
 
+import itertools
 import os
 import stat
 import sys
@@ -15,6 +16,7 @@ from pathlib import Path
 from typing import Iterable
 
 _MAX_ASSET_BYTES = 2_000_000
+_MAX_ARGUMENTS = 1
 _REQUIRED_ASSETS = (
     "index.html",
     "preload.js",
@@ -57,7 +59,10 @@ def _contains_ascii_control(value: str) -> bool:
 
 
 def _repository_root(value: str | os.PathLike[str] | None = None) -> Path:
-    raw = Path(__file__).resolve().parent if value is None else Path(os.fspath(value))
+    try:
+        raw = Path(__file__).resolve().parent if value is None else Path(os.fspath(value))
+    except TypeError as exc:
+        raise ValueError("Repository root must be a filesystem path.") from exc
     rendered = os.fspath(raw)
     if not rendered or len(rendered) > 4096 or _contains_ascii_control(rendered):
         raise ValueError("Repository root is invalid or too long.")
@@ -114,28 +119,48 @@ def verify_frontend(root: str | os.PathLike[str] | None = None) -> list[str]:
         raise ValueError("frontend must be an existing non-symlink directory.")
 
     verified: list[str] = []
-    combined_scripts: list[str] = []
+    asset_text: dict[str, str] = {}
     for name in _REQUIRED_ASSETS:
         path = frontend / name
         text = _read_asset(path)
+        asset_text[name] = text
         for marker in _REQUIRED_MARKERS.get(name, ()):
             if marker not in text:
-                raise ValueError(f"Frontend asset {name} is missing required marker: {marker}")
-        if path.suffix == ".js":
-            combined_scripts.append(text)
+                raise ValueError(
+                    f"Frontend asset {name} is missing required marker: {marker}"
+                )
         verified.append(name)
 
-    combined = "\n".join(combined_scripts)
+    combined = "\n".join(asset_text.values())
     for token in _FORBIDDEN_TOKENS:
-        if token in combined or token in _read_asset(frontend / "index.html"):
+        if token in combined:
             raise ValueError(f"Frontend contains forbidden token: {token}")
     return verified
 
 
+def _bounded_arguments(argv: Iterable[str] | None) -> list[str]:
+    values = sys.argv[1:] if argv is None else argv
+    if isinstance(values, (str, bytes, bytearray)):
+        raise ValueError("Arguments must be an iterable of strings.")
+    try:
+        arguments = list(itertools.islice(iter(values), _MAX_ARGUMENTS + 1))
+    except Exception as exc:
+        raise ValueError("Arguments must be iterable.") from exc
+    if len(arguments) > _MAX_ARGUMENTS:
+        raise ValueError("At most one repository-root argument is supported.")
+    if any(
+        not isinstance(argument, str) or _contains_ascii_control(argument)
+        for argument in arguments
+    ):
+        raise ValueError("Arguments must be valid strings.")
+    return arguments
+
+
 def main(argv: Iterable[str] | None = None) -> int:
-    arguments = list(argv if argv is not None else sys.argv[1:])
-    if len(arguments) > 1:
-        print("Usage: python setup_frontend.py [repository-root]", file=sys.stderr)
+    try:
+        arguments = _bounded_arguments(argv)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
         return 2
     try:
         verified = verify_frontend(arguments[0] if arguments else None)
