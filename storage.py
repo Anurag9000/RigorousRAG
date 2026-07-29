@@ -41,10 +41,13 @@ def _lexical_absolute(path: str | os.PathLike[str]) -> Path:
         rendered = os.fspath(path)
     except TypeError as exc:
         raise ValueError("CLASSIC_STORAGE_DIR must be a filesystem path.") from exc
-    if not isinstance(rendered, str) or not rendered or len(rendered) > 4096:
+    if (
+        not isinstance(rendered, str)
+        or not rendered
+        or len(rendered) > 4096
+        or any(ord(character) < 32 or ord(character) == 127 for character in rendered)
+    ):
         raise ValueError("CLASSIC_STORAGE_DIR is invalid or too long.")
-    if "\x00" in rendered:
-        raise ValueError("CLASSIC_STORAGE_DIR contains an invalid null character.")
     candidate = Path(rendered)
     if not candidate.is_absolute():
         candidate = Path.cwd() / candidate
@@ -127,7 +130,13 @@ class StorageManager(_original_storage_manager):
         if candidate.parent != self._lexical_root:
             raise ValueError("Classic storage members must be direct children of the root.")
         name = candidate.name
-        if not name or name in {".", ".."} or "/" in name or "\\" in name:
+        if (
+            not name
+            or name in {".", ".."}
+            or "/" in name
+            or "\\" in name
+            or any(ord(character) < 32 or ord(character) == 127 for character in name)
+        ):
             raise ValueError("Classic storage member name is invalid.")
         return name
 
