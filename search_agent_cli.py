@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import itertools
 import os
 import sys
 from typing import Iterable, Optional
@@ -14,6 +15,8 @@ from tools.privacy import mask_metadata_text
 _MAX_QUERY_CHARS = 20_000
 _MAX_DISPLAY_CHARS = 100_000
 _MAX_CITATIONS = 100
+_MAX_WARNINGS = 100
+_MAX_CLI_ARGUMENTS = 10_000
 
 
 def _bounded_query(value: object) -> str:
@@ -29,6 +32,22 @@ def _bounded_query(value: object) -> str:
     if "\x00" in query:
         raise ValueError("The query contains an invalid null character.")
     return query
+
+
+def _bounded_argv(argv: Optional[Iterable[str]]) -> Optional[list[str]]:
+    if argv is None:
+        return None
+    if isinstance(argv, (str, bytes, bytearray)):
+        raise ValueError("CLI arguments must be an iterable of argument strings.")
+    try:
+        values = list(itertools.islice(iter(argv), _MAX_CLI_ARGUMENTS + 1))
+    except Exception as exc:
+        raise ValueError("CLI arguments must be iterable.") from exc
+    if len(values) > _MAX_CLI_ARGUMENTS:
+        raise ValueError(f"At most {_MAX_CLI_ARGUMENTS:,} CLI arguments are supported.")
+    if any(not isinstance(value, str) or "\x00" in value for value in values):
+        raise ValueError("CLI arguments must be valid strings.")
+    return values
 
 
 def parse_args(argv: Optional[Iterable[str]] = None) -> argparse.Namespace:
@@ -55,7 +74,7 @@ def parse_args(argv: Optional[Iterable[str]] = None) -> argparse.Namespace:
         action="store_true",
         help="Use a local Ollama-compatible endpoint with qwen2.5:0.5b.",
     )
-    return parser.parse_args(list(argv) if argv is not None else None)
+    return parser.parse_args(_bounded_argv(argv))
 
 
 def _display(value: object, limit: int) -> str:
@@ -69,6 +88,17 @@ def print_result(result: AgentAnswer) -> None:
         raise ValueError("The research agent returned an invalid result.")
     print("\nAnswer:")
     print(_display(result.answer, _MAX_DISPLAY_CHARS) or "No answer was produced.")
+
+    warnings = [
+        _display(warning, 2000).strip()
+        for warning in result.warnings[:_MAX_WARNINGS]
+        if isinstance(warning, str)
+    ]
+    warnings = [warning for warning in warnings if warning]
+    if warnings:
+        print("\nWarnings:")
+        for warning in warnings:
+            print(f"- {warning}")
 
     citations = result.citations[:_MAX_CITATIONS]
     if not citations:
@@ -121,8 +151,8 @@ def _build_agent(args: argparse.Namespace) -> SearchAgent:
 
 
 def main(argv: Optional[Iterable[str]] = None) -> int:
-    args = parse_args(argv)
     try:
+        args = parse_args(argv)
         agent = _build_agent(args)
         if args.query is not None:
             query = _bounded_query(args.query)
