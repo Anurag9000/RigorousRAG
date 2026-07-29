@@ -10,10 +10,12 @@ def test_pagerank_validates_parameters():
     for kwargs in (
         {"damping": 1.0},
         {"damping": float("nan")},
+        {"damping": True},
         {"iterations": 0},
         {"iterations": "bad"},
         {"tolerance": float("inf")},
         {"tolerance": -1.0},
+        {"tolerance": False},
     ):
         with pytest.raises(ValueError):
             compute_pagerank({"a": {"b"}}, **kwargs)
@@ -37,6 +39,49 @@ def test_pagerank_rejects_invalid_and_unbounded_graph_values(monkeypatch):
 
     with pytest.raises(ValueError, match="at most 3"):
         compute_pagerank({"a": infinite_targets()})
+
+
+def test_hostile_graph_and_target_iterators_fail_safely():
+    class BrokenMapping(dict):
+        def items(self):
+            raise RuntimeError("private graph detail")
+
+    class BrokenTargets:
+        def __iter__(self):
+            raise RuntimeError("private target detail")
+
+    with pytest.raises(ValueError, match="safely iterable mapping"):
+        compute_pagerank(BrokenMapping())
+    with pytest.raises(ValueError, match="safely iterable"):
+        compute_pagerank({"a": BrokenTargets()})
+
+
+def test_node_identifiers_reject_whitespace_controls_and_oversize():
+    for graph in (
+        {" a": {"b"}},
+        {"a ": {"b"}},
+        {"a\n": {"b"}},
+        {"a": {"b\x00hidden"}},
+        {"x" * (Pagerank._MAX_NODE_CHARS + 1): set()},
+    ):
+        with pytest.raises(ValueError):
+            compute_pagerank(graph)
+
+
+def test_duplicate_targets_are_deduplicated_before_scoring():
+    scores = compute_pagerank({"a": ["b", "b", "b"], "b": ["a"]})
+    assert sum(scores.values()) == pytest.approx(1.0)
+    assert set(scores) == {"a", "b"}
+
+
+def test_global_edge_and_node_limits_fail_closed(monkeypatch):
+    monkeypatch.setattr(Pagerank, "_MAX_EDGES", 1)
+    with pytest.raises(ValueError, match="at most 1 edges"):
+        compute_pagerank({"a": ["b", "c"]})
+
+    monkeypatch.setattr(Pagerank, "_MAX_NODES", 2)
+    with pytest.raises(ValueError, match="at most 2 nodes"):
+        compute_pagerank({"a": ["b", "c"]})
 
 
 def test_pagerank_converges_and_normalizes():
