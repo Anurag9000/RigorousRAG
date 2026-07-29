@@ -103,12 +103,74 @@ def test_cancelled_queued_future_releases_admission():
         pool.shutdown(wait=True)
 
 
-def test_constructor_bounds_and_validates_limits():
-    with pytest.raises(ValueError, match="must be integers"):
+def test_task_exception_releases_admission():
+    pool = BoundedExecutor(
+        max_workers=1,
+        max_pending=1,
+        thread_name_prefix="test-error",
+    )
+    try:
+        def fail():
+            raise RuntimeError("task failure")
+
+        future = pool.submit(fail)
+        assert future is not None
+        with pytest.raises(RuntimeError, match="task failure"):
+            future.result(timeout=1.0)
+        assert pool.available_slots() == 1
+        replacement = pool.submit(lambda: "ok")
+        assert replacement is not None
+        assert replacement.result(timeout=1.0) == "ok"
+    finally:
+        pool.shutdown(wait=True)
+
+
+def test_executor_submit_failure_releases_admission(monkeypatch):
+    pool = BoundedExecutor(
+        max_workers=1,
+        max_pending=1,
+        thread_name_prefix="test-submit-failure",
+    )
+    original_submit = pool._executor.submit
+    try:
+        monkeypatch.setattr(
+            pool._executor,
+            "submit",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("closed")),
+        )
+        assert pool.submit(lambda: "never") is None
+        assert pool.available_slots() == 1
+
+        monkeypatch.setattr(pool._executor, "submit", original_submit)
+        future = pool.submit(lambda: "recovered")
+        assert future is not None
+        assert future.result(timeout=1.0) == "recovered"
+    finally:
+        pool.shutdown(wait=True)
+
+
+def test_constructor_bounds_and_strictly_validates_limits():
+    invalid = [
+        {"max_workers": "bad", "max_pending": 1},
+        {"max_workers": True, "max_pending": 1},
+        {"max_workers": 1.5, "max_pending": 2},
+        {"max_workers": 0, "max_pending": 1},
+        {"max_workers": 1, "max_pending": False},
+        {"max_workers": 1, "max_pending": 1.5},
+        {"max_workers": 1, "max_pending": 0},
+    ]
+    for arguments in invalid:
+        with pytest.raises(ValueError):
+            BoundedExecutor(
+                **arguments,
+                thread_name_prefix="test",
+            )
+
+    with pytest.raises(ValueError, match="thread_name_prefix"):
         BoundedExecutor(
-            max_workers="bad",
+            max_workers=1,
             max_pending=1,
-            thread_name_prefix="test",
+            thread_name_prefix=object(),
         )
 
     pool = BoundedExecutor(
@@ -119,6 +181,56 @@ def test_constructor_bounds_and_validates_limits():
     try:
         assert pool.max_workers == 256
         assert pool.max_pending == 100_000
+        assert len(pool._executor._thread_name_prefix) == 100
+    finally:
+        pool.shutdown(wait=True)
+
+
+def test_pending_capacity_is_never_below_worker_count():
+    pool = BoundedExecutor(
+        max_workers=4,
+        max_pending=1,
+        thread_name_prefix="test-capacity",
+    )
+    try:
+        assert pool.max_workers == 4
+        assert pool.max_pending == 4
+        assert pool.available_slots() == 4
+    finally:
+        pool.shutdown(wait=True)
+
+
+def test_thread_prefix_controls_are_removed():
+    pool = BoundedExecutor(
+        max_workers=1,
+        max_pending=1,
+        thread_name_prefix=" worker\r\nInjected: yes\x00 ",
+    )
+    try:
+        prefix = pool._executor._thread_name_prefix
+        assert "\r" not in prefix
+        assert "\n" not in prefix
+        assert "\x00" not in prefix
+        assert prefix == "worker Injected: yes"
+    finally:
+        pool.shutdown(wait=True)
+
+
+def test_invalid_shutdown_flags_do_not_transition_pool_to_shutdown():
+    pool = BoundedExecutor(
+        max_workers=1,
+        max_pending=1,
+        thread_name_prefix="test-shutdown-validation",
+    )
+    try:
+        with pytest.raises(ValueError, match="wait"):
+            pool.shutdown(wait="yes")
+        with pytest.raises(ValueError, match="cancel_futures"):
+            pool.shutdown(cancel_futures=1)
+        assert pool._shutdown is False
+        future = pool.submit(lambda: "still-open")
+        assert future is not None
+        assert future.result(timeout=1.0) == "still-open"
     finally:
         pool.shutdown(wait=True)
 
