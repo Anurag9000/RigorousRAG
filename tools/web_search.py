@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import itertools
 import json
 import os
-from typing import List, Optional
+import re
+from typing import Any, Iterable, List, Optional
 from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field
@@ -26,13 +28,15 @@ _MAX_RESULT_CANDIDATES = bounded_int_env(
     minimum=10,
     maximum=100,
 )
+_MAX_ALLOWED_DOMAINS = 50
+_HOST_LABEL_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 
 
 class WebSearchInput(BaseModel):
     query: str = Field(..., min_length=1, max_length=2000)
     allowed_domains: Optional[List[str]] = Field(
         default=None,
-        max_length=50,
+        max_length=_MAX_ALLOWED_DOMAINS,
         description="Optional exact hostnames or parent domains.",
     )
 
@@ -52,11 +56,91 @@ class WebSearchError(RuntimeError):
 
 
 def _bounded_limit(value: object) -> int:
+    if isinstance(value, bool):
+        raise ValueError("limit must be an integer.")
     try:
         parsed = int(value)
     except (TypeError, ValueError, OverflowError) as exc:
         raise ValueError("limit must be an integer.") from exc
-    return max(1, min(parsed, 10))
+    if isinstance(value, float) and not value.is_integer():
+        raise ValueError("limit must be an integer.")
+    if not 1 <= parsed <= 10:
+        raise ValueError("limit must be between 1 and 10.")
+    return parsed
+
+
+def _bounded_query(value: Any) -> str:
+    if not isinstance(value, str):
+        raise ValueError("Web-search queries must be strings.")
+    query = value.strip()
+    if not query:
+        return ""
+    if len(query) > 2000 or "\x00" in query:
+        raise ValueError("Web-search queries may contain at most 2,000 valid characters.")
+    return query
+
+
+def _canonical_domain(value: Any) -> str:
+    if not isinstance(value, str):
+        raise ValueError("Allowed domains must be strings.")
+    rendered = value.strip().rstrip(".").lower()
+    if not rendered or len(rendered) > 253 or any(character.isspace() for character in rendered):
+        raise ValueError("Allowed domains must be valid hostnames.")
+    try:
+        parsed = urlparse(rendered if "://" in rendered else f"https://{rendered}")
+        hostname = parsed.hostname or ""
+        ascii_host = hostname.encode("idna").decode("ascii").lower()
+    except (ValueError, UnicodeError):
+        raise ValueError("Allowed domains must be valid hostnames.")
+    if parsed.username is not None or parsed.password is not None or parsed.path not in {"", "/"}:
+        raise ValueError("Allowed domains must contain hostnames only.")
+    labels = ascii_host.split(".")
+    if not labels or any(not _HOST_LABEL_RE.fullmatch(label) for label in labels):
+        raise ValueError("Allowed domains must be valid hostnames.")
+    return ascii_host
+
+
+def _bounded_domains(values: Optional[Iterable[str]]) -> List[str]:
+    if values is None:
+        return []
+    if isinstance(values, (str, bytes, bytearray)):
+        raise ValueError("allowed_domains must be an array of hostnames.")
+    try:
+        raw_values = list(
+            itertools.islice(iter(values), _MAX_ALLOWED_DOMAINS + 1)
+        )
+    except Exception as exc:
+        raise ValueError("allowed_domains must be iterable.") from exc
+    if len(raw_values) > _MAX_ALLOWED_DOMAINS:
+        raise ValueError(
+            f"At most {_MAX_ALLOWED_DOMAINS} allowed domains may be supplied."
+        )
+    domains: List[str] = []
+    for raw_value in raw_values:
+        domain = _canonical_domain(raw_value)
+        if domain not in domains:
+            domains.append(domain)
+    return domains
+
+
+def _strict_provider_json(content: bytes) -> dict[str, Any]:
+    try:
+        decoded = content.decode("utf-8")
+        payload = json.loads(
+            decoded,
+            parse_constant=lambda value: (_ for _ in ()).throw(
+                ValueError(f"Non-standard JSON constant {value}")
+            ),
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError, RecursionError) as exc:
+        raise WebSearchError(
+            "The web-search provider returned invalid JSON."
+        ) from exc
+    if not isinstance(payload, dict):
+        raise WebSearchError(
+            "The web-search provider returned an invalid result structure."
+        )
+    return payload
 
 
 def web_search(
@@ -65,24 +149,21 @@ def web_search(
     *,
     limit: int = 5,
 ) -> List[Citation]:
-    query = (query or "").strip()
-    if not query:
+    bounded_query = _bounded_query(query)
+    if not bounded_query:
         return []
-    if len(query) > 2000:
-        raise ValueError("Web-search queries may contain at most 2,000 characters.")
-    domains = [
-        str(value).strip()[:253]
-        for value in (allowed_domains or [])
-        if str(value).strip()
-    ]
-    if len(domains) > 50:
-        raise ValueError("At most 50 allowed domains may be supplied.")
-    api_key = str(os.getenv("SERPER_API_KEY") or "").strip()
-    if not api_key:
-        raise WebSearchError("Web search is unavailable because SERPER_API_KEY is not configured.")
-    if len(api_key) > 4096:
-        raise WebSearchError("The configured web-search provider key is invalid.")
+    domains = _bounded_domains(allowed_domains)
     requested = _bounded_limit(limit)
+    api_key = os.getenv("SERPER_API_KEY", "").strip()
+    if not api_key:
+        raise WebSearchError(
+            "Web search is unavailable because SERPER_API_KEY is not configured."
+        )
+    if (
+        len(api_key) > 4096
+        or any(character in api_key for character in ("\x00", "\r", "\n"))
+    ):
+        raise WebSearchError("The configured web-search provider key is invalid.")
     try:
         downloaded = safe_download(
             _SERPER_ENDPOINT,
@@ -92,42 +173,56 @@ def web_search(
                 "Content-Type": "application/json",
                 "Accept": "application/json",
             },
-            json_body={"q": query, "num": requested},
+            json_body={"q": bounded_query, "num": requested},
             timeout=15,
             max_bytes=_SERPER_MAX_RESPONSE_BYTES,
             allowed_content_types={"application/json"},
         )
-        payload = json.loads(downloaded.content.decode("utf-8"))
-        if not isinstance(payload, dict):
-            raise ValueError("Provider response must be a JSON object.")
+        payload = _strict_provider_json(downloaded.content)
+    except WebSearchError:
+        raise
     except Exception as exc:
-        raise WebSearchError("The configured web-search provider request failed.") from exc
+        raise WebSearchError(
+            "The configured web-search provider request failed."
+        ) from exc
 
     organic = payload.get("organic", [])
     if not isinstance(organic, list):
-        raise WebSearchError("The web-search provider returned an invalid result structure.")
+        raise WebSearchError(
+            "The web-search provider returned an invalid result structure."
+        )
     citations: List[Citation] = []
     for result in organic[:_MAX_RESULT_CANDIDATES]:
         if not isinstance(result, dict):
             continue
-        link = str(result.get("link") or "").strip()
+        raw_link = result.get("link")
+        if not isinstance(raw_link, str):
+            continue
+        link = raw_link.strip()
         if not link:
             continue
-        parsed = urlparse(link)
-        hostname = parsed.hostname or ""
+        try:
+            parsed = urlparse(link)
+            hostname = parsed.hostname or ""
+        except ValueError:
+            continue
         if domains and (not hostname or not hostname_matches(hostname, domains)):
             continue
         try:
             public_url = validate_public_url(link)
         except Exception:
             continue
+        raw_title = result.get("title")
+        title = raw_title.strip() if isinstance(raw_title, str) else "Untitled result"
+        raw_snippet = result.get("snippet")
+        snippet = raw_snippet.strip() if isinstance(raw_snippet, str) else ""
         citations.append(
             Citation(
                 label=f"[{len(citations) + 1}]",
-                title=str(result.get("title") or "Untitled result")[:500],
+                title=title[:500] or "Untitled result",
                 url=public_url,
                 source_type="web_search",
-                snippet=str(result.get("snippet") or "")[:4000] or None,
+                snippet=snippet[:4000] or None,
                 source_id=public_url,
             )
         )
