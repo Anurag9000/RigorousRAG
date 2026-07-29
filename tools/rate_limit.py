@@ -5,8 +5,22 @@ from __future__ import annotations
 import math
 import threading
 import time
-from collections import defaultdict, deque
+from collections import deque
 from typing import Deque, Dict
+
+
+def _positive_integer(value: object, label: str) -> int:
+    if isinstance(value, bool):
+        raise ValueError("Rate-limit settings must be integers.")
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("Rate-limit settings must be integers.") from exc
+    if isinstance(value, float) and not value.is_integer():
+        raise ValueError("Rate-limit settings must be integers.")
+    if not 1 <= parsed <= 1_000_000:
+        raise ValueError(f"{label} must be between 1 and 1,000,000.")
+    return parsed
 
 
 class SlidingWindowRateLimiter:
@@ -16,22 +30,28 @@ class SlidingWindowRateLimiter:
         *,
         max_keys: int = 100_000,
     ) -> None:
-        try:
-            parsed_limit = int(requests_per_minute)
-            parsed_keys = int(max_keys)
-        except (TypeError, ValueError, OverflowError) as exc:
-            raise ValueError("Rate-limit settings must be integers.") from exc
-        self.limit = max(1, min(parsed_limit, 1_000_000))
-        self.max_keys = max(1, min(parsed_keys, 1_000_000))
+        self.limit = _positive_integer(
+            requests_per_minute,
+            "requests_per_minute",
+        )
+        self.max_keys = _positive_integer(max_keys, "max_keys")
         self.window_seconds = 60.0
-        self._events: Dict[str, Deque[float]] = defaultdict(deque)
+        self._events: Dict[str, Deque[float]] = {}
         self._lock = threading.Lock()
 
     @staticmethod
     def _key(value: object) -> str:
-        key = str(value or "").strip()
-        if not key or len(key) > 200:
-            raise ValueError("Rate-limit keys must contain between 1 and 200 characters.")
+        if not isinstance(value, str):
+            raise ValueError("Rate-limit keys must be strings.")
+        key = value.strip()
+        if (
+            not key
+            or len(key) > 200
+            or any(ord(character) < 32 or ord(character) == 127 for character in key)
+        ):
+            raise ValueError(
+                "Rate-limit keys must contain between 1 and 200 valid characters."
+            )
         return key
 
     @staticmethod
@@ -58,15 +78,20 @@ class SlidingWindowRateLimiter:
         current = self._time(time.monotonic() if now is None else now)
         cutoff = current - self.window_seconds
         with self._lock:
-            if identifier not in self._events and len(self._events) >= self.max_keys:
-                self._prune_stale_keys(cutoff)
+            events = self._events.get(identifier)
+            if events is None:
                 if len(self._events) >= self.max_keys:
-                    raise RuntimeError("Rate-limit key capacity is exhausted.")
-            events = self._events[identifier]
+                    self._prune_stale_keys(cutoff)
+                    if len(self._events) >= self.max_keys:
+                        raise RuntimeError("Rate-limit key capacity is exhausted.")
+                events = deque()
+                self._events[identifier] = events
+            if events and current < events[-1]:
+                raise ValueError("Rate-limit time must not move backwards for a key.")
             while events and events[0] <= cutoff:
                 events.popleft()
             if len(events) >= self.limit:
                 retry = events[0] + self.window_seconds - current
-                return max(float(retry), 0.001)
+                return min(max(float(retry), 0.001), self.window_seconds)
             events.append(current)
             return 0.0
