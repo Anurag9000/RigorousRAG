@@ -5,7 +5,7 @@ from __future__ import annotations
 import itertools
 import math
 from collections.abc import Mapping
-from typing import Dict, Iterable, Set
+from typing import Dict, Iterable, List, Set, Tuple
 
 _MAX_NODES = 100_000
 _MAX_EDGES = 5_000_000
@@ -15,6 +15,8 @@ _MAX_ITERATIONS = 10_000
 
 
 def _finite_float(value: object, label: str) -> float:
+    if isinstance(value, bool):
+        raise ValueError(f"{label} must be numeric.")
     try:
         numeric = float(value)
     except (TypeError, ValueError, OverflowError) as exc:
@@ -41,12 +43,44 @@ def _positive_integer(value: object, label: str, maximum: int) -> int:
 def _node(value: object) -> str:
     if not isinstance(value, str):
         raise ValueError("PageRank node identifiers must be strings.")
-    node = value.strip()
-    if not node or len(node) > _MAX_NODE_CHARS:
+    if value != value.strip():
+        raise ValueError("PageRank node identifiers may not have surrounding whitespace.")
+    if not value or len(value) > _MAX_NODE_CHARS:
         raise ValueError(
             f"PageRank node identifiers must contain 1-{_MAX_NODE_CHARS} characters."
         )
-    return node
+    if any(ord(character) < 32 or ord(character) == 127 for character in value):
+        raise ValueError("PageRank node identifiers may not contain control characters.")
+    return value
+
+
+def _mapping_items(graph: object) -> List[Tuple[object, object]]:
+    if not isinstance(graph, Mapping):
+        raise ValueError("graph must be a node-to-targets mapping.")
+    try:
+        items = list(itertools.islice(graph.items(), _MAX_NODES + 1))
+    except Exception as exc:
+        raise ValueError("graph must be a safely iterable mapping.") from exc
+    if len(items) > _MAX_NODES:
+        raise ValueError(f"PageRank supports at most {_MAX_NODES} nodes.")
+    return items
+
+
+def _target_values(value: object) -> List[object]:
+    if isinstance(value, (str, bytes, bytearray)):
+        raise ValueError("PageRank target collections may not be strings.")
+    try:
+        iterator = iter(value)  # type: ignore[arg-type]
+        targets = list(itertools.islice(iterator, _MAX_EDGES_PER_NODE + 1))
+    except Exception as exc:
+        raise ValueError(
+            "Every PageRank target collection must be safely iterable."
+        ) from exc
+    if len(targets) > _MAX_EDGES_PER_NODE:
+        raise ValueError(
+            f"A PageRank node may have at most {_MAX_EDGES_PER_NODE} targets."
+        )
+    return targets
 
 
 def compute_pagerank(
@@ -64,35 +98,18 @@ def compute_pagerank(
     tolerance_value = _finite_float(tolerance, "tolerance")
     if tolerance_value < 0:
         raise ValueError("tolerance cannot be negative.")
-    if not isinstance(graph, Mapping):
-        raise ValueError("graph must be a node-to-targets mapping.")
-    if len(graph) > _MAX_NODES:
-        raise ValueError(f"PageRank supports at most {_MAX_NODES} nodes.")
 
+    graph_items = _mapping_items(graph)
     adjacency: Dict[str, Set[str]] = {}
     nodes: Set[str] = set()
     total_edges = 0
-    for raw_source, raw_targets in graph.items():
+    for raw_source, raw_targets in graph_items:
         source = _node(raw_source)
+        if source in adjacency:
+            raise ValueError("PageRank graph contains duplicate normalized source nodes.")
         nodes.add(source)
-        if len(nodes) > _MAX_NODES:
-            raise ValueError(f"PageRank supports at most {_MAX_NODES} nodes.")
-        if isinstance(raw_targets, (str, bytes)):
-            raise ValueError("PageRank target collections may not be strings.")
-        try:
-            target_iterator = iter(raw_targets)
-        except TypeError as exc:
-            raise ValueError("Every PageRank target collection must be iterable.") from exc
-
         targets: Set[str] = set()
-        exhausted = True
-        for raw_target in itertools.islice(
-            target_iterator,
-            _MAX_EDGES_PER_NODE + 1,
-        ):
-            if len(targets) >= _MAX_EDGES_PER_NODE:
-                exhausted = False
-                break
+        for raw_target in _target_values(raw_targets):
             target = _node(raw_target)
             if target in targets:
                 continue
@@ -103,10 +120,6 @@ def compute_pagerank(
                 raise ValueError(f"PageRank supports at most {_MAX_NODES} nodes.")
             if total_edges > _MAX_EDGES:
                 raise ValueError(f"PageRank supports at most {_MAX_EDGES} edges.")
-        if not exhausted:
-            raise ValueError(
-                f"A PageRank node may have at most {_MAX_EDGES_PER_NODE} targets."
-            )
         adjacency[source] = targets
 
     if not nodes:
@@ -116,7 +129,8 @@ def compute_pagerank(
 
     ordered_nodes = sorted(nodes)
     total_nodes = len(ordered_nodes)
-    rank = {node: 1.0 / total_nodes for node in ordered_nodes}
+    initial = 1.0 / total_nodes
+    rank = {node: initial for node in ordered_nodes}
     teleport = (1.0 - damping_value) / total_nodes
 
     for _ in range(iteration_count):
@@ -125,6 +139,8 @@ def compute_pagerank(
             for node, targets in adjacency.items()
             if not targets
         )
+        if not math.isfinite(sink_mass) or sink_mass < 0:
+            raise ValueError("PageRank computation produced invalid sink mass.")
         sink_share = damping_value * sink_mass / total_nodes
         new_rank = {node: teleport + sink_share for node in ordered_nodes}
         for source in ordered_nodes:
@@ -132,17 +148,32 @@ def compute_pagerank(
             if not targets:
                 continue
             share = damping_value * rank[source] / len(targets)
+            if not math.isfinite(share) or share < 0:
+                raise ValueError("PageRank computation produced an invalid edge share.")
             for target in targets:
                 new_rank[target] += share
-        delta = sum(abs(new_rank[node] - rank[node]) for node in ordered_nodes)
+        if any(
+            not math.isfinite(value) or value < 0
+            for value in new_rank.values()
+        ):
+            raise ValueError("PageRank computation produced an invalid score.")
+        delta = sum(
+            abs(new_rank[node] - rank[node])
+            for node in ordered_nodes
+        )
+        if not math.isfinite(delta):
+            raise ValueError("PageRank convergence delta is invalid.")
         rank = new_rank
         if delta <= tolerance_value:
             break
 
     total = sum(rank.values())
     if not math.isfinite(total) or total <= 0:
-        return {node: 1.0 / total_nodes for node in ordered_nodes}
+        return {node: initial for node in ordered_nodes}
     normalized = {node: value / total for node, value in rank.items()}
-    if any(not math.isfinite(value) or value < 0 for value in normalized.values()):
+    if any(
+        not math.isfinite(value) or value < 0
+        for value in normalized.values()
+    ):
         raise ValueError("PageRank computation produced an invalid score.")
     return normalized
