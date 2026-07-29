@@ -6,14 +6,16 @@ import argparse
 import itertools
 import math
 import os
+import sys
 from collections import Counter
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Optional, Sequence
 
-from Crawler import AcademicCrawler, DEFAULT_SEEDS, Page
+from Crawler import AcademicCrawler, DEFAULT_SEEDS, Page, normalize_url
 from Indexer import InvertedIndex, tokenize
 from Pagerank import compute_pagerank
 from storage import CrawlState, StorageManager
+from tools.privacy import mask_metadata_text
 
 _MAX_QUERY_CHARS = 2000
 _MAX_SEEDS = 10_000
@@ -24,11 +26,19 @@ _MAX_DISPLAY_CHARS = 500
 
 
 def _clean_line(value: object, *, limit: int, default: str = "") -> str:
-    try:
-        text = str(value if value is not None else default)
-    except Exception:
+    if isinstance(value, str):
+        text = value
+    elif value is None:
         text = default
-    return " ".join(text.replace("\r", " ").replace("\n", " ").split())[:limit]
+    else:
+        try:
+            text = str(value)
+        except Exception:
+            text = default
+    cleaned = " ".join(
+        text.replace("\x00", " ").replace("\r", " ").replace("\n", " ").split()
+    )
+    return mask_metadata_text(cleaned)[:limit]
 
 
 def _bounded_int(value: object, label: str, *, minimum: int, maximum: int) -> int:
@@ -46,6 +56,8 @@ def _bounded_int(value: object, label: str, *, minimum: int, maximum: int) -> in
 
 
 def _bounded_float(value: object, label: str, *, minimum: float, maximum: float) -> float:
+    if isinstance(value, bool):
+        raise ValueError(f"{label} must be numeric.")
     try:
         numeric = float(value)
     except (TypeError, ValueError, OverflowError) as exc:
@@ -63,16 +75,46 @@ def _bounded_query(value: object) -> str:
         return ""
     if len(query) > _MAX_QUERY_CHARS:
         raise ValueError(f"Search queries may contain at most {_MAX_QUERY_CHARS} characters.")
+    if "\x00" in query:
+        raise ValueError("Search queries contain an invalid null character.")
     return query
 
 
 def _bounded_storage_dir(value: object) -> str:
     if not isinstance(value, (str, os.PathLike)):
         raise ValueError("storage_dir must be a filesystem path.")
-    rendered = os.fspath(value)
-    if not rendered or len(rendered) > 4096 or "\x00" in rendered:
+    try:
+        rendered = os.fspath(value)
+    except TypeError as exc:
+        raise ValueError("storage_dir must be a filesystem path.") from exc
+    if not isinstance(rendered, str) or not rendered or len(rendered) > 4096:
         raise ValueError("storage_dir is invalid or too long.")
+    if "\x00" in rendered:
+        raise ValueError("storage_dir contains an invalid null character.")
     return rendered
+
+
+def _bounded_seeds(values: Iterable[object]) -> List[str]:
+    if isinstance(values, (str, bytes, bytearray)):
+        raise ValueError("seeds must be a sequence of URLs, not a string.")
+    try:
+        candidates = list(itertools.islice(iter(values), _MAX_SEEDS + 1))
+    except Exception as exc:
+        raise ValueError("seeds must be a safely iterable collection.") from exc
+    if len(candidates) > _MAX_SEEDS:
+        raise ValueError(f"At most {_MAX_SEEDS} seeds may be configured.")
+    seeds: List[str] = []
+    for candidate in candidates:
+        if not isinstance(candidate, str):
+            raise ValueError("Every seed must be an HTTP or HTTPS URL string.")
+        normalized = normalize_url(candidate)
+        if not normalized:
+            raise ValueError("Every seed must be a valid credential-free HTTP or HTTPS URL.")
+        if normalized not in seeds:
+            seeds.append(normalized)
+    if not seeds:
+        raise ValueError("At least one valid seed URL is required.")
+    return seeds
 
 
 @dataclass
@@ -89,6 +131,8 @@ class SearchHit:
     def __post_init__(self) -> None:
         self.rank = _bounded_int(self.rank, "rank", minimum=0, maximum=1_000_000)
         self.url = _clean_line(self.url, limit=4096)
+        if not self.url:
+            raise ValueError("Search-hit URLs may not be empty.")
         self.title = _clean_line(self.title, limit=500, default="Untitled") or "Untitled"
         self.snippet = _clean_line(self.snippet, limit=4000)
         self.score = _bounded_float(self.score, "score", minimum=0.0, maximum=1.0)
@@ -121,36 +165,36 @@ class AcademicSearchEngine:
             minimum=0.0,
             maximum=1.0,
         )
-        if seeds is None:
-            raw_seeds: Iterable[str] = DEFAULT_SEEDS
-        else:
-            if isinstance(seeds, (str, bytes)):
-                raise ValueError("seeds must be a sequence of URLs, not a string.")
-            raw_seeds = seeds
-        try:
-            seed_values = list(itertools.islice(iter(raw_seeds), _MAX_SEEDS + 1))
-        except TypeError as exc:
-            raise ValueError("seeds must be iterable.") from exc
-        if len(seed_values) > _MAX_SEEDS:
-            raise ValueError(f"At most {_MAX_SEEDS} seeds may be configured.")
-        self.seeds = [value for value in seed_values if isinstance(value, str)]
+        self.seeds = _bounded_seeds(DEFAULT_SEEDS if seeds is None else seeds)
         self.crawler = AcademicCrawler(
             max_pages=max_pages,
             max_depth=max_depth,
             request_delay=request_delay,
         )
-        selected_storage = storage_dir
-        if selected_storage is None:
-            selected_storage = os.getenv("CLASSIC_STORAGE_DIR", "data")
+        selected_storage = (
+            os.getenv("CLASSIC_STORAGE_DIR", "data")
+            if storage_dir is None
+            else storage_dir
+        )
         self.storage = StorageManager(_bounded_storage_dir(selected_storage))
-        state, index, pagerank = self.storage.load_snapshot()
+        snapshot = self.storage.load_snapshot()
+        if not isinstance(snapshot, tuple) or len(snapshot) != 3:
+            self.close()
+            raise RuntimeError("Classic storage returned an invalid snapshot.")
+        state, index, pagerank = snapshot
+        if not isinstance(state, CrawlState):
+            state = CrawlState.empty()
+        if index is not None and not isinstance(index, InvertedIndex):
+            index = None
+        if not isinstance(pagerank, dict):
+            pagerank = {}
         if not self.storage.snapshot_manifest_path.exists():
             legacy_presence = (
                 self.storage.crawl_path.exists(),
                 self.storage.index_path.exists(),
                 self.storage.pagerank_path.exists(),
             )
-            page_urls = set(state.pages)
+            page_urls = set(state.pages) if isinstance(state.pages, dict) else set()
             legacy_consistent = (
                 all(legacy_presence)
                 and index is not None
@@ -170,10 +214,19 @@ class AcademicSearchEngine:
             and math.isfinite(float(value))
             and float(value) >= 0
         }
-        self.pages: Dict[str, Page] = dict(self.state.pages)
+        self.pages: Dict[str, Page] = {
+            url: page
+            for url, page in self.state.pages.items()
+            if isinstance(url, str) and isinstance(page, Page)
+        }
 
     def close(self) -> None:
-        self.crawler.close()
+        crawler = getattr(self, "crawler", None)
+        if crawler is not None:
+            try:
+                crawler.close()
+            except Exception:
+                pass
 
     def __enter__(self) -> "AcademicSearchEngine":
         return self
@@ -190,26 +243,41 @@ class AcademicSearchEngine:
         )
 
     def build(self) -> int:
-        self.state = self.crawler.crawl(self.seeds, self.state)
-        self.pages = dict(self.state.pages)
-        page_urls = set(self.pages)
-        filtered_graph = {
-            url: {
-                target
-                for target in self.state.graph.get(url, set())
-                if target in page_urls
-            }
-            for url in page_urls
+        crawled = self.crawler.crawl(self.seeds, self.state)
+        if not isinstance(crawled, CrawlState):
+            raise RuntimeError("The crawler returned an invalid state.")
+        if not isinstance(crawled.pages, dict) or not isinstance(crawled.graph, dict):
+            raise RuntimeError("The crawler returned malformed page or graph state.")
+        pages = {
+            url: page
+            for url, page in crawled.pages.items()
+            if isinstance(url, str) and isinstance(page, Page)
         }
-        self.state.graph = filtered_graph
-        self.index = InvertedIndex()
-        self.index.build(self.pages)
-        self.pagerank_scores = compute_pagerank(filtered_graph)
-        self.storage.save_snapshot(
-            self.state,
-            self.index,
-            self.pagerank_scores,
-        )
+        page_urls = set(pages)
+        filtered_graph: Dict[str, set[str]] = {}
+        for url in page_urls:
+            raw_edges = crawled.graph.get(url, set())
+            if isinstance(raw_edges, (str, bytes, bytearray)):
+                raw_edges = set()
+            try:
+                edges = {
+                    target
+                    for target in itertools.islice(iter(raw_edges), 100_000)
+                    if isinstance(target, str) and target in page_urls
+                }
+            except Exception:
+                edges = set()
+            filtered_graph[url] = edges
+        crawled.pages = pages
+        crawled.graph = filtered_graph
+        self.state = crawled
+        self.pages = pages
+        new_index = InvertedIndex()
+        new_index.build(self.pages)
+        new_pagerank = compute_pagerank(filtered_graph)
+        self.storage.save_snapshot(self.state, new_index, new_pagerank)
+        self.index = new_index
+        self.pagerank_scores = new_pagerank
         return len(self.pages)
 
     def search(self, query: str, limit: int = 10) -> List[SearchHit]:
@@ -246,8 +314,15 @@ class AcademicSearchEngine:
         query_norm = math.sqrt(query_norm_squared)
         dot_products: Dict[str, float] = {}
         for term, query_weight in query_vector.items():
-            for url, document_weight in self.index.index.get(term, {}).items():
-                if not math.isfinite(document_weight) or document_weight <= 0:
+            postings = self.index.index.get(term, {})
+            if not isinstance(postings, dict):
+                continue
+            for url, document_weight in postings.items():
+                if not isinstance(url, str) or not isinstance(document_weight, (int, float)):
+                    continue
+                if isinstance(document_weight, bool) or not math.isfinite(document_weight):
+                    continue
+                if document_weight <= 0:
                     continue
                 updated = dot_products.get(url, 0.0) + query_weight * document_weight
                 if math.isfinite(updated):
@@ -256,7 +331,10 @@ class AcademicSearchEngine:
         finite_pagerank = [
             value
             for value in self.pagerank_scores.values()
-            if math.isfinite(value) and value >= 0
+            if isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and math.isfinite(value)
+            and value >= 0
         ]
         global_max_pagerank = max(finite_pagerank, default=0.0)
         authority_weight = 1.0 - self.lexical_weight
@@ -265,7 +343,9 @@ class AcademicSearchEngine:
             norm = self.index.doc_norms.get(url, 0.0)
             metadata = self.index.documents.get(url)
             if (
-                not math.isfinite(norm)
+                not isinstance(norm, (int, float))
+                or isinstance(norm, bool)
+                or not math.isfinite(norm)
                 or norm <= 0
                 or metadata is None
                 or url not in self.pages
@@ -276,7 +356,12 @@ class AcademicSearchEngine:
                 continue
             cosine = max(0.0, min(dot_product / denominator, 1.0))
             raw_pagerank = self.pagerank_scores.get(url, 0.0)
-            if not math.isfinite(raw_pagerank) or raw_pagerank < 0:
+            if (
+                not isinstance(raw_pagerank, (int, float))
+                or isinstance(raw_pagerank, bool)
+                or not math.isfinite(raw_pagerank)
+                or raw_pagerank < 0
+            ):
                 raw_pagerank = 0.0
             pagerank = (
                 raw_pagerank / global_max_pagerank
@@ -286,18 +371,21 @@ class AcademicSearchEngine:
             score = self.lexical_weight * cosine + authority_weight * pagerank
             if not math.isfinite(score):
                 continue
-            ranked.append(
-                SearchHit(
-                    rank=0,
-                    url=url,
-                    title=metadata.title,
-                    snippet=self._query_snippet(url, tokens, metadata.snippet),
-                    score=max(0.0, min(score, 1.0)),
-                    cosine=cosine,
-                    pagerank=max(0.0, min(pagerank, 1.0)),
-                    length=metadata.length,
+            try:
+                ranked.append(
+                    SearchHit(
+                        rank=0,
+                        url=url,
+                        title=metadata.title,
+                        snippet=self._query_snippet(url, tokens, metadata.snippet),
+                        score=max(0.0, min(score, 1.0)),
+                        cosine=cosine,
+                        pagerank=max(0.0, min(pagerank, 1.0)),
+                        length=metadata.length,
+                    )
                 )
-            )
+            except (TypeError, ValueError):
+                continue
         ranked.sort(
             key=lambda item: (item.score, item.cosine, item.pagerank, item.url),
             reverse=True,
@@ -314,11 +402,13 @@ class AcademicSearchEngine:
         fallback: str,
     ) -> str:
         page = self.pages.get(url)
-        if page is None or not page.text:
+        if page is None or not isinstance(page.text, str) or not page.text:
             return _clean_line(fallback, limit=4000)
         lowered = page.text.casefold()
         positions: List[int] = []
         for token in tokens[:1000]:
+            if not isinstance(token, str):
+                continue
             position = lowered.find(token)
             if position >= 0:
                 positions.append(position)
@@ -349,14 +439,12 @@ class AcademicSearchEngine:
             minimum=1,
             maximum=_MAX_CONTEXT_CHARS,
         )
-        if isinstance(hits, (str, bytes)):
+        if isinstance(hits, (str, bytes, bytearray)):
             raise ValueError("hits must be a sequence of SearchHit objects.")
         try:
-            candidates = list(
-                itertools.islice(iter(hits), _MAX_CONTEXT_HITS + 1)
-            )
-        except TypeError as exc:
-            raise ValueError("hits must be iterable.") from exc
+            candidates = list(itertools.islice(iter(hits), _MAX_CONTEXT_HITS + 1))
+        except Exception as exc:
+            raise ValueError("hits must be a safely iterable collection.") from exc
         if len(candidates) > _MAX_CONTEXT_HITS:
             raise ValueError(f"At most {_MAX_CONTEXT_HITS} hits may be gathered.")
         valid = [
@@ -364,14 +452,17 @@ class AcademicSearchEngine:
             for hit in candidates
             if isinstance(hit, SearchHit)
         ]
-        valid = [(hit, page) for hit, page in valid if page is not None]
+        valid = [
+            (hit, page)
+            for hit, page in valid
+            if isinstance(page, Page) and isinstance(page.text, str) and page.text
+        ]
         if not valid:
             return []
         per_document = max(1, requested_chars // len(valid))
         contexts: List[Dict[str, str]] = []
         remaining = requested_chars
         for hit, page in valid:
-            assert page is not None
             excerpt = page.text[: min(per_document, remaining)]
             if not excerpt:
                 continue
@@ -408,6 +499,9 @@ class AcademicSearchEngine:
             except ValueError as exc:
                 print(f"Invalid query: {exc}\n")
                 continue
+            except Exception:
+                print("The search backend failed.\n")
+                continue
             if not matches:
                 print("No results found.\n")
                 continue
@@ -423,7 +517,7 @@ class AcademicSearchEngine:
             print()
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Academic lexical search engine")
     parser.add_argument("--max-pages", type=int, default=150)
     parser.add_argument("--max-depth", type=int, default=2)
@@ -438,11 +532,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Crawl and rebuild the persisted index before searching.",
     )
-    return parser.parse_args()
+    return parser.parse_args(list(argv) if argv is not None else None)
 
 
-def main() -> None:
-    args = parse_args()
+def main(argv: Optional[Sequence[str]] = None) -> int:
+    args = parse_args(argv)
     try:
         with AcademicSearchEngine(
             max_pages=args.max_pages,
@@ -459,9 +553,14 @@ def main() -> None:
                     f"Loaded {len(engine.index.documents)} indexed pages from disk.\n"
                 )
             engine.interactive_loop(limit=args.results)
+        return 0
     except ValueError as exc:
-        raise SystemExit(str(exc)) from exc
+        print(str(exc), file=sys.stderr)
+        return 2
+    except Exception:
+        print("The academic search engine could not be initialized.", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
