@@ -7,8 +7,9 @@ import json
 import math
 import os
 import sys
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Sequence
+from typing import Any, Dict, Iterable, List, Optional
 
 from tools.config import bounded_int_env
 from tools.privacy import mask_metadata_text
@@ -37,35 +38,64 @@ from tools import rag_legacy as _implementation
 from tools.security import normalize_owner_id
 
 _MAX_METADATA_ITEMS = bounded_int_env(
-    "MAX_VECTOR_METADATA_ITEMS", 200, minimum=10, maximum=2000
+    "MAX_VECTOR_METADATA_ITEMS",
+    200,
+    minimum=10,
+    maximum=2000,
 )
 _MAX_SECTIONS = bounded_int_env(
-    "MAX_SECTIONS_PER_DOCUMENT", 10_000, minimum=1, maximum=100_000
+    "MAX_SECTIONS_PER_DOCUMENT",
+    10_000,
+    minimum=1,
+    maximum=100_000,
 )
 _MAX_QUERY_CHARS = bounded_int_env(
-    "MAX_RAG_QUERY_CHARS", 20_000, minimum=1000, maximum=100_000
+    "MAX_RAG_QUERY_CHARS",
+    20_000,
+    minimum=1000,
+    maximum=100_000,
 )
 _MAX_WHERE_CHARS = 20_000
 _MAX_DOCUMENT_TEXT_CHARS = 50_000_000
 _MAX_SECTION_TEXT_CHARS = 5_000_000
 _MAX_CHUNK_SIZE = 100_000
 _MAX_RESULT_TEXT_CHARS = 100_000
+_MAX_RESULT_ID_CHARS = 500
+_MAX_EXPANDED_QUERY_CHARS = 2000
 
 
 def _safe_text(value: Any, *, limit: int, default: str = "") -> str:
-    try:
-        rendered = str(value if value is not None else default)
-    except Exception:
+    if isinstance(value, str):
+        rendered = value
+    elif value is None:
         rendered = default
+    else:
+        try:
+            rendered = str(value)
+        except Exception:
+            rendered = default
     return rendered[:limit]
+
+
+def _safe_getattr(value: object, name: str, default: object = None) -> object:
+    try:
+        return getattr(value, name, default)
+    except Exception:
+        return default
 
 
 def _bounded_identifier(value: Any, label: str, *, limit: int = 200) -> str:
     if not isinstance(value, str):
         raise ValueError(f"{label} must be a string.")
     result = value.strip()
-    if not result or len(result) > limit or "\x00" in result:
-        raise ValueError(f"{label} must contain between 1 and {limit} valid characters.")
+    if (
+        not result
+        or len(result) > limit
+        or any(character in result for character in ("\x00", "\r", "\n"))
+    ):
+        raise ValueError(
+            f"{label} must contain between 1 and {limit} valid characters."
+        )
     return result
 
 
@@ -95,21 +125,41 @@ def _bounded_query(value: Any) -> str:
         raise ValueError(
             f"RAG queries may contain at most {_MAX_QUERY_CHARS} characters."
         )
+    if "\x00" in query:
+        raise ValueError("RAG queries contain an invalid null character.")
     return query
 
 
+def _mapping_items(value: object, *, label: str, maximum: int) -> list[tuple[Any, Any]]:
+    if not isinstance(value, Mapping):
+        raise ValueError(f"{label} must be an object.")
+    try:
+        items = list(itertools.islice(value.items(), maximum + 1))
+    except Exception as exc:
+        raise ValueError(f"{label} must be a safely iterable object.") from exc
+    if len(items) > maximum:
+        raise ValueError(f"{label} may contain at most {maximum} fields.")
+    return items
+
+
 def _clean_metadata(metadata: Dict[str, Any]) -> Dict[str, str | int | float | bool]:
-    if not isinstance(metadata, dict):
-        raise ValueError("metadata must be an object.")
-    if len(metadata) > _MAX_METADATA_ITEMS:
-        raise ValueError(f"metadata may contain at most {_MAX_METADATA_ITEMS} fields.")
     cleaned: Dict[str, str | int | float | bool] = {}
-    for raw_key, value in metadata.items():
+    for raw_key, value in _mapping_items(
+        metadata,
+        label="metadata",
+        maximum=_MAX_METADATA_ITEMS,
+    ):
         if not isinstance(raw_key, str):
             raise ValueError("Vector metadata keys must be strings.")
         key = raw_key.strip()
-        if not key or len(key) > 200 or "\x00" in key:
-            raise ValueError("Vector metadata keys must contain 1-200 valid characters.")
+        if (
+            not key
+            or len(key) > 200
+            or any(character in key for character in ("\x00", "\r", "\n"))
+        ):
+            raise ValueError(
+                "Vector metadata keys must contain 1-200 valid characters."
+            )
         if isinstance(value, bool):
             cleaned[key] = value
         elif isinstance(value, int):
@@ -119,21 +169,30 @@ def _clean_metadata(metadata: Dict[str, Any]) -> Dict[str, str | int | float | b
                 cleaned[key] = value
         elif isinstance(value, str):
             cleaned[key] = mask_metadata_text(value)[:4000]
-    owner = normalize_owner_id(str(cleaned.get("owner_id") or ""))
-    cleaned["owner_id"] = owner
+    owner_value = cleaned.get("owner_id")
+    if not isinstance(owner_value, str):
+        raise ValueError("metadata.owner_id must be a string.")
+    cleaned["owner_id"] = normalize_owner_id(owner_value)
     return cleaned
 
 
 def _section_data(section: Any, index: int) -> Dict[str, Any]:
-    if hasattr(section, "model_dump"):
-        raw = section.model_dump()
-    elif isinstance(section, dict):
-        raw = dict(section)
+    model_dump = _safe_getattr(section, "model_dump")
+    if callable(model_dump):
+        try:
+            raw = model_dump()
+        except Exception as exc:
+            raise ValueError("A semantic section could not be serialized.") from exc
+    elif isinstance(section, Mapping):
+        try:
+            raw = dict(section)
+        except Exception as exc:
+            raise ValueError("A semantic section could not be copied.") from exc
     else:
         raw = {
-            "title": getattr(section, "title", f"Section {index + 1}"),
-            "content": getattr(section, "content", ""),
-            "page_number": getattr(section, "page_number", None),
+            "title": _safe_getattr(section, "title", f"Section {index + 1}"),
+            "content": _safe_getattr(section, "content", ""),
+            "page_number": _safe_getattr(section, "page_number", None),
         }
     if not isinstance(raw, dict):
         raise ValueError("Every semantic section must be an object-like value.")
@@ -150,20 +209,24 @@ def _section_data(section: Any, index: int) -> Dict[str, Any]:
 def _bounded_sections(sections: Optional[Iterable[Any]]) -> Optional[List[Any]]:
     if sections is None:
         return None
-    if isinstance(sections, (str, bytes)):
+    if isinstance(sections, (str, bytes, bytearray)):
         raise ValueError("sections must be an iterable of semantic-section objects.")
     try:
         values = list(itertools.islice(iter(sections), _MAX_SECTIONS + 1))
-    except TypeError as exc:
-        raise ValueError("sections must be iterable.") from exc
+    except Exception as exc:
+        raise ValueError("sections must be safely iterable.") from exc
     if len(values) > _MAX_SECTIONS:
-        raise ValueError(f"A document may contain at most {_MAX_SECTIONS} semantic sections.")
+        raise ValueError(
+            f"A document may contain at most {_MAX_SECTIONS} semantic sections."
+        )
     total = 0
     for index, section in enumerate(values):
         data = _section_data(section, index)
         total += len(data.get("content") or "")
         if total > _MAX_DOCUMENT_TEXT_CHARS:
-            raise ValueError("Semantic sections exceed the document text character limit.")
+            raise ValueError(
+                "Semantic sections exceed the document text character limit."
+            )
     return values
 
 
@@ -185,39 +248,74 @@ def _absolute_storage_path(value: Any) -> str:
     if not isinstance(value, (str, os.PathLike)):
         raise ValueError("persist_directory must be a filesystem path.")
     rendered = os.fspath(value)
-    if not rendered or len(rendered) > 4096 or "\x00" in rendered:
+    if not isinstance(rendered, str) or not rendered or len(rendered) > 4096:
         raise ValueError("persist_directory is invalid or too long.")
+    if "\x00" in rendered:
+        raise ValueError("persist_directory contains an invalid null character.")
     raw = Path(rendered)
+    if not raw.is_absolute():
+        raw = Path.cwd() / raw
     absolute = Path(os.path.abspath(raw))
     for candidate in (absolute, *absolute.parents):
-        if candidate.is_symlink():
-            raise ValueError("CHROMA_PATH may not contain symbolic-link components.")
+        try:
+            if candidate.is_symlink():
+                raise ValueError(
+                    "CHROMA_PATH may not contain symbolic-link components."
+                )
+        except OSError as exc:
+            raise ValueError("CHROMA_PATH could not be validated.") from exc
     return str(absolute)
 
 
-def _row(value: Any, *, maximum: int) -> List[Any]:
-    if not isinstance(value, list) or not value or not isinstance(value[0], list):
-        return []
+def _query_row(value: Any, *, label: str, maximum: int) -> List[Any]:
+    if not isinstance(value, list) or len(value) != 1 or not isinstance(value[0], list):
+        raise ValueError(f"Vector backend returned invalid {label} rows.")
     return value[0][:_bounded_integer(maximum, "maximum", minimum=1, maximum=100)]
 
 
 def _result_metadata(value: Any) -> Dict[str, Any]:
-    if not isinstance(value, dict):
+    if not isinstance(value, Mapping):
+        return {}
+    try:
+        items = itertools.islice(value.items(), _MAX_METADATA_ITEMS)
+    except Exception:
         return {}
     cleaned: Dict[str, Any] = {}
-    for index, (raw_key, item) in enumerate(value.items()):
-        if index >= _MAX_METADATA_ITEMS or not isinstance(raw_key, str):
-            break
-        key = raw_key[:200]
-        if isinstance(item, bool) or item is None:
-            cleaned[key] = item
-        elif isinstance(item, int):
-            cleaned[key] = item
-        elif isinstance(item, float) and math.isfinite(item):
-            cleaned[key] = item
-        elif isinstance(item, str):
-            cleaned[key] = mask_metadata_text(item)[:4000]
+    try:
+        for raw_key, item in items:
+            if not isinstance(raw_key, str):
+                continue
+            key = raw_key[:200]
+            if isinstance(item, bool) or item is None:
+                cleaned[key] = item
+            elif isinstance(item, int):
+                cleaned[key] = item
+            elif isinstance(item, float) and math.isfinite(item):
+                cleaned[key] = item
+            elif isinstance(item, str):
+                cleaned[key] = mask_metadata_text(item)[:4000]
+    except Exception:
+        return {}
     return cleaned
+
+
+def _bounded_generated_queries(value: object, maximum: int) -> List[str]:
+    if value is None or isinstance(value, (str, bytes, bytearray)):
+        return []
+    try:
+        candidates = itertools.islice(iter(value), maximum + 1)  # type: ignore[arg-type]
+        result: List[str] = []
+        for item in candidates:
+            if not isinstance(item, str):
+                continue
+            bounded = item.strip()[:_MAX_EXPANDED_QUERY_CHARS]
+            if bounded and "\x00" not in bounded and bounded not in result:
+                result.append(bounded)
+            if len(result) >= maximum:
+                break
+        return result
+    except Exception:
+        return []
 
 
 class RAGLayer(_implementation.RAGLayer):
@@ -233,7 +331,9 @@ class RAGLayer(_implementation.RAGLayer):
         super().__init__(
             persist_directory=_absolute_storage_path(persist_directory),
             collection_name=_bounded_identifier(
-                collection_name, "collection_name", limit=200
+                collection_name,
+                "collection_name",
+                limit=200,
             ),
             embedding_model=_bounded_model(embedding_model),
         )
@@ -256,12 +356,20 @@ class RAGLayer(_implementation.RAGLayer):
             if not isinstance(text, str):
                 raise ValueError("Document text must be a string.")
             if len(text) > _MAX_DOCUMENT_TEXT_CHARS:
-                raise ValueError("Document text exceeds the vector-ingestion character limit.")
+                raise ValueError(
+                    "Document text exceeds the vector-ingestion character limit."
+                )
         size = _bounded_integer(
-            chunk_size, "chunk_size", minimum=1, maximum=_MAX_CHUNK_SIZE
+            chunk_size,
+            "chunk_size",
+            minimum=1,
+            maximum=_MAX_CHUNK_SIZE,
         )
         overlap_value = _bounded_integer(
-            overlap, "overlap", minimum=0, maximum=_MAX_CHUNK_SIZE - 1
+            overlap,
+            "overlap",
+            minimum=0,
+            maximum=_MAX_CHUNK_SIZE - 1,
         )
         if overlap_value >= size:
             raise ValueError("overlap must be smaller than chunk_size.")
@@ -294,9 +402,14 @@ class RAGLayer(_implementation.RAGLayer):
         if not bounded:
             return ""
         generated = super().generate_hyde_query(
-            bounded, agent_client, model=_bounded_model(model)
+            bounded,
+            agent_client,
+            model=_bounded_model(model),
         )
-        return _safe_text(generated or bounded, limit=_MAX_QUERY_CHARS)
+        if not isinstance(generated, str):
+            return bounded
+        candidate = generated.strip()[:_MAX_QUERY_CHARS]
+        return candidate if candidate and "\x00" not in candidate else bounded
 
     def generate_expanded_queries(
         self,
@@ -311,13 +424,12 @@ class RAGLayer(_implementation.RAGLayer):
             return []
         requested = _bounded_integer(count, "count", minimum=1, maximum=4)
         generated = super().generate_expanded_queries(
-            bounded, agent_client, model=_bounded_model(model), count=requested
+            bounded,
+            agent_client,
+            model=_bounded_model(model),
+            count=requested,
         )
-        unique: List[str] = []
-        for item in itertools.islice(iter(generated or []), requested + 1):
-            value = _safe_text(item, limit=2000).strip()
-            if value and value not in unique:
-                unique.append(value)
+        unique = _bounded_generated_queries(generated, requested)
         return unique or [bounded]
 
     def query(
@@ -335,7 +447,12 @@ class RAGLayer(_implementation.RAGLayer):
         query = _bounded_query(query_text)
         if not query:
             return []
-        requested = _bounded_integer(n_results, "n_results", minimum=1, maximum=50)
+        requested = _bounded_integer(
+            n_results,
+            "n_results",
+            minimum=1,
+            maximum=50,
+        )
         owner = normalize_owner_id(owner_id)
         document_id = (
             _bounded_identifier(doc_id, "doc_id") if doc_id is not None else None
@@ -362,39 +479,65 @@ class RAGLayer(_implementation.RAGLayer):
         for current_query in queries[:5]:
             try:
                 results = self.collection.query(
-                    query_texts=[_safe_text(current_query, limit=_MAX_QUERY_CHARS)],
+                    query_texts=[current_query[:_MAX_QUERY_CHARS]],
                     n_results=requested,
                     where=combined_where,
                     include=["documents", "metadatas", "distances"],
                 )
                 if not isinstance(results, dict):
                     raise ValueError("Vector backend returned a non-object response.")
-                result_ids = _row(results.get("ids"), maximum=requested)
-                docs = _row(results.get("documents"), maximum=requested)
-                metas = _row(results.get("metadatas"), maximum=requested)
-                distances = _row(results.get("distances"), maximum=requested)
+                result_ids = _query_row(
+                    results.get("ids"),
+                    label="identifier",
+                    maximum=requested,
+                )
+                docs = _query_row(
+                    results.get("documents"),
+                    label="document",
+                    maximum=requested,
+                )
+                metas = _query_row(
+                    results.get("metadatas"),
+                    label="metadata",
+                    maximum=requested,
+                )
+                distances = _query_row(
+                    results.get("distances"),
+                    label="distance",
+                    maximum=requested,
+                )
                 successful_queries += 1
             except Exception as exc:
                 errors.append(exc)
                 continue
             for index, raw_id in enumerate(result_ids):
-                chunk_id = _safe_text(raw_id, limit=501).strip()
-                if not chunk_id or len(chunk_id) > 500:
+                if not isinstance(raw_id, str):
                     continue
-                metadata = _result_metadata(metas[index] if index < len(metas) else {})
-                if str(metadata.get("owner_id") or "") != owner:
+                chunk_id = raw_id.strip()
+                if not chunk_id or len(chunk_id) > _MAX_RESULT_ID_CHARS:
                     continue
-                if document_id and str(metadata.get("doc_id") or "") != document_id:
+                metadata = _result_metadata(
+                    metas[index] if index < len(metas) else {}
+                )
+                if metadata.get("owner_id") != owner:
                     continue
-                try:
-                    distance = float(distances[index]) if index < len(distances) else 1.0
-                except (TypeError, ValueError, OverflowError):
+                if document_id and metadata.get("doc_id") != document_id:
+                    continue
+                raw_distance = distances[index] if index < len(distances) else 1.0
+                if isinstance(raw_distance, bool):
                     distance = 1.0
+                else:
+                    try:
+                        distance = float(raw_distance)
+                    except (TypeError, ValueError, OverflowError):
+                        distance = 1.0
                 if not math.isfinite(distance) or distance < 0:
                     distance = 1.0
-                text = _safe_text(
-                    docs[index] if index < len(docs) else "",
-                    limit=_MAX_RESULT_TEXT_CHARS,
+                raw_text = docs[index] if index < len(docs) else ""
+                text = (
+                    raw_text[:_MAX_RESULT_TEXT_CHARS]
+                    if isinstance(raw_text, str)
+                    else ""
                 )
                 candidate = _implementation.Chunk(
                     id=chunk_id,
@@ -408,17 +551,26 @@ class RAGLayer(_implementation.RAGLayer):
                     candidates[candidate.id] = candidate
         if successful_queries == 0 and errors:
             raise RuntimeError("Vector retrieval is unavailable.") from errors[0]
-        return sorted(candidates.values(), key=lambda item: item.distance)[:requested]
+        return sorted(
+            candidates.values(),
+            key=lambda item: item.distance,
+        )[:requested]
 
     def list_documents(
-        self, *, owner_id: str, limit: int = 1000
+        self,
+        *,
+        owner_id: str,
+        limit: int = 1000,
     ) -> List[Dict[str, Any]]:
         owner = normalize_owner_id(owner_id)
         requested = _bounded_integer(limit, "limit", minimum=1, maximum=5000)
         seen: Dict[str, Dict[str, Any]] = {}
         offset = 0
         scanned = 0
-        while len(seen) < requested and scanned < _implementation.MAX_LIST_SCAN_CHUNKS:
+        while (
+            len(seen) < requested
+            and scanned < _implementation.MAX_LIST_SCAN_CHUNKS
+        ):
             batch_limit = min(
                 _implementation.LIST_SCAN_BATCH,
                 _implementation.MAX_LIST_SCAN_CHUNKS - scanned,
@@ -435,31 +587,62 @@ class RAGLayer(_implementation.RAGLayer):
                 result_ids = results.get("ids") or []
                 metadatas = results.get("metadatas") or []
                 if not isinstance(result_ids, list) or not isinstance(metadatas, list):
-                    raise ValueError("Vector backend returned invalid document arrays.")
+                    raise ValueError(
+                        "Vector backend returned invalid document arrays."
+                    )
+                if len(result_ids) != len(metadatas):
+                    raise ValueError(
+                        "Vector backend returned incomplete document arrays."
+                    )
                 result_ids = result_ids[:batch_limit]
                 metadatas = metadatas[:batch_limit]
             except Exception as exc:
-                raise RuntimeError("Vector document listing is unavailable.") from exc
+                raise RuntimeError(
+                    "Vector document listing is unavailable."
+                ) from exc
             if not result_ids:
                 break
             for raw_metadata in metadatas:
                 metadata = _result_metadata(raw_metadata)
-                if str(metadata.get("owner_id") or "") != owner:
+                if metadata.get("owner_id") != owner:
                     continue
-                doc_id_value = _safe_text(metadata.get("doc_id"), limit=201).strip()
-                if not doc_id_value or len(doc_id_value) > 200 or doc_id_value in seen:
+                raw_doc_id = metadata.get("doc_id")
+                if not isinstance(raw_doc_id, str):
                     continue
+                doc_id_value = raw_doc_id.strip()
+                if (
+                    not doc_id_value
+                    or len(doc_id_value) > 200
+                    or doc_id_value in seen
+                ):
+                    continue
+                filename = metadata.get("filename")
+                summary = metadata.get("llm_summary")
+                mime_type = metadata.get("mime_type")
+                created_at = metadata.get("created_at")
                 seen[doc_id_value] = {
                     "doc_id": doc_id_value,
                     "filename": mask_metadata_text(
-                        _safe_text(metadata.get("filename") or doc_id_value, limit=500)
+                        filename[:500]
+                        if isinstance(filename, str)
+                        else doc_id_value
                     ),
                     "owner_id": owner,
-                    "llm_summary": mask_metadata_text(
-                        _safe_text(metadata.get("llm_summary"), limit=4000)
-                    ) or None,
-                    "mime_type": _safe_text(metadata.get("mime_type"), limit=200) or None,
-                    "created_at": _safe_text(metadata.get("created_at"), limit=100) or None,
+                    "llm_summary": (
+                        mask_metadata_text(summary[:4000])
+                        if isinstance(summary, str) and summary
+                        else None
+                    ),
+                    "mime_type": (
+                        mime_type[:200]
+                        if isinstance(mime_type, str) and mime_type
+                        else None
+                    ),
+                    "created_at": (
+                        created_at[:100]
+                        if isinstance(created_at, str) and created_at
+                        else None
+                    ),
                 }
                 if len(seen) >= requested:
                     break
@@ -470,7 +653,7 @@ class RAGLayer(_implementation.RAGLayer):
                 break
         return sorted(
             seen.values(),
-            key=lambda item: str(item.get("created_at") or ""),
+            key=lambda item: item.get("created_at") or "",
             reverse=True,
         )[:requested]
 
@@ -479,7 +662,9 @@ _RAG_INSTANCES: Dict[str, RAGLayer] = {}
 _RAG_LOCK = _implementation.threading.Lock()
 
 
-def get_rag_layer(persist_directory: str = _implementation.CHROMA_PATH) -> RAGLayer:
+def get_rag_layer(
+    persist_directory: str = _implementation.CHROMA_PATH,
+) -> RAGLayer:
     path = _absolute_storage_path(persist_directory)
     with _RAG_LOCK:
         instance = _RAG_INSTANCES.get(path)
