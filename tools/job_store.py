@@ -28,11 +28,19 @@ _MAX_JOB_ID_CHARS = 200
 _MAX_OWNER_SAFE_PATH_CHARS = 4000
 
 
+def _contains_ascii_control(value: str) -> bool:
+    return any(ord(character) < 32 or ord(character) == 127 for character in value)
+
+
 def _absolute_without_resolution(value: str | os.PathLike[str], label: str) -> Path:
     if not isinstance(value, (str, os.PathLike)):
         raise ValueError(f"{label} must be a filesystem path.")
     rendered = os.fspath(value)
-    if not rendered or len(rendered) > 4096 or "\x00" in rendered:
+    if (
+        not rendered
+        or len(rendered) > 4096
+        or _contains_ascii_control(rendered)
+    ):
         raise ValueError(f"{label} is invalid or too long.")
     candidate = Path(rendered)
     if not candidate.is_absolute():
@@ -50,17 +58,27 @@ def _safe_database_path(value: str | os.PathLike[str]) -> Path:
     return absolute
 
 
-def _job_identifier(value: Any) -> str:
+def _bounded_identifier(value: Any, label: str, maximum: int = 200) -> str:
     if not isinstance(value, str):
-        raise ValueError("job_id must be a string.")
+        raise ValueError(f"{label} must be a string.")
     identifier = value.strip()
     if (
         not identifier
-        or len(identifier) > _MAX_JOB_ID_CHARS
-        or "\x00" in identifier
+        or len(identifier) > maximum
+        or _contains_ascii_control(identifier)
     ):
-        raise ValueError("job_id must contain 1-200 valid characters.")
+        raise ValueError(
+            f"{label} must contain 1-{maximum} valid characters."
+        )
     return identifier
+
+
+def _job_identifier(value: Any) -> str:
+    return _bounded_identifier(value, "job_id", _MAX_JOB_ID_CHARS)
+
+
+def _document_identifier(value: Any) -> str:
+    return _bounded_identifier(value, "doc_id", 200)
 
 
 def _bounded_integer(
@@ -277,18 +295,11 @@ class JobStore:
         )
         message = message or None
         raw_doc_id = fields.get("doc_id")
-        if raw_doc_id in (None, ""):
-            requested_doc_id = None
-        else:
-            if not isinstance(raw_doc_id, str):
-                raise ValueError("doc_id must be a string.")
-            requested_doc_id = raw_doc_id.strip()
-            if (
-                not requested_doc_id
-                or len(requested_doc_id) > 200
-                or "\x00" in requested_doc_id
-            ):
-                raise ValueError("doc_id must contain 1-200 valid characters.")
+        requested_doc_id = (
+            None
+            if raw_doc_id in (None, "")
+            else _document_identifier(raw_doc_id)
+        )
 
         source_path_value = fields.get("source_path")
         source_path = None
@@ -340,8 +351,9 @@ class JobStore:
 
             stored_doc_id = requested_doc_id if status in {"finalizing", "success"} else None
             if status in {"finalizing", "success"} and stored_doc_id is None and existing:
-                existing_doc_id = str(existing["doc_id"] or "").strip()
-                stored_doc_id = existing_doc_id or None
+                existing_value = existing["doc_id"]
+                if existing_value not in (None, ""):
+                    stored_doc_id = _document_identifier(existing_value)
             if status in {"finalizing", "success"} and stored_doc_id is None:
                 raise ValueError(f"doc_id is required when status is {status}.")
 
@@ -446,7 +458,18 @@ class JobStore:
                 """,
                 (_MAX_RECOVERABLE_JOBS,),
             ).fetchall()
-        return [dict(row) for row in rows]
+        records: List[Dict[str, Any]] = []
+        for row in rows:
+            record = dict(row)
+            try:
+                record["job_id"] = _job_identifier(record.get("job_id"))
+                record["owner_id"] = normalize_owner_id(record.get("owner_id"))
+                if record.get("doc_id") not in (None, ""):
+                    record["doc_id"] = _document_identifier(record["doc_id"])
+            except (TypeError, ValueError):
+                continue
+            records.append(record)
+        return records
 
     def active_source_paths(self) -> Set[Path]:
         with self._lock, self._connect() as connection:
