@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import hashlib
-import itertools
 import re
 from typing import Any, Dict, Iterable, List
+
+from tools.privacy import mask_metadata_text
 
 _ALLOWED_ENTRY_TYPES = {
     "article", "book", "incollection", "inproceedings", "mastersthesis",
@@ -83,6 +84,7 @@ _FIELD_LIMITS = {
 }
 _MAX_OUTPUT_ENTRIES = 100
 _MAX_INSPECTED_CANDIDATES = 1000
+_MAX_OUTPUT_CHARS = 500_000
 _BIBTEX_ESCAPES = {
     "\\": r"\textbackslash{}",
     "{": r"\{",
@@ -99,32 +101,57 @@ _BIBTEX_ESCAPES = {
 
 def _bounded_scalar(value: Any, field: str) -> str:
     limit = _FIELD_LIMITS.get(field, 1000)
-    return str(value or "")[:limit]
+    if isinstance(value, bool) or value is None:
+        return ""
+    if isinstance(value, int):
+        rendered = str(value)
+    elif isinstance(value, str):
+        rendered = value
+    else:
+        return ""
+    return mask_metadata_text(rendered)[:limit]
 
 
 def _escape_bibtex(value: Any) -> str:
     """Escape each original character once, avoiding cascading replacements."""
 
-    text = " ".join(str(value or "").replace("\x00", "").split())
+    if not isinstance(value, str):
+        return ""
+    text = " ".join(value.replace("\x00", "").split())
     return "".join(_BIBTEX_ESCAPES.get(character, character) for character in text)
 
 
 def _slug(value: str, limit: int = 28) -> str:
-    return "".join(re.findall(r"[A-Za-z0-9]+", value or ""))[:limit] or "reference"
+    if not isinstance(value, str):
+        return "reference"
+    return "".join(re.findall(r"[A-Za-z0-9]+", value))[:limit] or "reference"
+
+
+def _value(citation: Dict[str, Any], field: str) -> Any:
+    try:
+        return citation.get(field)
+    except Exception:
+        return None
+
+
+def _first_nonempty(citation: Dict[str, Any], *fields: str) -> str:
+    for field in fields:
+        value = _bounded_scalar(_value(citation, field), field)
+        if value.strip():
+            return value
+    return ""
 
 
 def _citation_key(citation: Dict[str, Any], index: int) -> str:
-    authors = _bounded_scalar(
-        citation.get("authors") or citation.get("author") or "",
-        "authors",
-    )
+    authors = _first_nonempty(citation, "authors", "author")
     first_author = re.split(r"\s+and\s+|,|;", authors, maxsplit=1, flags=re.I)[0]
     surname = first_author.strip().split()[-1] if first_author.strip() else "anon"
-    year = re.sub(r"\D", "", _bounded_scalar(citation.get("year") or "nd", "year")) or "nd"
-    title = _bounded_scalar(citation.get("title") or "untitled", "title")
+    year_value = _bounded_scalar(_value(citation, "year"), "year") or "nd"
+    year = re.sub(r"\D", "", year_value) or "nd"
+    title = _bounded_scalar(_value(citation, "title"), "title") or "untitled"
     title_slug = _slug(title, 18)
     identity = "|".join(
-        _bounded_scalar(citation.get(field) or "", field)
+        _bounded_scalar(_value(citation, field), field)
         for field in ("title", "authors", "year", "doi", "url")
     )
     digest = hashlib.sha1(identity.encode("utf-8")).hexdigest()[:6]
@@ -132,10 +159,11 @@ def _citation_key(citation: Dict[str, Any], index: int) -> str:
 
 
 def _normalise_entry(citation: Dict[str, Any]) -> tuple[str, Dict[str, str]]:
-    entry_type = _bounded_scalar(
-        citation.get("entry_type") or "article",
+    raw_entry_type = _bounded_scalar(
+        _value(citation, "entry_type"),
         "entry_type",
-    ).lower().strip()
+    )
+    entry_type = (raw_entry_type or "article").lower().strip()
     if entry_type not in _ALLOWED_ENTRY_TYPES:
         entry_type = "misc"
     fields: Dict[str, str] = {}
@@ -146,9 +174,11 @@ def _normalise_entry(citation: Dict[str, Any]) -> tuple[str, Dict[str, str]]:
         "number": "number", "pages": "pages", "doi": "doi", "url": "url",
     }
     for source, destination in mappings.items():
-        value = citation.get(source)
-        if value not in (None, "") and destination not in fields:
-            fields[destination] = _escape_bibtex(_bounded_scalar(value, source))
+        if destination in fields:
+            continue
+        bounded = _bounded_scalar(_value(citation, source), source)
+        if bounded.strip():
+            fields[destination] = _escape_bibtex(bounded)
     fields.setdefault("title", "Untitled")
     fields.setdefault("author", "Unknown")
     fields.setdefault("year", "n.d.")
@@ -158,18 +188,31 @@ def _normalise_entry(citation: Dict[str, Any]) -> tuple[str, Dict[str, str]]:
 
 
 def export_to_bibtex(citations: Iterable[Dict[str, Any]]) -> str:
-    entries: List[str] = []
-    used_keys: set[str] = set()
+    if isinstance(citations, (str, bytes, bytearray)):
+        raise ValueError("citations must be an iterable of metadata objects, not text.")
     try:
         iterator = iter(citations)
     except TypeError as exc:
         raise ValueError("citations must be an iterable of metadata objects.") from exc
-    for raw in itertools.islice(iterator, _MAX_INSPECTED_CANDIDATES):
+
+    entries: List[str] = []
+    used_keys: set[str] = set()
+    output_chars = 0
+    for _ in range(_MAX_INSPECTED_CANDIDATES):
         if len(entries) >= _MAX_OUTPUT_ENTRIES:
             break
+        try:
+            raw = next(iterator)
+        except StopIteration:
+            break
+        except Exception as exc:
+            raise ValueError("citations iteration failed.") from exc
         if not isinstance(raw, dict):
             continue
-        citation = dict(raw)
+        try:
+            citation = dict(raw)
+        except Exception:
+            continue
         entry_type, fields = _normalise_entry(citation)
         key = _citation_key(citation, len(entries))
         base_key = key
@@ -184,5 +227,10 @@ def export_to_bibtex(citations: Iterable[Dict[str, Any]]) -> str:
             comma = "," if position < len(ordered) - 1 else ""
             lines.append(f"  {field} = {{{fields[field]}}}{comma}")
         lines.append("}")
-        entries.append("\n".join(lines))
+        entry = "\n".join(lines)
+        addition = len(entry) + (2 if entries else 0)
+        if output_chars + addition > _MAX_OUTPUT_CHARS:
+            break
+        entries.append(entry)
+        output_chars += addition
     return "\n\n".join(entries)
