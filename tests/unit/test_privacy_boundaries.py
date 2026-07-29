@@ -1,3 +1,4 @@
+import json
 import math
 
 from tools.privacy import mask_metadata_text, sanitize_metadata, sanitize_metadata_dict
@@ -76,6 +77,17 @@ def test_nonfinite_numbers_become_json_null_equivalents():
     assert math.isfinite(sanitized["finite"])
 
 
+def test_huge_integers_are_replaced_with_json_safe_sentinel():
+    sanitized = sanitize_metadata({
+        "normal": 123,
+        "huge": 1 << 5000,
+    })
+
+    assert sanitized["normal"] == 123
+    assert sanitized["huge"] == "[INTEGER_OUT_OF_RANGE]"
+    json.dumps(sanitized, allow_nan=False)
+
+
 def test_self_referential_containers_are_replaced_with_sentinel():
     mapping = {}
     mapping["self"] = mapping
@@ -138,15 +150,34 @@ def test_masked_key_collision_storm_remains_bounded_and_unique():
     assert sanitized["__truncated_items__"] is True
 
 
-def test_strings_and_hostile_custom_objects_are_bounded():
+def test_strings_and_hostile_custom_objects_are_bounded_without_bool_calls():
     class BrokenString:
+        def __bool__(self):
+            raise RuntimeError("do not call bool")
+
         def __str__(self):
             raise RuntimeError("private /secret/path")
 
+    broken = BrokenString()
     sanitized = sanitize_metadata({
         "long": "x" * 200_000,
-        "broken": BrokenString(),
+        "broken": broken,
     })
 
     assert len(sanitized["long"]) == 100_000
     assert sanitized["broken"] == "[UNPRINTABLE_BrokenString]"
+    assert mask_metadata_text(broken) == "[UNPRINTABLE_BrokenString]"
+
+
+def test_hostile_container_subclasses_fail_closed_without_escaping():
+    class BrokenDict(dict):
+        def items(self):
+            raise RuntimeError("private mapping")
+
+    class BrokenList(list):
+        def __iter__(self):
+            raise RuntimeError("private sequence")
+
+    assert sanitize_metadata(BrokenDict(secret="value")) == "[UNREADABLE_CONTAINER]"
+    assert sanitize_metadata_dict(BrokenDict(secret="value")) == {}
+    assert sanitize_metadata(BrokenList(["secret"])) == ["[UNREADABLE_CONTAINER]"]
