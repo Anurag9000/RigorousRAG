@@ -11,7 +11,7 @@ import threading
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterator
+from typing import Any, Dict, Iterator, Optional
 
 from tools.privacy import mask_metadata_text, sanitize_metadata, sanitize_metadata_dict
 
@@ -117,11 +117,19 @@ def _nonnegative_integer(value: Any) -> int:
     return max(0, min(numeric, _MAX_PUBLIC_INTEGER))
 
 
+def _contains_ascii_control(value: str) -> bool:
+    return any(ord(character) < 32 or ord(character) == 127 for character in value)
+
+
 def _absolute_without_resolving(path: Any) -> Path:
     if not isinstance(path, (str, os.PathLike)):
         raise ValueError("Telemetry path must be a filesystem path.")
     rendered = os.fspath(path)
-    if not rendered or len(rendered) > _MAX_PATH_CHARS or "\x00" in rendered:
+    if (
+        not rendered
+        or len(rendered) > _MAX_PATH_CHARS
+        or _contains_ascii_control(rendered)
+    ):
         raise ValueError("Telemetry path is invalid or too long.")
     candidate = Path(rendered)
     if not candidate.is_absolute():
@@ -132,37 +140,124 @@ def _absolute_without_resolving(path: Any) -> Path:
 def _has_symlink_component(path: Path) -> bool:
     try:
         candidate = _absolute_without_resolving(path)
-        return any(component.is_symlink() for component in (candidate, *candidate.parents))
+        return any(
+            component.is_symlink()
+            for component in (candidate, *candidate.parents)
+        )
     except (OSError, ValueError):
         return True
 
 
+def _rotated_name(name: str, index: int) -> str:
+    return f"{name}.{index}"
+
+
 def _rotated_path(path: Path, index: int) -> Path:
-    return path.with_name(f"{path.name}.{index}")
+    return path.with_name(_rotated_name(path.name, index))
 
 
-def _regular_or_missing(path: Path) -> bool:
-    try:
-        metadata = path.lstat()
-    except FileNotFoundError:
-        return True
-    except OSError:
-        return False
-    return stat.S_ISREG(metadata.st_mode)
+def _identity(metadata: os.stat_result) -> tuple[int, int]:
+    return int(metadata.st_dev), int(metadata.st_ino)
 
 
 @contextmanager
-def _process_log_lock(path: Path) -> Iterator[None]:
+def _log_directory(path: Path) -> Iterator[tuple[Path, Optional[int]]]:
+    """Anchor all POSIX member operations to one verified directory descriptor."""
+
+    destination = _absolute_without_resolving(path)
+    parent = destination.parent
+    if _has_symlink_component(parent):
+        raise OSError("Telemetry parent path is unsafe.")
+    parent.mkdir(parents=True, exist_ok=True)
+    if _has_symlink_component(parent):
+        raise OSError("Telemetry parent path is unsafe.")
+    before = os.stat(parent, follow_symlinks=False)
+    if not stat.S_ISDIR(before.st_mode):
+        raise OSError("Telemetry parent must be a directory.")
+
+    if os.name == "nt":  # pragma: no cover - Windows-specific fallback
+        try:
+            yield destination, None
+        finally:
+            if _has_symlink_component(parent):
+                raise OSError("Telemetry parent changed during publication.")
+            after = os.stat(parent, follow_symlinks=False)
+            if _identity(after) != _identity(before):
+                raise OSError("Telemetry parent identity changed during publication.")
+        return
+
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    descriptor = os.open(parent, flags)
+    try:
+        opened = os.fstat(descriptor)
+        if not stat.S_ISDIR(opened.st_mode) or _identity(opened) != _identity(before):
+            raise OSError("Telemetry parent descriptor identity is invalid.")
+        current = os.stat(parent, follow_symlinks=False)
+        if _identity(current) != _identity(opened):
+            raise OSError("Telemetry parent changed before publication.")
+        yield destination, descriptor
+        current = os.stat(parent, follow_symlinks=False)
+        if _identity(current) != _identity(opened):
+            raise OSError("Telemetry parent changed during publication.")
+    finally:
+        os.close(descriptor)
+
+
+def _member_stat(path: Path, parent_fd: Optional[int]) -> Optional[os.stat_result]:
+    try:
+        if parent_fd is None:
+            return path.lstat()
+        return os.stat(path.name, dir_fd=parent_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return None
+
+
+def _regular_or_missing(path: Path, parent_fd: Optional[int] = None) -> bool:
+    try:
+        metadata = _member_stat(path, parent_fd)
+    except OSError:
+        return False
+    return metadata is None or stat.S_ISREG(metadata.st_mode)
+
+
+def _unlink_member(path: Path, parent_fd: Optional[int]) -> None:
+    if parent_fd is None:
+        path.unlink(missing_ok=True)
+        return
+    try:
+        os.unlink(path.name, dir_fd=parent_fd)
+    except FileNotFoundError:
+        pass
+
+
+def _replace_member(source: Path, destination: Path, parent_fd: Optional[int]) -> None:
+    if parent_fd is None:
+        source.replace(destination)
+        return
+    os.replace(
+        source.name,
+        destination.name,
+        src_dir_fd=parent_fd,
+        dst_dir_fd=parent_fd,
+    )
+
+
+@contextmanager
+def _process_log_lock(path: Path, parent_fd: Optional[int] = None) -> Iterator[None]:
     """Serialize publication and rotation across service processes."""
 
     lock_path = path.with_name(f".{path.name}.lock")
-    if lock_path.is_symlink() or not _regular_or_missing(lock_path):
+    if not _regular_or_missing(lock_path, parent_fd):
         raise OSError("Telemetry lock path is unsafe.")
-    descriptor = os.open(
-        lock_path,
-        os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0),
-        0o600,
-    )
+    flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
+    if parent_fd is None:
+        descriptor = os.open(lock_path, flags, 0o600)
+    else:
+        descriptor = os.open(lock_path.name, flags, 0o600, dir_fd=parent_fd)
     try:
         if not stat.S_ISREG(os.fstat(descriptor).st_mode):
             raise OSError("Telemetry lock path must be a regular file.")
@@ -195,33 +290,40 @@ def _process_log_lock(path: Path) -> Iterator[None]:
         os.close(descriptor)
 
 
-def _rotate(path: Path) -> None:
-    if not path.exists() and not path.is_symlink():
+def _rotate(path: Path, parent_fd: Optional[int] = None) -> None:
+    metadata = _member_stat(path, parent_fd)
+    if metadata is None:
         return
-    if path.is_symlink() or not _regular_or_missing(path):
+    if not stat.S_ISREG(metadata.st_mode):
         raise OSError("Telemetry rotation refused a non-regular path.")
     if LOG_BACKUPS <= 0:
-        path.unlink(missing_ok=True)
+        _unlink_member(path, parent_fd)
         return
+
     oldest = _rotated_path(path, LOG_BACKUPS)
-    if oldest.is_symlink() or _regular_or_missing(oldest):
-        oldest.unlink(missing_ok=True)
-    else:
-        raise OSError("Telemetry backup path is not a regular file.")
+    oldest_metadata = _member_stat(oldest, parent_fd)
+    if oldest_metadata is not None:
+        if not stat.S_ISREG(oldest_metadata.st_mode):
+            raise OSError("Telemetry backup path is not a regular file.")
+        _unlink_member(oldest, parent_fd)
+
     for index in range(LOG_BACKUPS - 1, 0, -1):
         source = _rotated_path(path, index)
         destination = _rotated_path(path, index + 1)
-        if source.is_symlink():
-            source.unlink(missing_ok=True)
+        source_metadata = _member_stat(source, parent_fd)
+        if source_metadata is None:
             continue
-        if source.exists():
-            if not _regular_or_missing(source) or destination.is_symlink():
-                raise OSError("Telemetry backup rotation encountered an unsafe path.")
-            source.replace(destination)
-    path.replace(_rotated_path(path, 1))
+        if not stat.S_ISREG(source_metadata.st_mode):
+            raise OSError("Telemetry backup rotation encountered an unsafe path.")
+        destination_metadata = _member_stat(destination, parent_fd)
+        if destination_metadata is not None and not stat.S_ISREG(destination_metadata.st_mode):
+            raise OSError("Telemetry backup rotation encountered an unsafe path.")
+        _replace_member(source, destination, parent_fd)
+
+    _replace_member(path, _rotated_path(path, 1), parent_fd)
 
 
-def _append_line(path: Path, encoded: bytes) -> None:
+def _append_line(path: Path, encoded: bytes, parent_fd: Optional[int] = None) -> None:
     if not encoded or len(encoded) > _MAX_EVENT_BYTES:
         raise OSError("Telemetry event exceeds the append limit.")
     flags = (
@@ -231,7 +333,10 @@ def _append_line(path: Path, encoded: bytes) -> None:
         | getattr(os, "O_NONBLOCK", 0)
         | getattr(os, "O_NOFOLLOW", 0)
     )
-    descriptor = os.open(path, flags, 0o600)
+    if parent_fd is None:
+        descriptor = os.open(path, flags, 0o600)
+    else:
+        descriptor = os.open(path.name, flags, 0o600, dir_fd=parent_fd)
     try:
         metadata = os.fstat(descriptor)
         if not stat.S_ISREG(metadata.st_mode):
@@ -246,6 +351,10 @@ def _append_line(path: Path, encoded: bytes) -> None:
             if written <= 0:
                 raise OSError("Telemetry append made no progress.")
             offset += written
+        try:
+            os.fsync(descriptor)
+        except OSError:
+            pass
     finally:
         os.close(descriptor)
 
@@ -294,20 +403,17 @@ def log_activity(activity_type: str, details: Dict[str, Any]) -> None:
         if not encoded:
             return
         path = _absolute_without_resolving(LOG_FILE)
-        if _has_symlink_component(path.parent):
-            return
-        path.parent.mkdir(parents=True, exist_ok=True)
-        if _has_symlink_component(path.parent):
-            return
-        with _LOG_LOCK, _process_log_lock(path):
-            if path.is_symlink() or not _regular_or_missing(path):
-                return
-            current_size = path.stat().st_size if path.exists() else 0
-            if current_size + len(encoded) > LOG_MAX_BYTES:
-                _rotate(path)
-            if path.is_symlink() or not _regular_or_missing(path):
-                return
-            _append_line(path, encoded)
+        with _LOG_LOCK, _log_directory(path) as (destination, parent_fd):
+            with _process_log_lock(destination, parent_fd):
+                metadata = _member_stat(destination, parent_fd)
+                if metadata is not None and not stat.S_ISREG(metadata.st_mode):
+                    return
+                current_size = metadata.st_size if metadata is not None else 0
+                if current_size + len(encoded) > LOG_MAX_BYTES:
+                    _rotate(destination, parent_fd)
+                if not _regular_or_missing(destination, parent_fd):
+                    return
+                _append_line(destination, encoded, parent_fd)
     except Exception:
         return
 
@@ -352,9 +458,15 @@ def log_agent_run(
             maximum=_MAX_PRIVATE_HASH_INPUT_CHARS,
         )
         query_bytes = bounded_query.encode("utf-8", errors="replace")
-        bounded_owner = _safe_text(owner_id, maximum=500) if owner_id is not None else ""
+        bounded_owner = (
+            _safe_text(owner_id, maximum=500)
+            if owner_id is not None
+            else ""
+        )
         owner_hash = (
-            hashlib.sha256(bounded_owner.encode("utf-8", errors="replace")).hexdigest()
+            hashlib.sha256(
+                bounded_owner.encode("utf-8", errors="replace")
+            ).hexdigest()
             if bounded_owner
             else None
         )
