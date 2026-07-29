@@ -2,8 +2,8 @@
 
 ``server_app`` owns route declarations and response schemas. This module validates
 configuration before importing it, then installs strict runtime helpers for model
-selection, identifiers, upload scheduling, durable recovery, immutable ingestion,
-document deletion, and public error translation.
+selection, identifiers, upload scheduling, replay-only durable recovery, immutable
+ingestion, document deletion, and public error translation.
 """
 
 from __future__ import annotations
@@ -123,13 +123,12 @@ def _normalize_service_environment() -> None:
         )
         for name, (default, minimum, maximum) in integer_specs.items()
     }
-    float_specs = {
+    for name, (default, minimum, maximum) in {
         "REMOTE_REQUEST_TIMEOUT_SECONDS": (15.0, 0.1, 300.0),
         "QUERY_TIMEOUT_SECONDS": (120.0, 1.0, 900.0),
         "INGEST_ADMISSION_RETRY_SECONDS": (1.0, 0.1, 60.0),
         "MAX_DOCX_COMPRESSION_RATIO": (1000.0, 10.0, 100_000.0),
-    }
-    for name, (default, minimum, maximum) in float_specs.items():
+    }.items():
         _normalize_float_env(
             name,
             default,
@@ -150,10 +149,9 @@ def _normalize_service_environment() -> None:
         )
     )
     upload_limit = normalized["MAX_UPLOAD_BYTES"]
-    request_default = min(upload_limit + 1_048_576, 1_000_000_000)
     _normalize_integer_env(
         "MAX_REQUEST_BODY_BYTES",
-        request_default,
+        min(upload_limit + 1_048_576, 1_000_000_000),
         minimum=upload_limit,
         maximum=1_000_000_000,
     )
@@ -492,7 +490,7 @@ def _retry_or_fail_snapshot(
 
 
 def _recover_interrupted_jobs() -> None:
-    """Reconcile committed finalization or replay every other unfinished job."""
+    """Replay every unfinished job; registry existence alone is not a commit token."""
 
     try:
         records = _implementation._JOB_STORE.recoverable()
@@ -510,36 +508,7 @@ def _recover_interrupted_jobs() -> None:
             continue
         display_name = str(record.get("filename") or "upload")[:500]
         source_path = str(record.get("source_path") or "")[:4096]
-        doc_id = str(record.get("doc_id") or "")[:200]
         attempts = _safe_attempt_count(record.get("attempts"))
-
-        registry_record = None
-        if doc_id:
-            try:
-                registry_record = _implementation._DOCUMENT_STORE.get(
-                    owner_id=owner_id,
-                    doc_id=doc_id,
-                )
-            except Exception:
-                registry_record = None
-        if isinstance(registry_record, Mapping):
-            retained_path = str(registry_record.get("source_path") or "")[:4096]
-            try:
-                _implementation._JOB_STORE.update(
-                    job_id,
-                    owner_id,
-                    status="success",
-                    filename=display_name,
-                    source_path=retained_path,
-                    message="Recovered completed document finalization after restart.",
-                    doc_id=doc_id,
-                )
-            except Exception:
-                continue
-            if registry_record.get("source_retained") is not True:
-                _implementation._safe_unlink_upload(source_path)
-            continue
-
         if attempts >= _implementation.INGEST_MAX_ATTEMPTS:
             _implementation._persist_failed_job(
                 job_id,
@@ -574,6 +543,13 @@ def _recover_interrupted_jobs() -> None:
         except Exception:
             continue
         _submit_ingestion(str(candidate), display_name, job_id, owner_id)
+
+
+def _same_retained_source(previous_path: Any, current_path: Path) -> bool:
+    if previous_path in (None, ""):
+        return False
+    previous = _validated_upload_file(previous_path)
+    return previous is not None and previous == current_path
 
 
 def process_ingestion(
@@ -673,7 +649,10 @@ def process_ingestion(
                 registry_keeps_source = (
                     registry_record.get("source_retained") is True
                 )
-                if previous_path:
+                if previous_path and not (
+                    retained_path is not None
+                    and _same_retained_source(previous_path, path)
+                ):
                     _implementation._safe_unlink_upload(previous_path)
                 _implementation._JOB_STORE.update(
                     job_id,
