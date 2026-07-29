@@ -141,3 +141,30 @@ def test_symlinked_service_path_component_is_rejected_before_server_app_import(
     assert setting in result.stderr
     assert "symbolic-link components" in result.stderr
     assert list(outside.iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    "setting",
+    [
+        "UPLOAD_DIR",
+        "JOB_DB_PATH",
+        "DOCUMENT_DB_PATH",
+        "CHROMA_PATH",
+        "CLASSIC_STORAGE_DIR",
+    ],
+)
+@pytest.mark.parametrize("control", ["\t", "\n", "\r", "\x7f"])
+def test_control_bearing_service_paths_fail_before_server_app_import(
+    tmp_path,
+    setting,
+    control,
+):
+    environment = _base_environment(tmp_path)
+    environment[setting] = str(tmp_path / f"unsafe{control}path")
+
+    result = _run_server_import("import server", environment)
+
+    assert result.returncode != 0
+    assert setting in result.stderr
+    assert "invalid or too long" in result.stderr
+    assert not any("unsafe" in path.name for path in tmp_path.iterdir())
