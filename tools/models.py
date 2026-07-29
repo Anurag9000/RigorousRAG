@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 import itertools
 import math
 from typing import Any, Dict, List, Literal, Optional
@@ -31,6 +32,7 @@ _MAX_METADATA_DEPTH = 6
 _MAX_METADATA_ITEMS = 100
 _MAX_CITATIONS = 100
 _MAX_WARNINGS = 100
+_MAX_CITATION_URL_CHARS = 4096
 
 
 def _safe_text(value: Any, *, limit: int) -> str:
@@ -107,40 +109,80 @@ def _bounded_metadata(value: Any, *, max_items: int = _MAX_METADATA_ITEMS) -> Di
     return result if isinstance(result, dict) else {}
 
 
+def _mask_url_path(path: str) -> str:
+    return "/".join(mask_metadata_text(segment) for segment in path.split("/"))
+
+
+def _mask_url_query(query: str) -> str:
+    if not query:
+        return ""
+    masked = mask_metadata_text(f"?{query}")
+    return masked[1:] if masked.startswith("?") else masked
+
+
 def _safe_citation_url(value: Any) -> str:
     if not isinstance(value, str):
         raise ValueError("Citation URLs must be strings.")
-    bounded = _safe_text(value, limit=4096)
-    if not bounded:
+    raw = value.strip()
+    if not raw:
         raise ValueError("Citation URLs may not be empty.")
-    if any(ord(character) < 32 or ord(character) == 127 for character in bounded):
+    if len(raw) > _MAX_CITATION_URL_CHARS:
+        raise ValueError("Citation URLs may contain at most 4,096 characters.")
+    if any(ord(character) < 32 or ord(character) == 127 for character in raw):
         raise ValueError("Citation URLs may not contain control characters.")
     try:
-        parsed = urlsplit(bounded)
+        parsed = urlsplit(raw)
         port = parsed.port
     except ValueError as exc:
         raise ValueError("Citation URLs must be valid URLs.") from exc
     scheme = parsed.scheme.lower()
     if scheme not in {"http", "https", "local"}:
         raise ValueError("Citation URLs must use http, https, or local schemes.")
+
+    safe_path = _mask_url_path(parsed.path)
+    safe_query = _mask_url_query(parsed.query)
+    safe_fragment = mask_metadata_text(parsed.fragment)
+
     if scheme == "local":
         if parsed.username is not None or parsed.password is not None:
             raise ValueError("Local citation URLs may not contain credentials.")
-        if not parsed.netloc and not parsed.path.strip("/"):
+        target = f"{parsed.netloc}{parsed.path}".strip("/")
+        if not target:
             raise ValueError("Local citation URLs must identify a source.")
-        return urlunsplit(
-            (scheme, parsed.netloc, parsed.path, parsed.query, parsed.fragment)
-        )[:4096]
+        safe_netloc = mask_metadata_text(parsed.netloc)
+        if "[REDACTED_" in safe_netloc:
+            safe_netloc = "redacted-source"
+        result = urlunsplit(
+            (scheme, safe_netloc, safe_path, safe_query, safe_fragment)
+        )
+        return result[:_MAX_CITATION_URL_CHARS]
+
     hostname = parsed.hostname
     if not hostname:
         raise ValueError("Public citation URLs must contain a hostname.")
-    rendered_host = f"[{hostname}]" if ":" in hostname else hostname
+    lowered_host = hostname.rstrip(".").lower()
+    if lowered_host in {"localhost", "localhost.localdomain"} or lowered_host.endswith(
+        ".localhost"
+    ):
+        raise ValueError("Public citation URLs may not target localhost.")
+    try:
+        literal_address = ipaddress.ip_address(lowered_host)
+    except ValueError:
+        literal_address = None
+    if literal_address is not None and not literal_address.is_global:
+        raise ValueError("Public citation URLs may not target private or reserved addresses.")
+    try:
+        ascii_host = lowered_host.encode("idna").decode("ascii")
+    except UnicodeError as exc:
+        raise ValueError("Public citation URLs must contain a valid hostname.") from exc
+    rendered_host = f"[{ascii_host}]" if ":" in ascii_host else ascii_host
     netloc = rendered_host
     if port is not None:
         netloc = f"{rendered_host}:{port}"
-    return urlunsplit(
-        (scheme, netloc, parsed.path, parsed.query, parsed.fragment)
-    )[:4096]
+    result = urlunsplit(
+        (scheme, netloc, safe_path, safe_query, safe_fragment)
+    )
+    return result[:_MAX_CITATION_URL_CHARS]
 
 
 def _bounded_iterable(value: Any, label: str, maximum: int) -> list[Any]:
