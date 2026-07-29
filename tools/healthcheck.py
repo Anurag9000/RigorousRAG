@@ -2,7 +2,7 @@
 
 The probe intentionally does not import ``server`` or initialize the embedding model.
 It verifies a small loopback HTTP response, both SQLite registries, and runtime
-storage directories through create/fsync/delete cycles.
+storage directories through bounded create/fsync/delete cycles.
 """
 
 from __future__ import annotations
@@ -11,13 +11,17 @@ import json
 import math
 import os
 import sqlite3
+import stat
 import tempfile
 import urllib.request
+import uuid
 from pathlib import Path
-from typing import Dict
+from typing import Any, Dict, Optional
 from urllib.parse import urlparse
 
 _MAX_HTTP_BYTES = 64 * 1024
+_MAX_PATH_CHARS = 4096
+_MAX_HEALTH_URL_CHARS = 4096
 _LOCAL_HOSTS = {"127.0.0.1", "::1", "localhost", "localhost.localdomain"}
 
 
@@ -26,10 +30,24 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def _has_symlink_component(path: Path) -> bool:
-    absolute = path.absolute()
+def _lexical_absolute(value: Any) -> Optional[Path]:
+    if not isinstance(value, (str, os.PathLike)):
+        return None
     try:
-        return any(candidate.is_symlink() for candidate in (absolute, *absolute.parents))
+        rendered = os.fspath(value)
+    except TypeError:
+        return None
+    if not rendered or len(rendered) > _MAX_PATH_CHARS or "\x00" in rendered:
+        return None
+    candidate = Path(rendered)
+    if not candidate.is_absolute():
+        candidate = Path.cwd() / candidate
+    return Path(os.path.abspath(candidate))
+
+
+def _has_symlink_component(path: Path) -> bool:
+    try:
+        return any(candidate.is_symlink() for candidate in (path, *path.parents))
     except OSError:
         return True
 
@@ -45,11 +63,26 @@ def _finite_timeout(value: object, default: float = 3.0) -> float:
 
 
 def check_http(url: str, timeout: float = 3.0) -> bool:
-    parsed = urlparse(str(url or "").strip())
-    hostname = (parsed.hostname or "").rstrip(".").lower()
+    if not isinstance(url, str):
+        return False
+    rendered = url.strip()
+    if (
+        not rendered
+        or len(rendered) > _MAX_HEALTH_URL_CHARS
+        or any(ord(character) < 32 or ord(character) == 127 for character in rendered)
+    ):
+        return False
+    try:
+        parsed = urlparse(rendered)
+        hostname = (parsed.hostname or "").rstrip(".").lower()
+        port = parsed.port
+    except ValueError:
+        return False
     if parsed.scheme.lower() not in {"http", "https"} or hostname not in _LOCAL_HOSTS:
         return False
-    if parsed.username or parsed.password:
+    if parsed.username is not None or parsed.password is not None:
+        return False
+    if port is not None and not 1 <= port <= 65_535:
         return False
     try:
         opener = urllib.request.build_opener(
@@ -62,53 +95,123 @@ def check_http(url: str, timeout: float = 3.0) -> bool:
             method="GET",
         )
         with opener.open(request, timeout=_finite_timeout(timeout)) as response:
-            if response.status != 200:
+            if int(response.status) != 200:
                 return False
             raw = response.read(_MAX_HTTP_BYTES + 1)
-        if len(raw) > _MAX_HTTP_BYTES:
+        if not isinstance(raw, bytes) or len(raw) > _MAX_HTTP_BYTES:
             return False
-        payload = json.loads(raw.decode("utf-8"))
+        payload = json.loads(
+            raw.decode("utf-8"),
+            parse_constant=lambda value: (_ for _ in ()).throw(
+                ValueError(f"Non-standard JSON constant {value}")
+            ),
+        )
         return isinstance(payload, dict) and payload.get("status") == "ok"
     except Exception:
         return False
 
 
 def check_sqlite(path: str | Path) -> bool:
-    raw_database = Path(path)
-    if _has_symlink_component(raw_database):
-        return False
-    database = raw_database.resolve()
-    if not database.exists() or not database.is_file():
+    database = _lexical_absolute(path)
+    if database is None or _has_symlink_component(database):
         return False
     try:
+        before = database.stat(follow_symlinks=False)
+        if not stat.S_ISREG(before.st_mode):
+            return False
         uri = f"file:{database.as_posix()}?mode=rw"
         with sqlite3.connect(uri, uri=True, timeout=2) as connection:
             row = connection.execute("SELECT 1").fetchone()
+        after = database.stat(follow_symlinks=False)
+        if (
+            not stat.S_ISREG(after.st_mode)
+            or (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino)
+        ):
+            return False
         return bool(row and row[0] == 1)
-    except sqlite3.Error:
+    except (sqlite3.Error, OSError, ValueError):
         return False
 
 
-def check_writable_directory(path: str | Path) -> bool:
-    raw_directory = Path(path)
-    if _has_symlink_component(raw_directory):
-        return False
-    directory = raw_directory.resolve()
-    if not directory.exists() or not directory.is_dir():
-        return False
+def _check_writable_directory_posix(directory: Path) -> bool:
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    directory_fd = os.open(directory, flags)
+    filename = f".health-{uuid.uuid4().hex}"
+    descriptor = -1
+    try:
+        if not stat.S_ISDIR(os.fstat(directory_fd).st_mode):
+            return False
+        descriptor = os.open(
+            filename,
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+            dir_fd=directory_fd,
+        )
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            return False
+        os.write(descriptor, b"ok")
+        os.fsync(descriptor)
+        os.close(descriptor)
+        descriptor = -1
+        os.unlink(filename, dir_fd=directory_fd)
+        return True
+    finally:
+        if descriptor >= 0:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+            try:
+                os.unlink(filename, dir_fd=directory_fd)
+            except OSError:
+                pass
+        os.close(directory_fd)
+
+
+def _check_writable_directory_portable(directory: Path) -> bool:
+    before = directory.stat()
     probe_path: Path | None = None
     try:
         descriptor, raw_path = tempfile.mkstemp(prefix=".health-", dir=directory)
         probe_path = Path(raw_path)
         with os.fdopen(descriptor, "wb") as handle:
+            if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+                return False
             handle.write(b"ok")
             handle.flush()
             os.fsync(handle.fileno())
+        after = directory.stat()
+        if (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino):
+            return False
         probe_path.unlink()
         return True
-    except OSError:
+    finally:
         if probe_path is not None:
-            probe_path.unlink(missing_ok=True)
+            try:
+                if not probe_path.is_symlink():
+                    probe_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
+def check_writable_directory(path: str | Path) -> bool:
+    directory = _lexical_absolute(path)
+    if directory is None or _has_symlink_component(directory):
+        return False
+    try:
+        if not directory.exists() or not directory.is_dir():
+            return False
+        if os.name == "nt":  # pragma: no cover
+            return _check_writable_directory_portable(directory)
+        return _check_writable_directory_posix(directory)
+    except (OSError, ValueError):
         return False
 
 
