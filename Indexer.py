@@ -6,8 +6,8 @@ import itertools
 import math
 import re
 from collections import Counter, defaultdict
-from dataclasses import asdict, dataclass
-from typing import Any, Dict, List, Mapping
+from dataclasses import dataclass
+from typing import Any, Dict, Iterable, List, Mapping, Tuple
 
 from Crawler import Page
 
@@ -24,8 +24,6 @@ STOP_WORDS: set[str] = {
     "will", "with", "would", "you", "your",
 }
 
-# Unicode word components, retaining numbers and scientific identifiers such as
-# IL-6, GPT-4o, H2O, p53, α-synuclein, 10.1038 and ResNet/50.
 TOKEN_PATTERN = re.compile(r"[^\W_]+(?:[-./][^\W_]+)*", flags=re.UNICODE)
 _MAX_TEXT_CHARS = 5_000_000
 _MAX_TOKENS_PER_DOCUMENT = 1_000_000
@@ -38,7 +36,22 @@ _MAX_TITLE_CHARS = 500
 _MAX_SNIPPET_CHARS = 4000
 
 
+def _safe_text(value: object, *, limit: int, default: str = "") -> str:
+    if isinstance(value, str):
+        text = value
+    elif value is None:
+        text = default
+    else:
+        try:
+            text = str(value)
+        except Exception:
+            text = default
+    return text[: max(int(limit), 0)]
+
+
 def _finite_nonnegative(value: Any, label: str) -> float:
+    if isinstance(value, bool):
+        raise ValueError(f"{label} must be numeric.")
     try:
         numeric = float(value)
     except (TypeError, ValueError, OverflowError) as exc:
@@ -62,6 +75,23 @@ def _bounded_nonnegative_int(value: Any, label: str, maximum: int) -> int:
     return numeric
 
 
+def _mapping_items(
+    value: object,
+    *,
+    label: str,
+    maximum: int,
+) -> List[Tuple[object, object]]:
+    if not isinstance(value, Mapping):
+        raise ValueError(f"{label} must be an object.")
+    try:
+        items = list(itertools.islice(value.items(), maximum + 1))
+    except Exception as exc:
+        raise ValueError(f"{label} must be a safely iterable object.") from exc
+    if len(items) > maximum:
+        raise ValueError(f"{label} contains too many entries.")
+    return items
+
+
 def tokenize(text: str) -> List[str]:
     if not isinstance(text, str) or not text:
         return []
@@ -83,11 +113,12 @@ def tokenize(text: str) -> List[str]:
 
 
 def build_snippet(text: str, max_words: int = 40) -> str:
-    if not isinstance(text, str) or max_words <= 0:
+    words_limit = _bounded_nonnegative_int(max_words, "max_words", 10_000)
+    if not isinstance(text, str) or words_limit == 0:
         return ""
     words = text[:_MAX_TEXT_CHARS].split()
-    snippet = " ".join(words[:max_words])[:_MAX_SNIPPET_CHARS]
-    return f"{snippet}…" if len(words) > max_words else snippet
+    snippet = " ".join(words[:words_limit])[:_MAX_SNIPPET_CHARS]
+    return f"{snippet}…" if len(words) > words_limit else snippet
 
 
 @dataclass
@@ -95,6 +126,19 @@ class DocumentMetadata:
     title: str
     snippet: str
     length: int
+
+    def __post_init__(self) -> None:
+        self.title = _safe_text(
+            self.title,
+            limit=_MAX_TITLE_CHARS,
+            default="Untitled",
+        ).strip() or "Untitled"
+        self.snippet = _safe_text(self.snippet, limit=_MAX_SNIPPET_CHARS)
+        self.length = _bounded_nonnegative_int(
+            self.length,
+            "document length",
+            _MAX_TOKENS_PER_DOCUMENT,
+        )
 
 
 class InvertedIndex:
@@ -115,23 +159,26 @@ class InvertedIndex:
         self.doc_norms.clear()
 
     def build(self, pages: Dict[str, Page]) -> None:
-        """Rebuild from scratch; repeated calls never retain stale postings."""
+        """Build a complete replacement generation and publish it only on success."""
 
-        self.clear()
-        if not isinstance(pages, dict):
-            raise ValueError("pages must be a URL-to-Page mapping.")
-        if len(pages) > _MAX_DOCUMENTS:
-            raise ValueError(f"An index may contain at most {_MAX_DOCUMENTS} documents.")
-
+        page_items = _mapping_items(
+            pages,
+            label="pages",
+            maximum=_MAX_DOCUMENTS,
+        )
         term_document_frequency: Counter[str] = Counter()
         document_term_frequency: Dict[str, Counter[str]] = {}
-        for raw_url, page in pages.items():
+        documents: Dict[str, DocumentMetadata] = {}
+
+        for raw_url, page in page_items:
             if not isinstance(raw_url, str) or not 0 < len(raw_url) <= _MAX_URL_CHARS:
                 continue
             if not isinstance(page, Page):
                 continue
-            body_tokens = tokenize(page.text)
-            title_tokens = tokenize(page.title)
+            body_text = page.text if isinstance(page.text, str) else ""
+            title_text = page.title if isinstance(page.title, str) else "Untitled"
+            body_tokens = tokenize(body_text)
+            title_tokens = tokenize(title_text)
             if not body_tokens and not title_tokens:
                 continue
             frequencies = Counter(body_tokens)
@@ -139,22 +186,28 @@ class InvertedIndex:
                 frequencies[token] += 2
             document_term_frequency[raw_url] = frequencies
             term_document_frequency.update(frequencies.keys())
-            self.documents[raw_url] = DocumentMetadata(
-                title=str(page.title or "Untitled")[:_MAX_TITLE_CHARS],
-                snippet=build_snippet(page.text),
+            documents[raw_url] = DocumentMetadata(
+                title=title_text,
+                snippet=build_snippet(body_text),
                 length=len(body_tokens),
             )
 
         total_documents = len(document_term_frequency)
         if total_documents == 0:
+            self.documents = {}
+            self.index = defaultdict(dict)
+            self.idf = {}
+            self.doc_norms = {}
             return
         if len(term_document_frequency) > _MAX_TERMS:
             raise ValueError(f"An index may contain at most {_MAX_TERMS} unique terms.")
 
-        self.idf = {
+        idf = {
             term: math.log((1 + total_documents) / (1 + frequency)) + 1.0
             for term, frequency in term_document_frequency.items()
         }
+        postings: Dict[str, Dict[str, float]] = defaultdict(dict)
+        doc_norms: Dict[str, float] = {}
         total_postings = 0
         for url, frequencies in document_term_frequency.items():
             norm_squared = 0.0
@@ -164,20 +217,91 @@ class InvertedIndex:
                     raise ValueError(
                         f"An index may contain at most {_MAX_POSTINGS} postings."
                     )
-                weight = (1.0 + math.log(frequency)) * self.idf[term]
-                self.index[term][url] = weight
+                weight = (1.0 + math.log(frequency)) * idf[term]
+                if not math.isfinite(weight) or weight <= 0:
+                    raise ValueError("Computed posting weight is invalid.")
+                postings[term][url] = weight
                 norm_squared += weight * weight
-            self.doc_norms[url] = math.sqrt(norm_squared)
+            if not math.isfinite(norm_squared) or norm_squared <= 0:
+                raise ValueError("Computed document norm is invalid.")
+            doc_norms[url] = math.sqrt(norm_squared)
+
+        self.documents = documents
+        self.index = defaultdict(dict, {term: dict(values) for term, values in postings.items()})
+        self.idf = idf
+        self.doc_norms = doc_norms
 
     def to_dict(self) -> Dict[str, object]:
+        document_items = _mapping_items(
+            self.documents,
+            label="index documents",
+            maximum=_MAX_DOCUMENTS,
+        )
+        term_items = _mapping_items(
+            self.index,
+            label="index postings",
+            maximum=_MAX_TERMS,
+        )
+        idf_items = _mapping_items(
+            self.idf,
+            label="index IDF values",
+            maximum=_MAX_TERMS,
+        )
+        total_postings = 0
+        serialized_documents: Dict[str, Dict[str, object]] = {}
+        for url, metadata in document_items:
+            if not isinstance(url, str) or not isinstance(metadata, DocumentMetadata):
+                raise ValueError("Index documents contain invalid entries.")
+            serialized_documents[url] = {
+                "title": metadata.title,
+                "snippet": metadata.snippet,
+                "length": metadata.length,
+            }
+        serialized_idf: Dict[str, float] = {}
+        for term, value in idf_items:
+            if not isinstance(term, str):
+                raise ValueError("Index terms must be strings.")
+            numeric = _finite_nonnegative(value, "IDF value")
+            if numeric <= 0:
+                raise ValueError("IDF values must be positive.")
+            serialized_idf[term] = numeric
+        serialized_postings: Dict[str, Dict[str, float]] = {}
+        for term, values in term_items:
+            if not isinstance(term, str):
+                raise ValueError("Index terms must be strings.")
+            posting_items = _mapping_items(
+                values,
+                label="term postings",
+                maximum=_MAX_DOCUMENTS,
+            )
+            accepted: Dict[str, float] = {}
+            for url, weight in posting_items:
+                total_postings += 1
+                if total_postings > _MAX_POSTINGS:
+                    raise ValueError("Index contains too many postings.")
+                if not isinstance(url, str) or url not in serialized_documents:
+                    raise ValueError("Index postings reference an unknown document.")
+                numeric = _finite_nonnegative(weight, "posting weight")
+                if numeric <= 0:
+                    raise ValueError("Posting weights must be positive.")
+                accepted[url] = numeric
+            if accepted:
+                serialized_postings[term] = accepted
+        serialized_norms = {
+            url: _finite_nonnegative(value, "document norm")
+            for url, value in _mapping_items(
+                self.doc_norms,
+                label="document norms",
+                maximum=_MAX_DOCUMENTS,
+            )
+            if isinstance(url, str)
+        }
         return {
             "schema_version": self.SCHEMA_VERSION,
-            "documents": {
-                url: asdict(metadata) for url, metadata in self.documents.items()
-            },
-            "index": {term: dict(postings) for term, postings in self.index.items()},
-            "idf": dict(self.idf),
-            "doc_norms": dict(self.doc_norms),
+            "documents": serialized_documents,
+            "index": serialized_postings,
+            "idf": serialized_idf,
+            "doc_norms": serialized_norms,
         }
 
     @classmethod
@@ -186,66 +310,83 @@ class InvertedIndex:
 
         if not isinstance(payload, dict):
             raise ValueError("Index payload must be an object.")
+        raw_version = payload.get("schema_version", 1)
+        if isinstance(raw_version, bool):
+            raise ValueError("Index schema version is invalid.")
         try:
-            version = int(payload.get("schema_version", 1))
+            version = int(raw_version)
         except (TypeError, ValueError, OverflowError) as exc:
             raise ValueError("Index schema version is invalid.") from exc
+        if isinstance(raw_version, float) and not raw_version.is_integer():
+            raise ValueError("Index schema version is invalid.")
         if version not in {1, cls.SCHEMA_VERSION}:
             raise ValueError(f"Unsupported index schema version {version}.")
 
-        documents_payload = payload.get("documents", {})
-        postings_payload = payload.get("index", {})
-        idf_payload = payload.get("idf", {})
-        if not isinstance(documents_payload, Mapping):
-            raise ValueError("Index documents must be an object.")
-        if not isinstance(postings_payload, Mapping):
-            raise ValueError("Index postings must be an object.")
-        if not isinstance(idf_payload, Mapping):
-            raise ValueError("Index IDF values must be an object.")
-        if len(documents_payload) > _MAX_DOCUMENTS:
-            raise ValueError("Persisted index contains too many documents.")
-        if len(postings_payload) > _MAX_TERMS or len(idf_payload) > _MAX_TERMS:
-            raise ValueError("Persisted index contains too many terms.")
+        document_items = _mapping_items(
+            payload.get("documents", {}),
+            label="Index documents",
+            maximum=_MAX_DOCUMENTS,
+        )
+        posting_terms = _mapping_items(
+            payload.get("index", {}),
+            label="Index postings",
+            maximum=_MAX_TERMS,
+        )
+        idf_items = _mapping_items(
+            payload.get("idf", {}),
+            label="Index IDF values",
+            maximum=_MAX_TERMS,
+        )
 
         instance = cls()
-        for raw_url, metadata in documents_payload.items():
+        documents: Dict[str, DocumentMetadata] = {}
+        for raw_url, metadata in document_items:
             if not isinstance(raw_url, str) or not 0 < len(raw_url) <= _MAX_URL_CHARS:
                 continue
             if not isinstance(metadata, Mapping):
                 continue
+            try:
+                title = metadata.get("title", "Untitled")
+                snippet = metadata.get("snippet", "")
+                length_value = metadata.get("length", 0)
+            except Exception as exc:
+                raise ValueError("Index document metadata is invalid.") from exc
             length = _bounded_nonnegative_int(
-                metadata.get("length", 0),
+                length_value,
                 "document length",
                 _MAX_TOKENS_PER_DOCUMENT,
             )
-            instance.documents[raw_url] = DocumentMetadata(
-                title=str(metadata.get("title") or "Untitled")[:_MAX_TITLE_CHARS],
-                snippet=str(metadata.get("snippet") or "")[:_MAX_SNIPPET_CHARS],
+            documents[raw_url] = DocumentMetadata(
+                title=title if isinstance(title, str) else "Untitled",
+                snippet=snippet if isinstance(snippet, str) else "",
                 length=length,
             )
 
         parsed_idf: Dict[str, float] = {}
-        for raw_term, raw_value in idf_payload.items():
+        for raw_term, raw_value in idf_items:
             if not isinstance(raw_term, str) or not 0 < len(raw_term) <= _MAX_TOKEN_CHARS:
                 continue
             value = _finite_nonnegative(raw_value, "IDF value")
             if value > 0:
                 parsed_idf[raw_term] = value
 
+        postings: Dict[str, Dict[str, float]] = defaultdict(dict)
         norm_squares: Dict[str, float] = defaultdict(float)
         total_postings = 0
-        for raw_term, raw_postings in postings_payload.items():
-            if raw_term not in parsed_idf or not isinstance(raw_postings, Mapping):
+        for raw_term, raw_postings in posting_terms:
+            if raw_term not in parsed_idf:
                 continue
+            posting_items = _mapping_items(
+                raw_postings,
+                label="Term postings",
+                maximum=_MAX_DOCUMENTS,
+            )
             accepted: Dict[str, float] = {}
-            for raw_url, raw_weight in itertools.islice(
-                raw_postings.items(),
-                _MAX_DOCUMENTS + 1,
-            ):
+            for raw_url, raw_weight in posting_items:
                 total_postings += 1
                 if total_postings > _MAX_POSTINGS:
                     raise ValueError("Persisted index contains too many postings.")
-                if raw_url not in instance.documents:
+                if raw_url not in documents:
                     continue
                 weight = _finite_nonnegative(raw_weight, "posting weight")
                 if weight <= 0:
@@ -253,19 +394,37 @@ class InvertedIndex:
                 accepted[str(raw_url)] = weight
                 norm_squares[str(raw_url)] += weight * weight
             if accepted:
-                instance.index[str(raw_term)] = accepted
-                instance.idf[str(raw_term)] = parsed_idf[str(raw_term)]
+                postings[str(raw_term)] = accepted
 
-        instance.doc_norms = {
+        doc_norms = {
             url: math.sqrt(value)
             for url, value in norm_squares.items()
             if math.isfinite(value) and value > 0
         }
-        instance.documents = {
+        documents = {
             url: metadata
-            for url, metadata in instance.documents.items()
-            if url in instance.doc_norms
+            for url, metadata in documents.items()
+            if url in doc_norms
         }
-        if documents_payload and not instance.documents:
+        if document_items and not documents:
             raise ValueError("Persisted index contains no usable document vectors.")
+
+        instance.documents = documents
+        instance.index = defaultdict(
+            dict,
+            {
+                term: {
+                    url: weight
+                    for url, weight in values.items()
+                    if url in documents
+                }
+                for term, values in postings.items()
+                if any(url in documents for url in values)
+            },
+        )
+        instance.idf = {
+            term: parsed_idf[term]
+            for term in instance.index
+        }
+        instance.doc_norms = doc_norms
         return instance
