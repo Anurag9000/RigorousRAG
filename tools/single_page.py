@@ -15,6 +15,8 @@ from tools.security import (
     safe_download,
 )
 
+_MAX_PAGE_BYTES = DEFAULT_MAX_DOWNLOAD_BYTES
+_MAX_USER_AGENT_CHARS = 1200
 _DEFAULT_CONTACT_URL = os.getenv(
     "CRAWLER_CONTACT_URL",
     "https://github.com/Anurag9000/RigorousRAG",
@@ -22,7 +24,7 @@ _DEFAULT_CONTACT_URL = os.getenv(
 DEFAULT_USER_AGENT = (
     "RigorousRAGBot/3.0 "
     f"(+{_DEFAULT_CONTACT_URL})"
-)[:500]
+)[:_MAX_USER_AGENT_CHARS]
 ALLOWED_PAGE_CONTENT_TYPES = {"text/html", "application/xhtml+xml", "text/plain"}
 
 
@@ -47,6 +49,20 @@ def _public_display_url(value: Any) -> str:
     return mask_metadata_text(rendered)[:4096]
 
 
+def _bounded_page_bytes(value: Any) -> int:
+    if isinstance(value, bool):
+        raise ValueError("max_bytes must be an integer.")
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("max_bytes must be an integer.") from exc
+    if isinstance(value, float) and not value.is_integer():
+        raise ValueError("max_bytes must be an integer.")
+    if parsed <= 0:
+        raise ValueError("max_bytes must be positive.")
+    return min(parsed, _MAX_PAGE_BYTES)
+
+
 def _user_agent(value: Any) -> str:
     if not isinstance(value, str):
         raise ValueError("user_agent must be a string.")
@@ -55,7 +71,7 @@ def _user_agent(value: Any) -> str:
     )
     if not cleaned:
         raise ValueError("user_agent is required.")
-    return cleaned[:500]
+    return cleaned[:_MAX_USER_AGENT_CHARS]
 
 
 def fetch_single_page(
@@ -66,10 +82,11 @@ def fetch_single_page(
 ) -> PageContent:
     """Fetch a public page without permitting internal-network access."""
 
+    page_limit = _bounded_page_bytes(max_bytes)
     safe_display_url = _public_display_url(url)
     try:
-        if not isinstance(url, str):
-            raise ValueError("url must be a string.")
+        if not isinstance(url, str) or not url.strip():
+            raise ValueError("url must be a non-empty string.")
         agent = _user_agent(user_agent)
         downloaded = safe_download(
             url,
@@ -78,7 +95,7 @@ def fetch_single_page(
                 "Accept": "text/html,application/xhtml+xml,text/plain;q=0.8",
             },
             timeout=DEFAULT_REQUEST_TIMEOUT,
-            max_bytes=max_bytes,
+            max_bytes=page_limit,
             allowed_content_types=ALLOWED_PAGE_CONTENT_TYPES,
         )
         content_type = downloaded.headers.get("Content-Type", "").lower()
