@@ -19,7 +19,9 @@ class FakeResponse:
         return False
 
     def read(self, amount=-1):
-        return self.body if amount < 0 else self.body[:amount]
+        if isinstance(self.body, bytes):
+            return self.body if amount < 0 else self.body[:amount]
+        return self.body
 
 
 class FakeOpener:
@@ -44,6 +46,16 @@ def test_sqlite_and_directory_checks(tmp_path):
     assert healthcheck.check_writable_directory(directory) is True
     assert not list(directory.iterdir())
     assert healthcheck.check_writable_directory(tmp_path / "missing") is False
+
+
+def test_malformed_direct_paths_fail_closed_without_exceptions():
+    class Hostile:
+        def __fspath__(self):
+            raise RuntimeError("do not inspect")
+
+    for value in (None, object(), Hostile(), "", "x" * 5000, "bad\x00path"):
+        assert healthcheck.check_sqlite(value) is False
+        assert healthcheck.check_writable_directory(value) is False
 
 
 def test_symlinked_state_paths_are_not_ready(tmp_path):
@@ -80,7 +92,7 @@ def test_http_check_requires_small_loopback_ok_json(monkeypatch):
     assert healthcheck.check_http("http://127.0.0.1/health") is False
 
 
-def test_http_check_rejects_remote_or_oversized_response(monkeypatch):
+def test_http_check_rejects_remote_oversized_nonbyte_and_nonstandard_json(monkeypatch):
     calls = []
 
     def build_opener(*_args):
@@ -93,6 +105,36 @@ def test_http_check_rejects_remote_or_oversized_response(monkeypatch):
     assert calls == []
     assert healthcheck.check_http("http://localhost/health") is False
     assert calls == [True]
+
+    for body in ("not-bytes", b'{"status":NaN}', b"[]", b"not-json", b"\xff"):
+        monkeypatch.setattr(
+            healthcheck.urllib.request,
+            "build_opener",
+            lambda *_args, body=body: FakeOpener(FakeResponse(body=body)),
+        )
+        assert healthcheck.check_http("http://127.0.0.1/health") is False
+
+
+def test_http_check_rejects_malformed_urls_before_opening(monkeypatch):
+    build = pytest.MonkeyPatch()
+    calls = []
+    monkeypatch.setattr(
+        healthcheck.urllib.request,
+        "build_opener",
+        lambda *_args: calls.append(True),
+    )
+    for value in (
+        None,
+        object(),
+        "",
+        "x" * 5000,
+        "http://user:password@127.0.0.1/health",
+        "http://127.0.0.1:99999/health",
+        "http://127.0.0.1/health\r\nInjected: yes",
+    ):
+        assert healthcheck.check_http(value) is False
+    assert calls == []
+    build.undo()
 
 
 def test_malformed_healthcheck_timeout_uses_bounded_default(monkeypatch):
