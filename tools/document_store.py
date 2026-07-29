@@ -37,11 +37,19 @@ def _normalize_registry_environment() -> None:
         )
 
 
+def _contains_ascii_control(value: str) -> bool:
+    return any(ord(character) < 32 or ord(character) == 127 for character in value)
+
+
 def _lexical_absolute(value: str | os.PathLike[str], label: str) -> Path:
     if not isinstance(value, (str, os.PathLike)):
         raise ValueError(f"{label} must be a filesystem path.")
     rendered = os.fspath(value)
-    if not rendered or len(rendered) > 4096 or "\x00" in rendered:
+    if (
+        not rendered
+        or len(rendered) > 4096
+        or _contains_ascii_control(rendered)
+    ):
         raise ValueError(f"{label} is invalid or too long.")
     path = Path(rendered)
     if not path.is_absolute():
@@ -57,7 +65,11 @@ def _document_id(value: Any) -> str:
     if not isinstance(value, str):
         raise ValueError("doc_id must be a string.")
     result = value.strip()
-    if not result or len(result) > 200 or "\x00" in result:
+    if (
+        not result
+        or len(result) > 200
+        or _contains_ascii_control(result)
+    ):
         raise ValueError("doc_id must contain 1-200 valid characters.")
     return result
 
@@ -65,6 +77,8 @@ def _document_id(value: Any) -> str:
 def _filename(value: Any) -> str:
     if not isinstance(value, str):
         raise ValueError("filename must be a string.")
+    if _contains_ascii_control(value):
+        raise ValueError("filename may not contain control characters.")
     return mask_metadata_text(Path(value or "document").name)[:500] or "document"
 
 
