@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from typing import Optional
+from typing import Any, Optional
 
 from bs4 import BeautifulSoup
 from pydantic import BaseModel, Field
@@ -15,10 +15,14 @@ from tools.security import (
     safe_download,
 )
 
+_DEFAULT_CONTACT_URL = os.getenv(
+    "CRAWLER_CONTACT_URL",
+    "https://github.com/Anurag9000/RigorousRAG",
+)
 DEFAULT_USER_AGENT = (
     "RigorousRAGBot/3.0 "
-    f"(+{os.getenv('CRAWLER_CONTACT_URL', 'https://github.com/Anurag9000/RigorousRAG')})"
-)
+    f"(+{_DEFAULT_CONTACT_URL})"
+)[:500]
 ALLOWED_PAGE_CONTENT_TYPES = {"text/html", "application/xhtml+xml", "text/plain"}
 
 
@@ -30,8 +34,28 @@ class PageContent(BaseModel):
     error: Optional[str] = Field(default=None, max_length=500)
 
 
-def _public_display_url(value: str) -> str:
-    return mask_metadata_text((value or "").strip())[:4096]
+def _safe_text(value: Any, *, maximum: int, default: str = "") -> str:
+    try:
+        rendered = str(value if value is not None else default)
+    except Exception:
+        rendered = default
+    return rendered[:maximum]
+
+
+def _public_display_url(value: Any) -> str:
+    rendered = _safe_text(value, maximum=4096).strip()
+    return mask_metadata_text(rendered)[:4096]
+
+
+def _user_agent(value: Any) -> str:
+    if not isinstance(value, str):
+        raise ValueError("user_agent must be a string.")
+    cleaned = " ".join(
+        value.replace("\x00", " ").replace("\r", " ").replace("\n", " ").split()
+    )
+    if not cleaned:
+        raise ValueError("user_agent is required.")
+    return cleaned[:500]
 
 
 def fetch_single_page(
@@ -44,10 +68,13 @@ def fetch_single_page(
 
     safe_display_url = _public_display_url(url)
     try:
+        if not isinstance(url, str):
+            raise ValueError("url must be a string.")
+        agent = _user_agent(user_agent)
         downloaded = safe_download(
             url,
             headers={
-                "User-Agent": user_agent[:500],
+                "User-Agent": agent,
                 "Accept": "text/html,application/xhtml+xml,text/plain;q=0.8",
             },
             timeout=DEFAULT_REQUEST_TIMEOUT,
@@ -83,8 +110,8 @@ def fetch_single_page(
 
         return PageContent(
             url=_public_display_url(downloaded.final_url),
-            title=title[:500] or "Untitled",
-            text=text[:100_000],
+            title=mask_metadata_text(_safe_text(title, maximum=500).strip()) or "Untitled",
+            text=mask_metadata_text(text[:100_000]),
             content_length=len(downloaded.content),
         )
     except Exception as exc:
