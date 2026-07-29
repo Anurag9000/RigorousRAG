@@ -1,8 +1,9 @@
 """Path-safe boundary over classic crawl/index persistence.
 
 The complete generation, digest, migration, and validation implementation remains in
-``storage_legacy``. This module binds the public manager to one lexical root identity
-and performs persistent member I/O relative to that root wherever the platform allows.
+``storage_legacy``. This module binds the public manager to one lexical root identity,
+uses descriptor-relative persistence on POSIX, and retains identity-checked pathname
+fallbacks on Windows where ``dir_fd`` support is incomplete.
 """
 
 from __future__ import annotations
@@ -130,7 +131,15 @@ class StorageManager(_original_storage_manager):
             raise ValueError("Classic storage member name is invalid.")
         return name
 
+    def _member_path(self, path: Path) -> Path:
+        return self._lexical_root / self._member_name(path)
+
     def _fsync_directory(self) -> None:
+        if os.name == "nt":  # pragma: no cover - Windows-specific fallback
+            self._ensure_storage_root()
+            super()._fsync_directory()
+            self._ensure_storage_root()
+            return
         try:
             descriptor = self._open_root_descriptor()
         except OSError:
@@ -145,7 +154,7 @@ class StorageManager(_original_storage_manager):
     @contextmanager
     def _snapshot_guard(self) -> Iterator[None]:
         self._ensure_storage_root()
-        if os.name == "nt":  # pragma: no cover - Windows fallback
+        if os.name == "nt":  # pragma: no cover - Windows-specific fallback
             with super()._snapshot_guard():
                 self._ensure_storage_root()
                 yield
@@ -165,8 +174,8 @@ class StorageManager(_original_storage_manager):
                     0o600,
                     dir_fd=root_descriptor,
                 )
-                lock_info = os.fstat(lock_descriptor)
-                if not stat.S_ISREG(lock_info.st_mode):
+                info = os.fstat(lock_descriptor)
+                if not stat.S_ISREG(info.st_mode):
                     raise OSError("Snapshot lock must be a regular file.")
                 try:
                     os.fchmod(lock_descriptor, 0o600)
@@ -215,15 +224,20 @@ class StorageManager(_original_storage_manager):
             pass
 
     def _quarantine(self, path: Path) -> None:
+        member_path = self._member_path(path)
+        if os.name == "nt":  # pragma: no cover - Windows-specific fallback
+            self._ensure_storage_root()
+            super()._quarantine(member_path)
+            self._ensure_storage_root()
+            return
         try:
-            name = self._member_name(path)
             root_descriptor = self._open_root_descriptor()
-        except (OSError, ValueError):
+        except OSError:
             return
         try:
             try:
                 current = os.stat(
-                    name,
+                    member_path.name,
                     dir_fd=root_descriptor,
                     follow_symlinks=False,
                 )
@@ -231,7 +245,7 @@ class StorageManager(_original_storage_manager):
                 return
             self._quarantine_member(
                 root_descriptor,
-                name,
+                member_path.name,
                 (int(current.st_dev), int(current.st_ino)),
             )
         finally:
@@ -240,7 +254,14 @@ class StorageManager(_original_storage_manager):
     def _read_json(self, path: Path):
         """Read one bounded regular root member without following path components."""
 
-        name = self._member_name(path)
+        member_path = self._member_path(path)
+        if os.name == "nt":  # pragma: no cover - Windows-specific fallback
+            self._ensure_storage_root()
+            value = super()._read_json(member_path)
+            self._ensure_storage_root()
+            return value
+
+        name = member_path.name
         with self._lock:
             root_descriptor = self._open_root_descriptor()
             descriptor = -1
@@ -260,7 +281,6 @@ class StorageManager(_original_storage_manager):
                 identity = (int(info.st_dev), int(info.st_ino))
                 if info.st_size < 0 or info.st_size > self.max_snapshot_file_bytes:
                     raise ValueError("Persisted JSON exceeds the configured byte limit.")
-
                 data = bytearray()
                 while True:
                     remaining = self.max_snapshot_file_bytes + 1 - len(data)
@@ -299,7 +319,14 @@ class StorageManager(_original_storage_manager):
             raise ValueError(
                 f"Persisted JSON exceeds the {self.max_snapshot_file_bytes}-byte limit."
             )
-        name = self._member_name(path)
+        member_path = self._member_path(path)
+        if os.name == "nt":  # pragma: no cover - Windows-specific fallback
+            self._ensure_storage_root()
+            super()._write_bytes(member_path, encoded)
+            self._ensure_storage_root()
+            return
+
+        name = member_path.name
         temporary = f".{name}.{uuid.uuid4().hex}.tmp"
         with self._lock:
             root_descriptor = self._open_root_descriptor()
@@ -335,9 +362,7 @@ class StorageManager(_original_storage_manager):
                     os.close(descriptor)
                 try:
                     os.unlink(temporary, dir_fd=root_descriptor)
-                except FileNotFoundError:
-                    pass
-                except OSError:
+                except (FileNotFoundError, OSError):
                     pass
                 os.close(root_descriptor)
             self._ensure_storage_root()
