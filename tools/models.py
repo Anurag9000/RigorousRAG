@@ -5,6 +5,7 @@ from __future__ import annotations
 import ipaddress
 import itertools
 import math
+import re
 from typing import Any, Dict, List, Literal, Optional
 from urllib.parse import urlsplit, urlunsplit
 
@@ -33,6 +34,7 @@ _MAX_METADATA_ITEMS = 100
 _MAX_CITATIONS = 100
 _MAX_WARNINGS = 100
 _MAX_CITATION_URL_CHARS = 4096
+_HOST_LABEL_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 
 
 def _safe_text(value: Any, *, limit: int) -> str:
@@ -96,7 +98,11 @@ def _bounded_value(
     return _safe_text(value, limit=string_limit)
 
 
-def _bounded_metadata(value: Any, *, max_items: int = _MAX_METADATA_ITEMS) -> Dict[str, Any]:
+def _bounded_metadata(
+    value: Any,
+    *,
+    max_items: int = _MAX_METADATA_ITEMS,
+) -> Dict[str, Any]:
     sanitized = sanitize_metadata(value)
     if not isinstance(sanitized, dict):
         return {}
@@ -120,6 +126,44 @@ def _mask_url_query(query: str) -> str:
     return masked[1:] if masked.startswith("?") else masked
 
 
+def _validated_public_hostname(hostname: str) -> str:
+    lowered = hostname.rstrip(".").lower()
+    if (
+        not lowered
+        or len(lowered) > 253
+        or any(character.isspace() or ord(character) < 33 for character in lowered)
+    ):
+        raise ValueError("Public citation URLs must contain a valid hostname.")
+    if lowered in {"localhost", "localhost.localdomain"} or lowered.endswith(
+        ".localhost"
+    ):
+        raise ValueError("Public citation URLs may not target localhost.")
+    try:
+        literal_address = ipaddress.ip_address(lowered)
+    except ValueError:
+        literal_address = None
+    if literal_address is not None:
+        if not literal_address.is_global:
+            raise ValueError(
+                "Public citation URLs may not target private or reserved addresses."
+            )
+        return literal_address.compressed.lower()
+    try:
+        ascii_host = lowered.encode("idna").decode("ascii").lower()
+    except UnicodeError as exc:
+        raise ValueError(
+            "Public citation URLs must contain a valid hostname."
+        ) from exc
+    labels = ascii_host.split(".")
+    if (
+        len(labels) < 2
+        or len(ascii_host) > 253
+        or any(not _HOST_LABEL_RE.fullmatch(label) for label in labels)
+    ):
+        raise ValueError("Public citation URLs must contain a valid hostname.")
+    return ascii_host
+
+
 def _safe_citation_url(value: Any) -> str:
     if not isinstance(value, str):
         raise ValueError("Citation URLs must be strings.")
@@ -137,7 +181,9 @@ def _safe_citation_url(value: Any) -> str:
         raise ValueError("Citation URLs must be valid URLs.") from exc
     scheme = parsed.scheme.lower()
     if scheme not in {"http", "https", "local"}:
-        raise ValueError("Citation URLs must use http, https, or local schemes.")
+        raise ValueError(
+            "Citation URLs must use http, https, or local schemes."
+        )
 
     safe_path = _mask_url_path(parsed.path)
     safe_query = _mask_url_query(parsed.query)
@@ -160,21 +206,7 @@ def _safe_citation_url(value: Any) -> str:
     hostname = parsed.hostname
     if not hostname:
         raise ValueError("Public citation URLs must contain a hostname.")
-    lowered_host = hostname.rstrip(".").lower()
-    if lowered_host in {"localhost", "localhost.localdomain"} or lowered_host.endswith(
-        ".localhost"
-    ):
-        raise ValueError("Public citation URLs may not target localhost.")
-    try:
-        literal_address = ipaddress.ip_address(lowered_host)
-    except ValueError:
-        literal_address = None
-    if literal_address is not None and not literal_address.is_global:
-        raise ValueError("Public citation URLs may not target private or reserved addresses.")
-    try:
-        ascii_host = lowered_host.encode("idna").decode("ascii")
-    except UnicodeError as exc:
-        raise ValueError("Public citation URLs must contain a valid hostname.") from exc
+    ascii_host = _validated_public_hostname(hostname)
     rendered_host = f"[{ascii_host}]" if ":" in ascii_host else ascii_host
     netloc = rendered_host
     if port is not None:
@@ -205,11 +237,27 @@ class Citation(BaseModel):
     model_config = ConfigDict(validate_assignment=True, extra="forbid")
 
     label: str = Field(..., description="Inline citation marker, normally '[1]'.")
-    title: str = Field(..., min_length=1, max_length=500, description="Human-readable source title.")
-    url: str = Field(..., min_length=1, max_length=4096, description="Public URL or local:// document identifier.")
+    title: str = Field(
+        ...,
+        min_length=1,
+        max_length=500,
+        description="Human-readable source title.",
+    )
+    url: str = Field(
+        ...,
+        min_length=1,
+        max_length=4096,
+        description="Public URL or local:// document identifier.",
+    )
     source_type: SourceType = Field(default="unknown")
-    snippet: Optional[str] = Field(default=None, description="Relevant evidence passage.")
-    quote: Optional[str] = Field(default=None, description="Exact supporting excerpt when available.")
+    snippet: Optional[str] = Field(
+        default=None,
+        description="Relevant evidence passage.",
+    )
+    quote: Optional[str] = Field(
+        default=None,
+        description="Exact supporting excerpt when available.",
+    )
     source_id: Optional[str] = Field(default=None, max_length=4096)
     doc_id: Optional[str] = Field(default=None, max_length=200)
     chunk_id: Optional[str] = Field(default=None, max_length=500)
@@ -230,7 +278,10 @@ class Citation(BaseModel):
         if (
             not inner
             or len(bounded) > 64
-            or any(ord(character) < 32 or ord(character) == 127 for character in bounded)
+            or any(
+                ord(character) < 32 or ord(character) == 127
+                for character in bounded
+            )
             or "[" in inner
             or "]" in inner
         ):
@@ -265,8 +316,13 @@ class Citation(BaseModel):
         if not isinstance(value, str):
             raise ValueError(f"{info.field_name} must be a string.")
         bounded = _safe_text(value, limit=limits[info.field_name])
-        if any(ord(character) < 32 or ord(character) == 127 for character in bounded):
-            raise ValueError(f"{info.field_name} may not contain control characters.")
+        if any(
+            ord(character) < 32 or ord(character) == 127
+            for character in bounded
+        ):
+            raise ValueError(
+                f"{info.field_name} may not contain control characters."
+            )
         return bounded or None
 
     @field_validator("snippet", "quote", mode="before")
@@ -296,8 +352,14 @@ class AgentAnswer(BaseModel):
     model_config = ConfigDict(validate_assignment=True, extra="forbid")
 
     answer: str = Field(..., min_length=1, max_length=100_000)
-    citations: List[Citation] = Field(default_factory=list, max_length=_MAX_CITATIONS)
-    warnings: List[str] = Field(default_factory=list, max_length=_MAX_WARNINGS)
+    citations: List[Citation] = Field(
+        default_factory=list,
+        max_length=_MAX_CITATIONS,
+    )
+    warnings: List[str] = Field(
+        default_factory=list,
+        max_length=_MAX_WARNINGS,
+    )
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("answer", mode="before")
@@ -315,7 +377,10 @@ class AgentAnswer(BaseModel):
 
     @field_validator("citations")
     @classmethod
-    def deduplicate_citations(cls, values: List[Citation]) -> List[Citation]:
+    def deduplicate_citations(
+        cls,
+        values: List[Citation],
+    ) -> List[Citation]:
         selected: List[Citation] = []
         labels: set[str] = set()
         identities: set[tuple[str, str, str]] = set()
