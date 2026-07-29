@@ -1,3 +1,4 @@
+import itertools
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -38,6 +39,7 @@ def test_print_result_masks_private_metadata(capsys):
                 snippet="file:///private/evidence.txt",
             )
         ],
+        warnings=["Check /private/state and api_key=secret."],
     )
 
     print_result(answer)
@@ -46,6 +48,20 @@ def test_print_result_masks_private_metadata(capsys):
     assert "/private" not in output
     assert "password" not in output
     assert "api_key=secret" not in output
+
+
+def test_print_result_surfaces_bounded_warnings(capsys):
+    answer = AgentAnswer(
+        answer="Answer",
+        warnings=["Evidence coverage is incomplete.", "Second warning."],
+    )
+
+    print_result(answer)
+
+    output = capsys.readouterr().out
+    assert "Warnings:" in output
+    assert "Evidence coverage is incomplete." in output
+    assert "Second warning." in output
 
 
 def test_print_result_rejects_invalid_result():
@@ -83,6 +99,17 @@ def test_demo_and_local_modes_are_mutually_exclusive():
     with pytest.raises(SystemExit) as captured:
         parse_args(["--local", "--demo"])
     assert captured.value.code == 2
+
+
+def test_cli_argument_stream_is_strict_and_bounded(monkeypatch):
+    with pytest.raises(ValueError, match="iterable"):
+        parse_args("--query q")
+    with pytest.raises(ValueError, match="valid strings"):
+        parse_args(["--query", object()])
+
+    monkeypatch.setattr("search_agent_cli._MAX_CLI_ARGUMENTS", 3)
+    with pytest.raises(ValueError, match="At most 3"):
+        parse_args((str(index) for index in itertools.count()))
 
 
 def test_query_is_validated_before_agent_run(monkeypatch, capsys):
