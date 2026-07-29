@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import itertools
 import math
-from typing import Any, Iterable, List, Optional
+from collections.abc import Mapping
+from typing import Any, List, Optional
 
 from tools.models import Citation
 from tools.rag import get_rag_layer
@@ -53,12 +54,25 @@ RAG_SEARCH_TOOL_DEF = {
 _MAX_CITATIONS = 50
 
 
-def _text(value: Any, label: str, *, maximum: int, allow_empty: bool = False) -> str:
+def _text(
+    value: Any,
+    label: str,
+    *,
+    maximum: int,
+    allow_empty: bool = False,
+) -> str:
     if not isinstance(value, str):
         raise ValueError(f"{label} must be a string.")
     rendered = value.strip()
-    if "\x00" in rendered or len(rendered) > maximum:
-        raise ValueError(f"{label} may contain at most {maximum:,} valid characters.")
+    if (
+        "\x00" in rendered
+        or "\r" in rendered
+        or "\n" in rendered
+        or len(rendered) > maximum
+    ):
+        raise ValueError(
+            f"{label} may contain at most {maximum:,} valid characters."
+        )
     if not rendered and not allow_empty:
         raise ValueError(f"{label} is required.")
     return rendered
@@ -86,6 +100,8 @@ def _safe_attr(value: Any, name: str, default: Any = None) -> Any:
 
 
 def _finite_score(value: Any) -> float:
+    if isinstance(value, bool):
+        return 0.0
     try:
         score = float(value)
     except (TypeError, ValueError, OverflowError):
@@ -95,13 +111,21 @@ def _finite_score(value: Any) -> float:
     return max(0.0, min(score, 1.0))
 
 
-def _bounded_chunks(values: Any, maximum: int) -> Iterable[Any]:
+def _bounded_chunks(values: Any, maximum: int) -> List[Any]:
+    if values is None:
+        return []
     if isinstance(values, (str, bytes, bytearray)):
-        return ()
+        raise RuntimeError("The vector backend returned an invalid chunk collection.")
     try:
-        return itertools.islice(iter(values), maximum)
-    except Exception:
-        return ()
+        return list(itertools.islice(iter(values), maximum))
+    except Exception as exc:
+        raise RuntimeError(
+            "The vector backend returned an invalid chunk collection."
+        ) from exc
+
+
+def _metadata(value: Any) -> Mapping[str, Any]:
+    return value if isinstance(value, Mapping) else {}
 
 
 def search_uploaded_docs(
@@ -140,13 +164,18 @@ def search_uploaded_docs(
 
     rag = get_rag_layer()
     if use_hyde:
-        retrieval_query = rag.generate_hyde_query(
+        generated = rag.generate_hyde_query(
             retrieval_query,
             agent_client,
             model=model,
         )
+        if not isinstance(generated, str):
+            raise RuntimeError("The retrieval expansion backend returned invalid text.")
+        retrieval_query = generated.strip()
         if not retrieval_query:
             return []
+        if len(retrieval_query) > 20_000 or "\x00" in retrieval_query:
+            raise RuntimeError("The retrieval expansion backend returned invalid text.")
     chunks = rag.query(
         retrieval_query,
         n_results=requested,
@@ -159,54 +188,81 @@ def search_uploaded_docs(
 
     citations: List[Citation] = []
     for chunk in _bounded_chunks(chunks, requested):
-        raw_metadata = _safe_attr(chunk, "metadata", {})
-        metadata = raw_metadata if isinstance(raw_metadata, dict) else {}
-        metadata_owner = metadata.get("owner_id")
-        actual_doc_id = metadata.get("doc_id")
+        metadata = _metadata(_safe_attr(chunk, "metadata", {}))
+        try:
+            metadata_owner = metadata.get("owner_id")
+            actual_doc_id = metadata.get("doc_id")
+        except Exception:
+            continue
         if not isinstance(metadata_owner, str) or metadata_owner.strip() != owner:
             continue
         if not isinstance(actual_doc_id, str):
             continue
         actual_doc_id = actual_doc_id.strip()
-        if not actual_doc_id or len(actual_doc_id) > 200 or "\x00" in actual_doc_id:
+        if (
+            not actual_doc_id
+            or len(actual_doc_id) > 200
+            or any(character in actual_doc_id for character in ("\x00", "\r", "\n"))
+        ):
             continue
         if document_id is not None and actual_doc_id != document_id:
             continue
         raw_text = _safe_attr(chunk, "text", "")
-        chunk_text = raw_text if isinstance(raw_text, str) else ""
-        raw_parent = metadata.get("parent_text")
-        parent_text = raw_parent if isinstance(raw_parent, str) else chunk_text
-        page_number = metadata.get("page_number")
-        if isinstance(page_number, bool) or not isinstance(page_number, int) or page_number < 1:
+        chunk_text = raw_text[:4000] if isinstance(raw_text, str) else ""
+        try:
+            raw_parent = metadata.get("parent_text")
+            page_number = metadata.get("page_number")
+            filename = metadata.get("filename")
+            section_title = metadata.get("section_title")
+        except Exception:
+            continue
+        parent_text = raw_parent[:4000] if isinstance(raw_parent, str) else chunk_text
+        if (
+            isinstance(page_number, bool)
+            or not isinstance(page_number, int)
+            or page_number < 1
+        ):
             page_number = None
         raw_chunk_id = _safe_attr(chunk, "id", "")
         if not isinstance(raw_chunk_id, str):
             continue
         chunk_id = raw_chunk_id.strip()
-        if not chunk_id or len(chunk_id) > 500 or "\x00" in chunk_id:
+        if (
+            not chunk_id
+            or len(chunk_id) > 500
+            or any(character in chunk_id for character in ("\x00", "\r", "\n"))
+        ):
             continue
-        filename = metadata.get("filename")
-        title = filename if isinstance(filename, str) and filename.strip() else "Uploaded document"
-        citations.append(
-            Citation(
+        title = (
+            filename[:500]
+            if isinstance(filename, str) and filename.strip()
+            else "Uploaded document"
+        )
+        try:
+            citation = Citation(
                 label=f"[{len(citations) + 1}]",
                 title=title,
                 url=f"local://{actual_doc_id}",
                 source_type="uploaded_document",
-                snippet=parent_text,
-                quote=chunk_text,
+                snippet=parent_text or None,
+                quote=chunk_text or None,
                 source_id=chunk_id,
                 doc_id=actual_doc_id,
                 chunk_id=chunk_id,
                 page_number=page_number,
                 metadata={
                     "section_title": (
-                        metadata.get("section_title")
-                        if isinstance(metadata.get("section_title"), str)
+                        section_title[:500]
+                        if isinstance(section_title, str)
                         else None
                     ),
-                    "relevance": round(_finite_score(_safe_attr(chunk, "score", 0.0)), 6),
+                    "relevance": round(
+                        _finite_score(_safe_attr(chunk, "score", 0.0)),
+                        6,
+                    ),
                 },
             )
-        )
+        except Exception:
+            continue
+        citations.append(citation)
     return citations
