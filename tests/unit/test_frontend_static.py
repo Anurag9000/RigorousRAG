@@ -1,10 +1,14 @@
 from pathlib import Path
 
 
+ROOT = Path(__file__).resolve().parents[2]
+FRONTEND = ROOT / "frontend"
+
+
 def _all_frontend_scripts() -> str:
     return "\n".join(
         path.read_text(encoding="utf-8")
-        for path in sorted(Path("frontend").glob("*.js"))
+        for path in sorted(FRONTEND.glob("*.js"))
     )
 
 
@@ -18,7 +22,7 @@ def test_frontend_has_no_unsafe_html_assignment_or_persistent_local_storage():
 
 
 def test_frontend_is_self_contained_and_tools_remain_mobile_accessible():
-    html = Path("frontend/index.html").read_text(encoding="utf-8")
+    html = (FRONTEND / "index.html").read_text(encoding="utf-8")
     assert "cdn.jsdelivr" not in html
     assert "fonts.googleapis" not in html
     assert 'id="right-panel"' in html
@@ -29,14 +33,14 @@ def test_frontend_is_self_contained_and_tools_remain_mobile_accessible():
 
 
 def test_frontend_uses_server_model_configuration():
-    script = Path("frontend/app.js").read_text(encoding="utf-8")
+    script = (FRONTEND / "app.js").read_text(encoding="utf-8")
     assert 'fetchApi("/config")' in script
     assert "allowed_models" in script
     assert "default_model" in script
 
 
 def test_frontend_understands_durable_jobs_and_visual_source_capability():
-    script = Path("frontend/lifecycle.js").read_text(encoding="utf-8")
+    script = (FRONTEND / "lifecycle.js").read_text(encoding="utf-8")
     for state in ("queued", "processing", "finalizing", "success", "failed"):
         assert f"{state}:" in script
     assert "source_retained" in script
@@ -45,3 +49,17 @@ def test_frontend_understands_durable_jobs_and_visual_source_capability():
     assert "Visual PDF eligible; identity and limits verified on use" in script
     assert "Figure tool" in script
     assert "figureButton.disabled = !visualEligible" in script
+
+
+def test_frontend_applies_request_deadlines_and_bounded_file_enumeration():
+    script = (FRONTEND / "lifecycle.js").read_text(encoding="utf-8")
+
+    assert "AbortController" in script
+    assert "DEFAULT_CLIENT_REQUEST_TIMEOUT_MS" in script
+    assert "MAX_CLIENT_REQUEST_TIMEOUT_MS" in script
+    assert "MAX_CLIENT_UPLOAD_FILES = 100" in script
+    assert "boundedUploadFiles" in script
+    assert "for (const file of files)" in script
+    assert "Array.from(files" not in script
+    assert "Request timed out before the server responded." in script
+    assert "documents.slice(0, 5000)" in script
