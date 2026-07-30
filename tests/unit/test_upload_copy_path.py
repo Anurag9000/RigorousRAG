@@ -16,7 +16,7 @@ def test_copy_path_to_owner_refuses_symlinked_source(tmp_path):
     except (OSError, NotImplementedError):
         pytest.skip("Symlinks are unavailable in this environment.")
 
-    with pytest.raises(UploadStorageError, match="symbolic links"):
+    with pytest.raises(UploadStorageError, match="symbolic-link"):
         copy_path_to_owner(
             link,
             upload_root=root,
