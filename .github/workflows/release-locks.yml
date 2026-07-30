@@ -3,10 +3,8 @@ name: Exact-head verification
 on:
   workflow_dispatch:
   pull_request:
-  merge_group:
   push:
     branches: [main, "agent/**"]
-    tags: ["v*"]
 
 permissions:
   contents: read
