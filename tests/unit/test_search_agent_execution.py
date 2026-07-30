@@ -194,7 +194,7 @@ def test_oversized_tool_arguments_are_rejected(monkeypatch):
         tool_call("search_handbook", json.dumps({"query": "x" * 100}))
     )
     assert result.success is False
-    assert result.error_type == "JSONDecodeError"
+    assert result.error_type == "ValueError"
 
 
 def test_provider_tool_calls_are_sanitized_before_followup_conversation():
@@ -243,7 +243,7 @@ def test_provider_tool_calls_are_sanitized_before_followup_conversation():
     assistant_call = second_request[2]["tool_calls"][0]
     assert len(assistant_call["id"]) == 200
     assert len(assistant_call["function"]["name"]) == 200
-    assert assistant_call["function"]["arguments"] == search_agent._INVALID_ARGUMENTS
+    assert assistant_call["function"]["arguments"] == "__INVALID_TOOL_ARGUMENTS__"
     assert second_request[3]["tool_call_id"] == assistant_call["id"]
     assert "x" * 1000 not in json.dumps(second_request)
 
