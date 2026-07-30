@@ -20,6 +20,7 @@ from typing import Iterable, Sequence
 _MAX_ARGUMENTS = 50
 _MAX_PATH_CHARS = 4096
 _MAX_LOCK_BYTES = 20_000_000
+_FILE_ATTRIBUTE_REPARSE_POINT = 0x0400
 
 
 def _contains_ascii_control(value: str) -> bool:
@@ -58,6 +59,32 @@ def _safe_path(value: str | os.PathLike[str], *, label: str) -> Path:
     return Path(os.path.abspath(candidate))
 
 
+def _is_link_or_reparse(info: os.stat_result) -> bool:
+    attributes = int(getattr(info, "st_file_attributes", 0) or 0)
+    return stat.S_ISLNK(info.st_mode) or bool(attributes & _FILE_ATTRIBUTE_REPARSE_POINT)
+
+
+def _contains_link_component(path: Path) -> bool:
+    """Return whether any existing lexical component is a link/reparse point."""
+
+    absolute = _safe_path(path, label="path")
+    for component in (absolute, *absolute.parents):
+        try:
+            info = os.lstat(component)
+        except FileNotFoundError:
+            continue
+        except OSError:
+            return True
+        if _is_link_or_reparse(info):
+            return True
+    return False
+
+
+def _require_safe_ancestry(path: Path, *, label: str) -> None:
+    if _contains_link_component(path):
+        raise ValueError(f"{label} may not contain symbolic-link or reparse-point components.")
+
+
 def _platform_tag() -> str:
     system = platform.system().strip().lower()
     mapping = {"linux": "linux", "windows": "windows", "darwin": "macos"}
@@ -79,12 +106,13 @@ def _pip_compile_executable() -> Path:
         raise RuntimeError("The interpreter scripts directory is unavailable.")
     filename = "pip-compile.exe" if os.name == "nt" else "pip-compile"
     candidate = _safe_path(Path(scripts_path) / filename, label="pip-compile path")
+    _require_safe_ancestry(candidate, label="pip-compile path")
     try:
-        info = os.stat(candidate, follow_symlinks=True)
+        info = os.stat(candidate, follow_symlinks=False)
     except OSError as exc:
         raise RuntimeError("pip-compile is not installed for this interpreter.") from exc
-    if not stat.S_ISREG(info.st_mode):
-        raise RuntimeError("pip-compile is not a regular executable file.")
+    if not stat.S_ISREG(info.st_mode) or _is_link_or_reparse(info):
+        raise RuntimeError("pip-compile is not a safe regular executable file.")
     return candidate
 
 
@@ -95,13 +123,13 @@ def _write_github_output(destination: Path) -> None:
     if not output_value:
         raise RuntimeError("GITHUB_OUTPUT is unavailable.")
     output_path = _safe_path(output_value, label="GITHUB_OUTPUT path")
-    if output_path.exists() and output_path.is_symlink():
-        raise ValueError("GITHUB_OUTPUT may not be a symbolic link.")
+    _require_safe_ancestry(output_path.parent, label="GITHUB_OUTPUT parent")
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    _require_safe_ancestry(output_path, label="GITHUB_OUTPUT path")
     if output_path.exists():
         info = os.stat(output_path, follow_symlinks=False)
-        if not stat.S_ISREG(info.st_mode):
-            raise ValueError("GITHUB_OUTPUT must be a regular file.")
+        if not stat.S_ISREG(info.st_mode) or _is_link_or_reparse(info):
+            raise ValueError("GITHUB_OUTPUT must be a safe regular file.")
         if info.st_size > 1_000_000:
             raise ValueError("GITHUB_OUTPUT exceeds the 1 MB limit.")
 
@@ -146,15 +174,20 @@ def generate_lock(
 ) -> Path:
     source = _safe_path(input_path, label="input path")
     destination = _safe_path(output_path, label="output path")
-    if not source.exists() or not source.is_file() or source.is_symlink():
-        raise ValueError("The requirements input must be a regular non-symlink file.")
-    if source.stat().st_size > 1_000_000:
+    _require_safe_ancestry(source, label="requirements input")
+    if not source.exists() or not source.is_file():
+        raise ValueError("The requirements input must be a safe regular file.")
+    source_info = os.stat(source, follow_symlinks=False)
+    if not stat.S_ISREG(source_info.st_mode) or _is_link_or_reparse(source_info):
+        raise ValueError("The requirements input must be a safe regular file.")
+    if source_info.st_size > 1_000_000:
         raise ValueError("The requirements input exceeds the 1 MB limit.")
     if destination == source:
         raise ValueError("The lock output may not replace the requirements input.")
+
+    _require_safe_ancestry(destination.parent, label="lock output parent")
     destination.parent.mkdir(parents=True, exist_ok=True)
-    if destination.exists() and destination.is_symlink():
-        raise ValueError("The lock output may not be a symbolic link.")
+    _require_safe_ancestry(destination, label="lock output")
 
     command = [
         str(_pip_compile_executable()),
@@ -175,11 +208,12 @@ def generate_lock(
     environment.setdefault("PIP_DISABLE_PIP_VERSION_CHECK", "1")
     subprocess.run(command, check=True, env=environment)
 
-    if not destination.exists() or destination.is_symlink():
+    _require_safe_ancestry(destination, label="generated lock")
+    if not destination.exists():
         raise RuntimeError("pip-tools did not create a safe lock file.")
     info = os.stat(destination, follow_symlinks=False)
-    if not stat.S_ISREG(info.st_mode):
-        raise RuntimeError("The generated lock is not a regular file.")
+    if not stat.S_ISREG(info.st_mode) or _is_link_or_reparse(info):
+        raise RuntimeError("The generated lock is not a safe regular file.")
     if info.st_size <= 0 or info.st_size > _MAX_LOCK_BYTES:
         raise RuntimeError("The generated lock file is empty or unexpectedly large.")
     return destination
