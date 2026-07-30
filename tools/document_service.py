@@ -11,8 +11,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
-from tools.ingestion import ingest_file
-from tools.ingestion_models import IngestedDocument
+from tools.ingestion import ingest_file, redact_text
+from tools.ingestion_models import DocumentSection, IngestedDocument
 from tools.privacy import mask_metadata_text, sanitize_metadata_dict
 from tools.rag import RAGLayer, get_rag_layer
 from tools.security import DEFAULT_MAX_UPLOAD_BYTES, normalize_owner_id
@@ -212,6 +212,37 @@ def _verify_source_identity(document: IngestedDocument, owner_id: str) -> None:
         raise ValueError("The source changed after parsing and before indexing.")
 
 
+def _enforce_index_redaction(document: IngestedDocument) -> None:
+    """Apply a second complete masking pass at the final indexing boundary."""
+
+    redacted_text = redact_text(document.text).strip()
+    redacted_sections: list[DocumentSection] = []
+    for section in document.sections:
+        content = redact_text(section.content).strip()
+        if not content:
+            continue
+        title = mask_metadata_text(redact_text(section.title)).strip()[:500]
+        redacted_sections.append(
+            DocumentSection(
+                title=title or "Section",
+                content=content,
+                page_number=section.page_number,
+            )
+        )
+    if not redacted_text or not redacted_sections:
+        raise ValueError("No indexable text remained after privacy masking.")
+
+    document.text = redacted_text
+    document.sections = redacted_sections
+    if document.title:
+        document.title = mask_metadata_text(redact_text(document.title)).strip()[:1000] or None
+    document.filename = mask_metadata_text(document.filename).strip()[:500] or "document"
+    document.metadata["content_sha256"] = hashlib.sha256(
+        redacted_text.encode("utf-8")
+    ).hexdigest()
+    document.metadata["redaction"] = "best_effort_regex_masking"
+
+
 def _fallback_summary(document: IngestedDocument) -> str:
     return mask_metadata_text(document.text[:800].strip())[:_MAX_SUMMARY_CHARS]
 
@@ -257,7 +288,9 @@ def summarize_document(
             return fallback
         message = getattr(choices[0], "message", None)
         raw = getattr(message, "content", "") if message is not None else ""
-        value = mask_metadata_text(_safe_text(raw, limit=_MAX_SUMMARY_CHARS).strip())
+        value = mask_metadata_text(
+            _safe_text(raw, limit=_MAX_SUMMARY_CHARS).strip()
+        )[:_MAX_SUMMARY_CHARS]
         return value or fallback
     except Exception:
         return fallback
@@ -279,6 +312,7 @@ def index_document(
     owner = normalize_owner_id(owner_id)
     identifier = _job_id(job_id)
     _verify_source_identity(document, owner)
+    _enforce_index_redaction(document)
     selected_rag = rag if rag is not None else get_rag_layer()
     summary = summarize_document(
         document,
