@@ -16,7 +16,8 @@ from tools.security import (
 
 def test_owner_identifier_validation():
     assert normalize_owner_id("team.alpha-1") == "team.alpha-1"
-    for value in ("", "../other", "owner/child", " space", "a" * 129):
+    assert normalize_owner_id(" alice ") == "alice"
+    for value in ("", "../other", "owner/child", "two owners", "a" * 129):
         with pytest.raises(SecurityError):
             normalize_owner_id(value)
 
