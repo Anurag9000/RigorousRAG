@@ -33,6 +33,13 @@ _SECRET_QUERY_RE = re.compile(
     r"[^&#\s]+",
     flags=re.IGNORECASE,
 )
+_SECRET_ASSIGNMENT_RE = re.compile(
+    r"(?P<prefix>(?<![A-Za-z0-9_-])"
+    r"(?:api[_-]?key|access[_-]?token|auth[_-]?token|token|password|passwd|secret)"
+    r"\s*[:=]\s*)"
+    r"(?P<value>(?:['\"][^'\"\r\n]{1,4096}['\"]|[^\s,;)}\]>]{1,4096}))",
+    flags=re.IGNORECASE,
+)
 _FILE_URI_RE = re.compile(r"\bfile://(?:localhost)?/[^\s'\"<>]+", flags=re.IGNORECASE)
 _WINDOWS_PATH_RE = re.compile(
     r"(?<![A-Za-z0-9_])[A-Za-z]:\\(?:[^\\\s:*?\"<>|]+\\)*"
@@ -73,11 +80,12 @@ def _stringify(value: Any, *, fallback_prefix: str = "UNPRINTABLE") -> str:
 
 
 def mask_metadata_text(value: Any) -> str:
-    """Mask common PII, credentials, and paths in one bounded public string."""
+    """Mask common PII, credentials, secrets, and paths in one bounded string."""
 
     text = _stringify(value)[:_MAX_METADATA_STRING_CHARS]
     text = _URI_CREDENTIAL_RE.sub(r"\g<prefix>[REDACTED_CREDENTIALS]@", text)
     text = _SECRET_QUERY_RE.sub(r"\g<prefix>[REDACTED_SECRET]", text)
+    text = _SECRET_ASSIGNMENT_RE.sub(r"\g<prefix>[REDACTED_SECRET]", text)
     text = _FILE_URI_RE.sub("[REDACTED_PATH]", text)
     text = _WINDOWS_PATH_RE.sub("[REDACTED_PATH]", text)
     text = _HOME_PATH_RE.sub("[REDACTED_PATH]", text)
