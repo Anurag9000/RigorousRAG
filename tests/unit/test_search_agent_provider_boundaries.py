@@ -1,5 +1,6 @@
 import itertools
 import math
+from types import SimpleNamespace
 
 import pytest
 
@@ -113,27 +114,32 @@ def test_valid_direct_agent_parameters_are_normalized(monkeypatch):
     assert agent.tool_timeout == 300.0
 
 
-def test_bounded_tool_calls_never_materializes_infinite_provider_stream():
+def test_infinite_provider_tool_stream_is_bounded_through_public_run():
     def calls():
         for index in itertools.count():
-            yield type(
-                "Call",
-                (),
-                {
-                    "id": f"call-{index}",
-                    "function": type(
-                        "Function",
-                        (),
-                        {"name": "search_handbook", "arguments": "{}"},
-                    )(),
-                },
-            )()
+            yield SimpleNamespace(
+                id=f"call-{index}",
+                function=SimpleNamespace(name="search_handbook", arguments="{}"),
+            )
 
-    bounded, overflow = search_agent._bounded_tool_calls(calls(), 3)
+    response = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content="", tool_calls=calls()))]
+    )
+    agent = SearchAgent(owner_id="alice", max_tool_calls=3)
+    agent.client = SimpleNamespace(
+        chat=SimpleNamespace(
+            completions=SimpleNamespace(create=lambda **_kwargs: response)
+        )
+    )
+    agent._execute_tools = lambda tool_calls: [
+        ToolExecution(call.id, call.function.name, "unavailable", success=False)
+        for call in tool_calls
+    ]
 
-    assert overflow is True
-    assert len(bounded) == 3
-    assert [call.id for call in bounded] == ["call-0", "call-1", "call-2"]
+    answer = agent.run("question")
+
+    assert answer.metadata["tool_calls"] == 3
+    assert any("tool-call budget" in warning for warning in answer.warnings)
 
 
 def test_unmatched_handbook_lookup_returns_no_evidence(monkeypatch):
