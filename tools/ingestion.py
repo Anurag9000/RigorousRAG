@@ -3,19 +3,24 @@
 The parser, OCR, redaction, and archive implementation remains in
 ``ingestion_legacy``. This module normalizes parser budgets and consumes every direct
 source through a bounded no-follow byte snapshot before invoking that implementation.
+The wrapper independently reapplies final redaction and identity metadata so repeated
+compatibility imports cannot bypass the public privacy boundary.
 """
 
 from __future__ import annotations
 
+import hashlib
 import os
 import stat
 import sys
 import tempfile
+import uuid
 from pathlib import Path
 from typing import Any
 
 from tools.config import bounded_float_env, bounded_int_env
-from tools.ingestion_models import IngestionResult
+from tools.ingestion_models import DocumentSection, IngestionResult
+from tools.privacy import mask_metadata_text, sanitize_metadata_dict
 from tools.security import SecurityError, normalize_owner_id, safe_upload_suffix
 
 _INTEGER_BUDGETS = {
@@ -113,6 +118,83 @@ def _read_source_bytes(path: Path, maximum: int) -> bytes:
         os.close(descriptor)
 
 
+def _finalize_public_result(
+    result: IngestionResult,
+    *,
+    owner: str,
+    source: Path,
+    payload: bytes,
+) -> IngestionResult:
+    """Idempotently enforce the public redaction and identity contract."""
+
+    if not result.success or result.document is None:
+        return result
+    document = result.document
+    try:
+        redacted_text = _implementation.redact_text(document.text).strip()
+        section_helper = getattr(_implementation, "_redact_sections", None)
+        initial_sections = (
+            section_helper(document.sections)
+            if callable(section_helper)
+            else list(document.sections)
+        )
+        redacted_sections: list[DocumentSection] = []
+        for index, section in enumerate(initial_sections):
+            content = _implementation.redact_text(section.content).strip()
+            if not content:
+                continue
+            title = mask_metadata_text(section.title or f"Section {index + 1}").strip()
+            redacted_sections.append(
+                DocumentSection(
+                    title=(title or f"Section {index + 1}")[:500],
+                    content=content,
+                    page_number=section.page_number,
+                )
+            )
+        if not redacted_text or not redacted_sections:
+            return IngestionResult(
+                success=False,
+                error="No indexable text remained after parsing.",
+            )
+
+        source_hash = hashlib.sha256(payload).hexdigest()
+        content_hash = hashlib.sha256(redacted_text.encode("utf-8")).hexdigest()
+        extracted = _implementation.extract_academic_metadata(redacted_text)
+        fallback_title = source.stem.replace("_", " ").replace("-", " ")
+        title = mask_metadata_text(
+            document.title or extracted.get("extracted_title") or fallback_title
+        ).strip()
+
+        document.id = str(
+            uuid.uuid5(uuid.NAMESPACE_URL, f"rigorousrag:{owner}:{source_hash}")
+        )
+        document.filename = source.name
+        document.file_path = str(source)
+        document.text = redacted_text
+        document.sections = redacted_sections
+        document.title = title[:500] or fallback_title[:500]
+        metadata = sanitize_metadata_dict(document.metadata)
+        metadata.update(
+            sanitize_metadata_dict(extracted)
+        )
+        metadata.update(
+            {
+                "owner_id": owner,
+                "content_sha256": content_hash,
+                "file_size_bytes": len(payload),
+                "redaction": "best_effort_regex_masking",
+                "document_identity": "owner_and_source_sha256",
+            }
+        )
+        document.metadata = metadata
+        return IngestionResult(success=True, document=document)
+    except Exception as exc:
+        return IngestionResult(
+            success=False,
+            error=f"Document privacy finalization failed ({type(exc).__name__}).",
+        )
+
+
 def ingest_file(
     file_path: str | os.PathLike[str],
     owner_id: str = "default_user",
@@ -153,10 +235,12 @@ def ingest_file(
             os.close(descriptor)
         result = _original_ingest_file(str(snapshot), owner_id=owner)
 
-    if result.success and result.document is not None:
-        result.document.filename = source.name
-        result.document.file_path = str(source)
-    return result
+    return _finalize_public_result(
+        result,
+        owner=owner,
+        source=source,
+        payload=payload,
+    )
 
 
 _implementation.ingest_file = ingest_file
