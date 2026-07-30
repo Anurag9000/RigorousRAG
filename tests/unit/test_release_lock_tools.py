@@ -81,7 +81,7 @@ def test_generate_release_lock_uses_compile_only_entry_point(tmp_path, monkeypat
     )
     monkeypatch.setattr(generate_release_lock.subprocess, "run", fake_run)
 
-    generate_release_lock.generate_lock(
+    returned = generate_release_lock.generate_lock(
         input_path=source,
         output_path=destination,
         upgrade=True,
@@ -93,11 +93,43 @@ def test_generate_release_lock_uses_compile_only_entry_point(tmp_path, monkeypat
     assert "-m" not in command
     assert "piptools" not in command
     assert "--generate-hashes" in command
+    assert "--allow-unsafe" in command
     assert "--no-emit-index-url" in command
     assert "--no-emit-trusted-host" in command
     assert command[-1] == "--upgrade"
     assert environment["PIP_DISABLE_PIP_VERSION_CHECK"] == "1"
-    assert destination.exists()
+    assert returned == destination.resolve()
+
+
+def test_github_output_contains_absolute_lock_path_and_artifact_name(tmp_path, monkeypatch):
+    destination = (tmp_path / "locks" / "runtime-linux-py312.txt").resolve()
+    destination.parent.mkdir(parents=True)
+    destination.write_text("fixture", encoding="utf-8")
+    output = tmp_path / "github-output.txt"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+
+    generate_release_lock._write_github_output(destination)
+
+    assert output.read_text(encoding="utf-8") == (
+        f"path={destination.as_posix()}\nname=runtime-linux-py312\n"
+    )
+
+
+def test_github_output_refuses_symlink(tmp_path, monkeypatch):
+    destination = tmp_path / "runtime-linux-py312.txt"
+    destination.write_text("fixture", encoding="utf-8")
+    target = tmp_path / "target.txt"
+    target.write_text("unchanged", encoding="utf-8")
+    output = tmp_path / "github-output.txt"
+    try:
+        output.symlink_to(target)
+    except (OSError, NotImplementedError):
+        pytest.skip("Symlinks are unavailable in this environment.")
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+
+    with pytest.raises(ValueError, match="symbolic link"):
+        generate_release_lock._write_github_output(destination)
+    assert target.read_text(encoding="utf-8") == "unchanged"
 
 
 def test_generate_release_lock_refuses_symlinked_output(tmp_path):
