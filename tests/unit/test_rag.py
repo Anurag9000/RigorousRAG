@@ -180,16 +180,41 @@ def test_document_listing_pages_past_many_chunks_from_one_document(monkeypatch):
         {
             "ids": ["a1", "a2", "a3"],
             "metadatas": [
-                {"doc_id": "doc-a", "filename": "a.pdf", "created_at": "2026-01-01"},
-                {"doc_id": "doc-a", "filename": "a.pdf", "created_at": "2026-01-01"},
-                {"doc_id": "doc-a", "filename": "a.pdf", "created_at": "2026-01-01"},
+                {
+                    "owner_id": "alice",
+                    "doc_id": "doc-a",
+                    "filename": "a.pdf",
+                    "created_at": "2026-01-01",
+                },
+                {
+                    "owner_id": "alice",
+                    "doc_id": "doc-a",
+                    "filename": "a.pdf",
+                    "created_at": "2026-01-01",
+                },
+                {
+                    "owner_id": "alice",
+                    "doc_id": "doc-a",
+                    "filename": "a.pdf",
+                    "created_at": "2026-01-01",
+                },
             ],
         },
         {
             "ids": ["a4", "b1"],
             "metadatas": [
-                {"doc_id": "doc-a", "filename": "a.pdf", "created_at": "2026-01-01"},
-                {"doc_id": "doc-b", "filename": "b.pdf", "created_at": "2026-02-01"},
+                {
+                    "owner_id": "alice",
+                    "doc_id": "doc-a",
+                    "filename": "a.pdf",
+                    "created_at": "2026-01-01",
+                },
+                {
+                    "owner_id": "alice",
+                    "doc_id": "doc-b",
+                    "filename": "b.pdf",
+                    "created_at": "2026-02-01",
+                },
             ],
         },
     ]
@@ -202,7 +227,7 @@ def test_document_listing_pages_past_many_chunks_from_one_document(monkeypatch):
 
 def test_empty_owner_is_rejected():
     rag = make_rag()
-    with pytest.raises(ValueError, match="owner_id"):
+    with pytest.raises(ValueError, match="Owner identifiers"):
         rag.query("question", owner_id="")
 
 
