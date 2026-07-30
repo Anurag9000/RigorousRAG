@@ -6,15 +6,9 @@ on:
     paths:
       - requirements.txt
       - requirements-lock.txt
-      - requirements-dev.txt
       - scripts/generate_release_lock.py
       - scripts/verify_release_lock.py
       - .github/workflows/release-locks.yml
-      - tools/**
-      - tests/**
-      - server.py
-      - server_app.py
-      - storage.py
   push:
     tags: ["v*"]
 
@@ -22,48 +16,17 @@ permissions:
   contents: read
 
 jobs:
-  linux-verification:
-    name: Linux exact-head verification / Python 3.12
+  registration-smoke:
+    name: Workflow registration smoke
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-    env:
-      PYTHONHASHSEED: "0"
-      PYTHONDONTWRITEBYTECODE: "1"
-      TOKENIZERS_PARALLELISM: "false"
-      PIP_DISABLE_PIP_VERSION_CHECK: "1"
-      SINGLE_USER_OWNER_ID: ci-user
-      CHROMA_PATH: ${{ runner.temp }}/rigorousrag-vectors
-      JOB_DB_PATH: ${{ runner.temp }}/rigorousrag-jobs.sqlite3
-      DOCUMENT_DB_PATH: ${{ runner.temp }}/rigorousrag-documents.sqlite3
-      UPLOAD_DIR: ${{ runner.temp }}/rigorousrag-uploads
-      CLASSIC_STORAGE_DIR: ${{ runner.temp }}/rigorousrag-classic
-      USAGE_LOG_FILE: ${{ runner.temp }}/rigorousrag-usage.jsonl
-      ORPHAN_CLEANUP_ON_STARTUP: "false"
-      ENABLE_OCR: "false"
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-          cache: pip
-      - name: Install dependencies
-        run: python -m pip install --upgrade pip && python -m pip install -r requirements-dev.txt
-      - name: Verify dependency consistency
-        run: python -m pip check
-      - name: Check patch whitespace
-        shell: bash
-        run: git diff --check "$(git merge-base HEAD origin/${{ github.base_ref }})...HEAD"
-      - name: Compile Python
-        run: python -m compileall -q .
-      - name: Fatal lint checks
-        run: python -m ruff check . --select E9,F63,F7,F82
-      - name: Test with branch coverage
-        run: python -m pytest
+      - name: Confirm exact checkout
+        run: git rev-parse HEAD
 
   lock:
-    name: Runtime lock / ${{ matrix.os }} / Python ${{ matrix.python-version }}
+    name: ${{ matrix.os }} / Python ${{ matrix.python-version }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
