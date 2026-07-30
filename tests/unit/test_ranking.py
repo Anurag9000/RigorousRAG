@@ -122,7 +122,7 @@ def test_search_rejects_invalid_limits_queries_and_nonfinite_weight(tmp_path):
             engine.search("alpha", limit=10_000)
         with pytest.raises(ValueError, match="integer"):
             engine.search("alpha", limit="bad")
-        with pytest.raises(ValueError, match="2,000"):
+        with pytest.raises(ValueError, match="2000"):
             engine.search("q" * 2001)
 
     with pytest.raises(ValueError, match="finite"):
