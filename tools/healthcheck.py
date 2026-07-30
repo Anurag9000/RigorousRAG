@@ -35,20 +35,28 @@ def _lexical_absolute(value: Any) -> Optional[Path]:
         return None
     try:
         rendered = os.fspath(value)
-    except TypeError:
+    except Exception:
         return None
-    if not rendered or len(rendered) > _MAX_PATH_CHARS or "\x00" in rendered:
+    if (
+        not isinstance(rendered, str)
+        or not rendered
+        or len(rendered) > _MAX_PATH_CHARS
+        or "\x00" in rendered
+    ):
         return None
     candidate = Path(rendered)
     if not candidate.is_absolute():
         candidate = Path.cwd() / candidate
-    return Path(os.path.abspath(candidate))
+    try:
+        return Path(os.path.abspath(candidate))
+    except Exception:
+        return None
 
 
 def _has_symlink_component(path: Path) -> bool:
     try:
         return any(candidate.is_symlink() for candidate in (path, *path.parents))
-    except OSError:
+    except Exception:
         return True
 
 
@@ -129,7 +137,7 @@ def check_sqlite(path: str | Path) -> bool:
         ):
             return False
         return bool(row and row[0] == 1)
-    except (sqlite3.Error, OSError, ValueError):
+    except Exception:
         return False
 
 
@@ -211,7 +219,7 @@ def check_writable_directory(path: str | Path) -> bool:
         if os.name == "nt":  # pragma: no cover
             return _check_writable_directory_portable(directory)
         return _check_writable_directory_posix(directory)
-    except (OSError, ValueError):
+    except Exception:
         return False
 
 
