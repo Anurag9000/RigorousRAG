@@ -71,7 +71,8 @@ def test_standalone_ingestion_control_path_returns_safe_failure(tmp_path, contro
 
     assert result.success is False
     assert result.document is None
-    assert "Input validation failed" in result.error
+    assert result.error == "file_path is invalid or too long."
+    assert str(tmp_path) not in result.error
     assert not unsafe.exists()
 
 
