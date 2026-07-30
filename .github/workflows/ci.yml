@@ -71,6 +71,40 @@ jobs:
       - name: Test with coverage
         run: python -m pytest
 
+  windows-classic-storage:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.12"]
+    env:
+      PYTHONHASHSEED: "0"
+      PYTHONDONTWRITEBYTECODE: "1"
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      CLASSIC_STORAGE_DIR: ${{ runner.temp }}\rigorousrag-classic
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: Install dependencies
+        run: python -m pip install --upgrade pip && python -m pip install -r requirements-dev.txt
+      - name: Verify dependency consistency
+        run: python -m pip check
+      - name: Compile classic storage surfaces
+        run: python -m compileall -q storage.py storage_legacy.py Crawler.py Indexer.py Pagerank.py Searching.py
+      - name: Run Windows storage regressions
+        run: >-
+          python -m pytest
+          tests/unit/test_classic_storage_boundaries.py
+          tests/unit/test_storage.py
+          tests/unit/test_storage_root_paths.py
+          tests/unit/test_storage_snapshot_lock.py
+          tests/unit/test_internal_search_reload.py
+          --no-cov
+
   container:
     runs-on: ubuntu-latest
     timeout-minutes: 30
