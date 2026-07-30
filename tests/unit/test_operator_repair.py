@@ -4,7 +4,12 @@ import time
 import pytest
 
 from tools.job_store import JobStore
-from tools.operator_repair import list_corrupt_jobs, main, retire_corrupt_job
+from tools.operator_repair import (
+    _row_fingerprint,
+    list_corrupt_jobs,
+    main,
+    retire_corrupt_job,
+)
 
 
 def _insert_corrupt_row(store: JobStore, source_path: str) -> int:
@@ -125,17 +130,23 @@ def test_valid_job_cannot_be_retired_by_corrupt_row_tool(tmp_path):
     )
     with store._lock, store._connect() as connection:  # noqa: SLF001
         row = connection.execute(
-            "SELECT rowid FROM jobs WHERE job_id='valid-job'"
+            """
+            SELECT rowid, job_id, owner_id, status, filename, message, doc_id,
+                   source_path, attempts, next_attempt_at, created_at, updated_at
+            FROM jobs WHERE job_id='valid-job'
+            """
         ).fetchone()
-    rowid = int(row["rowid"])
+    record = dict(row)
+    rowid = int(record["rowid"])
+    fingerprint = _row_fingerprint(record)
 
     assert list_corrupt_jobs(store) == []
     with pytest.raises(ValueError, match="valid"):
         retire_corrupt_job(
             store,
             rowid=rowid,
-            fingerprint="0" * 64,
-            confirmation=f"RETIRE-{rowid}-000000000000",
+            fingerprint=fingerprint,
+            confirmation=f"RETIRE-{rowid}-{fingerprint[:12]}",
             reason="must not retire valid rows",
         )
 
