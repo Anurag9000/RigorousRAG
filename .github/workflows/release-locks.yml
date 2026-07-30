@@ -27,15 +27,28 @@ jobs:
       - name: Confirm exact checkout
         run: git rev-parse HEAD
 
-  linux-compile:
-    name: Linux dependency and compile gate / Python 3.12
+  linux-test:
+    name: Linux exact-head tests and coverage / Python 3.12
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      PYTHONHASHSEED: "0"
       PYTHONDONTWRITEBYTECODE: "1"
+      TOKENIZERS_PARALLELISM: "false"
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      SINGLE_USER_OWNER_ID: ci-user
+      CHROMA_PATH: ${{ runner.temp }}/rigorousrag-vectors
+      JOB_DB_PATH: ${{ runner.temp }}/rigorousrag-jobs.sqlite3
+      DOCUMENT_DB_PATH: ${{ runner.temp }}/rigorousrag-documents.sqlite3
+      UPLOAD_DIR: ${{ runner.temp }}/rigorousrag-uploads
+      CLASSIC_STORAGE_DIR: ${{ runner.temp }}/rigorousrag-classic
+      USAGE_LOG_FILE: ${{ runner.temp }}/rigorousrag-usage.jsonl
+      ORPHAN_CLEANUP_ON_STARTUP: "false"
+      ENABLE_OCR: "false"
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -44,10 +57,29 @@ jobs:
         run: python -m pip install --upgrade pip && python -m pip install -r requirements-dev.txt
       - name: Verify dependency consistency
         run: python -m pip check
+      - name: Check patch whitespace
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          if [[ "${EVENT_NAME}" == "pull_request" ]]; then
+            comparison_base="$(git merge-base HEAD "origin/${BASE_REF}")"
+          elif [[ "${EVENT_NAME}" == "push" && -n "${BEFORE_SHA}" && ! "${BEFORE_SHA}" =~ ^0+$ ]]; then
+            comparison_base="${BEFORE_SHA}"
+          elif git rev-parse HEAD^ >/dev/null 2>&1; then
+            comparison_base="HEAD^"
+          else
+            comparison_base="$(git rev-list --max-parents=0 HEAD)"
+          fi
+          git diff --check "${comparison_base}...HEAD"
       - name: Compile all Python
         run: python -m compileall -q .
       - name: Run fatal syntax and name lint
         run: python -m ruff check . --select E9,F63,F7,F82
+      - name: Run tests with branch coverage
+        run: python -m pytest
 
   lock:
     name: ${{ matrix.os }} / Python ${{ matrix.python-version }}
