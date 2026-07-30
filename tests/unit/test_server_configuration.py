@@ -60,7 +60,7 @@ def test_malformed_numeric_environment_imports_with_bounded_defaults(tmp_path):
         """
 import server as module
 assert module.DEFAULT_MAX_UPLOAD_BYTES == 50_000_000
-assert module.JOB_TTL_SECONDS == 300
+assert module.JOB_TTL_SECONDS == 60
 assert module.REQUESTS_PER_MINUTE == 60
 assert module.QUERY_WORKERS == 1
 assert module.QUERY_MAX_PENDING >= module.QUERY_WORKERS
