@@ -6,10 +6,13 @@ import tools.job_store as job_store
 from tools.job_store import JobStore
 
 
-def test_constructor_rejects_boolean_fractional_and_too_small_ttl(tmp_path):
-    for value in (True, 60.5, 59):
+def test_constructor_rejects_boolean_fractional_and_invalid_ttl(tmp_path):
+    for value in (True, 60.5, 0, -1, 31_536_001):
         with pytest.raises(ValueError, match="ttl_seconds"):
             JobStore(tmp_path / f"jobs-{value}.sqlite3", ttl_seconds=value)
+
+    floored = JobStore(tmp_path / "jobs-floored.sqlite3", ttl_seconds=59)
+    assert floored.ttl_seconds == 60
 
 
 def test_unknown_update_fields_are_rejected_before_persistence(tmp_path):
