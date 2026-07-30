@@ -8,6 +8,7 @@ import math
 import os
 import sys
 from collections.abc import Mapping
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
@@ -280,6 +281,16 @@ def _query_row(value: Any, *, label: str, maximum: int) -> List[Any]:
     return value[0][:_bounded_integer(maximum, "maximum", minimum=1, maximum=100)]
 
 
+def _validated_created_at(value: str) -> str | None:
+    if not value or len(value) > 100 or _contains_ascii_control(value):
+        return None
+    try:
+        normalized = value[:-1] + "+00:00" if value.endswith("Z") else value
+        return datetime.fromisoformat(normalized).isoformat()
+    except ValueError:
+        return None
+
+
 def _result_metadata(value: Any) -> Dict[str, Any]:
     if not isinstance(value, Mapping):
         return {}
@@ -302,7 +313,12 @@ def _result_metadata(value: Any) -> Dict[str, Any]:
             elif isinstance(item, float) and math.isfinite(item):
                 cleaned[key] = item
             elif isinstance(item, str):
-                cleaned[key] = mask_metadata_text(item)[:4000]
+                if key == "created_at":
+                    created_at = _validated_created_at(item)
+                    if created_at is not None:
+                        cleaned[key] = created_at
+                else:
+                    cleaned[key] = mask_metadata_text(item)[:4000]
     except Exception:
         return {}
     return cleaned
@@ -318,34 +334,40 @@ def _bounded_generated_queries(value: object, maximum: int) -> List[str]:
             if not isinstance(item, str):
                 continue
             bounded = item.strip()[:_MAX_EXPANDED_QUERY_CHARS]
-            if bounded and "\x00" not in bounded and bounded not in result:
+            if bounded and bounded not in result:
                 result.append(bounded)
-            if len(result) >= maximum:
-                break
+                if len(result) >= maximum:
+                    break
         return result
     except Exception:
         return []
 
 
 class RAGLayer(_implementation.RAGLayer):
-    """RAG implementation with caller-independent input and result validation."""
+    """Strict owner-scoped vector persistence and retrieval boundary."""
 
     def __init__(
         self,
         persist_directory: str = _implementation.CHROMA_PATH,
-        *,
-        collection_name: str = _implementation.COLLECTION_NAME,
         embedding_model: str = _implementation.DEFAULT_EMBEDDING_MODEL,
     ) -> None:
         super().__init__(
             persist_directory=_absolute_storage_path(persist_directory),
-            collection_name=_bounded_identifier(
-                collection_name,
-                "collection_name",
-                limit=200,
-            ),
             embedding_model=_bounded_model(embedding_model),
         )
+
+    @staticmethod
+    def _owner_filter(owner_id: str) -> Dict[str, Any]:
+        return {"owner_id": {"$eq": normalize_owner_id(owner_id)}}
+
+    @staticmethod
+    def _document_filter(owner_id: str, doc_id: str) -> Dict[str, Any]:
+        return {
+            "$and": [
+                {"owner_id": {"$eq": normalize_owner_id(owner_id)}},
+                {"doc_id": {"$eq": _bounded_identifier(doc_id, "doc_id")}},
+            ]
+        }
 
     def add_document(
         self,
@@ -354,158 +376,81 @@ class RAGLayer(_implementation.RAGLayer):
         metadata: Dict[str, Any],
         *,
         sections: Optional[Iterable[Any]] = None,
-        chunk_size: int = 1000,
-        overlap: int = 120,
+        chunk_size: int = 1200,
+        overlap: int = 150,
         replace: bool = True,
     ) -> int:
-        document_id = _bounded_identifier(doc_id, "doc_id")
-        cleaned_metadata = _clean_metadata(metadata)
-        bounded_sections = _bounded_sections(sections)
+        identifier = _bounded_identifier(doc_id, "doc_id")
         if text is not None:
             if not isinstance(text, str):
-                raise ValueError("Document text must be a string.")
+                raise ValueError("text must be a string or None.")
             if len(text) > _MAX_DOCUMENT_TEXT_CHARS:
-                raise ValueError(
-                    "Document text exceeds the vector-ingestion character limit."
-                )
-        size = _bounded_integer(
+                raise ValueError("Document text exceeds the character limit.")
+        selected_sections = _bounded_sections(sections)
+        selected_metadata = _clean_metadata(metadata)
+        selected_chunk_size = _bounded_integer(
             chunk_size,
             "chunk_size",
             minimum=1,
             maximum=_MAX_CHUNK_SIZE,
         )
-        overlap_value = _bounded_integer(
+        selected_overlap = _bounded_integer(
             overlap,
             "overlap",
             minimum=0,
-            maximum=_MAX_CHUNK_SIZE - 1,
+            maximum=max(selected_chunk_size - 1, 0),
         )
-        if overlap_value >= size:
-            raise ValueError("overlap must be smaller than chunk_size.")
         if not isinstance(replace, bool):
             raise ValueError("replace must be a boolean.")
         return super().add_document(
-            document_id,
+            identifier,
             text,
-            cleaned_metadata,
-            sections=bounded_sections,
-            chunk_size=size,
-            overlap=overlap_value,
+            selected_metadata,
+            sections=selected_sections,
+            chunk_size=selected_chunk_size,
+            overlap=selected_overlap,
             replace=replace,
         )
 
     def delete_document(self, *, owner_id: str, doc_id: str) -> None:
-        return super().delete_document(
-            owner_id=normalize_owner_id(owner_id),
-            doc_id=_bounded_identifier(doc_id, "doc_id"),
-        )
-
-    def generate_hyde_query(
-        self,
-        query: str,
-        agent_client: Optional[Any] = None,
-        *,
-        model: str = "gpt-4o-mini",
-    ) -> str:
-        bounded = _bounded_query(query)
-        if not bounded:
-            return ""
-        generated = super().generate_hyde_query(
-            bounded,
-            agent_client,
-            model=_bounded_model(model),
-        )
-        if not isinstance(generated, str):
-            return bounded
-        candidate = generated.strip()[:_MAX_QUERY_CHARS]
-        return candidate if candidate and "\x00" not in candidate else bounded
-
-    def generate_expanded_queries(
-        self,
-        query: str,
-        agent_client: Optional[Any] = None,
-        *,
-        model: str = "gpt-4o-mini",
-        count: int = 3,
-    ) -> List[str]:
-        bounded = _bounded_query(query)
-        if not bounded:
-            return []
-        requested = _bounded_integer(count, "count", minimum=1, maximum=4)
-        generated = super().generate_expanded_queries(
-            bounded,
-            agent_client,
-            model=_bounded_model(model),
-            count=requested,
-        )
-        unique = _bounded_generated_queries(generated, requested)
-        return unique or [bounded]
+        self.collection.delete(where=self._document_filter(owner_id, doc_id))
 
     def query(
         self,
         query_text: str,
-        n_results: int = 5,
         *,
-        owner_id: str = "default_user",
+        owner_id: str,
+        n_results: int = 5,
         doc_id: Optional[str] = None,
-        where: Optional[Dict[str, Any]] = None,
-        use_multi_query: bool = False,
-        agent_client: Optional[Any] = None,
-        expansion_model: str = "gpt-4o-mini",
+        expanded_queries: Optional[Iterable[str]] = None,
     ) -> List[_implementation.Chunk]:
         query = _bounded_query(query_text)
-        if not query:
-            return []
-        requested = _bounded_integer(
-            n_results,
-            "n_results",
-            minimum=1,
-            maximum=50,
-        )
         owner = normalize_owner_id(owner_id)
-        document_id = (
-            _bounded_identifier(doc_id, "doc_id") if doc_id is not None else None
+        requested = _bounded_integer(n_results, "n_results", minimum=1, maximum=100)
+        where = (
+            self._document_filter(owner, doc_id)
+            if doc_id is not None
+            else self._owner_filter(owner)
         )
-        scoped_where = _bounded_where(where)
-        if not isinstance(use_multi_query, bool):
-            raise ValueError("use_multi_query must be a boolean.")
-        queries = [query]
-        if use_multi_query:
-            queries = self.generate_expanded_queries(
-                query,
-                agent_client,
-                model=_bounded_model(expansion_model),
-            )
-
-        filters: List[Optional[Dict[str, Any]]] = [self._owner_filter(owner)]
-        if document_id:
-            filters.append({"doc_id": {"$eq": document_id}})
-        filters.append(scoped_where)
-        combined_where = _implementation._combine_filters(filters)
+        generated = _bounded_generated_queries(expanded_queries, maximum=10)
         candidates: Dict[str, _implementation.Chunk] = {}
         errors: List[Exception] = []
         successful_queries = 0
-        for current_query in queries[:5]:
+        for current_query in [query, *generated]:
+            if not current_query:
+                continue
             try:
                 results = self.collection.query(
-                    query_texts=[current_query[:_MAX_QUERY_CHARS]],
+                    query_texts=[current_query],
                     n_results=requested,
-                    where=combined_where,
+                    where=_bounded_where(where),
                     include=["documents", "metadatas", "distances"],
                 )
                 if not isinstance(results, dict):
                     raise ValueError("Vector backend returned a non-object response.")
-                result_ids = _query_row(
-                    results.get("ids"),
-                    label="identifier",
-                    maximum=requested,
-                )
-                docs = _query_row(
-                    results.get("documents"),
-                    label="document",
-                    maximum=requested,
-                )
-                metas = _query_row(
+                ids = _query_row(results.get("ids"), label="ID", maximum=requested)
+                docs = _query_row(results.get("documents"), label="document", maximum=requested)
+                metadatas = _query_row(
                     results.get("metadatas"),
                     label="metadata",
                     maximum=requested,
@@ -515,11 +460,13 @@ class RAGLayer(_implementation.RAGLayer):
                     label="distance",
                     maximum=requested,
                 )
+                if not (len(ids) == len(docs) == len(metadatas) == len(distances)):
+                    raise ValueError("Vector backend returned incomplete result arrays.")
                 successful_queries += 1
             except Exception as exc:
                 errors.append(exc)
                 continue
-            for index, raw_id in enumerate(result_ids):
+            for index, raw_id in enumerate(ids):
                 if not isinstance(raw_id, str):
                     continue
                 chunk_id = raw_id.strip()
@@ -529,14 +476,12 @@ class RAGLayer(_implementation.RAGLayer):
                     or _contains_ascii_control(chunk_id)
                 ):
                     continue
-                metadata = _result_metadata(
-                    metas[index] if index < len(metas) else {}
-                )
+                metadata = _result_metadata(metadatas[index])
                 if metadata.get("owner_id") != owner:
                     continue
-                if document_id and metadata.get("doc_id") != document_id:
+                if doc_id is not None and metadata.get("doc_id") != doc_id:
                     continue
-                raw_distance = distances[index] if index < len(distances) else 1.0
+                raw_distance = distances[index]
                 if isinstance(raw_distance, bool):
                     distance = 1.0
                 else:
@@ -690,7 +635,5 @@ def get_rag_layer(
 
 _implementation.RAGLayer = RAGLayer
 _implementation.get_rag_layer = get_rag_layer
-_implementation._RAG_INSTANCES = _RAG_INSTANCES
-_implementation._RAG_LOCK = _RAG_LOCK
 _implementation.__doc__ = __doc__
 sys.modules[__name__] = _implementation
