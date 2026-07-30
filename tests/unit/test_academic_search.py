@@ -156,8 +156,13 @@ def test_provider_key_is_validated_before_network(monkeypatch):
 
 
 def test_malformed_or_unsafe_provider_items_are_skipped():
+    # Provider JSON cannot contain arbitrary Python objects. Use malformed values that
+    # are representable on the actual wire so the adapter, rather than json.dumps,
+    # receives and rejects them.
     papers = [
-        object(),
+        None,
+        7,
+        "not-a-paper",
         {"title": "", "paperId": "empty"},
         {"title": "Boolean year", "paperId": "bool", "year": True},
         {"title": "Unsafe URL", "url": "file:///private/paper.pdf", "paperId": "unsafe"},
@@ -168,8 +173,8 @@ def test_malformed_or_unsafe_provider_items_are_skipped():
             "url": "https://example.test/valid",
             "authors": [
                 {"name": "Alice"},
-                {"name": object()},
-                object(),
+                {"name": ["not", "text"]},
+                9,
             ],
             "externalIds": {
                 "DOI": "10.1/valid",
