@@ -50,6 +50,7 @@ def test_failed_rebuild_keeps_previous_complete_generation(monkeypatch):
     index = InvertedIndex()
     index.build({"old": Page("old", "Old", "stable evidence", [], "text/html", 10)})
     previous = index.to_dict()
+    original_limit = Indexer._MAX_POSTINGS
     monkeypatch.setattr(Indexer, "_MAX_POSTINGS", 1)
 
     with pytest.raises(ValueError, match="at most 1 postings"):
@@ -57,6 +58,9 @@ def test_failed_rebuild_keeps_previous_complete_generation(monkeypatch):
             {"new": Page("new", "New", "alpha beta gamma", [], "text/html", 10)}
         )
 
+    # The artificially lowered build budget also applies to serialization. Restore the
+    # normal budget before comparing the preserved committed generation.
+    monkeypatch.setattr(Indexer, "_MAX_POSTINGS", original_limit)
     assert index.to_dict() == previous
 
 
