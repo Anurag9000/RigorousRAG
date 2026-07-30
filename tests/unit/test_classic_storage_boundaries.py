@@ -56,6 +56,42 @@ def test_non_standard_json_is_quarantined(tmp_path):
     assert list(tmp_path.glob("crawl_state.json.corrupt-*"))
 
 
+def test_path_fallback_rejects_non_standard_json(tmp_path):
+    manager = StorageManager(tmp_path)
+    path = tmp_path / "fallback.json"
+    path.write_text('{"value":Infinity}', encoding="utf-8")
+
+    assert manager._read_json_path_fallback(path) is None
+    assert not path.exists()
+    assert list(tmp_path.glob("fallback.json.corrupt-*"))
+
+
+def test_path_fallback_refuses_symlink_without_touching_target(tmp_path):
+    manager = StorageManager(tmp_path / "data")
+    target = tmp_path / "outside.json"
+    target.write_text('{"value":1}', encoding="utf-8")
+    link = manager.base_dir / "fallback.json"
+    try:
+        link.symlink_to(target)
+    except (OSError, NotImplementedError):
+        pytest.skip("Symlinks are unavailable in this environment.")
+
+    assert manager._read_json_path_fallback(link) is None
+    assert link.is_symlink()
+    assert target.read_text(encoding="utf-8") == '{"value":1}'
+
+
+def test_path_fallback_enforces_byte_limit(tmp_path, monkeypatch):
+    manager = StorageManager(tmp_path)
+    path = tmp_path / "fallback.json"
+    path.write_text("x" * 21, encoding="utf-8")
+    monkeypatch.setattr(manager, "max_snapshot_file_bytes", 20)
+
+    assert manager._read_json_path_fallback(path) is None
+    assert not path.exists()
+    assert list(tmp_path.glob("fallback.json.corrupt-*"))
+
+
 def test_fifo_member_is_refused_without_blocking(tmp_path):
     if not hasattr(os, "mkfifo"):
         pytest.skip("FIFOs are unavailable on this platform.")
