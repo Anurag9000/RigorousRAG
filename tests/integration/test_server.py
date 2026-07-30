@@ -38,6 +38,22 @@ def server_module(monkeypatch, tmp_path):
         sys.modules.pop(name, None)
 
 
+def _patch_recovery_submission(monkeypatch, server_module, submitted):
+    monkeypatch.setitem(
+        server_module._recover_interrupted_jobs.__globals__,
+        "_submit_ingestion",
+        lambda *args: submitted.append(args),
+    )
+
+
+def _patch_retry_submission(monkeypatch, server_module, submitted):
+    monkeypatch.setitem(
+        server_module._retry_or_fail_job.__globals__,
+        "_submit_ingestion",
+        lambda *args: submitted.append(args),
+    )
+
+
 def test_health_config_and_security_headers_are_public(server_module):
     with TestClient(server_module.app) as client:
         response = client.get("/health")
@@ -172,11 +188,7 @@ def test_startup_recovery_submits_valid_job_and_cleans_exhausted_source(
     assert server_module._JOB_STORE.claim("exhausted-job", "alice", 1) is True
     monkeypatch.setattr(server_module, "INGEST_MAX_ATTEMPTS", 1)
     submitted = []
-    monkeypatch.setattr(
-        server_module,
-        "_submit_ingestion",
-        lambda *args: submitted.append(args),
-    )
+    _patch_recovery_submission(monkeypatch, server_module, submitted)
 
     server_module._recover_interrupted_jobs()
 
@@ -210,11 +222,7 @@ def test_finalizing_job_with_registry_is_replayed(
         doc_id="doc-1",
     )
     submitted = []
-    monkeypatch.setattr(
-        server_module,
-        "_submit_ingestion",
-        lambda *args: submitted.append(args),
-    )
+    _patch_recovery_submission(monkeypatch, server_module, submitted)
 
     server_module._recover_interrupted_jobs()
 
@@ -277,11 +285,7 @@ def test_transient_index_failure_requeues_and_preserves_source(
         lambda *_args, **_kwargs: MagicMock(client=None),
     )
     submitted = []
-    monkeypatch.setattr(
-        server_module,
-        "_submit_ingestion",
-        lambda *args: submitted.append(args),
-    )
+    _patch_retry_submission(monkeypatch, server_module, submitted)
 
     server_module.process_ingestion(str(source), "paper.txt", "job-1", "alice")
 
