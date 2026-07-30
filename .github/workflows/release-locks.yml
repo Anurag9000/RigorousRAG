@@ -5,7 +5,7 @@ on:
   pull_request:
     paths:
       - requirements.txt
-      - requirements-dev.txt
+      - requirements-lock.txt
       - scripts/generate_release_lock.py
       - scripts/verify_release_lock.py
       - .github/workflows/release-locks.yml
@@ -34,11 +34,10 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
-      - name: Install lock tooling
+      - name: Install compatible lock tooling
         run: >-
-          python -m pip install --upgrade pip
-          "pip-tools>=7.4,<8"
-          "typing-extensions>=4.12,<5"
+          python -m pip install --upgrade "pip>=25,<26"
+          && python -m pip install -r requirements-lock.txt
       - name: Generate hashed platform lock
         run: python scripts/generate_release_lock.py --upgrade
       - name: Resolve lock filename
