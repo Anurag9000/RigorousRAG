@@ -61,7 +61,7 @@ def _contains_ascii_control(value: str) -> bool:
 def _repository_root(value: str | os.PathLike[str] | None = None) -> Path:
     try:
         raw = Path(__file__).resolve().parent if value is None else Path(os.fspath(value))
-    except TypeError as exc:
+    except Exception as exc:
         raise ValueError("Repository root must be a filesystem path.") from exc
     rendered = os.fspath(raw)
     if not rendered or len(rendered) > 4096 or _contains_ascii_control(rendered):
@@ -69,22 +69,34 @@ def _repository_root(value: str | os.PathLike[str] | None = None) -> Path:
     candidate = raw if raw.is_absolute() else Path.cwd() / raw
     absolute = Path(os.path.abspath(candidate))
     for component in (absolute, *absolute.parents):
-        if component.is_symlink():
-            raise ValueError("Repository root may not contain symbolic-link components.")
+        try:
+            if component.is_symlink():
+                raise ValueError(
+                    "Repository root may not contain symbolic-link components."
+                )
+        except OSError as exc:
+            raise ValueError("Repository root could not be inspected safely.") from exc
     if not absolute.exists() or not absolute.is_dir():
         raise ValueError("Repository root must be an existing directory.")
     return absolute
 
 
 def _read_asset(path: Path) -> str:
-    if path.is_symlink():
-        raise ValueError(f"Frontend asset {path.name} may not be a symbolic link.")
-    descriptor = os.open(
-        path,
-        os.O_RDONLY
-        | getattr(os, "O_NOFOLLOW", 0)
-        | getattr(os, "O_NONBLOCK", 0),
-    )
+    try:
+        if path.is_symlink():
+            raise ValueError(f"Frontend asset {path.name} may not be a symbolic link.")
+        descriptor = os.open(
+            path,
+            os.O_RDONLY
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_NONBLOCK", 0),
+        )
+    except ValueError:
+        raise
+    except OSError as exc:
+        raise ValueError(
+            f"Frontend asset {path.name} is missing or could not be opened safely."
+        ) from exc
     try:
         metadata = os.fstat(descriptor)
         if not stat.S_ISREG(metadata.st_mode):
@@ -106,6 +118,12 @@ def _read_asset(path: Path) -> str:
             return bytes(payload).decode("utf-8")
         except UnicodeDecodeError as exc:
             raise ValueError(f"Frontend asset {path.name} must be valid UTF-8.") from exc
+    except ValueError:
+        raise
+    except OSError as exc:
+        raise ValueError(
+            f"Frontend asset {path.name} could not be read safely."
+        ) from exc
     finally:
         os.close(descriptor)
 
