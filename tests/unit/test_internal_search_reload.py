@@ -94,7 +94,7 @@ def test_referenced_generation_member_replacement_triggers_reload(
             return []
 
     monkeypatch.setattr(internal_search, "AcademicSearchEngine", FakeEngine)
-    generation = "abc123"
+    generation = "a" * 32
     names = {
         "crawl": f"crawl_state.{generation}.json",
         "index": f"index.{generation}.json",
@@ -103,10 +103,11 @@ def test_referenced_generation_member_replacement_triggers_reload(
     for name in names.values():
         (tmp_path / name).write_text("member-a", encoding="utf-8")
     manifest = {
+        "generation": generation,
         "files": {
             key: {"name": name}
             for key, name in names.items()
-        }
+        },
     }
     (tmp_path / "snapshot_manifest.json").write_text(
         json.dumps(manifest),
@@ -169,7 +170,7 @@ def test_internal_search_maps_hits_to_bounded_citations(monkeypatch):
     engine = SimpleNamespace(search=lambda query, limit: [hit])
     monkeypatch.setattr(internal_search, "get_engine", lambda: engine)
 
-    citations = internal_search.search_internal("evidence", limit=50)
+    citations = internal_search.search_internal("evidence", limit=20)
 
     assert len(citations) == 1
     citation = citations[0]
