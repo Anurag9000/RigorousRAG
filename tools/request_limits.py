@@ -6,6 +6,10 @@ import itertools
 import json
 from typing import Any, Awaitable, Callable, Dict
 
+from tools.frontend_static import install_portable_frontend_staticfiles
+
+install_portable_frontend_staticfiles()
+
 ASGIReceive = Callable[..., Awaitable[Dict[str, Any]]]
 ASGISend = Callable[..., Awaitable[None]]
 ASGIApp = Callable[[Dict[str, Any], ASGIReceive, ASGISend], Awaitable[None]]
