@@ -3,7 +3,7 @@
 The commands in this module are deliberately conservative:
 
 * private source paths and raw database values are never printed;
-* rows are identified by SQLite ``rowid`` plus a bounded content fingerprint;
+* rows are identified by SQLite ``rowid`` plus an exact content fingerprint;
 * retirement requires an exact fingerprint and confirmation token;
 * source files, vectors, and document-registry rows are never deleted implicitly;
 * every retirement is recorded in an append-only audit table in the job database.
@@ -31,8 +31,6 @@ from tools.security import normalize_owner_id
 
 _ALLOWED_STATUSES = frozenset({"queued", "processing", "finalizing", "success", "failed"})
 _MAX_ROWS = 10_000
-_MAX_CELL_CHARS = 1_000_000
-_FINGERPRINT_SAMPLE_CHARS = 4096
 _AUDIT_REASON_CHARS = 500
 
 
@@ -98,11 +96,12 @@ def _safe_public_text(value: Any, *, limit: int, default: str) -> str:
 
 
 def _cell_fingerprint_bytes(value: Any) -> bytes:
-    """Return a bounded deterministic representation without exposing the value."""
+    """Return a deterministic full-value digest without exposing the stored value."""
 
     if value is None:
-        return b"null"
-    if isinstance(value, bytes):
+        payload = b""
+        type_name = b"null"
+    elif isinstance(value, bytes):
         payload = value
         type_name = b"blob"
     elif isinstance(value, str):
@@ -121,12 +120,13 @@ def _cell_fingerprint_bytes(value: Any) -> bytes:
         payload = type(value).__name__.encode("utf-8", errors="replace")
         type_name = b"other"
 
-    length = len(payload)
-    if length <= _MAX_CELL_CHARS:
-        sampled = payload
-    else:
-        sampled = payload[:_FINGERPRINT_SAMPLE_CHARS] + payload[-_FINGERPRINT_SAMPLE_CHARS:]
-    return b"|".join((type_name, str(length).encode("ascii"), sampled))
+    return b"|".join(
+        (
+            type_name,
+            str(len(payload)).encode("ascii"),
+            hashlib.sha256(payload).digest(),
+        )
+    )
 
 
 def _row_fingerprint(row: Mapping[str, Any]) -> str:
