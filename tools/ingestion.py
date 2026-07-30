@@ -1,10 +1,10 @@
-"""Failure-safe, immutable public boundary over document ingestion.
+"""Stable immutable public boundary over the legacy document parser.
 
-The parser, OCR, redaction, and archive implementation remains in
-``ingestion_legacy``. This module normalizes parser budgets and consumes every direct
-source through a bounded no-follow byte snapshot before invoking that implementation.
-The wrapper independently reapplies final redaction and identity metadata so repeated
-compatibility imports cannot bypass the public privacy boundary.
+``ingestion_legacy`` continues to own format parsing and OCR.  This module remains a
+real module instead of replacing itself in ``sys.modules``.  Public monkeypatches and
+runtime configuration are forwarded explicitly before each parse, and every successful
+legacy result is reconstructed as a new privacy-safe document from a bounded no-follow
+source snapshot.
 """
 
 from __future__ import annotations
@@ -12,14 +12,17 @@ from __future__ import annotations
 import hashlib
 import os
 import stat
-import sys
 import tempfile
 import uuid
 from pathlib import Path
 from typing import Any
 
 from tools.config import bounded_float_env, bounded_int_env
-from tools.ingestion_models import DocumentSection, IngestionResult
+from tools.ingestion_models import (
+    DocumentSection,
+    IngestedDocument,
+    IngestionResult,
+)
 from tools.privacy import mask_metadata_text, sanitize_metadata_dict
 from tools.security import SecurityError, normalize_owner_id, safe_upload_suffix
 
@@ -55,6 +58,42 @@ from tools import ingestion_legacy as _implementation
 
 _original_ingest_file = _implementation.ingest_file
 _MAX_PATH_CHARS = 4096
+_MAX_SECTIONS = 10_000
+
+# Re-export the complete legacy helper surface without replacing this module object.
+# This keeps existing imports and test overrides compatible while ensuring that every
+# caller reaches the wrapper ``ingest_file`` below.
+_FORWARDED_NAMES = tuple(
+    name
+    for name in dir(_implementation)
+    if not name.startswith("__") and name != "ingest_file"
+)
+for _forwarded_name in _FORWARDED_NAMES:
+    globals().setdefault(
+        _forwarded_name,
+        getattr(_implementation, _forwarded_name),
+    )
+
+
+def __getattr__(name: str) -> Any:
+    """Expose future legacy helpers without changing module identity."""
+
+    try:
+        return getattr(_implementation, name)
+    except AttributeError as exc:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from exc
+
+
+def _sync_legacy_runtime() -> None:
+    """Forward public overrides to the parser immediately before one parse."""
+
+    for name in _FORWARDED_NAMES:
+        if name in globals():
+            setattr(_implementation, name, globals()[name])
+    # Always bind parser model construction to the current privacy-safe classes.
+    _implementation.DocumentSection = DocumentSection
+    _implementation.IngestedDocument = IngestedDocument
+    _implementation.IngestionResult = IngestionResult
 
 
 def _source_path(value: Any) -> Path:
@@ -73,9 +112,7 @@ def _source_path(value: Any) -> Path:
     absolute = Path(os.path.abspath(candidate))
     for component in (absolute, *absolute.parents):
         if component.is_symlink():
-            raise ValueError(
-                "Input paths may not contain symbolic-link components."
-            )
+            raise ValueError("Input paths may not contain symbolic-link components.")
     return absolute
 
 
@@ -119,42 +156,54 @@ def _read_source_bytes(path: Path, maximum: int) -> bytes:
 
 
 def _redacted_sections(sections: Any) -> list[DocumentSection]:
-    """Independently mask and semantically bound parser-provided sections."""
-
-    if isinstance(sections, (str, bytes, bytearray)):
+    if sections is None or isinstance(sections, (str, bytes, bytearray)):
         return []
     try:
         values = list(sections)
     except Exception:
         return []
-    result: list[DocumentSection] = []
+    if len(values) > _MAX_SECTIONS:
+        values = values[:_MAX_SECTIONS]
+
     chunker = getattr(_implementation, "_chunk_text_semantically", None)
-    for index, section in enumerate(values[:10_000]):
+    result: list[DocumentSection] = []
+    for index, section in enumerate(values):
         try:
-            content = mask_metadata_text(section.content).strip()
-            page_number = section.page_number
+            raw_content = section.content
             raw_title = section.title
+            page_number = section.page_number
         except Exception:
             continue
+        if not isinstance(raw_content, str):
+            continue
+        content = mask_metadata_text(raw_content).strip()
         if not content:
             continue
-        chunks = (
-            chunker(content, max_chars=6000)
-            if callable(chunker)
-            else [content[position:position + 6000] for position in range(0, len(content), 6000)]
-        )
-        chunks = chunks or [content]
-        base_title = mask_metadata_text(raw_title or f"Section {index + 1}").strip()
+        if callable(chunker):
+            try:
+                chunks = chunker(content, max_chars=6000)
+            except Exception:
+                chunks = []
+        else:
+            chunks = []
+        chunks = chunks or [
+            content[position:position + 6000]
+            for position in range(0, len(content), 6000)
+        ]
+        base_title = mask_metadata_text(
+            raw_title or f"Section {index + 1}"
+        ).strip() or f"Section {index + 1}"
         for chunk_index, chunk in enumerate(chunks):
-            if not isinstance(chunk, str) or not chunk.strip():
+            masked_chunk = mask_metadata_text(chunk).strip()
+            if not masked_chunk:
                 continue
-            title = base_title or f"Section {index + 1}"
+            title = base_title
             if len(chunks) > 1:
                 title = f"{title} — Part {chunk_index + 1}"
             result.append(
                 DocumentSection(
                     title=title[:500],
-                    content=mask_metadata_text(chunk).strip(),
+                    content=masked_chunk,
                     page_number=page_number,
                 )
             )
@@ -162,43 +211,49 @@ def _redacted_sections(sections: Any) -> list[DocumentSection]:
 
 
 def _finalize_public_result(
-    result: IngestionResult,
+    result: Any,
     *,
     owner: str,
     source: Path,
     payload: bytes,
 ) -> IngestionResult:
-    """Idempotently enforce the public redaction and identity contract."""
+    """Reconstruct, rather than mutate, the parser result at the public boundary."""
 
-    if not result.success or result.document is None:
-        return result
-    document = result.document
     try:
-        redacted_text = mask_metadata_text(document.text).strip()
-        redacted_sections = _redacted_sections(document.sections)
+        success = result.success
+        legacy_document = result.document
+        legacy_error = result.error
+    except Exception:
+        return IngestionResult(
+            success=False,
+            error="Document parser returned an invalid result.",
+        )
+    if not success or legacy_document is None:
+        return IngestionResult(
+            success=False,
+            error=legacy_error or "Document ingestion failed.",
+        )
+
+    try:
+        redacted_text = mask_metadata_text(legacy_document.text).strip()
+        redacted_sections = _redacted_sections(legacy_document.sections)
         if not redacted_text or not redacted_sections:
             return IngestionResult(
                 success=False,
                 error="No indexable text remained after parsing.",
             )
-
         source_hash = hashlib.sha256(payload).hexdigest()
         content_hash = hashlib.sha256(redacted_text.encode("utf-8")).hexdigest()
         extracted = _implementation.extract_academic_metadata(redacted_text)
         fallback_title = source.stem.replace("_", " ").replace("-", " ")
         title = mask_metadata_text(
-            document.title or extracted.get("extracted_title") or fallback_title
-        ).strip()
-
-        document.id = str(
-            uuid.uuid5(uuid.NAMESPACE_URL, f"rigorousrag:{owner}:{source_hash}")
+            getattr(legacy_document, "title", None)
+            or extracted.get("extracted_title")
+            or fallback_title
+        ).strip() or fallback_title
+        metadata = sanitize_metadata_dict(
+            getattr(legacy_document, "metadata", {})
         )
-        document.filename = source.name
-        document.file_path = str(source)
-        document.text = redacted_text
-        document.sections = redacted_sections
-        document.title = title[:500] or fallback_title[:500]
-        metadata = sanitize_metadata_dict(document.metadata)
         metadata.update(sanitize_metadata_dict(extracted))
         metadata.update(
             {
@@ -209,7 +264,26 @@ def _finalize_public_result(
                 "document_identity": "owner_and_source_sha256",
             }
         )
-        document.metadata = metadata
+        document = IngestedDocument(
+            id=str(
+                uuid.uuid5(
+                    uuid.NAMESPACE_URL,
+                    f"rigorousrag:{owner}:{source_hash}",
+                )
+            ),
+            filename=source.name,
+            file_path=str(source),
+            mime_type=getattr(
+                legacy_document,
+                "mime_type",
+                _implementation.detect_mime_type(str(source)),
+            ),
+            created_at=getattr(legacy_document, "created_at", None),
+            title=title[:1000],
+            text=redacted_text,
+            sections=redacted_sections,
+            metadata=metadata,
+        )
         return IngestionResult(success=True, document=document)
     except Exception as exc:
         return IngestionResult(
@@ -222,16 +296,14 @@ def ingest_file(
     file_path: str | os.PathLike[str],
     owner_id: str = "default_user",
 ) -> IngestionResult:
-    """Parse one immutable source snapshot without reopening the caller's path."""
+    """Parse one immutable source snapshot without reopening the caller path."""
 
     try:
         owner = normalize_owner_id(owner_id)
         source = _source_path(file_path)
         suffix = safe_upload_suffix(source.name)
-        payload = _read_source_bytes(
-            source,
-            _implementation.DEFAULT_MAX_UPLOAD_BYTES,
-        )
+        maximum = int(getattr(_implementation, "DEFAULT_MAX_UPLOAD_BYTES"))
+        payload = _read_source_bytes(source, maximum)
     except (SecurityError, ValueError) as exc:
         return IngestionResult(success=False, error=str(exc))
     except Exception as exc:
@@ -240,6 +312,7 @@ def ingest_file(
             error=f"Input validation failed ({type(exc).__name__}).",
         )
 
+    _sync_legacy_runtime()
     with tempfile.TemporaryDirectory(prefix="rigorousrag-parser-") as directory:
         snapshot = Path(directory) / f"source{suffix}"
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
@@ -264,8 +337,3 @@ def ingest_file(
         source=source,
         payload=payload,
     )
-
-
-_implementation.ingest_file = ingest_file
-_implementation.__doc__ = __doc__
-sys.modules[__name__] = _implementation
