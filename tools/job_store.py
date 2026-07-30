@@ -1,4 +1,10 @@
-"""Crash-persistent, owner-scoped ingestion job storage."""
+"""Crash-persistent, owner-scoped ingestion job storage.
+
+The store deliberately exposes a small state-machine API. Every public write validates
+identifiers, clocks, retry values, transition legality, and public text before opening a
+transaction. Recovery reads treat durable rows as untrusted and skip malformed records
+rather than replaying them.
+"""
 
 from __future__ import annotations
 
@@ -16,29 +22,47 @@ from tools.privacy import mask_metadata_text
 from tools.security import normalize_owner_id
 
 _ALLOWED_STATUSES = frozenset({"queued", "processing", "finalizing", "success", "failed"})
+_ACTIVE_STATUSES = frozenset({"queued", "processing", "finalizing"})
 _ALLOWED_TRANSITIONS = {
-    "queued": frozenset({"queued", "failed"}),
+    "queued": frozenset({"queued", "processing", "failed"}),
     "processing": frozenset({"processing", "queued", "finalizing", "failed"}),
     "finalizing": frozenset({"finalizing", "queued", "failed", "success"}),
     "success": frozenset({"success"}),
     "failed": frozenset({"failed"}),
 }
+_ALLOWED_UPDATE_FIELDS = frozenset(
+    {"status", "filename", "message", "doc_id", "source_path", "next_attempt_at"}
+)
 _MAX_RECOVERABLE_JOBS = 100_000
 _MAX_JOB_ID_CHARS = 200
+_MAX_DOCUMENT_ID_CHARS = 200
+_MAX_FILENAME_CHARS = 500
+_MAX_MESSAGE_CHARS = 2000
 _MAX_OWNER_SAFE_PATH_CHARS = 4000
+_MAX_ATTEMPTS = 1_000_000
+_FILE_ATTRIBUTE_REPARSE_POINT = 0x0400
 
 
 def _contains_ascii_control(value: str) -> bool:
     return any(ord(character) < 32 or ord(character) == 127 for character in value)
 
 
+def _is_link_or_reparse(info: os.stat_result) -> bool:
+    attributes = int(getattr(info, "st_file_attributes", 0) or 0)
+    return stat.S_ISLNK(info.st_mode) or bool(attributes & _FILE_ATTRIBUTE_REPARSE_POINT)
+
+
 def _absolute_without_resolution(value: str | os.PathLike[str], label: str) -> Path:
     if not isinstance(value, (str, os.PathLike)):
         raise ValueError(f"{label} must be a filesystem path.")
-    rendered = os.fspath(value)
+    try:
+        rendered = os.fspath(value)
+    except TypeError as exc:
+        raise ValueError(f"{label} must be a filesystem path.") from exc
     if (
-        not rendered
-        or len(rendered) > 4096
+        not isinstance(rendered, str)
+        or not rendered
+        or len(rendered) > _MAX_OWNER_SAFE_PATH_CHARS
         or _contains_ascii_control(rendered)
     ):
         raise ValueError(f"{label} is invalid or too long.")
@@ -51,14 +75,20 @@ def _absolute_without_resolution(value: str | os.PathLike[str], label: str) -> P
 def _safe_database_path(value: str | os.PathLike[str]) -> Path:
     absolute = _absolute_without_resolution(value, "JOB_DB_PATH")
     for component in (absolute, *absolute.parents):
-        if component.is_symlink():
+        try:
+            info = os.lstat(component)
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            raise ValueError("JOB_DB_PATH could not be inspected safely.") from exc
+        if _is_link_or_reparse(info):
             raise ValueError(
-                "JOB_DB_PATH may not contain symbolic-link components."
+                "JOB_DB_PATH may not contain symbolic-link or reparse-point components."
             )
     return absolute
 
 
-def _bounded_identifier(value: Any, label: str, maximum: int = 200) -> str:
+def _bounded_identifier(value: Any, label: str, maximum: int) -> str:
     if not isinstance(value, str):
         raise ValueError(f"{label} must be a string.")
     identifier = value.strip()
@@ -67,9 +97,7 @@ def _bounded_identifier(value: Any, label: str, maximum: int = 200) -> str:
         or len(identifier) > maximum
         or _contains_ascii_control(identifier)
     ):
-        raise ValueError(
-            f"{label} must contain 1-{maximum} valid characters."
-        )
+        raise ValueError(f"{label} must contain 1-{maximum} valid characters.")
     return identifier
 
 
@@ -78,40 +106,26 @@ def _job_identifier(value: Any) -> str:
 
 
 def _document_identifier(value: Any) -> str:
-    return _bounded_identifier(value, "doc_id", 200)
+    return _bounded_identifier(value, "doc_id", _MAX_DOCUMENT_ID_CHARS)
 
 
-def _bounded_integer(
+def _strict_integer(
     value: Any,
     label: str,
     *,
     minimum: int,
     maximum: int,
 ) -> int:
-    if isinstance(value, bool):
+    if isinstance(value, bool) or not isinstance(value, int):
         raise ValueError(f"{label} must be an integer.")
-    try:
-        numeric = int(value)
-    except (TypeError, ValueError, OverflowError) as exc:
-        raise ValueError(f"{label} must be an integer.") from exc
-    if isinstance(value, float) and not value.is_integer():
-        raise ValueError(f"{label} must be an integer.")
-    if not minimum <= numeric <= maximum:
+    if not minimum <= value <= maximum:
         raise ValueError(f"{label} must be between {minimum} and {maximum}.")
-    return numeric
-
-
-def _saturating_nonnegative_integer(value: Any, maximum: int) -> int:
-    if isinstance(value, bool):
-        return 0
-    try:
-        numeric = int(value)
-    except (TypeError, ValueError, OverflowError):
-        return 0
-    return max(0, min(numeric, maximum))
+    return value
 
 
 def _finite_timestamp(value: Any, label: str, *, minimum: float = 0.0) -> float:
+    if isinstance(value, bool):
+        raise ValueError(f"{label} must be numeric, not boolean.")
     try:
         numeric = float(value)
     except (TypeError, ValueError, OverflowError) as exc:
@@ -121,21 +135,29 @@ def _finite_timestamp(value: Any, label: str, *, minimum: float = 0.0) -> float:
     return numeric
 
 
+def _current_time() -> float:
+    return _finite_timestamp(time.time(), "current time")
+
+
 def _safe_public_text(value: Any, *, limit: int, default: str = "") -> str:
     if value is None:
         rendered = default
-    elif not isinstance(value, str):
+    elif isinstance(value, str):
+        rendered = value
+    else:
         try:
             rendered = str(value)
         except Exception:
             rendered = default
-    else:
-        rendered = value
     return mask_metadata_text(rendered).strip()[:limit]
 
 
+def _validate_stored_attempts(value: Any) -> int:
+    return _strict_integer(value, "stored attempts", minimum=0, maximum=_MAX_ATTEMPTS)
+
+
 class JobStore:
-    """Durable ingestion queue and public job-status registry."""
+    """Durable ingestion queue and owner-scoped public job-status registry."""
 
     def __init__(
         self,
@@ -147,13 +169,17 @@ class JobStore:
         )
         self.path = _safe_database_path(selected)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        if isinstance(ttl_seconds, bool):
+        self.path = _safe_database_path(self.path)
+        parent_info = os.stat(self.path.parent, follow_symlinks=False)
+        if not stat.S_ISDIR(parent_info.st_mode) or _is_link_or_reparse(parent_info):
+            raise ValueError("JOB_DB_PATH parent must be a safe directory.")
+        self._parent_identity = (int(parent_info.st_dev), int(parent_info.st_ino))
+
+        if isinstance(ttl_seconds, bool) or not isinstance(ttl_seconds, int):
             raise ValueError("ttl_seconds must be an integer.")
-        try:
-            raw_ttl = int(ttl_seconds)
-        except (TypeError, ValueError, OverflowError) as exc:
-            raise ValueError("ttl_seconds must be an integer.") from exc
-        self.ttl_seconds = max(60, min(raw_ttl, 31_536_000))
+        if ttl_seconds <= 0 or ttl_seconds > 31_536_000:
+            raise ValueError("ttl_seconds must be between 1 and 31,536,000.")
+        self.ttl_seconds = max(60, ttl_seconds)
         self.retry_base_seconds = bounded_float_env(
             "INGEST_RETRY_BASE_SECONDS",
             2.0,
@@ -174,12 +200,21 @@ class JobStore:
 
     def _ensure_database_path(self) -> None:
         _safe_database_path(self.path)
-        if not self.path.parent.exists() or not self.path.parent.is_dir():
-            raise OSError("JOB_DB_PATH parent must remain a directory.")
+        try:
+            parent_info = os.stat(self.path.parent, follow_symlinks=False)
+        except OSError as exc:
+            raise OSError("JOB_DB_PATH parent is unavailable.") from exc
+        parent_identity = (int(parent_info.st_dev), int(parent_info.st_ino))
+        if (
+            not stat.S_ISDIR(parent_info.st_mode)
+            or _is_link_or_reparse(parent_info)
+            or parent_identity != self._parent_identity
+        ):
+            raise OSError("JOB_DB_PATH parent identity changed after initialization.")
         if self.path.exists():
-            mode = self.path.stat(follow_symlinks=False).st_mode
-            if not stat.S_ISREG(mode):
-                raise OSError("JOB_DB_PATH must remain a regular file.")
+            info = os.stat(self.path, follow_symlinks=False)
+            if not stat.S_ISREG(info.st_mode) or _is_link_or_reparse(info):
+                raise OSError("JOB_DB_PATH must remain a safe regular file.")
 
     def _connect(self) -> sqlite3.Connection:
         self._ensure_database_path()
@@ -241,27 +276,50 @@ class JobStore:
             with self._lock, self._connect() as connection:
                 row = connection.execute("SELECT 1 AS ok").fetchone()
             return bool(row and int(row["ok"]) == 1)
-        except (sqlite3.Error, OSError, ValueError):
+        except (sqlite3.Error, OSError, TypeError, ValueError):
             return False
 
     def prune(self, now: Optional[float] = None) -> int:
-        current_time = time.time() if now is None else _finite_timestamp(now, "now")
-        cutoff = current_time - self.ttl_seconds
+        current = _current_time() if now is None else _finite_timestamp(now, "current time")
+        cutoff = current - self.ttl_seconds
         with self._lock, self._connect() as connection:
             cursor = connection.execute(
                 "DELETE FROM jobs WHERE updated_at < ? "
                 "AND status IN ('success', 'failed')",
                 (cutoff,),
             )
-            return max(cursor.rowcount, 0)
+            return max(int(cursor.rowcount), 0)
 
-    def _retry_delay(self, attempts: int) -> float:
-        count = _saturating_nonnegative_integer(attempts, 1_000_000)
+    def _retry_delay(self, attempts: Any) -> float:
+        if isinstance(attempts, bool):
+            count = 0
+        else:
+            try:
+                count = int(attempts)
+            except (TypeError, ValueError, OverflowError):
+                count = 0
+        count = max(0, min(count, _MAX_ATTEMPTS))
         exponent = min(max(count - 1, 0), 60)
         return min(
             self.retry_max_seconds,
             self.retry_base_seconds * (2**exponent),
         )
+
+    def retry_delay_seconds(self, attempts: int) -> float:
+        count = _strict_integer(
+            attempts,
+            "attempts",
+            minimum=0,
+            maximum=_MAX_ATTEMPTS,
+        )
+        return self._retry_delay(count)
+
+    def retry_deadline(self, attempts: int, *, now: Optional[float] = None) -> float:
+        current = _current_time() if now is None else _finite_timestamp(now, "current time")
+        deadline = current + self.retry_delay_seconds(attempts)
+        if not math.isfinite(deadline):
+            raise ValueError("retry deadline must remain finite.")
+        return deadline
 
     @staticmethod
     def _validate_transition(previous_status: str, status: str) -> None:
@@ -277,23 +335,28 @@ class JobStore:
             )
 
     def update(self, job_id: str, owner_id: str, **fields: Any) -> None:
+        unknown = sorted(set(fields) - _ALLOWED_UPDATE_FIELDS)
+        if unknown:
+            raise ValueError(f"Unsupported job update field: {unknown[0]}.")
         owner = normalize_owner_id(owner_id)
         identifier = _job_identifier(job_id)
-        now = time.time()
+        now = _current_time()
+
         raw_status = fields.get("status", "queued")
         if not isinstance(raw_status, str):
             raise ValueError("status must be a string.")
         status = raw_status.strip().lower()
-        filename = _safe_public_text(
-            fields.get("filename"), limit=500, default="upload"
-        ) or "upload"
+        if status not in _ALLOWED_STATUSES:
+            raise ValueError(
+                "status must be one of queued, processing, finalizing, success, or failed."
+            )
+
         raw_message = fields.get("message")
         message = (
-            _safe_public_text(raw_message, limit=2000)
+            _safe_public_text(raw_message, limit=_MAX_MESSAGE_CHARS)
             if raw_message not in (None, "")
             else None
-        )
-        message = message or None
+        ) or None
         raw_doc_id = fields.get("doc_id")
         requested_doc_id = (
             None
@@ -302,58 +365,94 @@ class JobStore:
         )
 
         source_path_value = fields.get("source_path")
-        source_path = None
+        explicit_source = "source_path" in fields
+        source_path: Optional[str] = None
         if source_path_value not in (None, ""):
             source_path = str(
                 _absolute_without_resolution(source_path_value, "source_path")
             )
-            if len(source_path) > _MAX_OWNER_SAFE_PATH_CHARS:
-                raise ValueError("source_path exceeds the 4,000-character limit.")
-        next_attempt_value = fields.get("next_attempt_at")
+
+        explicit_deadline = "next_attempt_at" in fields
+        deadline_value = fields.get("next_attempt_at")
+        if explicit_deadline:
+            explicit_next_attempt_at = _finite_timestamp(
+                deadline_value,
+                "next_attempt_at",
+            )
+        else:
+            explicit_next_attempt_at = 0.0
 
         with self._lock, self._connect() as connection:
             existing = connection.execute(
-                "SELECT owner_id, status, attempts, source_path, "
-                "next_attempt_at, doc_id FROM jobs WHERE job_id=?",
+                "SELECT owner_id, status, filename, attempts, source_path, "
+                "next_attempt_at, doc_id, created_at FROM jobs WHERE job_id=?",
                 (identifier,),
             ).fetchone()
             if existing is not None and str(existing["owner_id"]) != owner:
                 raise PermissionError(
                     "A job ID cannot be reassigned to a different owner."
                 )
-            attempts = (
-                _saturating_nonnegative_integer(existing["attempts"] or 0, 1_000_000)
-                if existing
-                else 0
-            )
+
             previous_status = str(existing["status"] or "") if existing else ""
             self._validate_transition(previous_status, status)
-            if source_path_value is None and existing is not None:
-                source_path = str(existing["source_path"] or "") or None
-            if next_attempt_value is None and existing is not None:
+            attempts = (
+                _validate_stored_attempts(existing["attempts"])
+                if existing is not None
+                else 0
+            )
+            created_at = (
+                _finite_timestamp(existing["created_at"], "stored created_at")
+                if existing is not None
+                else now
+            )
+
+            if "filename" in fields:
+                filename = _safe_public_text(
+                    fields.get("filename"),
+                    limit=_MAX_FILENAME_CHARS,
+                    default="upload",
+                ) or "upload"
+            elif existing is not None:
+                filename = _safe_public_text(
+                    existing["filename"],
+                    limit=_MAX_FILENAME_CHARS,
+                    default="upload",
+                ) or "upload"
+            else:
+                filename = "upload"
+
+            if not explicit_source and existing is not None:
+                stored_source = existing["source_path"]
+                source_path = (
+                    str(_absolute_without_resolution(stored_source, "stored source_path"))
+                    if stored_source not in (None, "")
+                    else None
+                )
+
+            if explicit_deadline:
+                next_attempt_at = explicit_next_attempt_at
+            elif existing is not None:
                 next_attempt_at = _finite_timestamp(
-                    existing["next_attempt_at"] or 0.0,
+                    existing["next_attempt_at"],
                     "stored next_attempt_at",
                 )
             else:
-                next_attempt_at = _finite_timestamp(
-                    next_attempt_value or 0.0,
-                    "next_attempt_at",
-                )
+                next_attempt_at = 0.0
+
             if (
                 status == "queued"
-                and next_attempt_value is None
+                and not explicit_deadline
                 and previous_status in {"processing", "finalizing"}
             ):
-                next_attempt_at = now + self._retry_delay(attempts)
+                next_attempt_at = self.retry_deadline(attempts, now=now)
             elif status != "queued":
                 next_attempt_at = 0.0
 
             stored_doc_id = requested_doc_id if status in {"finalizing", "success"} else None
             if status in {"finalizing", "success"} and stored_doc_id is None and existing:
-                existing_value = existing["doc_id"]
-                if existing_value not in (None, ""):
-                    stored_doc_id = _document_identifier(existing_value)
+                prior_doc_id = existing["doc_id"]
+                if prior_doc_id not in (None, ""):
+                    stored_doc_id = _document_identifier(prior_doc_id)
             if status in {"finalizing", "success"} and stored_doc_id is None:
                 raise ValueError(f"doc_id is required when status is {status}.")
 
@@ -383,7 +482,7 @@ class JobStore:
                     source_path,
                     attempts,
                     next_attempt_at,
-                    now,
+                    created_at,
                     now,
                 ),
             )
@@ -399,13 +498,13 @@ class JobStore:
     ) -> bool:
         owner = normalize_owner_id(owner_id)
         identifier = _job_identifier(job_id)
-        limit = _bounded_integer(
+        limit = _strict_integer(
             max_attempts,
             "max_attempts",
             minimum=1,
-            maximum=1_000_000,
+            maximum=_MAX_ATTEMPTS,
         )
-        current_time = time.time() if now is None else _finite_timestamp(now, "now")
+        current = _current_time() if now is None else _finite_timestamp(now, "current time")
         with self._lock, self._connect() as connection:
             cursor = connection.execute(
                 """
@@ -413,11 +512,14 @@ class JobStore:
                 SET status='processing', attempts=attempts + 1,
                     next_attempt_at=0, message=NULL, doc_id=NULL, updated_at=?
                 WHERE job_id=? AND owner_id=? AND status='queued'
-                  AND attempts >= 0 AND attempts < ? AND next_attempt_at <= ?
+                  AND typeof(attempts)='integer'
+                  AND attempts >= 0 AND attempts < ?
+                  AND typeof(next_attempt_at) IN ('integer', 'real')
+                  AND next_attempt_at >= 0 AND next_attempt_at <= ?
                 """,
-                (current_time, identifier, owner, limit, current_time),
+                (current, identifier, owner, limit, current),
             )
-            return cursor.rowcount == 1
+            return int(cursor.rowcount) == 1
 
     def get(self, job_id: str, owner_id: str) -> Optional[Dict[str, Any]]:
         owner = normalize_owner_id(owner_id)
@@ -445,6 +547,61 @@ class JobStore:
             ).fetchone()
         return dict(row) if row is not None else None
 
+    @staticmethod
+    def _sanitize_recovery_record(raw: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        try:
+            job_id = _job_identifier(raw.get("job_id"))
+            owner_id = normalize_owner_id(raw.get("owner_id"))
+            status = raw.get("status")
+            if not isinstance(status, str) or status not in _ACTIVE_STATUSES:
+                return None
+            filename = raw.get("filename")
+            if (
+                not isinstance(filename, str)
+                or not filename
+                or len(filename) > _MAX_FILENAME_CHARS
+                or _contains_ascii_control(filename)
+            ):
+                return None
+            attempts = _strict_integer(
+                raw.get("attempts"),
+                "attempts",
+                minimum=0,
+                maximum=_MAX_ATTEMPTS,
+            )
+            next_attempt_at = _finite_timestamp(
+                raw.get("next_attempt_at"),
+                "next_attempt_at",
+            )
+            source_value = raw.get("source_path")
+            source_path = (
+                None
+                if source_value in (None, "")
+                else str(_absolute_without_resolution(source_value, "source_path"))
+            )
+            doc_value = raw.get("doc_id")
+            doc_id = (
+                None
+                if doc_value in (None, "")
+                else _document_identifier(doc_value)
+            )
+            if status == "finalizing" and doc_id is None:
+                return None
+            if status in {"queued", "processing"} and doc_id is not None:
+                return None
+        except (TypeError, ValueError):
+            return None
+        return {
+            "job_id": job_id,
+            "owner_id": owner_id,
+            "status": status,
+            "filename": filename,
+            "doc_id": doc_id,
+            "source_path": source_path,
+            "attempts": attempts,
+            "next_attempt_at": next_attempt_at,
+        }
+
     def recoverable(self) -> List[Dict[str, Any]]:
         with self._lock, self._connect() as connection:
             rows = connection.execute(
@@ -460,15 +617,9 @@ class JobStore:
             ).fetchall()
         records: List[Dict[str, Any]] = []
         for row in rows:
-            record = dict(row)
-            try:
-                record["job_id"] = _job_identifier(record.get("job_id"))
-                record["owner_id"] = normalize_owner_id(record.get("owner_id"))
-                if record.get("doc_id") not in (None, ""):
-                    record["doc_id"] = _document_identifier(record["doc_id"])
-            except (TypeError, ValueError):
-                continue
-            records.append(record)
+            record = self._sanitize_recovery_record(dict(row))
+            if record is not None:
+                records.append(record)
         return records
 
     def active_source_paths(self) -> Set[Path]:
