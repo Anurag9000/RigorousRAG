@@ -1,6 +1,6 @@
 # Exhaustive Remediation Status
 
-This document records implementation performed after the repository-wide static audit of 2026-07-27 and subsequent regression audits of the remediation branch. It does not claim that the software is proven defect-free. It separates controls implemented in source, tests written for those controls, executable verification, and residual limitations.
+This document records implementation performed after the repository-wide static audit of 2026-07-27 and six subsequent regression audits of the remediation branch. It does not claim that the software is proven defect-free. It separates controls implemented in source, tests written for those controls, executable verification, and residual limitations.
 
 ## Scope
 
@@ -8,11 +8,11 @@ The remediation branch audits and changes every product surface identified in th
 
 - classic crawler, sparse index, PageRank, generation persistence, scholarly adapters, and CLIs;
 - PDF/DOCX/text parsing, optional OCR, masking, source identity, retention, and vector retrieval;
-- durable ingestion queue, centralized delayed scheduling, bounded admission, startup recovery, and document registry;
+- durable ingestion queue, centralized delayed scheduling, bounded admission, startup recovery, document registry, and operator repair;
 - agent orchestration, query/tool concurrency, provenance, scientific-analysis tools, page/web/scholarly search, legacy summarization, and BibTeX;
-- FastAPI identity, body limits, uploads, jobs, models, throttling, request deadlines, and direct tool routes;
+- FastAPI identity, body limits, uploads, jobs, models, throttling, request deadlines, direct tool routes, and portable static assets;
 - browser rendering, authentication, upload status, document management, source capability, and responsive tools;
-- tests, CI, dependencies, container readiness, runtime artifacts, telemetry, licensing, and documentation.
+- tests, cross-platform CI, release-lock generation, dependencies, container readiness, runtime artifacts, telemetry, licensing, and documentation.
 
 ## Critical findings
 
@@ -33,13 +33,13 @@ The remediation branch audits and changes every product surface identified in th
 
 | Area | Status | Notes |
 |---|---|---|
-| Stale tests and absent CI | Remediated in source/config | Tests were replaced with contract/regression tests. CI config now checks dependency consistency, patch whitespace, Python 3.10–3.12 compile, fatal Ruff checks, pytest/coverage, Compose parsing, and Docker build. Exact-head execution is still absent. |
+| Stale tests and absent CI | Remediated in source/config | Tests were replaced with contract/regression tests. CI checks dependency consistency, patch whitespace, Python 3.10–3.12 compile, fatal Ruff checks, pytest/coverage, Compose parsing, Docker build, and focused Windows storage behavior. Exact-head execution is still absent. |
 | Model-authored citations | Resolved | The model returns prose. A bounded server evidence registry selects, deduplicates, relabels, and serializes actual tool citations. |
 | Prompt injection through evidence | Mitigated | Retrieved and OCR text is explicitly untrusted; tenant/provenance controls live outside the model. Model-prose risk remains. |
 | Tool argument and context abuse | Resolved in continuation | Runtime JSON-schema validation, bounded argument/result/evidence/answer sizes, generic exception messages, and process-wide bounded running-plus-queued tool admission. |
 | False tool timeout | Resolved in continuation | Tool calls return after the configured deadline instead of waiting for executor shutdown. Running third-party Python threads still cannot be killed. |
 | Unbounded timed-out tool threads/queue | Resolved in continuation | Per-request executors were replaced with one process-wide executor; `MAX_PENDING_TOOL_TASKS` prevents an unbounded submission queue and timed-out running work retains capacity until completion. |
-| Unbounded HTTP research work | Resolved in continuation | `/query`, direct visual entailment, and direct protocol extraction share a dedicated `BoundedExecutor`, explicit running-plus-pending limits, generic overload responses, and a whole-operation timeout. |
+| Unbounded HTTP research work | Resolved in continuation | `/query`, direct visual entailment, direct protocol extraction, document listing, and document deletion share bounded research execution, explicit running-plus-pending limits, generic overload responses, and whole-operation timeouts. |
 | Provider/model mismatch and malformed provider objects | Resolved | Server model allowlist, strict request-scoped provider configuration, bounded strict JSON, safe provider field extraction, and frontend options from `/config`. |
 | CLI/API ingestion divergence | Resolved | Shared parsing/indexing services and source registry; CLI can explicitly retain bounded random private copies. |
 | Batch CLI partial finalization | Resolved in continuation | The CLI refuses symlinked inputs, captures the prior owner/document vector generation before replacement, restores it when registry finalization fails, cleans new retained copies, and publishes manifests atomically. |
@@ -56,7 +56,7 @@ The remediation branch audits and changes every product surface identified in th
 | Empty-evidence comparisons/matrices | Resolved | Required-document evidence gaps stop synthesis. Matrix work is capped and consolidated into one bounded call. |
 | Web/scholarly provider bypass or unbounded result parsing | Resolved | Parsed hostname boundaries; shared peer-validated downloader; strict provider JSON; bounded candidate/result/author/metadata inspection; generic failures. |
 | Crawler redirect escape/oversized download | Resolved | Shared downloader, final-host trust check, response-byte and total-time ceilings. |
-| Non-atomic or redirectable classic persistence | Resolved | Deterministic serialization, fsync, atomic generation publication, manifest hashes/counts, strict JSON, cross-process locks, root ancestry checks, and root device/inode binding. POSIX member I/O is descriptor-relative; Windows uses identity-checked fallback. |
+| Non-atomic or redirectable classic persistence | Resolved | Deterministic serialization, fsync, atomic generation publication, manifest hashes/counts, strict JSON, cross-process locks, root ancestry checks, and root device/inode binding. POSIX member I/O is descriptor-relative; Windows fallback now performs strict bounded identity-checked parsing and rejects reparse points. |
 | Sensitive query/owner logging and unbounded logs | Resolved in continuation | Query/owner SHA-256 replaces plaintext; recursive event bounds, process serialization, configured JSONL rotation/backups, and symlink ancestry refusal. |
 | Job restart loss and duplicate replay | Resolved for one host | SQLite queue, atomic due claims, attempt ceilings, finalizing reconciliation, source ownership, and retry deadlines. |
 | Immediate retries, timer explosion, worker starvation | Resolved in continuation | SQLite stores bounded exponential deadlines; one lazy heap/condition scheduler manages delayed jobs; `INGEST_MAX_PENDING` prevents unbounded executor submission. |
@@ -83,8 +83,10 @@ The branch additionally implements:
 - lifecycle-aware upload status and retained-PDF eligibility/verification fields;
 - request-ID allowlisting and model/job/document/response identifier limits;
 - immutable validated trusted-source catalogues;
+- launch-directory-independent bundled frontend mounting without changing process CWD;
+- explicit audited retirement of corrupt durable rows without implicit source deletion;
 - non-root read-only container, dropped capabilities, no-new-privileges, PID limit, Tesseract, named state volumes, and dependency-aware readiness;
-- separated runtime/development dependencies, environment template, package metadata, and MIT license;
+- separated runtime/development dependencies, environment template, package metadata, MIT license, and platform lock tooling;
 - removal of committed runtime databases, fabricated fixtures, destructive generators, mislabeled assets, and stale self-certification documents.
 
 ## New justified functionality
@@ -119,6 +121,10 @@ Functionality added because it directly closes audited gaps:
 26. Bounded pseudonymous rotating telemetry.
 27. Security, architecture, remediation, and deployment documentation.
 28. Clean-clone CI, Compose validation, and Docker build configuration.
+29. Strict Windows classic JSON fallback and focused Windows CI.
+30. Verified module-relative frontend static mounting.
+31. Sanitized, fingerprint-bound, audited corrupt-row operator retirement.
+32. Linux/Windows/macOS Python 3.10–3.12 hashed release-lock generation and verification.
 
 No unrelated feature was added merely to increase the feature count.
 
@@ -139,26 +145,28 @@ These are disclosed rather than falsely marked complete:
 - The readiness probe tests stores/volumes, not embedding-model download or representative semantic retrieval.
 - Citation provenance is structural; semantic support still requires source inspection or a separately validated entailment system.
 - Scientific-analysis outputs require expert review and replication.
-- Runtime dependency ranges are not release locks; production releases should generate platform-specific lock files with hashes.
+- Platform-specific hashed locks must be produced by a successful target-platform resolver run; source tooling alone is not a release artifact.
 
 ## Verification status
 
 ### Statically inspected and contract-tested in source
 
-- The remediation and continuation passes re-read changed public contracts and exact commit diffs through the GitHub connector.
-- Regression tests target tenant isolation, request-body ceilings, query/direct-route overload and deadlines, tool admission/timeouts, peer-validated networking, strict provider JSON, redirect secrets, parser/archive complexity, source identity, retained-source mutation, visual limits, scientific output sanitization, vector/CLI rollback, paginated listing, retrieval outages, queue migration/backoff, delayed scheduling, source reconciliation, bounded models, privacy-safe telemetry, OCR, frontend safety, classic storage identity, and deployment configuration.
+- Six remediation/continuation passes re-read changed public contracts and exact commit diffs through the GitHub connector.
+- Regression tests target tenant isolation, request-body ceilings, query/direct-route overload and deadlines, tool admission/timeouts, peer-validated networking, strict provider JSON, redirect secrets, parser/archive complexity, source identity, retained-source mutation, visual limits, scientific output sanitization, vector/CLI rollback, paginated listing, retrieval outages, queue migration/backoff, delayed scheduling, source reconciliation, corrupt-row retirement, bounded models, privacy-safe telemetry, OCR, frontend safety/portability, classic storage identity/Windows fallback, release locks, and deployment configuration.
 - Runtime artifacts remain ignored and committed stale artifacts were removed.
 
 ### Executable verification still required
 
 The branch defines checks for:
 
-- Python 3.10, 3.11, and 3.12;
+- Linux Python 3.10, 3.11, and 3.12;
+- focused Windows Python 3.10 and 3.12 classic-storage behavior;
 - installed dependency consistency with `pip check`;
 - patch whitespace and `compileall`;
 - fatal Ruff syntax/name checks;
 - pytest with branch coverage and an initial 50% floor;
 - Docker Compose configuration parsing;
-- Docker image build including Tesseract.
+- Docker image build including Tesseract;
+- hashed lock resolution, contract validation, and installation dry runs on Linux, Windows, and macOS for Python 3.10–3.12.
 
-The available remediation environment cannot clone/download and execute the branch because `github.com` DNS resolution fails. No workflow result has been observed for the exact current head through the available connector. Therefore this PR remains draft and is not merge-ready until checks run against the final head and every failure is corrected. Coverage targets must rise from measured results, not fabricated claims.
+The available remediation environment cannot clone/download and execute the branch because `github.com` DNS resolution fails. No successful workflow result has yet been observed for the exact current head through the available connector. Therefore this PR remains draft and is not merge-ready until every final-head check runs, every failure is corrected, and the resulting head is re-audited. Coverage targets must rise from measured results, not fabricated claims.
