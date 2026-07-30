@@ -1,4 +1,4 @@
-"""Document-ingestion models with privacy-safe serialization defaults."""
+"""Document-ingestion models with privacy-safe construction and serialization."""
 
 from __future__ import annotations
 
@@ -79,12 +79,15 @@ class DocumentSection(BaseModel):
 
     @field_validator("content", mode="before")
     @classmethod
-    def validate_content(cls, value: Any) -> str:
+    def mask_and_validate_content(cls, value: Any) -> str:
         if not isinstance(value, str):
             raise ValueError("Section content must be a string.")
         if not value or len(value) > _MAX_DOCUMENT_TEXT_CHARS or "\x00" in value:
             raise ValueError("Section content must contain valid non-empty text.")
-        return value
+        masked = mask_metadata_text(value)
+        if not masked:
+            raise ValueError("Section content must contain valid non-empty text.")
+        return masked
 
     @field_validator("page_number", mode="before")
     @classmethod
@@ -158,12 +161,12 @@ class IngestedDocument(BaseModel):
 
     @field_validator("text", mode="before")
     @classmethod
-    def validate_document_text(cls, value: Any) -> str:
+    def mask_and_validate_document_text(cls, value: Any) -> str:
         if not isinstance(value, str):
             raise ValueError("Document text must be a string.")
         if len(value) > _MAX_DOCUMENT_TEXT_CHARS or "\x00" in value:
             raise ValueError("Document text exceeds the valid text boundary.")
-        return value
+        return mask_metadata_text(value)
 
     @field_validator("sections", mode="before")
     @classmethod
