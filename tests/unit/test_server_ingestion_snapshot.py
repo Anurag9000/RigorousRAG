@@ -53,6 +53,22 @@ def _document(snapshot: Path, *, doc_id: str = "doc-1") -> IngestedDocument:
     )
 
 
+def _patch_snapshot_materializer(monkeypatch, server_module, replacement):
+    monkeypatch.setitem(
+        server_module.process_ingestion.__globals__,
+        "materialize_ingestion_snapshot",
+        replacement,
+    )
+
+
+def _patch_retry_submission(monkeypatch, server_module, submissions):
+    monkeypatch.setitem(
+        server_module._retry_or_fail_job.__globals__,
+        "_submit_ingestion",
+        lambda *args: submissions.append(args),
+    )
+
+
 def test_worker_passes_private_snapshot_path_to_parser(server_module, monkeypatch, tmp_path):
     source = _owner_source(server_module)
     snapshot = tmp_path / "snapshot.txt"
@@ -67,7 +83,7 @@ def test_worker_passes_private_snapshot_path_to_parser(server_module, monkeypatc
         return_value=IngestionResult(success=False, error="parse failed")
     )
     failed = MagicMock(return_value=True)
-    monkeypatch.setattr(server_module, "materialize_ingestion_snapshot", fake_snapshot)
+    _patch_snapshot_materializer(monkeypatch, server_module, fake_snapshot)
     monkeypatch.setattr(server_module, "ingest_file", parser)
     monkeypatch.setattr(server_module, "_persist_failed_job", failed)
     monkeypatch.setattr(server_module._JOB_STORE, "claim", lambda *_args, **_kwargs: True)
@@ -103,7 +119,7 @@ def test_mutated_queued_source_is_rejected_before_vector_publication(
         return IngestionResult(success=True, document=document)
 
     index_document = MagicMock()
-    monkeypatch.setattr(server_module, "materialize_ingestion_snapshot", fake_snapshot)
+    _patch_snapshot_materializer(monkeypatch, server_module, fake_snapshot)
     monkeypatch.setattr(server_module, "ingest_file", parse_then_mutate)
     monkeypatch.setattr(server_module, "index_document", index_document)
     monkeypatch.setattr(server_module._JOB_STORE, "claim", lambda *_args, **_kwargs: True)
@@ -137,7 +153,7 @@ def test_preexisting_registry_does_not_mask_current_vector_failure(
         yield snapshot, snapshot.read_bytes()
 
     submissions = []
-    monkeypatch.setattr(server_module, "materialize_ingestion_snapshot", fake_snapshot)
+    _patch_snapshot_materializer(monkeypatch, server_module, fake_snapshot)
     monkeypatch.setattr(
         server_module,
         "ingest_file",
@@ -158,11 +174,7 @@ def test_preexisting_registry_does_not_mask_current_vector_failure(
         },
     )
     monkeypatch.setattr(server_module._JOB_STORE, "claim", lambda *_args, **_kwargs: True)
-    monkeypatch.setattr(
-        server_module,
-        "_submit_ingestion",
-        lambda *args: submissions.append(args),
-    )
+    _patch_retry_submission(monkeypatch, server_module, submissions)
 
     server_module.process_ingestion(
         str(source),
@@ -189,9 +201,9 @@ def test_unexpected_snapshot_failure_returns_job_to_durable_queue(
     updates = []
     submissions = []
     monkeypatch.setattr(server_module._JOB_STORE, "claim", lambda *_args, **_kwargs: True)
-    monkeypatch.setattr(
+    _patch_snapshot_materializer(
+        monkeypatch,
         server_module,
-        "materialize_ingestion_snapshot",
         MagicMock(side_effect=OSError("temporary volume unavailable")),
     )
     monkeypatch.setattr(
@@ -204,11 +216,7 @@ def test_unexpected_snapshot_failure_returns_job_to_durable_queue(
         "update",
         lambda *args, **kwargs: updates.append((args, kwargs)),
     )
-    monkeypatch.setattr(
-        server_module,
-        "_submit_ingestion",
-        lambda *args: submissions.append(args),
-    )
+    _patch_retry_submission(monkeypatch, server_module, submissions)
 
     server_module.process_ingestion(
         str(source),
@@ -227,9 +235,9 @@ def test_snapshot_failure_after_attempt_limit_is_terminal(server_module, monkeyp
     source = _owner_source(server_module)
     failed = MagicMock(return_value=True)
     monkeypatch.setattr(server_module._JOB_STORE, "claim", lambda *_args, **_kwargs: True)
-    monkeypatch.setattr(
+    _patch_snapshot_materializer(
+        monkeypatch,
         server_module,
-        "materialize_ingestion_snapshot",
         MagicMock(side_effect=OSError("temporary volume unavailable")),
     )
     monkeypatch.setattr(
