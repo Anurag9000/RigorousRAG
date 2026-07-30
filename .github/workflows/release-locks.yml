@@ -39,17 +39,8 @@ jobs:
           python -m pip install --upgrade "pip>=25,<26"
           && python -m pip install -r requirements-lock.txt
       - name: Generate hashed platform lock
-        run: python scripts/generate_release_lock.py --upgrade
-      - name: Resolve lock filename
         id: lock
-        shell: python
-        run: |
-          import os
-          from scripts.generate_release_lock import default_output_path
-          path = default_output_path()
-          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as handle:
-              handle.write(f"path={path.as_posix()}\n")
-              handle.write(f"name={path.stem}\n")
+        run: python scripts/generate_release_lock.py --upgrade --github-output
       - name: Verify hashed lock contract
         run: python scripts/verify_release_lock.py "${{ steps.lock.outputs.path }}"
       - name: Verify install from hashes
