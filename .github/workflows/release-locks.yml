@@ -2,6 +2,15 @@ name: Generate release locks
 
 on:
   workflow_dispatch:
+  pull_request:
+    paths:
+      - requirements.txt
+      - requirements-dev.txt
+      - scripts/generate_release_lock.py
+      - scripts/verify_release_lock.py
+      - .github/workflows/release-locks.yml
+  push:
+    tags: ["v*"]
 
 permissions:
   contents: read
