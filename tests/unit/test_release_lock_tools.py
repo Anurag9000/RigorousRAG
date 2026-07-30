@@ -127,7 +127,7 @@ def test_github_output_refuses_symlink(tmp_path, monkeypatch):
         pytest.skip("Symlinks are unavailable in this environment.")
     monkeypatch.setenv("GITHUB_OUTPUT", str(output))
 
-    with pytest.raises(ValueError, match="symbolic link"):
+    with pytest.raises(ValueError, match="symbolic-link"):
         generate_release_lock._write_github_output(destination)
     assert target.read_text(encoding="utf-8") == "unchanged"
 
@@ -143,10 +143,49 @@ def test_generate_release_lock_refuses_symlinked_output(tmp_path):
     except (OSError, NotImplementedError):
         pytest.skip("Symlinks are unavailable in this environment.")
 
-    with pytest.raises(ValueError, match="symbolic link"):
+    with pytest.raises(ValueError, match="symbolic-link"):
         generate_release_lock.generate_lock(
             input_path=source,
             output_path=destination,
             upgrade=False,
         )
     assert target.read_text(encoding="utf-8") == "unchanged"
+
+
+def test_generate_release_lock_refuses_symlinked_input_ancestor(tmp_path):
+    real = tmp_path / "real-input"
+    real.mkdir()
+    source = real / "requirements.txt"
+    source.write_text("requests>=2,<3\n", encoding="utf-8")
+    linked = tmp_path / "linked-input"
+    try:
+        linked.symlink_to(real, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("Directory symlinks are unavailable in this environment.")
+
+    with pytest.raises(ValueError, match="symbolic-link"):
+        generate_release_lock.generate_lock(
+            input_path=linked / "requirements.txt",
+            output_path=tmp_path / "lock.txt",
+            upgrade=False,
+        )
+
+
+def test_generate_release_lock_refuses_symlinked_output_ancestor(tmp_path):
+    source = tmp_path / "requirements.txt"
+    source.write_text("requests>=2,<3\n", encoding="utf-8")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    linked = tmp_path / "linked-output"
+    try:
+        linked.symlink_to(outside, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("Directory symlinks are unavailable in this environment.")
+
+    with pytest.raises(ValueError, match="symbolic-link"):
+        generate_release_lock.generate_lock(
+            input_path=source,
+            output_path=linked / "runtime.txt",
+            upgrade=False,
+        )
+    assert list(outside.iterdir()) == []
