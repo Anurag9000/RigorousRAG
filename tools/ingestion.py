@@ -118,6 +118,49 @@ def _read_source_bytes(path: Path, maximum: int) -> bytes:
         os.close(descriptor)
 
 
+def _redacted_sections(sections: Any) -> list[DocumentSection]:
+    """Independently mask and semantically bound parser-provided sections."""
+
+    if isinstance(sections, (str, bytes, bytearray)):
+        return []
+    try:
+        values = list(sections)
+    except Exception:
+        return []
+    result: list[DocumentSection] = []
+    chunker = getattr(_implementation, "_chunk_text_semantically", None)
+    for index, section in enumerate(values[:10_000]):
+        try:
+            content = mask_metadata_text(section.content).strip()
+            page_number = section.page_number
+            raw_title = section.title
+        except Exception:
+            continue
+        if not content:
+            continue
+        chunks = (
+            chunker(content, max_chars=6000)
+            if callable(chunker)
+            else [content[position:position + 6000] for position in range(0, len(content), 6000)]
+        )
+        chunks = chunks or [content]
+        base_title = mask_metadata_text(raw_title or f"Section {index + 1}").strip()
+        for chunk_index, chunk in enumerate(chunks):
+            if not isinstance(chunk, str) or not chunk.strip():
+                continue
+            title = base_title or f"Section {index + 1}"
+            if len(chunks) > 1:
+                title = f"{title} — Part {chunk_index + 1}"
+            result.append(
+                DocumentSection(
+                    title=title[:500],
+                    content=mask_metadata_text(chunk).strip(),
+                    page_number=page_number,
+                )
+            )
+    return result
+
+
 def _finalize_public_result(
     result: IngestionResult,
     *,
@@ -131,26 +174,8 @@ def _finalize_public_result(
         return result
     document = result.document
     try:
-        redacted_text = _implementation.redact_text(document.text).strip()
-        section_helper = getattr(_implementation, "_redact_sections", None)
-        initial_sections = (
-            section_helper(document.sections)
-            if callable(section_helper)
-            else list(document.sections)
-        )
-        redacted_sections: list[DocumentSection] = []
-        for index, section in enumerate(initial_sections):
-            content = _implementation.redact_text(section.content).strip()
-            if not content:
-                continue
-            title = mask_metadata_text(section.title or f"Section {index + 1}").strip()
-            redacted_sections.append(
-                DocumentSection(
-                    title=(title or f"Section {index + 1}")[:500],
-                    content=content,
-                    page_number=section.page_number,
-                )
-            )
+        redacted_text = mask_metadata_text(document.text).strip()
+        redacted_sections = _redacted_sections(document.sections)
         if not redacted_text or not redacted_sections:
             return IngestionResult(
                 success=False,
@@ -174,9 +199,7 @@ def _finalize_public_result(
         document.sections = redacted_sections
         document.title = title[:500] or fallback_title[:500]
         metadata = sanitize_metadata_dict(document.metadata)
-        metadata.update(
-            sanitize_metadata_dict(extracted)
-        )
+        metadata.update(sanitize_metadata_dict(extracted))
         metadata.update(
             {
                 "owner_id": owner,
