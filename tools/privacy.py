@@ -13,6 +13,7 @@ from typing import Any, Dict, Iterator, MutableSet, Tuple
 
 _EMAIL_RE = re.compile(r"(?<![\w.+-])[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}(?![\w.-])")
 _PHONE_RE = re.compile(r"(?<!\w)(?:\+?\d{1,3}[\s().-]*)?(?:\d[\s().-]*){7,14}\d(?!\w)")
+_ISO_DATE_RE = re.compile(r"(?:19|20)\d{2}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])")
 _IPV4_RE = re.compile(
     r"\b(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}"
     r"(?:25[0-5]|2[0-4]\d|1?\d?\d)\b"
@@ -79,6 +80,11 @@ def _stringify(value: Any, *, fallback_prefix: str = "UNPRINTABLE") -> str:
         return f"[{fallback_prefix}_{_type_name(value)}]"
 
 
+def _mask_phone(match: re.Match[str]) -> str:
+    value = match.group(0)
+    return value if _ISO_DATE_RE.fullmatch(value) else "[REDACTED_PHONE]"
+
+
 def mask_metadata_text(value: Any) -> str:
     """Mask common PII, credentials, secrets, and paths in one bounded string."""
 
@@ -93,7 +99,7 @@ def mask_metadata_text(value: Any) -> str:
     text = _EMAIL_RE.sub("[REDACTED_EMAIL]", text)
     text = _ADDRESS_RE.sub("[REDACTED_ADDRESS]", text)
     text = _IPV4_RE.sub("[REDACTED_IP]", text)
-    text = _PHONE_RE.sub("[REDACTED_PHONE]", text)
+    text = _PHONE_RE.sub(_mask_phone, text)
     return text
 
 
