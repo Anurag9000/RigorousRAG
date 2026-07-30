@@ -16,7 +16,7 @@ from typing import Any
 
 from tools.config import bounded_float_env, bounded_int_env
 from tools.ingestion_models import IngestionResult
-from tools.security import normalize_owner_id, safe_upload_suffix
+from tools.security import SecurityError, normalize_owner_id, safe_upload_suffix
 
 _INTEGER_BUDGETS = {
     "MAX_UPLOAD_BYTES": (50_000_000, 1, 1_000_000_000),
@@ -127,6 +127,8 @@ def ingest_file(
             source,
             _implementation.DEFAULT_MAX_UPLOAD_BYTES,
         )
+    except (SecurityError, ValueError) as exc:
+        return IngestionResult(success=False, error=str(exc))
     except Exception as exc:
         return IngestionResult(
             success=False,
