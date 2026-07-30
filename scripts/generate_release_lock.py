@@ -10,8 +10,10 @@ from __future__ import annotations
 import argparse
 import os
 import platform
+import stat
 import subprocess
 import sys
+import sysconfig
 from pathlib import Path
 from typing import Iterable, Sequence
 
@@ -68,6 +70,23 @@ def default_output_path() -> Path:
     return Path("locks") / f"runtime-{_platform_tag()}-{python_tag}.txt"
 
 
+def _pip_compile_executable() -> Path:
+    """Return this interpreter environment's compile-only pip-tools entry point."""
+
+    scripts_path = sysconfig.get_path("scripts")
+    if not isinstance(scripts_path, str) or not scripts_path:
+        raise RuntimeError("The interpreter scripts directory is unavailable.")
+    filename = "pip-compile.exe" if os.name == "nt" else "pip-compile"
+    candidate = _safe_path(Path(scripts_path) / filename, label="pip-compile path")
+    try:
+        info = os.stat(candidate, follow_symlinks=True)
+    except OSError as exc:
+        raise RuntimeError("pip-compile is not installed for this interpreter.") from exc
+    if not stat.S_ISREG(info.st_mode):
+        raise RuntimeError("pip-compile is not a regular executable file.")
+    return candidate
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Generate a hashed RigorousRAG runtime lock for this OS/Python."
@@ -101,10 +120,7 @@ def generate_lock(
         raise ValueError("The lock output may not be a symbolic link.")
 
     command = [
-        sys.executable,
-        "-m",
-        "piptools",
-        "compile",
+        str(_pip_compile_executable()),
         str(source),
         "--resolver=backtracking",
         "--generate-hashes",
