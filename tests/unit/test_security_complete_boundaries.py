@@ -31,7 +31,7 @@ class FakeResponse:
         peer=None,
     ):
         self.status_code = status
-        self.headers = headers or {"Content-Type": "text/plain"}
+        self.headers = {"Content-Type": "text/plain"} if headers is None else headers
         self._chunks = chunks if chunks is not None else [b"evidence"]
         socket = peer if peer is not None else PublicSocket()
         self.raw = SimpleNamespace(_connection=SimpleNamespace(sock=socket))
