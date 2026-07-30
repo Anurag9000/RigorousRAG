@@ -35,6 +35,14 @@ def _source(module):
     return path
 
 
+def _patch_recovery_submission(monkeypatch, server_module, submissions):
+    monkeypatch.setitem(
+        server_module._recover_interrupted_jobs.__globals__,
+        "_submit_ingestion",
+        lambda *args: submissions.append(args),
+    )
+
+
 def test_queued_job_is_not_promoted_by_preexisting_registry(
     server_module,
     monkeypatch,
@@ -58,11 +66,7 @@ def test_queued_job_is_not_promoted_by_preexisting_registry(
         },
     )
     submissions = []
-    monkeypatch.setattr(
-        server_module,
-        "_submit_ingestion",
-        lambda *args: submissions.append(args),
-    )
+    _patch_recovery_submission(monkeypatch, server_module, submissions)
 
     server_module._recover_interrupted_jobs()
 
@@ -106,11 +110,7 @@ def test_finalizing_job_is_replayed_instead_of_inferred_success(
         },
     )
     submissions = []
-    monkeypatch.setattr(
-        server_module,
-        "_submit_ingestion",
-        lambda *args: submissions.append(args),
-    )
+    _patch_recovery_submission(monkeypatch, server_module, submissions)
 
     server_module._recover_interrupted_jobs()
 
