@@ -1,0 +1,154 @@
+import json
+import time
+
+import pytest
+
+from tools.job_store import JobStore
+from tools.operator_repair import list_corrupt_jobs, main, retire_corrupt_job
+
+
+def _insert_corrupt_row(store: JobStore, source_path: str) -> int:
+    now = time.time()
+    with store._lock, store._connect() as connection:  # noqa: SLF001
+        cursor = connection.execute(
+            """
+            INSERT INTO jobs(
+                job_id, owner_id, status, filename, message, doc_id,
+                source_path, attempts, next_attempt_at, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "bad\njob",
+                "operator-owner",
+                "processing",
+                "paper.pdf",
+                None,
+                None,
+                source_path,
+                -1,
+                0.0,
+                now,
+                now,
+            ),
+        )
+        return int(cursor.lastrowid)
+
+
+def test_corrupt_job_listing_is_sanitized_and_hides_source_path(tmp_path):
+    store = JobStore(path=tmp_path / "jobs.sqlite3")
+    private_source = str(tmp_path / "private" / "secret-paper.pdf")
+    rowid = _insert_corrupt_row(store, private_source)
+
+    records = list_corrupt_jobs(store)
+
+    assert len(records) == 1
+    record = records[0]
+    assert record.rowid == rowid
+    assert "invalid_job_id" in record.reasons
+    assert "invalid_attempts" in record.reasons
+    payload = json.dumps(record.public_dict())
+    assert private_source not in payload
+    assert "secret-paper.pdf" not in payload
+    assert record.source_recorded is True
+
+
+def test_retire_corrupt_job_requires_exact_confirmation_and_preserves_source(tmp_path):
+    store = JobStore(path=tmp_path / "jobs.sqlite3")
+    source = tmp_path / "private.pdf"
+    source.write_bytes(b"retained")
+    rowid = _insert_corrupt_row(store, str(source))
+    record = list_corrupt_jobs(store)[0]
+
+    with pytest.raises(ValueError, match="confirmation"):
+        retire_corrupt_job(
+            store,
+            rowid=rowid,
+            fingerprint=record.fingerprint,
+            confirmation="wrong",
+            reason="retire malformed recovery row",
+        )
+
+    result = retire_corrupt_job(
+        store,
+        rowid=rowid,
+        fingerprint=record.fingerprint,
+        confirmation=f"RETIRE-{rowid}-{record.fingerprint[:12]}",
+        reason="retire malformed recovery row",
+    )
+
+    assert result["retired"] is True
+    assert result["source_preserved"] is True
+    assert source.read_bytes() == b"retained"
+    with store._lock, store._connect() as connection:  # noqa: SLF001
+        assert connection.execute(
+            "SELECT 1 FROM jobs WHERE rowid=?", (rowid,)
+        ).fetchone() is None
+        audit = connection.execute(
+            "SELECT action, job_rowid, row_fingerprint, source_preserved "
+            "FROM operator_repairs"
+        ).fetchone()
+    assert dict(audit) == {
+        "action": "retire_corrupt_job",
+        "job_rowid": rowid,
+        "row_fingerprint": record.fingerprint,
+        "source_preserved": 1,
+    }
+
+
+def test_retirement_fails_when_row_changed_after_listing(tmp_path):
+    store = JobStore(path=tmp_path / "jobs.sqlite3")
+    rowid = _insert_corrupt_row(store, str(tmp_path / "private.pdf"))
+    record = list_corrupt_jobs(store)[0]
+    with store._lock, store._connect() as connection:  # noqa: SLF001
+        connection.execute(
+            "UPDATE jobs SET filename='changed.pdf' WHERE rowid=?", (rowid,)
+        )
+
+    with pytest.raises(RuntimeError, match="changed after inspection"):
+        retire_corrupt_job(
+            store,
+            rowid=rowid,
+            fingerprint=record.fingerprint,
+            confirmation=f"RETIRE-{rowid}-{record.fingerprint[:12]}",
+            reason="retire malformed recovery row",
+        )
+
+
+def test_valid_job_cannot_be_retired_by_corrupt_row_tool(tmp_path):
+    store = JobStore(path=tmp_path / "jobs.sqlite3")
+    store.update(
+        "valid-job",
+        "operator-owner",
+        status="queued",
+        filename="paper.pdf",
+        source_path=str(tmp_path / "paper.pdf"),
+    )
+    with store._lock, store._connect() as connection:  # noqa: SLF001
+        row = connection.execute(
+            "SELECT rowid FROM jobs WHERE job_id='valid-job'"
+        ).fetchone()
+    rowid = int(row["rowid"])
+
+    assert list_corrupt_jobs(store) == []
+    with pytest.raises(ValueError, match="valid"):
+        retire_corrupt_job(
+            store,
+            rowid=rowid,
+            fingerprint="0" * 64,
+            confirmation=f"RETIRE-{rowid}-000000000000",
+            reason="must not retire valid rows",
+        )
+
+
+def test_cli_lists_corrupt_rows_without_private_path(tmp_path, capsys):
+    database = tmp_path / "jobs.sqlite3"
+    store = JobStore(path=database)
+    private_source = str(tmp_path / "private" / "secret.pdf")
+    _insert_corrupt_row(store, private_source)
+
+    assert main(["--job-db", str(database), "list"]) == 0
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert len(payload) == 1
+    assert private_source not in captured.out
+    assert "secret.pdf" not in captured.out
