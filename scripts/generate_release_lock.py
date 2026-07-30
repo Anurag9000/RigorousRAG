@@ -19,6 +19,7 @@ from typing import Iterable, Sequence
 
 _MAX_ARGUMENTS = 50
 _MAX_PATH_CHARS = 4096
+_MAX_LOCK_BYTES = 20_000_000
 
 
 def _contains_ascii_control(value: str) -> bool:
@@ -87,6 +88,37 @@ def _pip_compile_executable() -> Path:
     return candidate
 
 
+def _write_github_output(destination: Path) -> None:
+    """Publish the generated absolute path and artifact name to GitHub Actions."""
+
+    output_value = os.environ.get("GITHUB_OUTPUT")
+    if not output_value:
+        raise RuntimeError("GITHUB_OUTPUT is unavailable.")
+    output_path = _safe_path(output_value, label="GITHUB_OUTPUT path")
+    if output_path.exists() and output_path.is_symlink():
+        raise ValueError("GITHUB_OUTPUT may not be a symbolic link.")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    if output_path.exists():
+        info = os.stat(output_path, follow_symlinks=False)
+        if not stat.S_ISREG(info.st_mode):
+            raise ValueError("GITHUB_OUTPUT must be a regular file.")
+        if info.st_size > 1_000_000:
+            raise ValueError("GITHUB_OUTPUT exceeds the 1 MB limit.")
+
+    rendered_path = destination.as_posix()
+    rendered_name = destination.stem
+    if (
+        _contains_ascii_control(rendered_path)
+        or _contains_ascii_control(rendered_name)
+        or len(rendered_path) > _MAX_PATH_CHARS
+        or len(rendered_name) > 255
+    ):
+        raise ValueError("Generated workflow output is invalid or too long.")
+    with output_path.open("a", encoding="utf-8", newline="\n") as handle:
+        handle.write(f"path={rendered_path}\n")
+        handle.write(f"name={rendered_name}\n")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Generate a hashed RigorousRAG runtime lock for this OS/Python."
@@ -98,6 +130,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Permit pip-tools to upgrade already-resolved versions.",
     )
+    parser.add_argument(
+        "--github-output",
+        action="store_true",
+        help="Publish path/name values to the GitHub Actions output file.",
+    )
     return parser
 
 
@@ -106,7 +143,7 @@ def generate_lock(
     input_path: Path,
     output_path: Path,
     upgrade: bool,
-) -> None:
+) -> Path:
     source = _safe_path(input_path, label="input path")
     destination = _safe_path(output_path, label="output path")
     if not source.exists() or not source.is_file() or source.is_symlink():
@@ -124,6 +161,7 @@ def generate_lock(
         str(source),
         "--resolver=backtracking",
         "--generate-hashes",
+        "--allow-unsafe",
         "--no-annotate",
         "--no-emit-index-url",
         "--no-emit-trusted-host",
@@ -139,19 +177,25 @@ def generate_lock(
 
     if not destination.exists() or destination.is_symlink():
         raise RuntimeError("pip-tools did not create a safe lock file.")
-    if destination.stat().st_size <= 0 or destination.stat().st_size > 20_000_000:
+    info = os.stat(destination, follow_symlinks=False)
+    if not stat.S_ISREG(info.st_mode):
+        raise RuntimeError("The generated lock is not a regular file.")
+    if info.st_size <= 0 or info.st_size > _MAX_LOCK_BYTES:
         raise RuntimeError("The generated lock file is empty or unexpectedly large.")
+    return destination
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     try:
         arguments = build_parser().parse_args(_bounded_argv(argv))
-        generate_lock(
+        destination = generate_lock(
             input_path=Path(arguments.input),
             output_path=Path(arguments.output),
             upgrade=bool(arguments.upgrade),
         )
-        print(_safe_path(arguments.output, label="output path"))
+        if arguments.github_output:
+            _write_github_output(destination)
+        print(destination)
         return 0
     except (OSError, RuntimeError, subprocess.CalledProcessError, TypeError, ValueError) as exc:
         print(f"lock generation failed: {type(exc).__name__}", file=sys.stderr)
