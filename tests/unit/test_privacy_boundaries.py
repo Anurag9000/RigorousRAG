@@ -34,6 +34,16 @@ def test_uri_credentials_and_secret_parameters_are_redacted():
     assert masked.count("[REDACTED_SECRET]") == 2
 
 
+def test_iso_dates_are_not_misclassified_as_phone_numbers():
+    value = "created=2026-02-01 phone=+1 202-555-0114"
+
+    masked = mask_metadata_text(value)
+
+    assert "2026-02-01" in masked
+    assert "202-555-0114" not in masked
+    assert "[REDACTED_PHONE]" in masked
+
+
 def test_file_uri_and_nested_metadata_are_redacted():
     sanitized = sanitize_metadata_dict({
         "error": "file:///var/lib/rigorousrag/jobs.sqlite3",
