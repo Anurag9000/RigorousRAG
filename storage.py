@@ -32,6 +32,7 @@ os.environ["CLASSIC_MAX_SNAPSHOT_FILE_BYTES"] = str(
 import storage_legacy as _implementation
 
 _original_storage_manager = _implementation.StorageManager
+_FILE_ATTRIBUTE_REPARSE_POINT = 0x0400
 
 
 def _lexical_absolute(path: str | os.PathLike[str]) -> Path:
@@ -54,13 +55,23 @@ def _lexical_absolute(path: str | os.PathLike[str]) -> Path:
     return Path(os.path.abspath(candidate))
 
 
+def _is_link_or_reparse(info: os.stat_result) -> bool:
+    """Return whether a stat result represents a symlink or Windows reparse point."""
+
+    attributes = int(getattr(info, "st_file_attributes", 0) or 0)
+    return stat.S_ISLNK(info.st_mode) or bool(attributes & _FILE_ATTRIBUTE_REPARSE_POINT)
+
+
 def _has_symlink_component(path: Path) -> bool:
     absolute = _lexical_absolute(path)
     for component in (absolute, *absolute.parents):
         try:
-            if component.is_symlink():
-                return True
+            info = os.lstat(component)
+        except FileNotFoundError:
+            continue
         except OSError:
+            return True
+        if _is_link_or_reparse(info):
             return True
     return False
 
@@ -232,12 +243,39 @@ class StorageManager(_original_storage_manager):
         except OSError:
             pass
 
+    def _quarantine_path_member(
+        self,
+        member_path: Path,
+        expected_identity: tuple[int, int],
+    ) -> None:
+        """Conservatively quarantine one identity-checked pathname fallback member."""
+
+        try:
+            self._ensure_storage_root()
+            current = os.lstat(member_path)
+        except OSError:
+            return
+        identity = (int(current.st_dev), int(current.st_ino))
+        if (
+            _is_link_or_reparse(current)
+            or not stat.S_ISREG(current.st_mode)
+            or identity != expected_identity
+        ):
+            return
+        super()._quarantine(member_path)
+        self._ensure_storage_root()
+
     def _quarantine(self, path: Path) -> None:
         member_path = self._member_path(path)
         if os.name == "nt":  # pragma: no cover - Windows-specific fallback
-            self._ensure_storage_root()
-            super()._quarantine(member_path)
-            self._ensure_storage_root()
+            try:
+                current = os.lstat(member_path)
+            except OSError:
+                return
+            self._quarantine_path_member(
+                member_path,
+                (int(current.st_dev), int(current.st_ino)),
+            )
             return
         try:
             root_descriptor = self._open_root_descriptor()
@@ -260,15 +298,85 @@ class StorageManager(_original_storage_manager):
         finally:
             os.close(root_descriptor)
 
+    def _read_json_path_fallback(self, path: Path):
+        """Strict bounded pathname read used where descriptor-relative I/O is unavailable."""
+
+        member_path = self._member_path(path)
+        descriptor = -1
+        identity: tuple[int, int] | None = None
+        should_quarantine = False
+        with self._lock:
+            try:
+                self._ensure_storage_root()
+                before = os.lstat(member_path)
+                if _is_link_or_reparse(before) or not stat.S_ISREG(before.st_mode):
+                    return None
+                identity = (int(before.st_dev), int(before.st_ino))
+                if before.st_size < 0 or before.st_size > self.max_snapshot_file_bytes:
+                    raise ValueError("Persisted JSON exceeds the configured byte limit.")
+
+                flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
+                flags |= getattr(os, "O_NOINHERIT", 0)
+                descriptor = os.open(member_path, flags)
+                opened = os.fstat(descriptor)
+                opened_identity = (int(opened.st_dev), int(opened.st_ino))
+                if (
+                    not stat.S_ISREG(opened.st_mode)
+                    or _is_link_or_reparse(opened)
+                    or opened_identity != identity
+                ):
+                    return None
+
+                data = bytearray()
+                while True:
+                    remaining = self.max_snapshot_file_bytes + 1 - len(data)
+                    if remaining <= 0:
+                        raise ValueError("Persisted JSON exceeds the configured byte limit.")
+                    chunk = os.read(descriptor, min(64 * 1024, remaining))
+                    if not chunk:
+                        break
+                    data.extend(chunk)
+                    if len(data) > self.max_snapshot_file_bytes:
+                        raise ValueError("Persisted JSON exceeds the configured byte limit.")
+
+                after = os.lstat(member_path)
+                after_identity = (int(after.st_dev), int(after.st_ino))
+                if (
+                    _is_link_or_reparse(after)
+                    or not stat.S_ISREG(after.st_mode)
+                    or after_identity != identity
+                ):
+                    return None
+                self._ensure_storage_root()
+                return json.loads(
+                    bytes(data).decode("utf-8"),
+                    parse_constant=_reject_json_constant,
+                )
+            except FileNotFoundError:
+                return None
+            except (
+                OSError,
+                UnicodeDecodeError,
+                json.JSONDecodeError,
+                RecursionError,
+                TypeError,
+                ValueError,
+            ):
+                should_quarantine = identity is not None
+            finally:
+                if descriptor >= 0:
+                    os.close(descriptor)
+
+            if should_quarantine and identity is not None:
+                self._quarantine_path_member(member_path, identity)
+            return None
+
     def _read_json(self, path: Path):
         """Read one bounded regular root member without following path components."""
 
         member_path = self._member_path(path)
         if os.name == "nt":  # pragma: no cover - Windows-specific fallback
-            self._ensure_storage_root()
-            value = super()._read_json(member_path)
-            self._ensure_storage_root()
-            return value
+            return self._read_json_path_fallback(member_path)
 
         name = member_path.name
         with self._lock:
