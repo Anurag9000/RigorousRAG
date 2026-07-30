@@ -44,7 +44,9 @@ def test_nonfinite_clock_cannot_enter_durable_state(tmp_path, monkeypatch):
             source_path="/tmp/paper.txt",
         )
 
-    assert store.get("job-1", "alice") is None
+    # get() intentionally prunes and therefore also consults the hostile clock.
+    # Inspect the durable row directly to prove the failed write was atomic.
+    assert store.get_internal("job-1", "alice") is None
 
 
 def test_boolean_deadline_and_attempt_limits_are_rejected(tmp_path):
@@ -114,4 +116,5 @@ def test_nonfinite_prune_clock_fails_without_deleting_rows(tmp_path, monkeypatch
     with pytest.raises(ValueError, match="current time"):
         store.prune()
 
-    assert store.get("job-1", "alice")["status"] == "failed"
+    # Avoid get(), whose documented public behavior includes another prune attempt.
+    assert store.get_internal("job-1", "alice")["status"] == "failed"
