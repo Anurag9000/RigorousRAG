@@ -68,7 +68,7 @@ def test_all_scientific_text_and_identity_limits_are_enforced_before_work():
         check_visual_entailment("", "Figure 1", "doc-1", owner_id="alice")
     with pytest.raises(ValueError, match="figure_id"):
         check_visual_entailment("claim", "f" * 201, "doc-1", owner_id="alice")
-    with pytest.raises(ValueError, match="owner"):
+    with pytest.raises(ValueError, match="Owner identifiers"):
         check_visual_entailment(
             "claim",
             "Figure 1",
