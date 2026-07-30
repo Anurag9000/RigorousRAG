@@ -8,14 +8,17 @@ from scripts import generate_release_lock, verify_release_lock
 def test_verify_release_lock_accepts_pinned_hashed_requirements(tmp_path):
     lock = tmp_path / "runtime-linux-py312.txt"
     lock.write_text(
-        """
-# generated fixture
-alpha==1.2.3 \\
-    --hash=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \\
-    --hash=sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
-beta==2.0.0 \\
-    --hash=sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
-""".lstrip(),
+        "alpha==1.2.3 \\\n"
+        "    --hash=sha256:"
+        + "a" * 64
+        + " \\\n"
+        "    --hash=sha256:"
+        + "b" * 64
+        + "\n"
+        "beta==2.0.0 \\\n"
+        "    --hash=sha256:"
+        + "c" * 64
+        + "\n",
         encoding="utf-8",
     )
 
@@ -52,10 +55,12 @@ def test_verify_release_lock_rejects_unreproducible_files(tmp_path, content, mes
         verify_release_lock.verify_lock(lock)
 
 
-def test_generate_release_lock_builds_hashed_pip_tools_command(tmp_path, monkeypatch):
+def test_generate_release_lock_uses_compile_only_entry_point(tmp_path, monkeypatch):
     source = tmp_path / "requirements.txt"
     source.write_text("requests>=2,<3\n", encoding="utf-8")
     destination = tmp_path / "locks" / "runtime-linux-py312.txt"
+    executable = tmp_path / "pip-compile"
+    executable.write_text("fixture", encoding="utf-8")
     calls = []
 
     def fake_run(command, check, env):
@@ -69,6 +74,11 @@ def test_generate_release_lock_builds_hashed_pip_tools_command(tmp_path, monkeyp
             encoding="utf-8",
         )
 
+    monkeypatch.setattr(
+        generate_release_lock,
+        "_pip_compile_executable",
+        lambda: executable,
+    )
     monkeypatch.setattr(generate_release_lock.subprocess, "run", fake_run)
 
     generate_release_lock.generate_lock(
@@ -79,11 +89,13 @@ def test_generate_release_lock_builds_hashed_pip_tools_command(tmp_path, monkeyp
 
     command, check, environment = calls[0]
     assert check is True
+    assert command[0] == str(executable)
+    assert "-m" not in command
+    assert "piptools" not in command
     assert "--generate-hashes" in command
     assert "--no-emit-index-url" in command
     assert "--no-emit-trusted-host" in command
-    assert "--upgrade" in command
-    assert command[-2:] == ["--upgrade"] or command[-1] == "--upgrade"
+    assert command[-1] == "--upgrade"
     assert environment["PIP_DISABLE_PIP_VERSION_CHECK"] == "1"
     assert destination.exists()
 
