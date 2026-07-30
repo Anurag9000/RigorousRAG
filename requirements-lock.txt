@@ -1,3 +1,4 @@
-# Release-lock tooling only. The application runtime does not depend on these packages.
+# Isolated release-lock tooling only; install with pip>=25,<26 as documented.
+# The application runtime and development environment do not depend on these packages.
 pip-tools==7.6.0
 typing-extensions>=4.12,<5
