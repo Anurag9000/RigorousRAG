@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import operator
 import threading
 from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Any, Callable, Optional, Set
@@ -11,14 +12,13 @@ def _positive_integer(value: Any, label: str, *, maximum: int) -> int:
     if isinstance(value, bool):
         raise ValueError("Executor limits must be integers.")
     try:
-        parsed = int(value)
+        parsed = operator.index(value)
     except (TypeError, ValueError, OverflowError) as exc:
         raise ValueError("Executor limits must be integers.") from exc
-    if isinstance(value, float) and not value.is_integer():
-        raise ValueError("Executor limits must be integers.")
-    if parsed <= 0:
+    result = int(parsed)
+    if result <= 0:
         raise ValueError(f"{label} must be positive.")
-    return min(parsed, maximum)
+    return min(result, maximum)
 
 
 def _thread_prefix(value: Any) -> str:
