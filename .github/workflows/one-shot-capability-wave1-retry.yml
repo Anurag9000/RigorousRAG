@@ -132,3 +132,5 @@ jobs:
           git add docs/CAPABILITY_WAVE1_FAILURE.md
           git commit -m "Update capability wave one failure" || exit 0
           git push origin HEAD:main
+
+# Triggered after the workflow existed on main.
