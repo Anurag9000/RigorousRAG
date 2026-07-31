@@ -17,17 +17,31 @@ import urllib.request
 import uuid
 from pathlib import Path
 from typing import Any, Dict, Optional
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 _MAX_HTTP_BYTES = 64 * 1024
 _MAX_PATH_CHARS = 4096
 _MAX_HEALTH_URL_CHARS = 4096
 _LOCAL_HOSTS = {"127.0.0.1", "::1", "localhost", "localhost.localdomain"}
+_FILE_ATTRIBUTE_REPARSE_POINT = 0x0400
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         return None
+
+
+def _contains_ascii_control(value: str) -> bool:
+    return any(ord(character) < 32 or ord(character) == 127 for character in value)
+
+
+def _is_link_or_reparse(info: os.stat_result) -> bool:
+    attributes = int(getattr(info, "st_file_attributes", 0) or 0)
+    return stat.S_ISLNK(info.st_mode) or bool(attributes & _FILE_ATTRIBUTE_REPARSE_POINT)
+
+
+def _identity(info: os.stat_result) -> tuple[int, int]:
+    return int(info.st_dev), int(info.st_ino)
 
 
 def _lexical_absolute(value: Any) -> Optional[Path]:
@@ -41,7 +55,7 @@ def _lexical_absolute(value: Any) -> Optional[Path]:
         not isinstance(rendered, str)
         or not rendered
         or len(rendered) > _MAX_PATH_CHARS
-        or "\x00" in rendered
+        or _contains_ascii_control(rendered)
     ):
         return None
     candidate = Path(rendered)
@@ -53,18 +67,28 @@ def _lexical_absolute(value: Any) -> Optional[Path]:
         return None
 
 
-def _has_symlink_component(path: Path) -> bool:
+def _has_redirected_component(path: Path) -> bool:
     try:
-        return any(candidate.is_symlink() for candidate in (path, *path.parents))
+        for candidate in (path, *path.parents):
+            try:
+                info = os.lstat(candidate)
+            except FileNotFoundError:
+                continue
+            if _is_link_or_reparse(info):
+                return True
+        return False
     except Exception:
         return True
 
 
 def _finite_timeout(value: object, default: float = 3.0) -> float:
-    try:
-        parsed = float(value)
-    except (TypeError, ValueError, OverflowError):
+    if isinstance(value, bool):
         parsed = default
+    else:
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError, OverflowError):
+            parsed = default
     if not math.isfinite(parsed) or parsed <= 0:
         parsed = default
     return max(0.1, min(parsed, 60.0))
@@ -77,7 +101,7 @@ def check_http(url: str, timeout: float = 3.0) -> bool:
     if (
         not rendered
         or len(rendered) > _MAX_HEALTH_URL_CHARS
-        or any(ord(character) < 32 or ord(character) == 127 for character in rendered)
+        or _contains_ascii_control(rendered)
     ):
         return False
     try:
@@ -119,26 +143,53 @@ def check_http(url: str, timeout: float = 3.0) -> bool:
         return False
 
 
+def _sqlite_uri(database: Path) -> str:
+    encoded = quote(database.as_posix(), safe="/:")
+    return f"file:{encoded}?mode=rw"
+
+
 def check_sqlite(path: str | Path) -> bool:
     database = _lexical_absolute(path)
-    if database is None or _has_symlink_component(database):
+    if database is None or _has_redirected_component(database):
         return False
     try:
-        before = database.stat(follow_symlinks=False)
-        if not stat.S_ISREG(before.st_mode):
+        before = os.lstat(database)
+        parent_before = os.lstat(database.parent)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or _is_link_or_reparse(before)
+            or not stat.S_ISDIR(parent_before.st_mode)
+            or _is_link_or_reparse(parent_before)
+        ):
             return False
-        uri = f"file:{database.as_posix()}?mode=rw"
-        with sqlite3.connect(uri, uri=True, timeout=2) as connection:
+        with sqlite3.connect(_sqlite_uri(database), uri=True, timeout=2) as connection:
+            connection.execute("PRAGMA query_only=ON")
             row = connection.execute("SELECT 1").fetchone()
-        after = database.stat(follow_symlinks=False)
+        if _has_redirected_component(database):
+            return False
+        after = os.lstat(database)
+        parent_after = os.lstat(database.parent)
         if (
             not stat.S_ISREG(after.st_mode)
-            or (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino)
+            or _is_link_or_reparse(after)
+            or _identity(before) != _identity(after)
+            or not stat.S_ISDIR(parent_after.st_mode)
+            or _is_link_or_reparse(parent_after)
+            or _identity(parent_before) != _identity(parent_after)
         ):
             return False
         return bool(row and row[0] == 1)
     except Exception:
         return False
+
+
+def _write_all(descriptor: int, payload: bytes) -> None:
+    offset = 0
+    while offset < len(payload):
+        written = os.write(descriptor, payload[offset:])
+        if written <= 0:
+            raise OSError("Readiness probe write made no progress.")
+        offset += written
 
 
 def _check_writable_directory_posix(directory: Path) -> bool:
@@ -150,8 +201,11 @@ def _check_writable_directory_posix(directory: Path) -> bool:
     directory_fd = os.open(directory, flags)
     filename = f".health-{uuid.uuid4().hex}"
     descriptor = -1
+    named_entry_exists = False
+    descriptor_identity: tuple[int, int] | None = None
     try:
-        if not stat.S_ISDIR(os.fstat(directory_fd).st_mode):
+        directory_info = os.fstat(directory_fd)
+        if not stat.S_ISDIR(directory_info.st_mode):
             return False
         descriptor = os.open(
             filename,
@@ -162,13 +216,24 @@ def _check_writable_directory_posix(directory: Path) -> bool:
             0o600,
             dir_fd=directory_fd,
         )
-        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+        named_entry_exists = True
+        opened = os.fstat(descriptor)
+        if not stat.S_ISREG(opened.st_mode):
             return False
-        os.write(descriptor, b"ok")
-        os.fsync(descriptor)
-        os.close(descriptor)
-        descriptor = -1
+        descriptor_identity = _identity(opened)
+
+        # Remove the name while the original descriptor is still open. This tests
+        # directory deletion permission and prevents a later cleanup from unlinking a
+        # replacement entry supplied by another process.
+        entry = os.stat(filename, dir_fd=directory_fd, follow_symlinks=False)
+        if _is_link_or_reparse(entry) or _identity(entry) != descriptor_identity:
+            return False
         os.unlink(filename, dir_fd=directory_fd)
+        named_entry_exists = False
+
+        _write_all(descriptor, b"ok")
+        os.fsync(descriptor)
+        os.fsync(directory_fd)
         return True
     finally:
         if descriptor >= 0:
@@ -176,45 +241,46 @@ def _check_writable_directory_posix(directory: Path) -> bool:
                 os.close(descriptor)
             except OSError:
                 pass
+        if named_entry_exists and descriptor_identity is not None:
             try:
-                os.unlink(filename, dir_fd=directory_fd)
+                entry = os.stat(filename, dir_fd=directory_fd, follow_symlinks=False)
+                if (
+                    not _is_link_or_reparse(entry)
+                    and _identity(entry) == descriptor_identity
+                ):
+                    os.unlink(filename, dir_fd=directory_fd)
             except OSError:
                 pass
         os.close(directory_fd)
 
 
 def _check_writable_directory_portable(directory: Path) -> bool:
-    before = directory.stat()
-    probe_path: Path | None = None
+    before = os.lstat(directory)
     try:
-        descriptor, raw_path = tempfile.mkstemp(prefix=".health-", dir=directory)
-        probe_path = Path(raw_path)
-        with os.fdopen(descriptor, "wb") as handle:
-            if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+        with tempfile.TemporaryFile(prefix=".health-", dir=directory) as handle:
+            opened = os.fstat(handle.fileno())
+            if not stat.S_ISREG(opened.st_mode):
                 return False
             handle.write(b"ok")
             handle.flush()
             os.fsync(handle.fileno())
-        after = directory.stat()
-        if (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino):
-            return False
-        probe_path.unlink()
-        return True
-    finally:
-        if probe_path is not None:
-            try:
-                if not probe_path.is_symlink():
-                    probe_path.unlink(missing_ok=True)
-            except OSError:
-                pass
+        after = os.lstat(directory)
+        return (
+            stat.S_ISDIR(after.st_mode)
+            and not _is_link_or_reparse(after)
+            and _identity(before) == _identity(after)
+        )
+    except Exception:
+        return False
 
 
 def check_writable_directory(path: str | Path) -> bool:
     directory = _lexical_absolute(path)
-    if directory is None or _has_symlink_component(directory):
+    if directory is None or _has_redirected_component(directory):
         return False
     try:
-        if not directory.exists() or not directory.is_dir():
+        info = os.lstat(directory)
+        if not stat.S_ISDIR(info.st_mode) or _is_link_or_reparse(info):
             return False
         if os.name == "nt":  # pragma: no cover
             return _check_writable_directory_portable(directory)
