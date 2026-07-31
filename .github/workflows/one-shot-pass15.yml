@@ -112,3 +112,5 @@ jobs:
           git add docs/PASS15_FAILURE.md
           git commit -m "Update pass fifteen verification failure" || exit 0
           git push origin HEAD:main
+
+# Triggered after installation on the default branch.
