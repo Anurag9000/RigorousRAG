@@ -16,15 +16,15 @@ This backlog is ordered by dependency and risk. The checked Wave 1 items are imp
 
 ## Wave 2A — model registry and sparse-store contracts
 
-- [ ] Implement `EmbeddingProfile` validation, canonical aliases and SHA-256 fingerprints.
-- [ ] Add profiles for MiniLM, E5, BGE, GTE, Instructor, SPECTER2 and BGE-M3.
-- [ ] Reject unknown/duplicate profile fields, invalid dimensions, controls and non-standard numbers.
-- [ ] Implement fielded sparse schema with owner/document/generation isolation.
-- [ ] Add positions, page, section, field and metadata provenance.
-- [ ] Implement transactional replace, snapshot, restore, delete and corruption refusal.
-- [ ] Add symlink/reparse/database-identity protections.
-- [ ] Add field-weighted BM25 and exact document filters.
-- [ ] Test owner isolation, field weighting, rollback, snapshots, path replacement and corrupt rows.
+- [x] Implement `EmbeddingProfile` validation, canonical aliases and SHA-256 fingerprints.
+- [x] Add profiles for MiniLM, E5, BGE, GTE, Instructor, SPECTER2 and BGE-M3.
+- [x] Reject unknown/duplicate profile fields, invalid dimensions, controls and non-standard numbers.
+- [x] Implement fielded sparse schema with owner/document/generation isolation.
+- [x] Add positions, page, section, field and metadata provenance.
+- [x] Implement transactional replace, snapshot, restore, delete and corruption refusal.
+- [x] Add symlink/reparse/database-identity protections.
+- [x] Add field-weighted BM25 and exact document filters.
+- [x] Test owner isolation, field weighting, rollback, snapshots, path replacement and corrupt rows.
 
 ## Wave 2B — cross-store coordination
 

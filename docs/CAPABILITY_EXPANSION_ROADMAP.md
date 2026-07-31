@@ -10,6 +10,8 @@ Deliverables: bounded hybrid ranking, lexical BM25, fusion, MMR, rerankers, norm
 
 ## Wave 2 — persistent hybrid retrieval and index governance
 
+Status: Wave 2A (profile registry and sparse-store contracts) is implemented; Wave 2B/2C remain active.
+
 1. Embedding profile registry: MiniLM compatibility profile, E5, BGE, GTE, Instructor, SPECTER2 and BGE-M3 capability metadata; query/document instructions; dimensions; normalization; language/domain; licensing notes; fingerprints and schema versions.
 2. Persistent sparse index: owner/document/field keys, fielded BM25, positional provenance, generation snapshots, transactional replace/delete and corruption refusal.
 3. Cross-store coordinator: vector and sparse snapshots, compensation on either-store failure, durable generation manifests and repair/reconciliation tooling.

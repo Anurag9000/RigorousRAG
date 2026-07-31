@@ -49,19 +49,31 @@ This ledger is the authoritative capability-expansion status for `main`. It comp
 
 ## Wave 2 — persistent hybrid index and model registry
 
-### Next implementation slice
+### Wave 2A implemented
 
-- [ ] Declarative embedding model profiles with fingerprints and index schema versions.
-- [ ] Owner-scoped persistent fielded sparse index.
-- [ ] Title, abstract, heading, body, caption, table and reference field weights.
-- [ ] Sparse document snapshots and exact restore.
+- [x] Declarative embedding profile registry with seven built-ins, operator profiles, compatibility aliases and schema fingerprints.
+- [x] Persistent owner-scoped fielded sparse index with transparent BM25-style scoring.
+- [x] Transactional replacement, optimistic generations, exact snapshots/restores and scoped deletion.
+- [x] Page, section, field, term-frequency and token-position provenance.
+- [x] Strict metadata/configuration JSON, corruption refusal and filesystem identity defenses.
+- [x] 21 focused Wave 2A tests and 33 combined focused Wave 1+2A tests.
+
+The sparse index remains non-authoritative until Wave 2B's cross-store coordinator is wired.
+
+### Wave 2B next implementation slice
+
 - [ ] Vector document snapshots and exact restore.
-- [ ] Compensating vector+sparse replacement coordinator.
-- [ ] Coordinated vector+sparse deletion.
+- [ ] Compensating vector+sparse replacement coordinator under an owner/document lock.
+- [ ] Coordinated vector+sparse deletion with prior-generation restoration on failure.
+- [ ] Generation manifests recording profile fingerprints, content hashes and store generations.
 - [ ] Ingestion, batch CLI, retry and recovery integration.
-- [ ] Corpus-level dense+sparse retrieval rather than candidate-pool-only lexical scoring.
-- [ ] Reindex and embedding-profile migration commands.
-- [ ] Generation manifests recording model/profile fingerprints.
+- [ ] Reconciliation scans and dry-run repair tooling for cross-store drift.
+
+### Wave 2C next implementation slice
+
+- [ ] Corpus-level dense+sparse candidate generation rather than candidate-pool-only lexical scoring.
+- [ ] RRF/calibrated fusion, reranker cascades, MMR, filters and complete score traces.
+- [ ] Reindex and embedding-profile migration commands with shadow validation and cutover.
 
 ## Permanent non-claims
 
