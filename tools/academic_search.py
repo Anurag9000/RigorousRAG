@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import itertools
 import json
+import operator
 import os
 from collections.abc import Mapping
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote, urlencode
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from tools.models import Citation
 from tools.security import safe_download
@@ -24,6 +25,8 @@ _MAX_EXTERNAL_IDS = 100
 
 
 class AcademicSearchInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     query: str = Field(..., min_length=1, max_length=2000)
     year_from: Optional[int] = Field(default=None, ge=0, le=9999)
     year_to: Optional[int] = Field(default=None, ge=0, le=9999)
@@ -43,13 +46,17 @@ class AcademicSearchError(RuntimeError):
     pass
 
 
+def _contains_ascii_control(value: str) -> bool:
+    return any(ord(character) < 32 or ord(character) == 127 for character in value)
+
+
 def _bounded_query(query: Any) -> str:
     if not isinstance(query, str):
         raise ValueError("Academic-search queries must be strings.")
     value = query.strip()
     if not value:
         return ""
-    if len(value) > 2000 or "\x00" in value:
+    if len(value) > 2000 or _contains_ascii_control(value):
         raise ValueError(
             "Academic-search queries may contain at most 2,000 valid characters."
         )
@@ -62,11 +69,10 @@ def _bounded_year(value: Any, label: str) -> Optional[int]:
     if isinstance(value, bool):
         raise ValueError(f"{label} must be an integer.")
     try:
-        year = int(value)
+        parsed = operator.index(value)
     except (TypeError, ValueError, OverflowError) as exc:
         raise ValueError(f"{label} must be an integer.") from exc
-    if isinstance(value, float) and not value.is_integer():
-        raise ValueError(f"{label} must be an integer.")
+    year = int(parsed)
     if not 0 <= year <= 9999:
         raise ValueError(f"{label} must be between 0 and 9999.")
     return year
@@ -76,30 +82,29 @@ def _bounded_limit(value: Any) -> int:
     if isinstance(value, bool):
         raise ValueError("limit must be an integer.")
     try:
-        parsed = int(value)
+        parsed = operator.index(value)
     except (TypeError, ValueError, OverflowError) as exc:
         raise ValueError("limit must be an integer.") from exc
-    if isinstance(value, float) and not value.is_integer():
-        raise ValueError("limit must be an integer.")
-    if not 1 <= parsed <= 10:
+    limit = int(parsed)
+    if not 1 <= limit <= 10:
         raise ValueError("limit must be between 1 and 10.")
-    return parsed
+    return limit
 
 
 def _provider_key() -> Optional[str]:
     raw = os.getenv("SEMANTIC_SCHOLAR_API_KEY", "")
     if not raw:
         return None
-    value = raw.strip()
     if (
-        not value
-        or len(value) > 4096
-        or any(character in value for character in ("\x00", "\r", "\n"))
+        not isinstance(raw, str)
+        or raw != raw.strip()
+        or len(raw) > 4096
+        or _contains_ascii_control(raw)
     ):
         raise AcademicSearchError(
             "The configured scholarly-search provider key is invalid."
         )
-    return value
+    return raw
 
 
 def _strict_provider_json(content: bytes) -> Dict[str, Any]:
