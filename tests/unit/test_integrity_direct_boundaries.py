@@ -46,6 +46,27 @@ def test_comparison_inputs_reject_strings_and_non_string_items():
         compare_papers(["doc-1", "doc-1"], "accuracy", owner_id="alice")
 
 
+def test_hostile_comparison_items_are_not_stringified_or_truth_tested():
+    class Hostile:
+        def __bool__(self):
+            raise RuntimeError("must not call bool")
+
+        def __str__(self):
+            raise RuntimeError("private /secret/path")
+
+    with pytest.raises(ValueError, match="must be a string") as captured:
+        compare_papers([Hostile(), "doc-2"], "accuracy", owner_id="alice")
+    assert "private" not in str(captured.value)
+
+    with pytest.raises(ValueError, match="must be a string") as captured:
+        generate_comparison_matrix(
+            ["doc-1"],
+            [Hostile()],
+            owner_id="alice",
+        )
+    assert "private" not in str(captured.value)
+
+
 def test_comparison_item_and_query_lengths_are_enforced_before_retrieval():
     with patch(
         "tools.integrity._retrieve_document_evidence",
@@ -61,19 +82,43 @@ def test_comparison_item_and_query_lengths_are_enforced_before_retrieval():
                 ["m" * 501],
                 owner_id="alice",
             )
+        for query in (object(), "bad\x00query", "bad\nquery", "bad\x7fquery"):
+            with pytest.raises(ValueError, match="query"):
+                compare_papers(["doc-1", "doc-2"], query, owner_id="alice")
 
 
 def test_all_scientific_text_and_identity_limits_are_enforced_before_work():
     with pytest.raises(ValueError, match="claim_text"):
         check_visual_entailment("", "Figure 1", "doc-1", owner_id="alice")
+    with pytest.raises(ValueError, match="claim_text"):
+        check_visual_entailment(object(), "Figure 1", "doc-1", owner_id="alice")
     with pytest.raises(ValueError, match="figure_id"):
         check_visual_entailment("claim", "f" * 201, "doc-1", owner_id="alice")
+    with pytest.raises(ValueError, match="figure_id"):
+        check_visual_entailment("claim", "bad\nfigure", "doc-1", owner_id="alice")
+    with pytest.raises(ValueError, match="doc_id"):
+        check_visual_entailment("claim", "Figure 1", "bad\x00doc", owner_id="alice")
     with pytest.raises(ValueError, match="Owner identifiers"):
         check_visual_entailment(
             "claim",
             "Figure 1",
             "doc-1",
             owner_id="../other",
+        )
+    with pytest.raises(ValueError, match="model"):
+        check_visual_entailment(
+            "claim",
+            "Figure 1",
+            "doc-1",
+            owner_id="alice",
+            model="m" * 201,
+        )
+    with pytest.raises(ValueError, match="model"):
+        compare_papers(
+            ["doc-1", "doc-2"],
+            "accuracy",
+            owner_id="alice",
+            model=object(),
         )
     with pytest.raises(ValueError, match="model"):
         extract_protocol("methods", model="m" * 201)
