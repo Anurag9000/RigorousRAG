@@ -36,6 +36,10 @@ jobs:
           python scripts/pass11_patch.py >> /tmp/pass11.log 2>&1
           status=$?
           if [[ $status -eq 0 ]]; then
+            python scripts/pass11_fix.py >> /tmp/pass11.log 2>&1
+            status=$?
+          fi
+          if [[ $status -eq 0 ]]; then
             python -m compileall -q tools/logger.py tests/unit/test_logger_boundaries.py tests/unit/test_logger_directory_boundary.py >> /tmp/pass11.log 2>&1
             status=$?
           fi
@@ -57,7 +61,8 @@ jobs:
           git add tools/logger.py \
             tests/unit/test_logger_boundaries.py \
             tests/unit/test_logger_directory_boundary.py
-          git rm scripts/pass11_patch.py .github/workflows/one-shot-pass11.yml
+          git rm scripts/pass11_patch.py scripts/pass11_fix.py \
+            .github/workflows/one-shot-pass11.yml docs/PASS11_FAILURE.md
           git diff --cached --check
           git commit -m "Harden telemetry identity and rotation boundaries"
           git push origin HEAD:main
@@ -67,15 +72,27 @@ jobs:
         run: |
           python - <<'PY'
           from pathlib import Path
-          log = Path('/tmp/pass11.log').read_text(encoding='utf-8', errors='replace')
-          diff = Path('/tmp/pass11.diff')
           import subprocess
-          result = subprocess.run(['git', 'diff', '--', 'tools/logger.py', 'tests/unit/test_logger_boundaries.py', 'tests/unit/test_logger_directory_boundary.py'], text=True, capture_output=True)
-          payload = '# Pass eleven diagnostic\n\n```text\n' + log[-30000:] + '\n```\n\n```diff\n' + result.stdout[-30000:] + '\n```\n'
+
+          log = Path('/tmp/pass11.log').read_text(encoding='utf-8', errors='replace')
+          result = subprocess.run(
+              ['git', 'diff', '--', 'tools/logger.py', 'tests/unit/test_logger_boundaries.py', 'tests/unit/test_logger_directory_boundary.py'],
+              text=True,
+              capture_output=True,
+          )
+          payload = (
+              '# Pass eleven diagnostic\n\n```text\n'
+              + log[-30000:]
+              + '\n```\n\n```diff\n'
+              + result.stdout[-30000:]
+              + '\n```\n'
+          )
           Path('docs/PASS11_FAILURE.md').write_text(payload, encoding='utf-8')
           PY
           git config user.name "RigorousRAG Remediation"
           git config user.email "actions@users.noreply.github.com"
           git add docs/PASS11_FAILURE.md
-          git commit -m "Record pass eleven verification failure"
+          git commit -m "Update pass eleven verification failure" || exit 0
           git push origin HEAD:main
+
+# Retry uses replacement-sensitive snapshots only for destructive operations.
