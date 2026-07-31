@@ -40,9 +40,6 @@ _AMBIENT_AUTHORITY_NAMES = frozenset(
         "REQUESTS_CA_BUNDLE",
         "SSL_CERT_DIR",
         "SSL_CERT_FILE",
-        "all_proxy",
-        "http_proxy",
-        "https_proxy",
     }
 )
 
@@ -220,7 +217,9 @@ def _validate_requirements_source(payload: bytes) -> None:
             )
         if (
             "://" in lowered
-            or lowered.startswith(("git+", "file:", "./", "../", "/", "~/", "\\\\"))
+            or "/" in stripped
+            or "\\" in stripped
+            or lowered.startswith(("git+", "file:", "./", "../", "~/"))
             or re.match(r"^[a-z]:[\\/]", lowered)
         ):
             raise ValueError("The requirements input may not contain URL or local-path requirements.")
@@ -350,7 +349,8 @@ def _safe_subprocess_environment() -> dict[str, str]:
     environment = {
         key: value
         for key, value in os.environ.items()
-        if not key.upper().startswith("PIP_") and key not in _AMBIENT_AUTHORITY_NAMES
+        if not key.upper().startswith("PIP_")
+        and key.upper() not in _AMBIENT_AUTHORITY_NAMES
     }
     environment["PIP_DISABLE_PIP_VERSION_CHECK"] = "1"
     environment["PIP_NO_INPUT"] = "1"
@@ -389,6 +389,13 @@ def _append_github_output(path: Path, payload: bytes) -> None:
         opened_identity = _identity(opened)
         if _is_link_or_reparse(opened) or not stat.S_ISREG(opened.st_mode):
             raise ValueError("GITHUB_OUTPUT must be a safe regular file.")
+        path_entry = os.lstat(path)
+        if (
+            _is_link_or_reparse(path_entry)
+            or not stat.S_ISREG(path_entry.st_mode)
+            or _identity(path_entry) != opened_identity
+        ):
+            raise ValueError("GITHUB_OUTPUT path is unsafe before append.")
         if expected is not None and opened_identity != expected:
             raise ValueError("GITHUB_OUTPUT identity changed while it was being opened.")
         if opened.st_size + len(payload) > _MAX_GITHUB_OUTPUT_BYTES:
@@ -423,6 +430,7 @@ def _write_github_output(destination: Path) -> None:
     if not output_value:
         raise RuntimeError("GITHUB_OUTPUT is unavailable.")
     output_path = _safe_path(output_value, label="GITHUB_OUTPUT path")
+    _require_safe_ancestry(output_path.parent, label="GITHUB_OUTPUT parent")
     output_path.parent.mkdir(parents=True, exist_ok=True)
     _require_safe_ancestry(output_path, label="GITHUB_OUTPUT path")
 
