@@ -36,6 +36,10 @@ jobs:
           python scripts/capability_wave1_core.py >> /tmp/wave1.log 2>&1
           status=$?
           if [[ $status -eq 0 ]]; then
+            python scripts/fix_capability_wave1_generator.py >> /tmp/wave1.log 2>&1
+            status=$?
+          fi
+          if [[ $status -eq 0 ]]; then
             python scripts/capability_wave1_tests_docs.py >> /tmp/wave1.log 2>&1
             status=$?
           fi
@@ -97,6 +101,7 @@ jobs:
             scripts/capability_wave1_core.py \
             scripts/capability_wave1_tests_docs.py \
             scripts/capability_wave1_corrections.py \
+            scripts/fix_capability_wave1_generator.py \
             .github/workflows/one-shot-capability-wave1.yml
           git rm -f docs/CAPABILITY_WAVE1_FAILURE.md
           git diff --cached --check
