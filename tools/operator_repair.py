@@ -31,6 +31,8 @@ from tools.security import normalize_owner_id
 
 _ALLOWED_STATUSES = frozenset({"queued", "processing", "finalizing", "success", "failed"})
 _MAX_ROWS = 10_000
+_MAX_SCAN_ROWS = 100_000
+_SCAN_BATCH_ROWS = 500
 _AUDIT_REASON_CHARS = 500
 
 
@@ -208,45 +210,70 @@ def _row_reasons(row: Mapping[str, Any]) -> tuple[str, ...]:
     return tuple(dict.fromkeys(reasons))
 
 
-def _select_rows(connection: sqlite3.Connection, limit: int) -> list[sqlite3.Row]:
+def _select_rows(
+    connection: sqlite3.Connection,
+    *,
+    after_rowid: int,
+    limit: int,
+) -> list[sqlite3.Row]:
     return connection.execute(
         """
         SELECT rowid, job_id, owner_id, status, filename, message, doc_id,
                source_path, attempts, next_attempt_at, created_at, updated_at
         FROM jobs
+        WHERE rowid > ?
         ORDER BY rowid ASC
         LIMIT ?
         """,
-        (limit,),
+        (after_rowid, limit),
     ).fetchall()
 
 
+def _public_corrupt_record(row: Mapping[str, Any]) -> CorruptJobRecord | None:
+    reasons = _row_reasons(row)
+    if not reasons:
+        return None
+    updated_at = None
+    if _finite_nonnegative(row.get("updated_at")):
+        updated_at = float(row["updated_at"])
+    return CorruptJobRecord(
+        rowid=int(row["rowid"]),
+        fingerprint=_row_fingerprint(row),
+        reasons=reasons,
+        status=_safe_public_text(row.get("status"), limit=50, default="invalid"),
+        filename=_safe_public_text(row.get("filename"), limit=200, default="upload"),
+        source_recorded=row.get("source_path") not in (None, ""),
+        updated_at=updated_at,
+    )
+
+
 def list_corrupt_jobs(store: JobStore, *, limit: int = 1000) -> list[CorruptJobRecord]:
+    """Return up to ``limit`` corrupt rows while scanning a separate bounded prefix."""
+
     if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= _MAX_ROWS:
         raise ValueError(f"limit must be an integer between 1 and {_MAX_ROWS}.")
 
     records: list[CorruptJobRecord] = []
+    scanned = 0
+    after_rowid = 0
     with store._lock, store._connect() as connection:  # noqa: SLF001 - operator boundary
-        rows = _select_rows(connection, limit)
-    for sqlite_row in rows:
-        row = dict(sqlite_row)
-        reasons = _row_reasons(row)
-        if not reasons:
-            continue
-        updated_at = None
-        if _finite_nonnegative(row.get("updated_at")):
-            updated_at = float(row["updated_at"])
-        records.append(
-            CorruptJobRecord(
-                rowid=int(row["rowid"]),
-                fingerprint=_row_fingerprint(row),
-                reasons=reasons,
-                status=_safe_public_text(row.get("status"), limit=50, default="invalid"),
-                filename=_safe_public_text(row.get("filename"), limit=200, default="upload"),
-                source_recorded=row.get("source_path") not in (None, ""),
-                updated_at=updated_at,
+        while len(records) < limit and scanned < _MAX_SCAN_ROWS:
+            batch_limit = min(_SCAN_BATCH_ROWS, _MAX_SCAN_ROWS - scanned)
+            rows = _select_rows(
+                connection,
+                after_rowid=after_rowid,
+                limit=batch_limit,
             )
-        )
+            if not rows:
+                break
+            scanned += len(rows)
+            after_rowid = int(rows[-1]["rowid"])
+            for sqlite_row in rows:
+                record = _public_corrupt_record(dict(sqlite_row))
+                if record is not None:
+                    records.append(record)
+                    if len(records) >= limit:
+                        break
     return records
 
 
