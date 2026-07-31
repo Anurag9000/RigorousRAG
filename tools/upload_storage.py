@@ -2,11 +2,13 @@
 
 Final owner-directory and file lookups are relative to already-opened descriptors on
 POSIX. Portable fallbacks repeat path and directory-identity checks. All lexical root
-components are validated before any path normalization can hide a symbolic link.
+components are validated before any path normalization can hide a symbolic link or
+Windows reparse point.
 """
 
 from __future__ import annotations
 
+import operator
 import os
 import stat
 import uuid
@@ -18,6 +20,7 @@ from tools.security import normalize_owner_id, safe_upload_suffix
 
 _MAX_LOCAL_FILE_BYTES = 1_000_000_000
 _MAX_LOCAL_PATH_CHARS = 4096
+_FILE_ATTRIBUTE_REPARSE_POINT = 0x0400
 
 
 class UploadStorageError(ValueError):
@@ -28,15 +31,23 @@ def _contains_ascii_control(value: str) -> bool:
     return any(ord(character) < 32 or ord(character) == 127 for character in value)
 
 
+def _is_link_or_reparse(info: os.stat_result) -> bool:
+    attributes = int(getattr(info, "st_file_attributes", 0) or 0)
+    return stat.S_ISLNK(info.st_mode) or bool(attributes & _FILE_ATTRIBUTE_REPARSE_POINT)
+
+
+def _identity(info: os.stat_result) -> tuple[int, int]:
+    return int(info.st_dev), int(info.st_ino)
+
+
 def _positive_limit(value: object) -> int:
     if isinstance(value, bool):
         raise UploadStorageError("max_bytes must be an integer.")
     try:
-        limit = int(value)
+        parsed = operator.index(value)
     except (TypeError, ValueError, OverflowError) as exc:
         raise UploadStorageError("max_bytes must be an integer.") from exc
-    if isinstance(value, float) and not value.is_integer():
-        raise UploadStorageError("max_bytes must be an integer.")
+    limit = int(parsed)
     if not 1 <= limit <= _MAX_LOCAL_FILE_BYTES:
         raise UploadStorageError(
             f"max_bytes must be between 1 and {_MAX_LOCAL_FILE_BYTES}."
@@ -47,9 +58,13 @@ def _positive_limit(value: object) -> int:
 def _absolute_lexical_path(value: str | os.PathLike[str], label: str) -> Path:
     if not isinstance(value, (str, os.PathLike)):
         raise UploadStorageError(f"{label} must be a filesystem path.")
-    rendered = os.fspath(value)
+    try:
+        rendered = os.fspath(value)
+    except TypeError as exc:
+        raise UploadStorageError(f"{label} must be a filesystem path.") from exc
     if (
-        not rendered
+        not isinstance(rendered, str)
+        or not rendered
         or len(rendered) > _MAX_LOCAL_PATH_CHARS
         or _contains_ascii_control(rendered)
     ):
@@ -60,19 +75,29 @@ def _absolute_lexical_path(value: str | os.PathLike[str], label: str) -> Path:
     return Path(os.path.abspath(candidate))
 
 
-def _no_symlink_components(path: Path, label: str) -> None:
+def _no_redirected_components(path: Path, label: str) -> None:
     for component in (path, *path.parents):
-        if component.is_symlink():
+        try:
+            info = os.lstat(component)
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            raise UploadStorageError(f"{label} could not be inspected safely.") from exc
+        if _is_link_or_reparse(info):
             raise UploadStorageError(
-                f"{label} may not contain symbolic-link components."
+                f"{label} may not contain symbolic-link or reparse-point components."
             )
 
 
 def _root_directory(upload_root: str | Path) -> Path:
     root = _absolute_lexical_path(upload_root, "UPLOAD_DIR")
-    _no_symlink_components(root, "UPLOAD_DIR")
-    if not root.exists() or not root.is_dir():
-        raise UploadStorageError("UPLOAD_DIR must be an existing directory.")
+    _no_redirected_components(root, "UPLOAD_DIR")
+    try:
+        info = os.lstat(root)
+    except OSError as exc:
+        raise UploadStorageError("UPLOAD_DIR must be an existing directory.") from exc
+    if _is_link_or_reparse(info) or not stat.S_ISDIR(info.st_mode):
+        raise UploadStorageError("UPLOAD_DIR must be an existing safe directory.")
     return root
 
 
@@ -80,8 +105,12 @@ def _portable_owner_directory(root: Path, owner: str, *, create: bool) -> Path:
     owner_dir = root / owner
     if create:
         owner_dir.mkdir(mode=0o700, exist_ok=True)
-    if owner_dir.is_symlink() or not owner_dir.exists() or not owner_dir.is_dir():
-        raise UploadStorageError("Owner upload directory is invalid or symlinked.")
+    try:
+        info = os.lstat(owner_dir)
+    except OSError as exc:
+        raise UploadStorageError("Owner upload directory is unavailable.") from exc
+    if _is_link_or_reparse(info) or not stat.S_ISDIR(info.st_mode):
+        raise UploadStorageError("Owner upload directory is invalid or redirected.")
     return owner_dir
 
 
@@ -96,18 +125,28 @@ def _owner_directory(
 
     root = _root_directory(upload_root)
     owner = normalize_owner_id(owner_id)
+    root_before = os.lstat(root)
+    expected_root = _identity(root_before)
     if os.name == "nt":  # pragma: no cover
         owner_path = _portable_owner_directory(root, owner, create=create)
-        before = owner_path.stat()
+        before = os.lstat(owner_path)
         try:
             yield root, None, owner_path
         finally:
-            if owner_path.is_symlink() or not owner_path.exists():
-                raise UploadStorageError(
-                    "Owner upload directory changed during operation."
-                )
-            after = owner_path.stat()
-            if (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino):
+            _no_redirected_components(root, "UPLOAD_DIR")
+            root_after = os.lstat(root)
+            if (
+                _is_link_or_reparse(root_after)
+                or not stat.S_ISDIR(root_after.st_mode)
+                or _identity(root_after) != expected_root
+            ):
+                raise UploadStorageError("UPLOAD_DIR changed during operation.")
+            after = os.lstat(owner_path)
+            if (
+                _is_link_or_reparse(after)
+                or not stat.S_ISDIR(after.st_mode)
+                or _identity(before) != _identity(after)
+            ):
                 raise UploadStorageError(
                     "Owner upload directory changed during operation."
                 )
@@ -121,6 +160,18 @@ def _owner_directory(
     root_fd = os.open(root, directory_flags)
     owner_fd: Optional[int] = None
     try:
+        opened_root = os.fstat(root_fd)
+        if (
+            not stat.S_ISDIR(opened_root.st_mode)
+            or _identity(opened_root) != expected_root
+        ):
+            raise UploadStorageError("UPLOAD_DIR identity changed while it was opened.")
+        current_root = os.lstat(root)
+        if (
+            _is_link_or_reparse(current_root)
+            or _identity(current_root) != expected_root
+        ):
+            raise UploadStorageError("UPLOAD_DIR changed before owner access.")
         if create:
             try:
                 os.mkdir(owner, mode=0o700, dir_fd=root_fd)
@@ -186,16 +237,14 @@ def validated_owner_file_path(
         ):
             if owner_fd is None:  # pragma: no cover
                 candidate = owner_path / filename
-                if candidate.is_symlink() or not candidate.exists():
-                    return None
-                metadata = candidate.stat()
+                metadata = os.lstat(candidate)
             else:
                 metadata = os.stat(
                     filename,
                     dir_fd=owner_fd,
                     follow_symlinks=False,
                 )
-            if not stat.S_ISREG(metadata.st_mode):
+            if _is_link_or_reparse(metadata) or not stat.S_ISREG(metadata.st_mode):
                 return None
             return root / owner / filename
     except (FileNotFoundError, NotADirectoryError, OSError, UploadStorageError):
@@ -237,19 +286,25 @@ def read_owner_file(
         ):
             if owner_fd is None:  # pragma: no cover
                 candidate = owner_path / filename
-                if candidate.is_symlink() or not candidate.exists():
-                    return None
-                before = candidate.stat()
-                if not stat.S_ISREG(before.st_mode) or before.st_size > limit:
+                before = os.lstat(candidate)
+                if (
+                    _is_link_or_reparse(before)
+                    or not stat.S_ISREG(before.st_mode)
+                    or before.st_size > limit
+                ):
                     return None
                 with candidate.open("rb") as handle:
                     opened = os.fstat(handle.fileno())
-                    if (before.st_dev, before.st_ino) != (
-                        opened.st_dev,
-                        opened.st_ino,
-                    ):
+                    if _identity(before) != _identity(opened):
                         return None
-                    return _read_bounded(handle, limit)
+                    payload = _read_bounded(handle, limit)
+                after = os.lstat(candidate)
+                if (
+                    _is_link_or_reparse(after)
+                    or _identity(after) != _identity(before)
+                ):
+                    return None
+                return payload
 
             flags = (
                 os.O_RDONLY
@@ -296,7 +351,8 @@ def store_owner_stream(
             total = 0
             try:
                 with destination.open("xb") as handle:
-                    if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+                    opened = os.fstat(handle.fileno())
+                    if not stat.S_ISREG(opened.st_mode):
                         raise UploadStorageError(
                             "Upload destination is not a regular file."
                         )
@@ -317,17 +373,27 @@ def store_owner_stream(
                         handle.write(data)
                     handle.flush()
                     os.fsync(handle.fileno())
+                final = os.lstat(destination)
+                if (
+                    _is_link_or_reparse(final)
+                    or not stat.S_ISREG(final.st_mode)
+                    or _identity(final) != _identity(opened)
+                ):
+                    raise UploadStorageError(
+                        "Upload destination changed during storage."
+                    )
             except Exception:
                 try:
-                    if not destination.is_symlink():
-                        destination.unlink(missing_ok=True)
+                    current = os.lstat(destination)
+                    if (
+                        'opened' in locals()
+                        and not _is_link_or_reparse(current)
+                        and _identity(current) == _identity(opened)
+                    ):
+                        destination.unlink()
                 except OSError:
                     pass
                 raise
-            if destination.is_symlink() or not destination.is_file():
-                raise UploadStorageError(
-                    "Upload destination changed during storage."
-                )
             return root / owner / filename
 
         flags = (
@@ -380,10 +446,10 @@ def copy_path_to_owner(
     max_bytes: int,
 ) -> Path:
     source = _absolute_lexical_path(source_path, "source_path")
-    _no_symlink_components(source, "source_path")
-    before = source.stat()
-    if not stat.S_ISREG(before.st_mode):
-        raise UploadStorageError("Source file must be a regular file.")
+    _no_redirected_components(source, "source_path")
+    before = os.lstat(source)
+    if _is_link_or_reparse(before) or not stat.S_ISREG(before.st_mode):
+        raise UploadStorageError("Source file must be a safe regular file.")
     limit = _positive_limit(max_bytes)
     if before.st_size > limit:
         raise UploadStorageError(
@@ -400,7 +466,7 @@ def copy_path_to_owner(
         opened = os.fstat(descriptor)
         if not stat.S_ISREG(opened.st_mode):
             raise UploadStorageError("Source file must be a regular file.")
-        if (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino):
+        if _identity(before) != _identity(opened):
             raise UploadStorageError(
                 "Source file changed before it could be copied."
             )
@@ -436,10 +502,8 @@ def remove_owner_file(
         ):
             if owner_fd is None:  # pragma: no cover
                 candidate = owner_path / filename
-                if candidate.is_symlink() or not candidate.exists():
-                    return False
-                metadata = candidate.stat()
-                if not stat.S_ISREG(metadata.st_mode):
+                metadata = os.lstat(candidate)
+                if _is_link_or_reparse(metadata) or not stat.S_ISREG(metadata.st_mode):
                     return False
                 candidate.unlink()
                 return True
@@ -449,7 +513,7 @@ def remove_owner_file(
                 dir_fd=owner_fd,
                 follow_symlinks=False,
             )
-            if not stat.S_ISREG(metadata.st_mode):
+            if _is_link_or_reparse(metadata) or not stat.S_ISREG(metadata.st_mode):
                 return False
             os.unlink(filename, dir_fd=owner_fd)
             return True
