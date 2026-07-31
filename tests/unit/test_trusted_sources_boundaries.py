@@ -111,3 +111,22 @@ def test_domain_derivation_rejects_text_and_infinite_iterables(monkeypatch):
         derive_domain_suffixes(
             f"https://{index}.example.test" for index in itertools.count()
         )
+
+def test_catalogue_text_and_seed_canonicality_is_strict():
+    for name, description in (("Bad\nName", "description"), ("Name", "bad\x7fdescription")):
+        with pytest.raises(ValueError):
+            SourceCategory(name=name, description=description, seeds=())
+
+    for seed in (
+        " https://example.test/",
+        "https://example.test/ ",
+        "https://example.test/path?token=value",
+        "https://example.test\\attacker.test/",
+        "https://example.test/unsafe\x7fpath",
+    ):
+        with pytest.raises(ValueError):
+            SourceCategory(
+                name="Name",
+                description="description",
+                seeds=(seed,),
+            )

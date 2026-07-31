@@ -168,3 +168,38 @@ def test_control_bearing_service_paths_fail_before_server_app_import(
     assert setting in result.stderr
     assert "invalid or too long" in result.stderr
     assert not any("unsafe" in path.name for path in tmp_path.iterdir())
+
+def test_reparse_service_path_component_is_rejected_before_server_app_import(
+    tmp_path,
+):
+    target = tmp_path / "reparse-root"
+    target.mkdir()
+    environment = _base_environment(tmp_path)
+    environment["UPLOAD_DIR"] = str(target)
+    environment["REPARSE_TARGET"] = str(target)
+
+    result = _run_server_import(
+        r"""
+import os
+import pathlib
+import types
+
+target = os.path.abspath(os.environ["REPARSE_TARGET"])
+original_lstat = pathlib.Path.lstat
+def reparse_lstat(self):
+    metadata = original_lstat(self)
+    if os.path.abspath(self) == target:
+        return types.SimpleNamespace(
+            st_mode=metadata.st_mode,
+            st_file_attributes=0x400,
+        )
+    return metadata
+pathlib.Path.lstat = reparse_lstat
+import server
+""",
+        environment,
+    )
+
+    assert result.returncode != 0
+    assert "UPLOAD_DIR" in result.stderr
+    assert "reparse points" in result.stderr

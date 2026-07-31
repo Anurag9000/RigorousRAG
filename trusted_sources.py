@@ -17,10 +17,14 @@ _MAX_URL_CHARS = 4096
 _HOST_LABEL_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 
 
+def _contains_ascii_control(value: str) -> bool:
+    return any(ord(character) < 32 or ord(character) == 127 for character in value)
+
+
 def _canonical_hostname(value: Any) -> str:
     if not isinstance(value, str) or not value or len(value) > 253:
         return ""
-    if any(character.isspace() or ord(character) < 33 for character in value):
+    if any(character.isspace() or ord(character) < 33 or ord(character) == 127 for character in value):
         return ""
     candidate = value.rstrip(".").lower()
     try:
@@ -46,11 +50,13 @@ def _canonical_hostname(value: Any) -> str:
 def _validated_seed(value: Any) -> str:
     if not isinstance(value, str):
         raise ValueError("Trusted source seeds must be strings.")
-    rendered = value.strip()
+    rendered = value
     if (
         not rendered
+        or rendered != rendered.strip()
         or len(rendered) > _MAX_URL_CHARS
-        or any(ord(character) < 32 or ord(character) == 127 for character in rendered)
+        or _contains_ascii_control(rendered)
+        or "\\" in rendered
     ):
         raise ValueError("Trusted source seeds must contain valid bounded URLs.")
     try:
@@ -64,6 +70,8 @@ def _validated_seed(value: Any) -> str:
         raise ValueError("Trusted source seeds may not contain credentials.")
     if port not in (None, 443):
         raise ValueError("Trusted source seeds may use only the default HTTPS port 443.")
+    if parsed.query:
+        raise ValueError("Trusted source seeds may not contain query strings.")
     if parsed.fragment:
         raise ValueError("Trusted source seeds may not contain fragments.")
     hostname = _canonical_hostname(parsed.hostname or "")
@@ -79,12 +87,18 @@ class SourceCategory:
     seeds: Tuple[str, ...]
 
     def __post_init__(self) -> None:
-        if not isinstance(self.name, str) or not self.name.strip() or len(self.name) > 200:
-            raise ValueError("Source-category names must contain 1-200 characters.")
+        if (
+            not isinstance(self.name, str)
+            or not self.name.strip()
+            or len(self.name) > 200
+            or _contains_ascii_control(self.name)
+        ):
+            raise ValueError("Source-category names must contain 1-200 valid characters.")
         if (
             not isinstance(self.description, str)
             or not self.description.strip()
             or len(self.description) > 2000
+            or _contains_ascii_control(self.description)
         ):
             raise ValueError(
                 "Source-category descriptions must contain 1-2,000 characters."

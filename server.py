@@ -12,11 +12,14 @@ import importlib
 import json
 import math
 import os
+import stat
 import sys
 import time
 from concurrent.futures import Future
 from pathlib import Path
 from typing import Any, Mapping, Optional
+
+_WINDOWS_REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
 
 import uvicorn
 from fastapi import Request
@@ -71,8 +74,19 @@ def _safe_state_path(name: str, default: str) -> Path:
         candidate = Path.cwd() / candidate
     absolute = Path(os.path.abspath(candidate))
     for component in (absolute, *absolute.parents):
-        if component.is_symlink():
-            raise RuntimeError(f"{name} may not contain symbolic-link components.")
+        try:
+            metadata = component.lstat()
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            raise RuntimeError(f"{name} could not be inspected safely.") from exc
+        attributes = int(getattr(metadata, "st_file_attributes", 0))
+        if stat.S_ISLNK(metadata.st_mode) or bool(
+            attributes & _WINDOWS_REPARSE_POINT
+        ):
+            raise RuntimeError(
+                f"{name} may not contain symbolic-link components or reparse points."
+            )
     os.environ[name] = str(absolute)
     return absolute
 

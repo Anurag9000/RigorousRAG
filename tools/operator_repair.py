@@ -36,6 +36,7 @@ _MAX_SCAN_ROWS = 100_000
 _MAX_ROWID = 9_223_372_036_854_775_807
 _SCAN_BATCH_ROWS = 500
 _AUDIT_REASON_CHARS = 500
+_MAX_AUDIT_REASON_INPUT_CHARS = 10_000
 
 
 @dataclass(frozen=True)
@@ -115,6 +116,19 @@ def _safe_public_text(value: Any, *, limit: int, default: str) -> str:
     else:
         rendered = type(value).__name__
     return mask_metadata_text(rendered).strip()[:limit] or default
+
+
+def _normalized_audit_reason(value: str) -> str:
+    if len(value) > _MAX_AUDIT_REASON_INPUT_CHARS:
+        raise ValueError(
+            f"reason may contain at most {_MAX_AUDIT_REASON_INPUT_CHARS:,} characters."
+        )
+    masked = mask_metadata_text(value)
+    control_normalized = "".join(
+        " " if ord(character) < 32 or ord(character) == 127 else character
+        for character in masked
+    )
+    return " ".join(control_normalized.split())[:_AUDIT_REASON_CHARS]
 
 
 def _cell_fingerprint_bytes(value: Any) -> bytes:
@@ -416,9 +430,18 @@ def retire_corrupt_job(
         raise ValueError(f"confirmation must exactly equal {expected_confirmation}.")
     if not isinstance(reason, str):
         raise ValueError("reason must be a string.")
-    public_reason = mask_metadata_text(reason).strip()[:_AUDIT_REASON_CHARS]
+    public_reason = _normalized_audit_reason(reason)
     if not public_reason:
         raise ValueError("reason must not be empty.")
+    repaired_at = time.time()
+    if (
+        isinstance(repaired_at, bool)
+        or not isinstance(repaired_at, (int, float))
+        or not math.isfinite(float(repaired_at))
+        or float(repaired_at) < 0
+    ):
+        raise RuntimeError("The operator audit clock returned an invalid timestamp.")
+    repaired_at = float(repaired_at)
 
     with store._lock, store._connect() as connection:  # noqa: SLF001 - operator boundary
         connection.execute("BEGIN IMMEDIATE")
@@ -448,7 +471,7 @@ def retire_corrupt_job(
                 repaired_at, action, job_rowid, row_fingerprint, reason, source_preserved
             ) VALUES (?, 'retire_corrupt_job', ?, ?, ?, ?)
             """,
-            (time.time(), rowid, fingerprint, public_reason, int(source_preserved)),
+            (repaired_at, rowid, fingerprint, public_reason, int(source_preserved)),
         )
         deleted = connection.execute("DELETE FROM jobs WHERE rowid=?", (rowid,))
         if deleted.rowcount != 1:

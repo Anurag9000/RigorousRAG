@@ -1,4 +1,5 @@
 import json
+import math
 import time
 
 import pytest
@@ -169,3 +170,55 @@ def test_cli_lists_corrupt_rows_with_scan_metadata_and_without_private_path(
     assert payload["complete"] is True
     assert private_source not in captured.out
     assert "secret.pdf" not in captured.out
+
+def test_retirement_audit_reason_is_single_line_masked_and_clock_is_finite(
+    tmp_path,
+):
+    store = JobStore(path=tmp_path / "jobs.sqlite3")
+    rowid = _insert_corrupt_row(store, str(tmp_path / "private.pdf"))
+    record = list_corrupt_jobs(store)[0]
+
+    retire_corrupt_job(
+        store,
+        rowid=rowid,
+        fingerprint=record.fingerprint,
+        confirmation=f"RETIRE-{rowid}-{record.fingerprint[:12]}",
+        reason="retire\napi_key=top-secret\x1b[31m row",
+    )
+
+    with store._lock, store._connect() as connection:  # noqa: SLF001
+        audit = connection.execute(
+            "SELECT repaired_at, reason FROM operator_repairs"
+        ).fetchone()
+    assert audit is not None
+    assert math.isfinite(float(audit["repaired_at"]))
+    assert float(audit["repaired_at"]) >= 0
+    assert "\n" not in audit["reason"]
+    assert "\r" not in audit["reason"]
+    assert "\x1b" not in audit["reason"]
+    assert "top-secret" not in audit["reason"]
+
+
+def test_nonfinite_repair_clock_preserves_corrupt_row(tmp_path, monkeypatch):
+    store = JobStore(path=tmp_path / "jobs.sqlite3")
+    rowid = _insert_corrupt_row(store, str(tmp_path / "private.pdf"))
+    record = list_corrupt_jobs(store)[0]
+    monkeypatch.setattr("tools.operator_repair.time.time", lambda: float("nan"))
+
+    with pytest.raises(RuntimeError, match="audit clock"):
+        retire_corrupt_job(
+            store,
+            rowid=rowid,
+            fingerprint=record.fingerprint,
+            confirmation=f"RETIRE-{rowid}-{record.fingerprint[:12]}",
+            reason="retire malformed recovery row",
+        )
+
+    with store._lock, store._connect() as connection:  # noqa: SLF001
+        assert connection.execute(
+            "SELECT 1 FROM jobs WHERE rowid=?", (rowid,)
+        ).fetchone() is not None
+        table = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='operator_repairs'"
+        ).fetchone()
+    assert table is None
