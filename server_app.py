@@ -8,7 +8,6 @@ import json
 import math
 import os
 import re
-import stat
 import threading
 import time
 import uuid
@@ -29,6 +28,7 @@ from tools.bounded_pool import BoundedExecutor
 from tools.document_service import index_document
 from tools.document_store import DocumentStore, get_document_store
 from tools.due_scheduler import DueScheduler
+from tools.frontend_static import frontend_directory
 from tools.ingestion import ingest_file
 from tools.integrity import check_visual_entailment, extract_protocol
 from tools.job_store import JobStore
@@ -48,25 +48,7 @@ from tools.upload_storage import UploadStorageError, remove_owner_file, store_ow
 
 T = TypeVar("T")
 
-
-def _frontend_directory() -> Path:
-    """Return the repository-local frontend without depending on process cwd."""
-
-    module_root = Path(__file__).resolve().parent
-    candidate = module_root / "frontend"
-    try:
-        info = os.stat(candidate, follow_symlinks=False)
-    except OSError as exc:
-        raise RuntimeError("The bundled frontend directory is unavailable.") from exc
-    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
-        raise RuntimeError("The bundled frontend path must be a real directory.")
-    resolved = candidate.resolve(strict=True)
-    if resolved.parent != module_root:
-        raise RuntimeError("The bundled frontend directory escaped the application root.")
-    return resolved
-
-
-_FRONTEND_DIR = _frontend_directory()
+_FRONTEND_DIR = frontend_directory()
 UPLOAD_DIR = Path(os.getenv("UPLOAD_DIR", "uploads")).resolve()
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 RETAIN_SOURCE_FILES = os.getenv(
