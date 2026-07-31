@@ -25,16 +25,22 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-      - name: Install development dependencies
-        run: python -m pip install --upgrade pip && python -m pip install -r requirements-dev.txt
-      - name: Apply and verify with captured diagnostics
+      - name: Install, apply, and verify with captured diagnostics
         id: verify
         shell: bash
         run: |
           set +e
           : > /tmp/pass12.log
-          python scripts/pass12_patch.py >> /tmp/pass12.log 2>&1
+          python -m pip install --upgrade pip >> /tmp/pass12.log 2>&1
           status=$?
+          if [[ $status -eq 0 ]]; then
+            python -m pip install -r requirements-dev.txt >> /tmp/pass12.log 2>&1
+            status=$?
+          fi
+          if [[ $status -eq 0 ]]; then
+            python scripts/pass12_patch.py >> /tmp/pass12.log 2>&1
+            status=$?
+          fi
           if [[ $status -eq 0 ]]; then
             python -m compileall -q tools/security.py tests/unit/test_security.py tests/unit/test_security_complete_boundaries.py >> /tmp/pass12.log 2>&1
             status=$?
@@ -87,4 +93,4 @@ jobs:
           git commit -m "Record pass twelve verification failure" || exit 0
           git push origin HEAD:main
 
-# Diagnostic retrigger after queue delay.
+# Installation and tests are both captured for deterministic diagnosis.
