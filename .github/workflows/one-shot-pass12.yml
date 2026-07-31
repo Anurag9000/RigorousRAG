@@ -1,0 +1,88 @@
+name: One-shot pass twelve remediation
+
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/one-shot-pass12.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: one-shot-pass-twelve-main
+  cancel-in-progress: true
+
+jobs:
+  remediate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install development dependencies
+        run: python -m pip install --upgrade pip && python -m pip install -r requirements-dev.txt
+      - name: Apply and verify with captured diagnostics
+        id: verify
+        shell: bash
+        run: |
+          set +e
+          : > /tmp/pass12.log
+          python scripts/pass12_patch.py >> /tmp/pass12.log 2>&1
+          status=$?
+          if [[ $status -eq 0 ]]; then
+            python -m compileall -q tools/security.py tests/unit/test_security.py tests/unit/test_security_complete_boundaries.py >> /tmp/pass12.log 2>&1
+            status=$?
+          fi
+          if [[ $status -eq 0 ]]; then
+            python -m pytest \
+              tests/unit/test_security.py \
+              tests/unit/test_security_complete_boundaries.py \
+              tests/unit/test_safe_download_deadline.py \
+              tests/unit/test_safe_download_peer.py \
+              tests/unit/test_safe_download_session_state.py \
+              --no-cov -q >> /tmp/pass12.log 2>&1
+            status=$?
+          fi
+          cat /tmp/pass12.log
+          echo "status=${status}" >> "$GITHUB_OUTPUT"
+      - name: Commit verified remediation directly to main
+        if: steps.verify.outputs.status == '0'
+        shell: bash
+        run: |
+          git config user.name "RigorousRAG Remediation"
+          git config user.email "actions@users.noreply.github.com"
+          git add tools/security.py tests/unit/test_security.py \
+            tests/unit/test_security_complete_boundaries.py
+          git rm scripts/pass12_patch.py .github/workflows/one-shot-pass12.yml
+          git rm -f docs/PASS12_FAILURE.md
+          git diff --cached --check
+          git commit -m "Harden authentication and URL configuration boundaries"
+          git push origin HEAD:main
+      - name: Publish bounded failure diagnostics
+        if: steps.verify.outputs.status != '0'
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import subprocess
+
+          log = Path('/tmp/pass12.log').read_text(encoding='utf-8', errors='replace')
+          result = subprocess.run(
+              ['git', 'diff', '--', 'tools/security.py', 'tests/unit/test_security.py', 'tests/unit/test_security_complete_boundaries.py'],
+              text=True,
+              capture_output=True,
+          )
+          payload = '# Pass twelve diagnostic\n\n```text\n' + log[-30000:] + '\n```\n\n```diff\n' + result.stdout[-30000:] + '\n```\n'
+          Path('docs/PASS12_FAILURE.md').write_text(payload, encoding='utf-8')
+          PY
+          git config user.name "RigorousRAG Remediation"
+          git config user.email "actions@users.noreply.github.com"
+          git add docs/PASS12_FAILURE.md
+          git commit -m "Record pass twelve verification failure" || exit 0
+          git push origin HEAD:main
