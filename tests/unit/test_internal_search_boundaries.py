@@ -200,6 +200,51 @@ def test_engine_reload_closes_superseded_instance(monkeypatch, tmp_path):
     second.close.assert_not_called()
 
 
+def test_unstable_reload_closes_candidates_and_preserves_previous_engine(
+    monkeypatch,
+    tmp_path,
+):
+    previous = MagicMock()
+    candidate_one = MagicMock()
+    candidate_two = MagicMock()
+    candidate_three = MagicMock()
+    engines = iter([candidate_one, candidate_two, candidate_three])
+    signatures = iter(
+        [
+            (str(tmp_path), (("a", 2, 2, 2, 2, 2),)),
+            (str(tmp_path), (("a", 3, 3, 3, 3, 3),)),
+            (str(tmp_path), (("a", 4, 4, 4, 4, 4),)),
+            (str(tmp_path), (("a", 5, 5, 5, 5, 5),)),
+        ]
+    )
+    monkeypatch.setenv("CLASSIC_STORAGE_DIR", str(tmp_path))
+    monkeypatch.setattr(internal_search, "_ENGINE_INSTANCE", previous)
+    monkeypatch.setattr(
+        internal_search,
+        "_ENGINE_SIGNATURE",
+        (str(tmp_path), (("a", 1, 1, 1, 1, 1),)),
+    )
+    monkeypatch.setattr(
+        internal_search,
+        "_storage_signature",
+        lambda _path: next(signatures),
+    )
+    monkeypatch.setattr(
+        internal_search,
+        "AcademicSearchEngine",
+        lambda **_kwargs: next(engines),
+    )
+
+    with pytest.raises(RuntimeError, match="changed repeatedly"):
+        internal_search.get_engine()
+
+    assert internal_search._ENGINE_INSTANCE is previous
+    candidate_one.close.assert_called_once()
+    candidate_two.close.assert_called_once()
+    candidate_three.close.assert_called_once()
+    previous.close.assert_not_called()
+
+
 def test_manifest_member_names_must_match_generation_exactly(tmp_path):
     generation = "a" * 32
     manifest = tmp_path / "snapshot_manifest.json"
