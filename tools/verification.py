@@ -74,39 +74,36 @@ def _answer_markers(answer: str) -> Tuple[List[Tuple[str, int]], bool]:
     ], truncated
 
 
-def _append_issue(
-    issues: List[Dict[str, Any]],
-    issue: Dict[str, Any],
-) -> bool:
-    if len(issues) >= _MAX_ISSUES:
-        return False
-    issues.append(issue)
-    return True
-
-
 def verify_citations(answer: str, citations: List[Citation]) -> List[Dict[str, Any]]:
     bounded_answer = _bounded_answer(answer)
     bounded_citations = _bounded_citations(citations)
     issues: List[Dict[str, Any]] = []
+    issue_overflow = False
+
+    def append_issue(issue: Dict[str, Any]) -> bool:
+        nonlocal issue_overflow
+        if len(issues) >= _MAX_ISSUES:
+            issue_overflow = True
+            return False
+        issues.append(issue)
+        return True
 
     labels = [citation.label for citation in bounded_citations]
     label_map: Dict[str, Citation] = {}
     for citation in bounded_citations:
         label_map.setdefault(citation.label, citation)
     if len(labels) != len(set(labels)):
-        _append_issue(
-            issues,
+        append_issue(
             {
                 "type": "duplicate_labels",
                 "label": "*",
                 "error": "The citation list contains duplicate labels.",
-            },
+            }
         )
 
     marker_positions, marker_overflow = _answer_markers(bounded_answer)
     if marker_overflow:
-        _append_issue(
-            issues,
+        append_issue(
             {
                 "type": "too_many_markers",
                 "label": "*",
@@ -114,7 +111,7 @@ def verify_citations(answer: str, citations: List[Citation]) -> List[Dict[str, A
                     f"The answer contains more than {_MAX_MARKERS} citation markers; "
                     "verification was truncated."
                 ),
-            },
+            }
         )
 
     positions_by_label: Dict[str, List[int]] = {}
@@ -124,21 +121,19 @@ def verify_citations(answer: str, citations: List[Citation]) -> List[Dict[str, A
     for label in positions_by_label:
         citation = label_map.get(label)
         if citation is None:
-            if not _append_issue(
-                issues,
+            if not append_issue(
                 {
                     "type": "missing_source",
                     "label": label,
                     "error": f"Citation marker {label} has no corresponding source.",
-                },
+                }
             ):
                 break
             continue
         evidence = citation.quote or citation.snippet or ""
         evidence_tokens = _tokenize_for_overlap(evidence)
         if len(evidence_tokens) < 8:
-            if not _append_issue(
-                issues,
+            if not append_issue(
                 {
                     "type": "weak_evidence_text",
                     "label": label,
@@ -147,7 +142,7 @@ def verify_citations(answer: str, citations: List[Citation]) -> List[Dict[str, A
                         f"The evidence text for {label} contains too few meaningful tokens "
                         "for even a lexical-alignment diagnostic. Inspect the source manually."
                     ),
-                },
+                }
             ):
                 break
             continue
@@ -163,8 +158,7 @@ def verify_citations(answer: str, citations: List[Citation]) -> List[Dict[str, A
                 len(context_tokens | evidence_tokens),
             )
             if overlap < 0.02:
-                if not _append_issue(
-                    issues,
+                if not append_issue(
                     {
                         "type": "low_lexical_alignment",
                         "label": label,
@@ -174,34 +168,31 @@ def verify_citations(answer: str, citations: List[Citation]) -> List[Dict[str, A
                             f"the evidence for {label}. This is a diagnostic, not a "
                             "semantic entailment verdict."
                         ),
-                    },
+                    }
                 ):
                     break
 
     used = set(positions_by_label)
     for label in labels:
         if label not in used:
-            if not _append_issue(
-                issues,
+            if not append_issue(
                 {
                     "type": "unused_source",
                     "label": label,
                     "error": f"Source {label} was returned but not cited in the answer.",
-                },
+                }
             ):
                 break
     if bounded_citations and not marker_positions:
-        _append_issue(
-            issues,
+        append_issue(
             {
                 "type": "missing_markers",
                 "label": "*",
                 "error": "Evidence was retrieved, but the answer contains no citation markers.",
-            },
+            }
         )
     if not bounded_citations and not marker_positions:
-        _append_issue(
-            issues,
+        append_issue(
             {
                 "type": "no_evidence",
                 "label": "*",
@@ -209,9 +200,9 @@ def verify_citations(answer: str, citations: List[Citation]) -> List[Dict[str, A
                     "No citations or citation markers were supplied; citation structure "
                     "could not be evaluated."
                 ),
-            },
+            }
         )
-    if len(issues) >= _MAX_ISSUES:
+    if issue_overflow:
         issues[-1] = {
             "type": "issue_limit_reached",
             "label": "*",
