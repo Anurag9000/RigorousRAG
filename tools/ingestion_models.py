@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import itertools
+import operator
 import re
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -21,6 +22,7 @@ from tools.privacy import mask_metadata_text, sanitize_metadata_dict
 _MAX_DOCUMENT_TEXT_CHARS = 50_000_000
 _MAX_SECTIONS = 10_000
 _MAX_METADATA_ITEMS = 1000
+_MAX_PAGE_NUMBER = 1_000_000
 _MIME_RE = re.compile(r"^[A-Za-z0-9!#$&^_.+-]{1,127}/[A-Za-z0-9!#$&^_.+-]{1,127}$")
 
 
@@ -37,6 +39,14 @@ def _safe_text(value: Any, *, limit: int, default: str = "") -> str:
 
 def _contains_ascii_control(value: str) -> bool:
     return any(ord(character) < 32 or ord(character) == 127 for character in value)
+
+
+def _contains_invalid_document_control(value: str) -> bool:
+    return any(
+        (ord(character) < 32 and character not in "\t\r\n")
+        or ord(character) == 127
+        for character in value
+    )
 
 
 def _required_text(value: Any, label: str, *, limit: int) -> str:
@@ -62,12 +72,29 @@ def _bounded_sections(value: Any) -> List[Any]:
     return sections
 
 
+def _exact_page_number(value: Any) -> Optional[int]:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise ValueError("page_number must be an integer.")
+    try:
+        parsed = operator.index(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("page_number must be an integer.") from exc
+    page = int(parsed)
+    if not 1 <= page <= _MAX_PAGE_NUMBER:
+        raise ValueError(
+            f"page_number must be between 1 and {_MAX_PAGE_NUMBER}."
+        )
+    return page
+
+
 class DocumentSection(BaseModel):
     model_config = ConfigDict(validate_assignment=True, extra="forbid")
 
     title: str = Field(..., min_length=1, max_length=500)
     content: str = Field(..., min_length=1, max_length=_MAX_DOCUMENT_TEXT_CHARS)
-    page_number: Optional[int] = Field(default=None, ge=1, le=1_000_000)
+    page_number: Optional[int] = Field(default=None, ge=1, le=_MAX_PAGE_NUMBER)
 
     @field_validator("title", mode="before")
     @classmethod
@@ -82,7 +109,11 @@ class DocumentSection(BaseModel):
     def mask_and_validate_content(cls, value: Any) -> str:
         if not isinstance(value, str):
             raise ValueError("Section content must be a string.")
-        if not value or len(value) > _MAX_DOCUMENT_TEXT_CHARS or "\x00" in value:
+        if (
+            not value
+            or len(value) > _MAX_DOCUMENT_TEXT_CHARS
+            or _contains_invalid_document_control(value)
+        ):
             raise ValueError("Section content must contain valid non-empty text.")
         masked = mask_metadata_text(value)
         if not masked:
@@ -91,10 +122,8 @@ class DocumentSection(BaseModel):
 
     @field_validator("page_number", mode="before")
     @classmethod
-    def reject_boolean_page_numbers(cls, value: Any) -> Any:
-        if isinstance(value, bool):
-            raise ValueError("page_number must be an integer.")
-        return value
+    def validate_page_number(cls, value: Any) -> Optional[int]:
+        return _exact_page_number(value)
 
 
 class IngestedDocument(BaseModel):
@@ -164,7 +193,10 @@ class IngestedDocument(BaseModel):
     def mask_and_validate_document_text(cls, value: Any) -> str:
         if not isinstance(value, str):
             raise ValueError("Document text must be a string.")
-        if len(value) > _MAX_DOCUMENT_TEXT_CHARS or "\x00" in value:
+        if (
+            len(value) > _MAX_DOCUMENT_TEXT_CHARS
+            or _contains_invalid_document_control(value)
+        ):
             raise ValueError("Document text exceeds the valid text boundary.")
         return mask_metadata_text(value)
 
