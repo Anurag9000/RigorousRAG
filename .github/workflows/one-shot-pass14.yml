@@ -41,18 +41,10 @@ jobs:
 
           boundary = Path("tools/integrity_boundary.py")
           text = boundary.read_text(encoding="utf-8")
-          old = '''        image_b64, page_number, caption_text = _extract_figure_region(
-              source_bytes,
-              figure,
-          )
-          '''
-          new = '''        image_b64, page_number, caption_text = _implementation._extract_figure_region(
-              source_bytes,
-              figure,
-          )
-          '''
+          old = "image_b64, page_number, caption_text = _extract_figure_region("
+          new = "image_b64, page_number, caption_text = _implementation._extract_figure_region("
           if old not in text:
-              raise SystemExit("Expected visual-entailment patch seam is missing.")
+              raise SystemExit("Expected visual-entailment call is missing.")
           boundary.write_text(text.replace(old, new, 1), encoding="utf-8")
 
           tests = Path("tests/unit/test_rag_public_boundaries.py")
