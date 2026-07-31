@@ -132,4 +132,4 @@ jobs:
           git commit -m "Update capability wave one failure" || exit 0
           git push origin HEAD:main
 
-# Rerun after hostile metadata containment.
+# Clean retrigger after the prior runner failed to register.
