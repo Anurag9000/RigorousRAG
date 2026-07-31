@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import operator
 import os
 import stat
 import threading
@@ -28,8 +29,22 @@ HANDBOOK_MAX_CHUNKS = bounded_int_env(
 _CHUNK_CHARS = 1200
 _MAX_QUERY_CHARS = 2000
 _MAX_PATH_CHARS = 4096
+_FILE_ATTRIBUTE_REPARSE_POINT = 0x0400
 _CACHE: Dict[str, Any] = {"signature": None, "index": None, "chunks": None}
 _CACHE_LOCK = threading.Lock()
+
+
+def _contains_ascii_control(value: str) -> bool:
+    return any(ord(character) < 32 or ord(character) == 127 for character in value)
+
+
+def _is_link_or_reparse(info: os.stat_result) -> bool:
+    attributes = int(getattr(info, "st_file_attributes", 0) or 0)
+    return stat.S_ISLNK(info.st_mode) or bool(attributes & _FILE_ATTRIBUTE_REPARSE_POINT)
+
+
+def _identity(info: os.stat_result) -> tuple[int, int]:
+    return int(info.st_dev), int(info.st_ino)
 
 
 def _paragraph_chunks(content: str) -> List[Tuple[str, str]]:
@@ -75,24 +90,49 @@ def _lexical_handbook_path(path: Any) -> Path:
         rendered = os.fspath(path)
     except TypeError as exc:
         raise FileNotFoundError("The handbook is unavailable.") from exc
-    if not rendered or len(rendered) > _MAX_PATH_CHARS or "\x00" in rendered:
+    if (
+        not isinstance(rendered, str)
+        or not rendered
+        or len(rendered) > _MAX_PATH_CHARS
+        or _contains_ascii_control(rendered)
+    ):
         raise FileNotFoundError("The handbook is unavailable.")
     candidate = Path(rendered)
     if not candidate.is_absolute():
         candidate = Path.cwd() / candidate
     absolute = Path(os.path.abspath(candidate))
     try:
-        if any(component.is_symlink() for component in (absolute, *absolute.parents)):
-            raise FileNotFoundError("The handbook is unavailable.")
+        for component in (absolute, *absolute.parents):
+            try:
+                info = os.lstat(component)
+            except FileNotFoundError:
+                continue
+            if _is_link_or_reparse(info):
+                raise FileNotFoundError("The handbook is unavailable.")
     except OSError as exc:
         raise FileNotFoundError("The handbook is unavailable.") from exc
     return absolute
 
 
 def _read_handbook(path: Path) -> Tuple[str, Tuple[str, int, int, int, int, int]]:
-    """Read one bounded regular handbook without following symbolic links."""
+    """Read one bounded regular handbook through a stable no-follow identity."""
 
     source = _lexical_handbook_path(path)
+    try:
+        before = os.lstat(source)
+    except OSError as exc:
+        raise FileNotFoundError("The handbook is unavailable.") from exc
+    if _is_link_or_reparse(before) or not stat.S_ISREG(before.st_mode):
+        raise ValueError("The handbook must be a regular file.")
+    if before.st_size > HANDBOOK_MAX_BYTES:
+        raise ValueError("The handbook exceeds the configured byte limit.")
+    expected_identity = _identity(before)
+    expected_metadata = (
+        int(before.st_ctime_ns),
+        int(before.st_mtime_ns),
+        int(before.st_size),
+    )
+
     flags = (
         os.O_RDONLY
         | getattr(os, "O_NOFOLLOW", 0)
@@ -103,11 +143,13 @@ def _read_handbook(path: Path) -> Tuple[str, Tuple[str, int, int, int, int, int]
     except OSError as exc:
         raise FileNotFoundError("The handbook is unavailable.") from exc
     try:
-        info = os.fstat(descriptor)
-        if not stat.S_ISREG(info.st_mode):
-            raise ValueError("The handbook must be a regular file.")
-        if info.st_size > HANDBOOK_MAX_BYTES:
-            raise ValueError("The handbook exceeds the configured byte limit.")
+        opened = os.fstat(descriptor)
+        if (
+            _is_link_or_reparse(opened)
+            or not stat.S_ISREG(opened.st_mode)
+            or _identity(opened) != expected_identity
+        ):
+            raise ValueError("The handbook changed while it was being opened.")
         data = bytearray()
         while True:
             remaining = HANDBOOK_MAX_BYTES + 1 - len(data)
@@ -119,21 +161,48 @@ def _read_handbook(path: Path) -> Tuple[str, Tuple[str, int, int, int, int, int]
             data.extend(chunk)
             if len(data) > HANDBOOK_MAX_BYTES:
                 raise ValueError("The handbook exceeds the configured byte limit.")
-        try:
-            content = bytes(data).decode("utf-8")
-        except UnicodeDecodeError as exc:
-            raise ValueError("The handbook must contain valid UTF-8 text.") from exc
-        signature = (
-            str(source),
-            int(info.st_dev),
-            int(info.st_ino),
-            int(info.st_ctime_ns),
-            int(info.st_mtime_ns),
-            int(info.st_size),
-        )
-        return content, signature
+        opened_after = os.fstat(descriptor)
+        if (
+            _identity(opened_after) != expected_identity
+            or (
+                int(opened_after.st_ctime_ns),
+                int(opened_after.st_mtime_ns),
+                int(opened_after.st_size),
+            ) != expected_metadata
+        ):
+            raise ValueError("The handbook changed while it was being read.")
     finally:
         os.close(descriptor)
+
+    source = _lexical_handbook_path(source)
+    try:
+        after = os.lstat(source)
+    except OSError as exc:
+        raise FileNotFoundError("The handbook changed while it was being read.") from exc
+    if (
+        _is_link_or_reparse(after)
+        or not stat.S_ISREG(after.st_mode)
+        or _identity(after) != expected_identity
+        or (
+            int(after.st_ctime_ns),
+            int(after.st_mtime_ns),
+            int(after.st_size),
+        ) != expected_metadata
+    ):
+        raise ValueError("The handbook changed while it was being read.")
+    try:
+        content = bytes(data).decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError("The handbook must contain valid UTF-8 text.") from exc
+    signature = (
+        str(source),
+        expected_identity[0],
+        expected_identity[1],
+        expected_metadata[0],
+        expected_metadata[1],
+        expected_metadata[2],
+    )
+    return content, signature
 
 
 def _build_index(content: str):
@@ -161,14 +230,26 @@ def _bounded_top_k(value: Any) -> int:
     if isinstance(value, bool):
         raise ValueError("top_k must be an integer.")
     try:
-        parsed = int(value)
+        parsed = operator.index(value)
     except (TypeError, ValueError, OverflowError) as exc:
         raise ValueError("top_k must be an integer.") from exc
-    if isinstance(value, float) and not value.is_integer():
-        raise ValueError("top_k must be an integer.")
-    if not 1 <= parsed <= 10:
+    result = int(parsed)
+    if not 1 <= result <= 10:
         raise ValueError("top_k must be between 1 and 10.")
-    return parsed
+    return result
+
+
+def _bounded_query(value: Any) -> str:
+    if not isinstance(value, str):
+        raise ValueError("Handbook queries must be strings.")
+    bounded = value.strip()
+    if (
+        not bounded
+        or len(bounded) > _MAX_QUERY_CHARS
+        or _contains_ascii_control(bounded)
+    ):
+        raise ValueError("Handbook queries may contain at most 2,000 valid characters.")
+    return bounded
 
 
 def _search(
@@ -179,10 +260,9 @@ def _search(
 ) -> List[Tuple[str, str]]:
     from Indexer import tokenize
 
-    if not isinstance(query, str):
-        raise ValueError("Handbook queries must be strings.")
+    bounded_query = _bounded_query(query)
     limit = _bounded_top_k(top_k)
-    tokens = tokenize(query)
+    tokens = tokenize(bounded_query)
     if not tokens:
         return []
     scores: Dict[str, float] = {}
@@ -214,13 +294,7 @@ def _search(
 
 
 def search_handbook(query: str) -> str:
-    if not isinstance(query, str):
-        raise ValueError("Handbook queries must be strings.")
-    bounded_query = query.strip()
-    if not bounded_query:
-        raise ValueError("A handbook query is required.")
-    if len(bounded_query) > _MAX_QUERY_CHARS or "\x00" in bounded_query:
-        raise ValueError("Handbook queries may contain at most 2,000 valid characters.")
+    bounded_query = _bounded_query(query)
     with _CACHE_LOCK:
         content, signature = _read_handbook(HANDBOOK_PATH)
         if _CACHE["signature"] != signature:
