@@ -85,6 +85,7 @@ _FIELD_LIMITS = {
 _MAX_OUTPUT_ENTRIES = 100
 _MAX_INSPECTED_CANDIDATES = 1000
 _MAX_OUTPUT_CHARS = 500_000
+_MAX_KEY_YEAR_DIGITS = 8
 _BIBTEX_ESCAPES = {
     "\\": r"\textbackslash{}",
     "{": r"\{",
@@ -113,11 +114,15 @@ def _bounded_scalar(value: Any, field: str) -> str:
 
 
 def _escape_bibtex(value: Any) -> str:
-    """Escape each original character once, avoiding cascading replacements."""
+    """Normalize controls and escape each original character exactly once."""
 
     if not isinstance(value, str):
         return ""
-    text = " ".join(value.replace("\x00", "").split())
+    without_controls = "".join(
+        " " if ord(character) < 32 or ord(character) == 127 else character
+        for character in value
+    )
+    text = " ".join(without_controls.split())
     return "".join(_BIBTEX_ESCAPES.get(character, character) for character in text)
 
 
@@ -147,7 +152,8 @@ def _citation_key(citation: Dict[str, Any], index: int) -> str:
     first_author = re.split(r"\s+and\s+|,|;", authors, maxsplit=1, flags=re.I)[0]
     surname = first_author.strip().split()[-1] if first_author.strip() else "anon"
     year_value = _bounded_scalar(_value(citation, "year"), "year") or "nd"
-    year = re.sub(r"\D", "", year_value) or "nd"
+    year_digits = re.sub(r"\D", "", year_value)[:_MAX_KEY_YEAR_DIGITS]
+    year = year_digits or "nd"
     title = _bounded_scalar(_value(citation, "title"), "title") or "untitled"
     title_slug = _slug(title, 18)
     identity = "|".join(
@@ -202,16 +208,12 @@ def export_to_bibtex(citations: Iterable[Dict[str, Any]]) -> str:
         if len(entries) >= _MAX_OUTPUT_ENTRIES:
             break
         try:
-            raw = next(iterator)
+            citation = next(iterator)
         except StopIteration:
             break
         except Exception as exc:
             raise ValueError("citations iteration failed.") from exc
-        if not isinstance(raw, dict):
-            continue
-        try:
-            citation = dict(raw)
-        except Exception:
+        if not isinstance(citation, dict):
             continue
         entry_type, fields = _normalise_entry(citation)
         key = _citation_key(citation, len(entries))
