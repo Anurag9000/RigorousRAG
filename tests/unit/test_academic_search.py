@@ -1,4 +1,6 @@
 import json
+from decimal import Decimal
+from fractions import Fraction
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -24,12 +26,21 @@ def test_direct_query_year_and_limit_inputs_are_strict_before_network():
         cases = [
             {"query": object()},
             {"query": "q" * 2001},
+            {"query": "bad\x00query"},
+            {"query": "bad\nquery"},
+            {"query": "bad\rquery"},
+            {"query": "bad\tquery"},
+            {"query": "bad\x7fquery"},
             {"query": "query", "year_from": True},
             {"query": "query", "year_from": 2020.5},
+            {"query": "query", "year_from": Decimal("2020.5")},
+            {"query": "query", "year_from": Fraction(4041, 2)},
             {"query": "query", "year_from": "bad"},
             {"query": "query", "year_to": 10_000},
             {"query": "query", "limit": True},
             {"query": "query", "limit": 1.5},
+            {"query": "query", "limit": Decimal("1.5")},
+            {"query": "query", "limit": Fraction(3, 2)},
             {"query": "query", "limit": "bad"},
             {"query": "query", "limit": 0},
             {"query": "query", "limit": 11},
@@ -38,6 +49,34 @@ def test_direct_query_year_and_limit_inputs_are_strict_before_network():
             with pytest.raises(ValueError):
                 academic_search(**arguments)
     network.assert_not_called()
+
+
+def test_exact_index_protocol_years_and_limit_are_accepted():
+    class ExactYear:
+        def __index__(self):
+            return 2020
+
+    class ExactEndYear:
+        def __index__(self):
+            return 2023
+
+    class ExactLimit:
+        def __index__(self):
+            return 4
+
+    with patch(
+        "tools.academic_search.safe_download",
+        return_value=provider_payload([]),
+    ) as network:
+        assert academic_search(
+            "query",
+            year_from=ExactYear(),
+            year_to=ExactEndYear(),
+            limit=ExactLimit(),
+        ) == []
+
+    assert "year=2020-2023" in network.call_args.args[0]
+    assert "limit=4" in network.call_args.args[0]
 
 
 def test_empty_query_returns_without_network():
@@ -142,17 +181,20 @@ def test_provider_request_failure_is_generic():
 
 
 def test_provider_key_is_validated_before_network(monkeypatch):
-    monkeypatch.setenv("SEMANTIC_SCHOLAR_API_KEY", "x" * 4097)
-    with patch("tools.academic_search.safe_download") as network:
-        with pytest.raises(AcademicSearchError, match="key is invalid"):
-            academic_search("query")
-    network.assert_not_called()
-
-    monkeypatch.setenv("SEMANTIC_SCHOLAR_API_KEY", "key\r\nInjected: yes")
-    with patch("tools.academic_search.safe_download") as network:
-        with pytest.raises(AcademicSearchError, match="key is invalid"):
-            academic_search("query")
-    network.assert_not_called()
+    for value in (
+        "x" * 4097,
+        "key\r\nInjected: yes",
+        "key\tInjected",
+        "key\x01Injected",
+        "key\x7fInjected",
+        " key",
+        "key ",
+    ):
+        monkeypatch.setenv("SEMANTIC_SCHOLAR_API_KEY", value)
+        with patch("tools.academic_search.safe_download") as network:
+            with pytest.raises(AcademicSearchError, match="key is invalid"):
+                academic_search("query")
+        network.assert_not_called()
 
 
 def test_malformed_or_unsafe_provider_items_are_skipped():
