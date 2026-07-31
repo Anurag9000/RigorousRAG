@@ -5,6 +5,7 @@ from __future__ import annotations
 import ipaddress
 import itertools
 import math
+import operator
 import os
 import re
 import time
@@ -76,16 +77,18 @@ def _safe_getattr(value: object, name: str, default: object) -> object:
         return default
 
 
+def _contains_ascii_control(value: str) -> bool:
+    return any(ord(character) < 32 or ord(character) == 127 for character in value)
+
+
 def _clean_header(value: object, *, default: str) -> str:
     if not isinstance(value, str):
         return default
-    text = " ".join(
-        value[:_MAX_USER_AGENT_CHARS]
-        .replace("\x00", " ")
-        .replace("\r", " ")
-        .replace("\n", " ")
-        .split()
+    normalized = "".join(
+        " " if ord(character) < 32 or ord(character) == 127 else character
+        for character in value[:_MAX_USER_AGENT_CHARS]
     )
+    text = " ".join(normalized.split())
     return text[:_MAX_USER_AGENT_CHARS] or default
 
 
@@ -93,11 +96,9 @@ def _bounded_int(value: object, label: str, minimum: int, maximum: int) -> int:
     if isinstance(value, bool):
         raise ValueError(f"{label} must be an integer.")
     try:
-        numeric = int(value)
+        numeric = int(operator.index(value))
     except (TypeError, ValueError, OverflowError) as exc:
         raise ValueError(f"{label} must be an integer.") from exc
-    if isinstance(value, float) and not value.is_integer():
-        raise ValueError(f"{label} must be an integer.")
     if not minimum <= numeric <= maximum:
         raise ValueError(f"{label} must be between {minimum} and {maximum}.")
     return numeric
@@ -119,7 +120,7 @@ def _nonnegative_int(value: object, maximum: int = 2_000_000_000) -> int:
     if isinstance(value, bool):
         return 0
     try:
-        numeric = int(value)
+        numeric = int(operator.index(value))
     except (TypeError, ValueError, OverflowError):
         return 0
     return max(0, min(numeric, maximum))
@@ -149,7 +150,10 @@ def _bounded_collection(value: object, maximum: int, label: str) -> List[object]
 def _canonical_hostname(value: object) -> str:
     if not isinstance(value, str) or not value or len(value) > 253:
         return ""
-    if any(character.isspace() or ord(character) < 33 for character in value):
+    if any(
+        character.isspace() or ord(character) < 33 or ord(character) == 127
+        for character in value
+    ):
         return ""
     candidate = value.rstrip(".").lower()
     try:
@@ -177,6 +181,35 @@ def _hostname(url: str) -> str:
         return ""
 
 
+def _allowed_domain(value: object) -> str:
+    if (
+        not isinstance(value, str)
+        or not value
+        or value != value.strip()
+        or len(value) > 253
+        or _contains_ascii_control(value)
+        or "\\" in value
+    ):
+        return ""
+    try:
+        parsed = urlparse(value if "://" in value else f"https://{value}")
+        port = parsed.port
+    except (ValueError, UnicodeError):
+        return ""
+    if (
+        parsed.scheme.lower() not in {"http", "https"}
+        or parsed.username is not None
+        or parsed.password is not None
+        or port is not None
+        or parsed.path not in {"", "/"}
+        or parsed.params
+        or parsed.query
+        or parsed.fragment
+    ):
+        return ""
+    return _canonical_hostname(parsed.hostname or "")
+
+
 _CONTACT_URL = _clean_header(
     os.getenv("CRAWLER_CONTACT_URL", ""),
     default="https://github.com/Anurag9000/RigorousRAG",
@@ -192,11 +225,7 @@ def is_trusted_domain(url: str, allowed_suffixes: Iterable[str]) -> bool:
     if not hostname or isinstance(allowed_suffixes, (str, bytes, bytearray)):
         return False
     for raw_suffix in _bounded_items(allowed_suffixes, _MAX_ALLOWED_DOMAINS):
-        if not isinstance(raw_suffix, str):
-            continue
-        suffix = _hostname(
-            raw_suffix if "://" in raw_suffix else f"https://{raw_suffix}"
-        )
+        suffix = _allowed_domain(raw_suffix)
         if suffix and (hostname == suffix or hostname.endswith(f".{suffix}")):
             return True
     return False
@@ -207,10 +236,14 @@ def normalize_url(url: str) -> str:
 
     if not isinstance(url, str):
         return ""
-    value = url.strip()
-    if not value or len(value) > _MAX_URL_CHARS:
-        return ""
-    if any(ord(character) < 32 or ord(character) == 127 for character in value):
+    value = url
+    if (
+        not value
+        or value != value.strip()
+        or len(value) > _MAX_URL_CHARS
+        or _contains_ascii_control(value)
+        or "\\" in value
+    ):
         return ""
     try:
         parsed = urlparse(value)
@@ -315,9 +348,11 @@ class AcademicCrawler:
         for item in domains:
             if not isinstance(item, str):
                 raise ValueError("Every allowed domain must be a hostname string.")
-            hostname = _hostname(item if "://" in item else f"https://{item}")
+            hostname = _allowed_domain(item)
             if not hostname:
-                raise ValueError("Every allowed domain must be a valid hostname.")
+                raise ValueError(
+                    "Every allowed domain must be a canonical hostname-only authority."
+                )
             canonical_domains.add(hostname)
         if not canonical_domains:
             raise ValueError("At least one valid allowed domain is required.")
@@ -375,7 +410,7 @@ class AcademicCrawler:
             if not isinstance(item, (tuple, list)) or len(item) != 2:
                 continue
             url = normalize_url(item[0]) if isinstance(item[0], str) else ""
-            if not url:
+            if not url or not is_trusted_domain(url, self.allowed_domains):
                 continue
             depth = _nonnegative_int(item[1], self.max_depth + 1)
             queue.append((url, min(depth, self.max_depth + 1)))
@@ -424,7 +459,7 @@ class AcademicCrawler:
             self.max_pages + self.max_frontier_entries,
         ):
             normalized = normalize_url(raw_url) if isinstance(raw_url, str) else ""
-            if normalized:
+            if normalized and is_trusted_domain(normalized, self.allowed_domains):
                 visited.add(normalized)
 
         queue = self._bounded_frontier(_safe_getattr(state, "frontier", []))
@@ -435,7 +470,11 @@ class AcademicCrawler:
                 raise ValueError("Every seed must be an HTTP or HTTPS URL string.")
             seed = normalize_url(raw_seed)
             if not seed:
-                raise ValueError("Every seed must be a valid credential-free HTTP or HTTPS URL.")
+                raise ValueError(
+                    "Every seed must be a canonical credential-free HTTP or HTTPS URL."
+                )
+            if not is_trusted_domain(seed, self.allowed_domains):
+                raise ValueError("Every seed must belong to the configured domain allowlist.")
             if seed not in visited and seed not in queued:
                 if len(queue) >= self.max_frontier_entries:
                     break
@@ -454,10 +493,7 @@ class AcademicCrawler:
             if current_url in visited:
                 continue
             visited.add(current_url)
-            if (
-                depth > self.max_depth
-                or not is_trusted_domain(current_url, self.allowed_domains)
-            ):
+            if depth > self.max_depth:
                 continue
             if not self._under_domain_quota(current_url, domain_counts):
                 continue
@@ -467,6 +503,8 @@ class AcademicCrawler:
             if fetched is None:
                 continue
             canonical = normalize_url(fetched.url) or current_url
+            if not is_trusted_domain(canonical, self.allowed_domains):
+                continue
             visited.add(canonical)
             if canonical in pages or not self._under_domain_quota(
                 canonical,
@@ -605,7 +643,7 @@ class AcademicCrawler:
             return []
         for anchor in anchors:
             try:
-                href = _safe_text(anchor.get("href"), limit=_MAX_URL_CHARS).strip()
+                href = _safe_text(anchor.get("href"), limit=_MAX_URL_CHARS)
             except Exception:
                 continue
             absolute = normalize_url(urljoin(base_url, href)) if href else ""
