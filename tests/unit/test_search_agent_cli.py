@@ -34,7 +34,7 @@ def test_print_result_masks_private_metadata(capsys):
             Citation(
                 label="[1]",
                 title="Report at /private/report.txt",
-                url="https://alice:password@example.test?api_key=secret",
+                url="https://example.test/report?api_key=secret",
                 source_type="web_page",
                 snippet="file:///private/evidence.txt",
             )
@@ -48,6 +48,30 @@ def test_print_result_masks_private_metadata(capsys):
     assert "/private" not in output
     assert "password" not in output
     assert "api_key=secret" not in output
+
+
+def test_print_result_removes_terminal_controls(capsys):
+    answer = AgentAnswer(
+        answer="safe\x1b[2J\x7fanswer\rreplacement",
+        warnings=["warn\x1b[31mred\rreset"],
+        citations=[
+            Citation(
+                label="[1]",
+                title="title\x1b[2J",
+                url="https://example.test/source",
+                source_type="web_page",
+                snippet="snippet\x1b[31mred\rreset",
+            )
+        ],
+    )
+
+    print_result(answer)
+
+    output = capsys.readouterr().out
+    assert "\x1b" not in output
+    assert "\x7f" not in output
+    assert "\r" not in output
+    assert "safe [2J answer replacement" in output
 
 
 def test_print_result_surfaces_bounded_warnings(capsys):
@@ -104,21 +128,46 @@ def test_demo_and_local_modes_are_mutually_exclusive():
 def test_cli_argument_stream_is_strict_and_bounded(monkeypatch):
     with pytest.raises(ValueError, match="iterable"):
         parse_args("--query q")
-    with pytest.raises(ValueError, match="valid strings"):
+    with pytest.raises(ValueError, match="bounded valid strings"):
         parse_args(["--query", object()])
+    for value in ("bad\x00arg", "bad\narg", "bad\x1barg", "bad\x7farg"):
+        with pytest.raises(ValueError, match="bounded valid strings"):
+            parse_args(["--query", value])
+    with pytest.raises(ValueError, match="bounded valid strings"):
+        parse_args(["--query", "q" * 20_001])
 
     monkeypatch.setattr("search_agent_cli._MAX_CLI_ARGUMENTS", 3)
     with pytest.raises(ValueError, match="At most 3"):
         parse_args((str(index) for index in itertools.count()))
 
 
-def test_query_is_validated_before_agent_run(monkeypatch, capsys):
+def test_query_is_validated_before_agent_initialization(monkeypatch, capsys):
     monkeypatch.setenv("OPENAI_API_KEY", "test")
     with patch("search_agent_cli.SearchAgent") as agent_class:
         assert main(["--query", "q" * 20_001]) == 2
-        agent_class.return_value.run.assert_not_called()
+        agent_class.assert_not_called()
 
-    assert "20,000" in capsys.readouterr().err
+    assert "valid strings" in capsys.readouterr().err
+
+
+def test_query_controls_fail_before_agent_initialization(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test")
+    for query in ("bad\x00query", "bad\nquery", "bad\x1bquery", "bad\x7fquery"):
+        with patch("search_agent_cli.SearchAgent") as agent_class:
+            assert main(["--query", query]) == 2
+        agent_class.assert_not_called()
+
+
+def test_model_and_owner_are_validated_before_agent_initialization(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test")
+    for arguments in (
+        ["--model", "m" * 201, "--query", "q"],
+        ["--model", "bad\x1bmodel", "--query", "q"],
+        ["--owner-id", "../other", "--query", "q"],
+    ):
+        with patch("search_agent_cli.SearchAgent") as agent_class:
+            assert main(arguments) == 2
+        agent_class.assert_not_called()
 
 
 def test_model_name_and_query_are_not_echoed_in_status_output(monkeypatch, capsys):
