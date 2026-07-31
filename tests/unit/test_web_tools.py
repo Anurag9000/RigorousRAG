@@ -1,4 +1,6 @@
 import json
+from decimal import Decimal
+from fractions import Fraction
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -14,14 +16,21 @@ def test_web_search_requires_provider_key(monkeypatch):
         web_search("query")
 
 
-def test_web_search_refuses_oversized_or_control_bearing_provider_key(monkeypatch):
-    monkeypatch.setenv("SERPER_API_KEY", "x" * 4097)
-    with pytest.raises(WebSearchError, match="key is invalid"):
-        web_search("query")
-
-    monkeypatch.setenv("SERPER_API_KEY", "key\r\nInjected: yes")
-    with pytest.raises(WebSearchError, match="key is invalid"):
-        web_search("query")
+def test_web_search_refuses_noncanonical_or_control_bearing_provider_key(monkeypatch):
+    for value in (
+        "x" * 4097,
+        "key\r\nInjected: yes",
+        "key\tInjected",
+        "key\x01Injected",
+        "key\x7fInjected",
+        " key",
+        "key ",
+    ):
+        monkeypatch.setenv("SERPER_API_KEY", value)
+        with patch("tools.web_search.safe_download") as network:
+            with pytest.raises(WebSearchError, match="key is invalid"):
+                web_search("query")
+        network.assert_not_called()
 
 
 def test_web_search_uses_bounded_downloader_and_hostname_boundaries(monkeypatch):
@@ -80,7 +89,7 @@ def test_web_search_bounds_public_url_validation_candidates(monkeypatch):
 
 def test_web_search_distinguishes_invalid_provider_json_from_request_failure(monkeypatch):
     monkeypatch.setenv("SERPER_API_KEY", "test-key")
-    for payload in (b"not-json", b'{"score":NaN}', b"[]", b"\xff"):
+    for payload in (b"not-json", b'{"score":NaN}', b"[]", b"\xff", object()):
         with patch(
             "tools.web_search.safe_download",
             return_value=SimpleNamespace(content=payload),
@@ -104,8 +113,16 @@ def test_web_search_validates_all_direct_inputs_before_network(monkeypatch):
         cases = [
             {"query": object()},
             {"query": "q" * 2001},
+            {"query": "bad\x00query"},
+            {"query": "bad\nquery"},
+            {"query": "bad\rquery"},
+            {"query": "bad\tquery"},
+            {"query": "bad\x7fquery"},
             {"query": "query", "allowed_domains": "example.org"},
             {"query": "query", "allowed_domains": [object()]},
+            {"query": "query", "allowed_domains": ["bad\x00.example.org"]},
+            {"query": "query", "allowed_domains": ["bad\n.example.org"]},
+            {"query": "query", "allowed_domains": ["example.org\\@evil.test"]},
             {"query": "query", "allowed_domains": ["https://example.org/path"]},
             {"query": "query", "allowed_domains": ["https://example.org?x=1"]},
             {"query": "query", "allowed_domains": ["https://example.org:443"]},
@@ -113,6 +130,8 @@ def test_web_search_validates_all_direct_inputs_before_network(monkeypatch):
             {"query": "query", "limit": "not-an-integer"},
             {"query": "query", "limit": True},
             {"query": "query", "limit": 1.5},
+            {"query": "query", "limit": Decimal("1.5")},
+            {"query": "query", "limit": Fraction(3, 2)},
             {"query": "query", "limit": 0},
             {"query": "query", "limit": 11},
         ]
@@ -126,6 +145,19 @@ def test_web_search_validates_all_direct_inputs_before_network(monkeypatch):
                 allowed_domains=[f"{index}.example" for index in range(51)],
             )
     network.assert_not_called()
+
+
+def test_web_search_accepts_exact_index_protocol_limit(monkeypatch):
+    class ExactInteger:
+        def __index__(self):
+            return 4
+
+    monkeypatch.setenv("SERPER_API_KEY", "test-key")
+    downloaded = SimpleNamespace(content=b'{"organic":[]}')
+    with patch("tools.web_search.safe_download", return_value=downloaded) as network:
+        assert web_search("query", limit=ExactInteger()) == []
+
+    assert network.call_args.kwargs["json_body"] == {"q": "query", "num": 4}
 
 
 def test_empty_web_query_returns_without_key_or_network(monkeypatch):
