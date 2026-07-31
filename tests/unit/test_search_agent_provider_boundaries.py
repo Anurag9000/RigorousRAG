@@ -169,3 +169,29 @@ def test_matched_handbook_lookup_keeps_one_real_citation(monkeypatch):
     assert "Policy evidence" in content
     assert len(citations) == 1
     assert citations[0].source_type == "handbook"
+
+def test_agent_integer_limits_require_index_and_timeouts_reject_booleans():
+    from decimal import Decimal
+    from fractions import Fraction
+
+    class ExactIndex:
+        def __index__(self):
+            return 3
+
+    agent = SearchAgent(owner_id="alice", max_turns=ExactIndex())
+    assert agent.max_turns == 3
+    for value in (1.0, Decimal("2"), Fraction(2, 1), Fraction(3, 2)):
+        with pytest.raises(ValueError, match="max_turns"):
+            SearchAgent(owner_id="alice", max_turns=value)
+    for name in ("request_timeout", "tool_timeout"):
+        with pytest.raises(ValueError, match=name):
+            SearchAgent(owner_id="alice", **{name: True})
+
+
+def test_agent_model_and_provider_fields_reject_all_ascii_controls():
+    for model in ("bad\tmodel", "bad\x1bmodel", "bad\x7fmodel"):
+        with pytest.raises(ValueError, match="model"):
+            SearchAgent(owner_id="alice", model=model)
+    for value in ("bad\tkey", "bad\x1bkey", "bad\x7fkey"):
+        with pytest.raises(ValueError, match="control"):
+            SearchAgent(owner_id="alice", api_key=value)

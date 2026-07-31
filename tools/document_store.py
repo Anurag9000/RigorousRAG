@@ -19,7 +19,10 @@ from tools.privacy import mask_metadata_text
 from tools.security import normalize_owner_id
 from tools import document_store_legacy as _implementation
 
-_original_document_store = _implementation.DocumentStore
+if not hasattr(_implementation, "_boundary_original_DocumentStore"):
+    _implementation._boundary_original_DocumentStore = _implementation.DocumentStore
+_original_document_store = _implementation._boundary_original_DocumentStore
+_WINDOWS_REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
 
 
 def _normalize_registry_environment() -> None:
@@ -41,6 +44,31 @@ def _contains_ascii_control(value: str) -> bool:
     return any(ord(character) < 32 or ord(character) == 127 for character in value)
 
 
+def _is_redirecting(metadata: os.stat_result) -> bool:
+    return stat.S_ISLNK(metadata.st_mode) or bool(
+        int(getattr(metadata, "st_file_attributes", 0))
+        & _WINDOWS_REPARSE_POINT
+    )
+
+
+def _identity(metadata: os.stat_result) -> tuple[int, int]:
+    return int(metadata.st_dev), int(metadata.st_ino)
+
+
+def _path_identity(path: Path, label: str, *, directory: bool) -> tuple[int, int]:
+    try:
+        metadata = path.lstat()
+    except OSError as exc:
+        raise OSError(f"{label} could not be inspected safely.") from exc
+    if _is_redirecting(metadata):
+        raise ValueError(f"{label} may not be a symbolic link or reparse point.")
+    expected = stat.S_ISDIR(metadata.st_mode) if directory else stat.S_ISREG(metadata.st_mode)
+    if not expected:
+        kind = "directory" if directory else "regular file"
+        raise OSError(f"{label} must remain a {kind}.")
+    return _identity(metadata)
+
+
 def _lexical_absolute(value: str | os.PathLike[str], label: str) -> Path:
     if not isinstance(value, (str, os.PathLike)):
         raise ValueError(f"{label} must be a filesystem path.")
@@ -56,8 +84,16 @@ def _lexical_absolute(value: str | os.PathLike[str], label: str) -> Path:
         path = Path.cwd() / path
     absolute = Path(os.path.abspath(path))
     for candidate in (absolute, *absolute.parents):
-        if candidate.is_symlink():
-            raise ValueError(f"{label} may not contain symbolic-link components.")
+        try:
+            metadata = candidate.lstat()
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            raise ValueError(f"{label} could not be validated safely.") from exc
+        if _is_redirecting(metadata):
+            raise ValueError(
+                f"{label} may not contain symbolic links or reparse points."
+            )
     return absolute
 
 
@@ -89,7 +125,7 @@ def _mime_type(value: Any) -> str:
     return rendered or "application/octet-stream"
 
 
-class DocumentStore(_original_document_store):
+class _DocumentStoreBoundary(_original_document_store):
     """Registry with bounded budgets, truthful flags, and safe storage roots."""
 
     def __init__(
@@ -106,23 +142,53 @@ class DocumentStore(_original_document_store):
         )
         safe_path = _lexical_absolute(selected_path, "DOCUMENT_DB_PATH")
         safe_root = _lexical_absolute(selected_root, "UPLOAD_DIR")
+        safe_path.parent.mkdir(parents=True, exist_ok=True)
+        safe_root.mkdir(parents=True, exist_ok=True)
+        self._boundary_database_parent_identity = _path_identity(
+            safe_path.parent,
+            "DOCUMENT_DB_PATH parent",
+            directory=True,
+        )
+        self._boundary_upload_root_identity = _path_identity(
+            safe_root,
+            "UPLOAD_DIR",
+            directory=True,
+        )
+        self._boundary_database_identity: tuple[int, int] | None = None
         super().__init__(path=safe_path, upload_root=safe_root)
+        self._boundary_database_identity = _path_identity(
+            self.path,
+            "DOCUMENT_DB_PATH",
+            directory=False,
+        )
         self._ensure_storage_paths()
 
     def _ensure_storage_paths(self) -> None:
-        _lexical_absolute(self.path, "DOCUMENT_DB_PATH")
-        _lexical_absolute(self.upload_root, "UPLOAD_DIR")
-        if not self.path.parent.exists() or not self.path.parent.is_dir():
-            raise OSError("DOCUMENT_DB_PATH parent must remain a directory.")
-        if not self.upload_root.exists() or not self.upload_root.is_dir():
-            raise OSError("UPLOAD_DIR must remain a directory.")
-        if self.path.exists():
-            try:
-                mode = self.path.stat(follow_symlinks=False).st_mode
-            except OSError as exc:
-                raise OSError("DOCUMENT_DB_PATH could not be inspected.") from exc
-            if not stat.S_ISREG(mode):
-                raise OSError("DOCUMENT_DB_PATH must remain a regular file.")
+        safe_path = _lexical_absolute(self.path, "DOCUMENT_DB_PATH")
+        safe_root = _lexical_absolute(self.upload_root, "UPLOAD_DIR")
+        if _path_identity(
+            safe_path.parent,
+            "DOCUMENT_DB_PATH parent",
+            directory=True,
+        ) != self._boundary_database_parent_identity:
+            raise OSError("DOCUMENT_DB_PATH parent identity changed after initialization.")
+        if _path_identity(
+            safe_root,
+            "UPLOAD_DIR",
+            directory=True,
+        ) != self._boundary_upload_root_identity:
+            raise OSError("UPLOAD_DIR identity changed after initialization.")
+        expected_database = self._boundary_database_identity
+        if safe_path.exists():
+            current_database = _path_identity(
+                safe_path,
+                "DOCUMENT_DB_PATH",
+                directory=False,
+            )
+            if expected_database is not None and current_database != expected_database:
+                raise OSError("DOCUMENT_DB_PATH identity changed after initialization.")
+        elif expected_database is not None:
+            raise OSError("DOCUMENT_DB_PATH disappeared after initialization.")
 
     def _connect(self):
         self._ensure_storage_paths()
@@ -191,6 +257,8 @@ class DocumentStore(_original_document_store):
         job_store: Optional[Any] = None,
     ) -> int:
         if now is not None:
+            if isinstance(now, bool):
+                raise ValueError("now must be numeric.")
             try:
                 current = float(now)
             except (TypeError, ValueError, OverflowError) as exc:
@@ -200,6 +268,11 @@ class DocumentStore(_original_document_store):
             now = current
         self._ensure_storage_paths()
         return super().cleanup_orphans(now=now, job_store=job_store)
+
+
+if not hasattr(_implementation, "_boundary_public_DocumentStore"):
+    _implementation._boundary_public_DocumentStore = _DocumentStoreBoundary
+DocumentStore = _implementation._boundary_public_DocumentStore
 
 
 def get_document_store(

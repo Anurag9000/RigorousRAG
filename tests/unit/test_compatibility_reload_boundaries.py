@@ -65,3 +65,63 @@ for _ in range(3):
 """
     )
     assert result.returncode == 0, result.stderr
+
+def test_stateful_class_wrappers_preserve_public_identity_across_reimports():
+    result = _run(
+        r"""
+import importlib
+import sys
+import tools
+
+# Classic storage.
+legacy_storage = importlib.import_module("storage_legacy")
+public_storage = importlib.import_module("storage")
+storage_base = legacy_storage._boundary_original_StorageManager
+storage_public = legacy_storage._boundary_public_StorageManager
+for _ in range(3):
+    sys.modules.pop("storage", None)
+    public_storage = importlib.import_module("storage")
+    assert public_storage.StorageManager is storage_public
+    assert storage_public.__mro__[1] is storage_base
+
+# Document registry.
+legacy_document = importlib.import_module("tools.document_store_legacy")
+public_document = importlib.import_module("tools.document_store")
+document_base = legacy_document._boundary_original_DocumentStore
+document_public = legacy_document._boundary_public_DocumentStore
+for _ in range(3):
+    sys.modules.pop("tools.document_store", None)
+    tools.__dict__.pop("document_store", None)
+    public_document = importlib.import_module("tools.document_store")
+    assert public_document.DocumentStore is document_public
+    assert document_public.__mro__[1] is document_base
+
+# Search agent.
+legacy_agent = importlib.import_module("search_agent_legacy")
+public_agent = importlib.import_module("search_agent")
+agent_base = legacy_agent._boundary_original_SearchAgent
+agent_public = legacy_agent._boundary_public_SearchAgent
+execution_base = legacy_agent._boundary_original_ToolExecution
+execution_public = legacy_agent._boundary_public_ToolExecution
+validator = legacy_agent._boundary_original_validate_schema_value
+for _ in range(3):
+    sys.modules.pop("search_agent", None)
+    public_agent = importlib.import_module("search_agent")
+    assert public_agent.SearchAgent is agent_public
+    assert agent_public.__mro__[1] is agent_base
+    assert public_agent.ToolExecution is execution_public
+    assert execution_public.__mro__[1] is execution_base
+    assert legacy_agent._boundary_original_validate_schema_value is validator
+
+# RAG public class, in addition to base/cache checks from pass fourteen.
+legacy_rag = importlib.import_module("tools.rag_legacy")
+public_rag = importlib.import_module("tools.rag")
+rag_public = legacy_rag._boundary_public_RAGLayer
+for _ in range(3):
+    sys.modules.pop("tools.rag", None)
+    tools.__dict__.pop("rag", None)
+    public_rag = importlib.import_module("tools.rag")
+    assert public_rag.RAGLayer is rag_public
+"""
+    )
+    assert result.returncode == 0, result.stderr

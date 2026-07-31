@@ -82,3 +82,41 @@ def test_visual_flag_cleanup_clock_and_identifiers_are_strict(tmp_path):
         store.get(owner_id="alice", doc_id="")
     with pytest.raises(ValueError, match="finite"):
         store.cleanup_orphans(now=float("nan"), job_store=object())
+
+def test_registry_detects_nonlink_root_replacement_and_boolean_clock(tmp_path):
+    parent = tmp_path / "state"
+    database = parent / "documents.sqlite3"
+    uploads = tmp_path / "uploads"
+    store = DocumentStore(database, uploads)
+
+    moved = tmp_path / "state-original"
+    parent.rename(moved)
+    parent.mkdir()
+    assert store.ping() is False
+
+    with pytest.raises(ValueError, match="numeric"):
+        store.cleanup_orphans(now=True, job_store=object())
+
+
+def test_registry_rejects_windows_reparse_components(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
+    uploads = tmp_path / "uploads"
+    uploads.mkdir()
+    database = tmp_path / "documents.sqlite3"
+    original_lstat = type(uploads).lstat
+
+    def reparse_lstat(self):
+        metadata = original_lstat(self)
+        if self == uploads:
+            return SimpleNamespace(
+                st_mode=metadata.st_mode,
+                st_file_attributes=0x400,
+                st_dev=metadata.st_dev,
+                st_ino=metadata.st_ino,
+            )
+        return metadata
+
+    monkeypatch.setattr(type(uploads), "lstat", reparse_lstat)
+    with pytest.raises(ValueError, match="reparse points"):
+        DocumentStore(database, uploads)

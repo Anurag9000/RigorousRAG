@@ -717,6 +717,10 @@ def get_rag_layer(
         return instance
 
 
+if not hasattr(_implementation, "_boundary_public_RAGLayer"):
+    _implementation._boundary_public_RAGLayer = RAGLayer
+RAGLayer = _implementation._boundary_public_RAGLayer
+
 _implementation.RAGLayer = RAGLayer
 _implementation.get_rag_layer = get_rag_layer
 _implementation._RAG_INSTANCES = _RAG_INSTANCES

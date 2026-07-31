@@ -31,7 +31,9 @@ os.environ["CLASSIC_MAX_SNAPSHOT_FILE_BYTES"] = str(
 
 import storage_legacy as _implementation
 
-_original_storage_manager = _implementation.StorageManager
+if not hasattr(_implementation, "_boundary_original_StorageManager"):
+    _implementation._boundary_original_StorageManager = _implementation.StorageManager
+_original_storage_manager = _implementation._boundary_original_StorageManager
 _FILE_ATTRIBUTE_REPARSE_POINT = 0x0400
 
 
@@ -80,7 +82,7 @@ def _reject_json_constant(value: str) -> None:
     raise ValueError(f"Non-standard JSON constant {value!r} is not allowed.")
 
 
-class StorageManager(_original_storage_manager):
+class _StorageManagerBoundary(_original_storage_manager):
     """Classic storage manager with identity-bound, bounded persistent I/O."""
 
     def __init__(self, base_dir: Path | str = "data") -> None:
@@ -487,6 +489,10 @@ class StorageManager(_original_storage_manager):
     def _write_json(self, path: Path, payload: Any) -> None:
         self._write_bytes(path, self._encode_json(payload))
 
+
+if not hasattr(_implementation, "_boundary_public_StorageManager"):
+    _implementation._boundary_public_StorageManager = _StorageManagerBoundary
+StorageManager = _implementation._boundary_public_StorageManager
 
 _implementation.StorageManager = StorageManager
 _implementation.__doc__ = __doc__

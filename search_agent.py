@@ -10,6 +10,7 @@ from __future__ import annotations
 import itertools
 import json
 import math
+import operator
 import os
 import re
 import sys
@@ -52,8 +53,20 @@ import search_agent_legacy as _implementation
 
 from tools.security import normalize_owner_id
 
-_original_validate_schema_value = _implementation._validate_schema_value
-_original_tool_execution = _implementation.ToolExecution
+if not hasattr(_implementation, "_boundary_original_validate_schema_value"):
+    _implementation._boundary_original_validate_schema_value = (
+        _implementation._validate_schema_value
+    )
+if not hasattr(_implementation, "_boundary_original_ToolExecution"):
+    _implementation._boundary_original_ToolExecution = _implementation.ToolExecution
+if not hasattr(_implementation, "_boundary_original_SearchAgent"):
+    _implementation._boundary_original_SearchAgent = _implementation.SearchAgent
+
+_original_validate_schema_value = (
+    _implementation._boundary_original_validate_schema_value
+)
+_original_tool_execution = _implementation._boundary_original_ToolExecution
+_original_search_agent = _implementation._boundary_original_SearchAgent
 _MAX_IDENTIFIER_CHARS = 200
 _MAX_PROVIDER_FIELD_CHARS = 4096
 _INVALID_ARGUMENTS = "__INVALID_TOOL_ARGUMENTS__"
@@ -101,7 +114,7 @@ def _optional_provider_value(value: Any, label: str) -> Optional[str]:
         raise ValueError(
             f"{label} may contain at most {_MAX_PROVIDER_FIELD_CHARS:,} characters."
         )
-    if any(character in rendered for character in ("\x00", "\r", "\n")):
+    if any(ord(character) < 32 or ord(character) == 127 for character in rendered):
         raise ValueError(f"{label} contains invalid control characters.")
     return rendered or None
 
@@ -113,7 +126,7 @@ def _required_model(value: Any) -> str:
     if (
         not selected
         or len(selected) > _MAX_IDENTIFIER_CHARS
-        or any(character in selected for character in ("\x00", "\r", "\n"))
+        or any(ord(character) < 32 or ord(character) == 127 for character in selected)
     ):
         raise ValueError("model must contain between 1 and 200 valid characters.")
     return selected
@@ -123,17 +136,17 @@ def _strict_int(value: Any, label: str, *, minimum: int, maximum: int) -> int:
     if isinstance(value, bool):
         raise ValueError(f"{label} must be an integer.")
     try:
-        parsed = int(value)
+        parsed = int(operator.index(value))
     except (TypeError, ValueError, OverflowError) as exc:
         raise ValueError(f"{label} must be an integer.") from exc
-    if isinstance(value, float) and not value.is_integer():
-        raise ValueError(f"{label} must be an integer.")
     if not minimum <= parsed <= maximum:
         raise ValueError(f"{label} must be between {minimum} and {maximum}.")
     return parsed
 
 
 def _finite_timeout(value: Any, label: str) -> float:
+    if isinstance(value, bool):
+        raise ValueError(f"{label} must be numeric.")
     try:
         parsed = float(value)
     except (TypeError, ValueError, OverflowError) as exc:
@@ -213,7 +226,7 @@ def _bounded_tool_calls(raw_calls: Any, maximum: int) -> Tuple[List[_SafeToolCal
     ], overflow
 
 
-class ToolExecution(_original_tool_execution):
+class _ToolExecutionBoundary(_original_tool_execution):
     """Bound provider-controlled identifiers, content, citations, and telemetry."""
 
     def __init__(
@@ -264,7 +277,7 @@ class ToolExecution(_original_tool_execution):
         )
 
 
-class SearchAgent(_implementation.SearchAgent):
+class _SearchAgentBoundary(_original_search_agent):
     """Research agent with sanitized provider calls and authoritative evidence."""
 
     def __init__(
@@ -640,6 +653,13 @@ class SearchAgent(_implementation.SearchAgent):
             return self.model
         return "gpt-4o-mini"
 
+
+if not hasattr(_implementation, "_boundary_public_ToolExecution"):
+    _implementation._boundary_public_ToolExecution = _ToolExecutionBoundary
+if not hasattr(_implementation, "_boundary_public_SearchAgent"):
+    _implementation._boundary_public_SearchAgent = _SearchAgentBoundary
+ToolExecution = _implementation._boundary_public_ToolExecution
+SearchAgent = _implementation._boundary_public_SearchAgent
 
 _implementation._validate_schema_value = _validate_schema_value
 _implementation.ToolExecution = ToolExecution
