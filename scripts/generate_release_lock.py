@@ -29,13 +29,21 @@ _MAX_LOCK_BYTES = 20_000_000
 _MAX_GITHUB_OUTPUT_BYTES = 1_000_000
 _FILE_ATTRIBUTE_REPARSE_POINT = 0x0400
 _PUBLIC_INDEX_URL = "https://pypi.org/simple"
-_FORBIDDEN_REQUIREMENT_OPTION = re.compile(
-    r"^(?:"
-    r"--index-url(?:\s|=)|--extra-index-url(?:\s|=)|--trusted-host(?:\s|=)|"
-    r"--find-links(?:\s|=)|--no-index(?:\s|$)|--requirement(?:\s|=)|"
-    r"--constraint(?:\s|=)|-i(?:\s|=)|-f(?:\s|=)|-r(?:\s|=)|-c(?:\s|=)"
-    r")",
-    flags=re.IGNORECASE,
+_AMBIENT_AUTHORITY_NAMES = frozenset(
+    {
+        "ALL_PROXY",
+        "CURL_CA_BUNDLE",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "PYTHONHOME",
+        "PYTHONPATH",
+        "REQUESTS_CA_BUNDLE",
+        "SSL_CERT_DIR",
+        "SSL_CERT_FILE",
+        "all_proxy",
+        "http_proxy",
+        "https_proxy",
+    }
 )
 
 
@@ -206,13 +214,13 @@ def _validate_requirements_source(payload: bytes) -> None:
         if not stripped or stripped.startswith("#"):
             continue
         lowered = stripped.lower()
-        if _FORBIDDEN_REQUIREMENT_OPTION.match(stripped):
+        if stripped.startswith("-"):
             raise ValueError(
-                "The requirements input may not change index authority or include another file."
+                "The requirements input may not contain resolver options or include another file."
             )
         if (
             "://" in lowered
-            or lowered.startswith(("git+", "file:", "./", "../", "/"))
+            or lowered.startswith(("git+", "file:", "./", "../", "/", "~/", "\\\\"))
             or re.match(r"^[a-z]:[\\/]", lowered)
         ):
             raise ValueError("The requirements input may not contain URL or local-path requirements.")
@@ -240,11 +248,41 @@ def _exclusive_write(path: Path, payload: bytes, *, label: str) -> None:
             os.close(descriptor)
 
 
+def _destination_identity(path: Path) -> tuple[int, int] | None:
+    if not (path.exists() or path.is_symlink()):
+        return None
+    info = os.lstat(path)
+    if _is_link_or_reparse(info) or not stat.S_ISREG(info.st_mode):
+        raise ValueError("The lock output must be absent or a safe regular file.")
+    return _identity(info)
+
+
+def _assert_expected_destination(
+    destination: Path,
+    expected_identity: tuple[int, int] | None,
+) -> None:
+    exists = destination.exists() or destination.is_symlink()
+    if expected_identity is None:
+        if exists:
+            raise ValueError("The lock output appeared unexpectedly during generation.")
+        return
+    if not exists:
+        raise ValueError("The existing lock output disappeared during generation.")
+    info = os.lstat(destination)
+    if (
+        _is_link_or_reparse(info)
+        or not stat.S_ISREG(info.st_mode)
+        or _identity(info) != expected_identity
+    ):
+        raise ValueError("The existing lock output identity changed during generation.")
+
+
 def _publish_lock(
     destination: Path,
     payload: bytes,
     *,
     expected_parent_identity: tuple[int, int],
+    expected_destination_identity: tuple[int, int] | None,
 ) -> Path:
     """Publish verified lock bytes through an atomic private-file replacement."""
 
@@ -253,20 +291,14 @@ def _publish_lock(
     parent = destination.parent
     if _directory_identity(parent, label="lock output parent") != expected_parent_identity:
         raise ValueError("The lock output parent identity changed during generation.")
-    if destination.exists() or destination.is_symlink():
-        info = os.lstat(destination)
-        if _is_link_or_reparse(info) or not stat.S_ISREG(info.st_mode):
-            raise ValueError("The lock output must be absent or a safe regular file.")
+    _assert_expected_destination(destination, expected_destination_identity)
 
     temporary = parent / f".{destination.name}.{secrets.token_hex(16)}.tmp"
     try:
         _exclusive_write(temporary, payload, label="temporary lock output")
         if _directory_identity(parent, label="lock output parent") != expected_parent_identity:
             raise ValueError("The lock output parent identity changed before publication.")
-        if destination.exists() or destination.is_symlink():
-            info = os.lstat(destination)
-            if _is_link_or_reparse(info) or not stat.S_ISREG(info.st_mode):
-                raise ValueError("The lock output changed to an unsafe entry before publication.")
+        _assert_expected_destination(destination, expected_destination_identity)
         os.replace(temporary, destination)
         _require_safe_ancestry(destination, label="published lock")
         final = os.lstat(destination)
@@ -318,10 +350,12 @@ def _safe_subprocess_environment() -> dict[str, str]:
     environment = {
         key: value
         for key, value in os.environ.items()
-        if not key.upper().startswith("PIP_")
+        if not key.upper().startswith("PIP_") and key not in _AMBIENT_AUTHORITY_NAMES
     }
     environment["PIP_DISABLE_PIP_VERSION_CHECK"] = "1"
     environment["PIP_NO_INPUT"] = "1"
+    environment["PIP_NO_CACHE_DIR"] = "1"
+    environment["PIP_KEYRING_PROVIDER"] = "disabled"
     environment["PIP_CONFIG_FILE"] = os.devnull
     return environment
 
@@ -352,9 +386,10 @@ def _append_github_output(path: Path, payload: bytes) -> None:
     try:
         descriptor = os.open(path, flags, 0o600)
         opened = os.fstat(descriptor)
+        opened_identity = _identity(opened)
         if _is_link_or_reparse(opened) or not stat.S_ISREG(opened.st_mode):
             raise ValueError("GITHUB_OUTPUT must be a safe regular file.")
-        if expected is not None and _identity(opened) != expected:
+        if expected is not None and opened_identity != expected:
             raise ValueError("GITHUB_OUTPUT identity changed while it was being opened.")
         if opened.st_size + len(payload) > _MAX_GITHUB_OUTPUT_BYTES:
             raise ValueError("GITHUB_OUTPUT exceeds the 1 MB limit.")
@@ -362,6 +397,15 @@ def _append_github_output(path: Path, payload: bytes) -> None:
             raise ValueError("GITHUB_OUTPUT parent identity changed before append.")
         _write_all(descriptor, payload)
         os.fsync(descriptor)
+        after = os.lstat(path)
+        if (
+            _is_link_or_reparse(after)
+            or not stat.S_ISREG(after.st_mode)
+            or _identity(after) != opened_identity
+        ):
+            raise ValueError("GITHUB_OUTPUT identity changed during append.")
+        if _directory_identity(path.parent, label="GITHUB_OUTPUT parent") != parent_identity:
+            raise ValueError("GITHUB_OUTPUT parent identity changed during append.")
     finally:
         if descriptor >= 0:
             os.close(descriptor)
@@ -370,6 +414,11 @@ def _append_github_output(path: Path, payload: bytes) -> None:
 def _write_github_output(destination: Path) -> None:
     """Publish the generated absolute path and artifact name to GitHub Actions."""
 
+    _read_regular_bytes(
+        destination,
+        label="generated lock output",
+        maximum=_MAX_LOCK_BYTES,
+    )
     output_value = os.environ.get("GITHUB_OUTPUT")
     if not output_value:
         raise RuntimeError("GITHUB_OUTPUT is unavailable.")
@@ -433,6 +482,7 @@ def generate_lock(
         label="lock output parent",
     )
     _require_safe_ancestry(destination, label="lock output")
+    expected_destination_identity = _destination_identity(destination)
 
     staging = Path(
         tempfile.mkdtemp(prefix=".rigorousrag-lock-", dir=destination.parent)
@@ -480,6 +530,7 @@ def generate_lock(
             destination,
             compiled_bytes,
             expected_parent_identity=expected_parent_identity,
+            expected_destination_identity=expected_destination_identity,
         )
     finally:
         try:
