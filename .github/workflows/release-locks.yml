@@ -3,6 +3,7 @@ name: Exact-head verification and release locks
 on:
   workflow_dispatch:
   pull_request:
+  merge_group:
   push:
     branches: [main, "agent/**"]
     tags: ["v*"]
