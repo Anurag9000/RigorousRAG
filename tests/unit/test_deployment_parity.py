@@ -3,6 +3,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 EXACT_HEAD_WORKFLOW = ROOT / ".github" / "workflows" / "release-locks.yml"
+_CHECKOUT_PIN = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"
+_SETUP_PYTHON_PIN = "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97"
+_UPLOAD_ARTIFACT_PIN = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
 
 
 def test_active_runtime_settings_are_exposed_in_env_and_compose():
@@ -67,6 +70,18 @@ def test_exact_head_workflow_is_unconditional_and_complete():
     assert "os: [ubuntu-latest, windows-latest, macos-latest]" in workflow
     assert "python scripts/verify_release_lock.py" in workflow
     assert "--require-hashes" in workflow
+
+
+def test_exact_head_workflow_pins_third_party_actions_by_commit():
+    workflow = EXACT_HEAD_WORKFLOW.read_text(encoding="utf-8")
+
+    assert workflow.count(_CHECKOUT_PIN) == 5
+    assert workflow.count(_SETUP_PYTHON_PIN) == 3
+    assert workflow.count(_UPLOAD_ARTIFACT_PIN) == 1
+    assert "actions/checkout@v" not in workflow
+    assert "actions/setup-python@v" not in workflow
+    assert "actions/upload-artifact@v" not in workflow
+    assert workflow.count("persist-credentials: false") == 5
 
 
 def test_obsolete_duplicate_workflows_are_absent():
