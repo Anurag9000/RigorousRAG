@@ -12,14 +12,46 @@ from tools import integrity_boundary as _implementation
 from tools.security import normalize_owner_id
 
 _MAX_SCIENTIFIC_JSON_CHARS = 100_000
-_original_extract_figure_region = _implementation._extract_figure_region
-_original_check_visual_entailment = _implementation.check_visual_entailment
-_original_compare_papers = _implementation.compare_papers
-_original_generate_comparison_matrix = _implementation.generate_comparison_matrix
-_original_extract_protocol = _implementation.extract_protocol
-_original_run_scientific_debate = _implementation.run_scientific_debate
-_original_detect_conflicts = _implementation.detect_conflicts
-_original_extract_limitations = _implementation.extract_limitations
+
+
+def _persisted_original(name: str, value: Any) -> Any:
+    if not hasattr(_implementation, name):
+        setattr(_implementation, name, value)
+    return getattr(_implementation, name)
+
+
+_original_extract_figure_region = _persisted_original(
+    "_integrity_final_original_extract_figure_region",
+    _implementation._extract_figure_region,
+)
+_original_check_visual_entailment = _persisted_original(
+    "_integrity_final_original_check_visual_entailment",
+    _implementation.check_visual_entailment,
+)
+_original_compare_papers = _persisted_original(
+    "_integrity_final_original_compare_papers",
+    _implementation.compare_papers,
+)
+_original_generate_comparison_matrix = _persisted_original(
+    "_integrity_final_original_generate_comparison_matrix",
+    _implementation.generate_comparison_matrix,
+)
+_original_extract_protocol = _persisted_original(
+    "_integrity_final_original_extract_protocol",
+    _implementation.extract_protocol,
+)
+_original_run_scientific_debate = _persisted_original(
+    "_integrity_final_original_run_scientific_debate",
+    _implementation.run_scientific_debate,
+)
+_original_detect_conflicts = _persisted_original(
+    "_integrity_final_original_detect_conflicts",
+    _implementation.detect_conflicts,
+)
+_original_extract_limitations = _persisted_original(
+    "_integrity_final_original_extract_limitations",
+    _implementation.extract_limitations,
+)
 _SAFE_VISUAL_ERROR_PREFIXES = (
     "The retained PDF source bytes are missing or oversized.",
     "figure_id must contain",

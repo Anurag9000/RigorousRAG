@@ -246,3 +246,40 @@ def test_singleton_factory_refuses_symlinked_chroma_root(tmp_path):
 
     with pytest.raises(ValueError, match="CHROMA_PATH"):
         get_rag_layer(str(link))
+
+def test_rag_integer_limits_require_the_index_protocol():
+    from decimal import Decimal
+    from fractions import Fraction
+
+    class ExactIndex:
+        def __index__(self):
+            return 3
+
+    layer = _layer()
+    assert layer.query("question", owner_id="alice", n_results=ExactIndex()) == []
+    for value in (1.0, Decimal("1"), Fraction(1, 1), Fraction(3, 2)):
+        with pytest.raises(ValueError, match="n_results"):
+            layer.query("question", owner_id="alice", n_results=value)
+
+
+def test_reparse_chroma_component_is_rejected(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
+    root = tmp_path / "vectors"
+    root.mkdir()
+    original_lstat = type(root).lstat
+
+    def reparse_lstat(self):
+        metadata = original_lstat(self)
+        if self == root:
+            return SimpleNamespace(
+                st_mode=metadata.st_mode,
+                st_file_attributes=0x400,
+                st_dev=metadata.st_dev,
+                st_ino=metadata.st_ino,
+            )
+        return metadata
+
+    monkeypatch.setattr(type(root), "lstat", reparse_lstat)
+    with pytest.raises(ValueError, match="reparse points"):
+        RAGLayer(persist_directory=str(root))

@@ -5,7 +5,9 @@ from __future__ import annotations
 import itertools
 import json
 import math
+import operator
 import os
+import stat
 import sys
 from collections.abc import Mapping
 from pathlib import Path
@@ -30,9 +32,34 @@ for _name, _default, _minimum, _maximum in (
         write_back=True,
     )
 
+_WINDOWS_REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+
+
+def _is_redirecting_path(metadata: Any) -> bool:
+    return stat.S_ISLNK(metadata.st_mode) or bool(
+        int(getattr(metadata, "st_file_attributes", 0))
+        & _WINDOWS_REPARSE_POINT
+    )
+
+
+def _reject_redirecting_components(path: Path) -> None:
+    for candidate in (path, *path.parents):
+        try:
+            metadata = candidate.lstat()
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            raise ValueError("CHROMA_PATH could not be validated.") from exc
+        if _is_redirecting_path(metadata):
+            raise ValueError(
+                "CHROMA_PATH may not contain symbolic links or reparse points."
+            )
+
+
 _raw_chroma_path = Path(os.getenv("CHROMA_PATH", "rag_storage"))
-if _raw_chroma_path.is_symlink():
-    raise ValueError("CHROMA_PATH may not be a symbolic link.")
+if not _raw_chroma_path.is_absolute():
+    _raw_chroma_path = Path.cwd() / _raw_chroma_path
+_reject_redirecting_components(Path(os.path.abspath(_raw_chroma_path)))
 
 from tools import rag_legacy as _implementation
 from tools.security import normalize_owner_id
@@ -107,11 +134,9 @@ def _bounded_integer(value: Any, label: str, *, minimum: int, maximum: int) -> i
     if isinstance(value, bool):
         raise ValueError(f"{label} must be an integer.")
     try:
-        numeric = int(value)
+        numeric = int(operator.index(value))
     except (TypeError, ValueError, OverflowError) as exc:
         raise ValueError(f"{label} must be an integer.") from exc
-    if isinstance(value, float) and not value.is_integer():
-        raise ValueError(f"{label} must be an integer.")
     if not minimum <= numeric <= maximum:
         raise ValueError(f"{label} must be between {minimum} and {maximum}.")
     return numeric
@@ -263,14 +288,7 @@ def _absolute_storage_path(value: Any) -> str:
     if not raw.is_absolute():
         raw = Path.cwd() / raw
     absolute = Path(os.path.abspath(raw))
-    for candidate in (absolute, *absolute.parents):
-        try:
-            if candidate.is_symlink():
-                raise ValueError(
-                    "CHROMA_PATH may not contain symbolic-link components."
-                )
-        except OSError as exc:
-            raise ValueError("CHROMA_PATH could not be validated.") from exc
+    _reject_redirecting_components(absolute)
     return str(absolute)
 
 
@@ -327,7 +345,13 @@ def _bounded_generated_queries(value: object, maximum: int) -> List[str]:
         return []
 
 
-class RAGLayer(_implementation.RAGLayer):
+if not hasattr(_implementation, "_boundary_original_RAGLayer"):
+    _implementation._boundary_original_RAGLayer = _implementation.RAGLayer
+
+_BaseRAGLayer = _implementation._boundary_original_RAGLayer
+
+
+class RAGLayer(_BaseRAGLayer):
     """RAG implementation with caller-independent input and result validation."""
 
     def __init__(
@@ -672,8 +696,13 @@ class RAGLayer(_implementation.RAGLayer):
         )[:requested]
 
 
-_RAG_INSTANCES: Dict[str, RAGLayer] = {}
-_RAG_LOCK = _implementation.threading.Lock()
+if not hasattr(_implementation, "_boundary_rag_instances"):
+    _implementation._boundary_rag_instances = {}
+if not hasattr(_implementation, "_boundary_rag_lock"):
+    _implementation._boundary_rag_lock = _implementation.threading.Lock()
+
+_RAG_INSTANCES: Dict[str, RAGLayer] = _implementation._boundary_rag_instances
+_RAG_LOCK = _implementation._boundary_rag_lock
 
 
 def get_rag_layer(

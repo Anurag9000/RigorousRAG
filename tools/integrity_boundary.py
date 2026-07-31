@@ -36,8 +36,24 @@ for _name, _default, _minimum, _maximum in (
 from tools import integrity_legacy as _implementation
 from tools.security import DEFAULT_MAX_UPLOAD_BYTES
 
-_original_compare_papers = _implementation.compare_papers
-_original_generate_comparison_matrix = _implementation.generate_comparison_matrix
+if not hasattr(_implementation, "_integrity_boundary_original_compare_papers"):
+    _implementation._integrity_boundary_original_compare_papers = (
+        _implementation.compare_papers
+    )
+if not hasattr(
+    _implementation,
+    "_integrity_boundary_original_generate_comparison_matrix",
+):
+    _implementation._integrity_boundary_original_generate_comparison_matrix = (
+        _implementation.generate_comparison_matrix
+    )
+
+_original_compare_papers = (
+    _implementation._integrity_boundary_original_compare_papers
+)
+_original_generate_comparison_matrix = (
+    _implementation._integrity_boundary_original_generate_comparison_matrix
+)
 
 
 def _contains_ascii_control(value: str) -> bool:
