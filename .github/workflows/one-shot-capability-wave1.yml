@@ -40,6 +40,10 @@ jobs:
             status=$?
           fi
           if [[ $status -eq 0 ]]; then
+            python scripts/capability_wave1_corrections.py >> /tmp/wave1.log 2>&1
+            status=$?
+          fi
+          if [[ $status -eq 0 ]]; then
             python -m compileall -q \
               tools/hybrid_retrieval.py tools/reranking.py tools/rag_tool.py \
               evaluation experiments scripts/run_retrieval_benchmarks.py \
@@ -92,6 +96,7 @@ jobs:
           git rm \
             scripts/capability_wave1_core.py \
             scripts/capability_wave1_tests_docs.py \
+            scripts/capability_wave1_corrections.py \
             .github/workflows/one-shot-capability-wave1.yml
           git rm -f docs/CAPABILITY_WAVE1_FAILURE.md
           git diff --cached --check
