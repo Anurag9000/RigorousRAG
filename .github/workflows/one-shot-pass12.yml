@@ -87,4 +87,4 @@ jobs:
           git commit -m "Record pass twelve verification failure" || exit 0
           git push origin HEAD:main
 
-# Direct-main trigger update.
+# Diagnostic retrigger after queue delay.
