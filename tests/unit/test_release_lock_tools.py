@@ -95,6 +95,9 @@ def test_generate_release_lock_uses_staged_compile_only_entry_point(tmp_path, mo
     monkeypatch.setattr(generate_release_lock.subprocess, "run", fake_run)
     monkeypatch.setenv("PIP_EXTRA_INDEX_URL", "https://untrusted.invalid/simple")
     monkeypatch.setenv("PIP_TRUSTED_HOST", "untrusted.invalid")
+    monkeypatch.setenv("PYTHONPATH", str(tmp_path / "injected-python"))
+    monkeypatch.setenv("HTTPS_PROXY", "https://proxy.invalid")
+    monkeypatch.setenv("REQUESTS_CA_BUNDLE", str(tmp_path / "untrusted-ca.pem"))
 
     returned = generate_release_lock.generate_lock(
         input_path=source,
@@ -116,9 +119,14 @@ def test_generate_release_lock_uses_staged_compile_only_entry_point(tmp_path, mo
     assert command[-1] == "--upgrade"
     assert environment["PIP_DISABLE_PIP_VERSION_CHECK"] == "1"
     assert environment["PIP_NO_INPUT"] == "1"
+    assert environment["PIP_NO_CACHE_DIR"] == "1"
+    assert environment["PIP_KEYRING_PROVIDER"] == "disabled"
     assert environment["PIP_CONFIG_FILE"] == os.devnull
     assert "PIP_EXTRA_INDEX_URL" not in environment
     assert "PIP_TRUSTED_HOST" not in environment
+    assert "PYTHONPATH" not in environment
+    assert "HTTPS_PROXY" not in environment
+    assert "REQUESTS_CA_BUNDLE" not in environment
     assert returned == destination.resolve()
     assert destination.read_text(encoding="utf-8") == _hashed_lock()
     assert not list(destination.parent.glob(".rigorousrag-lock-*"))
@@ -161,8 +169,11 @@ def test_generate_release_lock_snapshot_is_immune_to_source_replacement(tmp_path
         "--trusted-host packages.invalid\nrequests>=2\n",
         "-r other-requirements.txt\n",
         "-c constraints.txt\nrequests>=2\n",
+        "-e ../editable-package\n",
         "package @ https://packages.invalid/package.whl\n",
         "../local-package\n",
+        "~/local-package\n",
+        "\\\\server\\share\\package\n",
     ],
 )
 def test_generate_release_lock_rejects_external_authority_and_unsnapshotted_inputs(
@@ -180,7 +191,7 @@ def test_generate_release_lock_rejects_external_authority_and_unsnapshotted_inpu
 
     monkeypatch.setattr(generate_release_lock.subprocess, "run", fake_run)
 
-    with pytest.raises(ValueError, match="index authority|URL or local-path|include another"):
+    with pytest.raises(ValueError, match="resolver options|URL or local-path|include another"):
         generate_release_lock.generate_lock(
             input_path=source,
             output_path=tmp_path / "lock.txt",
@@ -280,7 +291,7 @@ def test_generate_release_lock_refuses_destination_replaced_during_resolution(
     monkeypatch.setattr(generate_release_lock, "_pip_compile_executable", lambda: executable)
     monkeypatch.setattr(generate_release_lock.subprocess, "run", fake_run)
 
-    with pytest.raises(ValueError, match="unsafe entry"):
+    with pytest.raises(ValueError, match="appeared unexpectedly|identity changed"):
         generate_release_lock.generate_lock(
             input_path=source,
             output_path=destination,
@@ -309,7 +320,7 @@ def test_generate_release_lock_refuses_symlinked_generated_output(tmp_path, monk
     monkeypatch.setattr(generate_release_lock, "_pip_compile_executable", lambda: executable)
     monkeypatch.setattr(generate_release_lock.subprocess, "run", fake_run)
 
-    with pytest.raises(ValueError, match="safe regular file"):
+    with pytest.raises(ValueError, match="symbolic-link|safe regular file"):
         generate_release_lock.generate_lock(
             input_path=source,
             output_path=destination,
