@@ -1,6 +1,8 @@
 import itertools
 import json
 import math
+from decimal import Decimal
+from fractions import Fraction
 
 import pytest
 from pydantic import ValidationError
@@ -85,18 +87,21 @@ def test_citation_url_schemes_hostnames_and_page_numbers_are_strict():
         "https://singlelabel/evidence",
         "http://127.0.0.1/evidence",
         "http://[::1]/evidence",
+        "https://alice:password@example.test/evidence",
+        "https://example.test\\@evil.test/evidence",
         "local://",
     ):
         with pytest.raises(ValidationError):
             Citation(label="[1]", title="Evidence", url=url)
 
-    with pytest.raises(ValidationError, match="page_number"):
-        Citation(
-            label="[1]",
-            title="Evidence",
-            url="local://doc-1",
-            page_number=True,
-        )
+    for page_number in (True, 2.0, Decimal("2"), Fraction(4, 2), 0, 1_000_001):
+        with pytest.raises(ValidationError, match="page_number"):
+            Citation(
+                label="[1]",
+                title="Evidence",
+                url="local://doc-1",
+                page_number=page_number,
+            )
 
     citation = Citation(
         label="[1]",
@@ -108,11 +113,26 @@ def test_citation_url_schemes_hostnames_and_page_numbers_are_strict():
     assert citation.page_number == 2
 
 
-def test_public_citation_fields_redact_credentials_paths_and_pii():
+def test_page_number_accepts_exact_index_protocol_value():
+    class ExactInteger:
+        def __index__(self):
+            return 3
+
+    citation = Citation(
+        label="[1]",
+        title="Evidence",
+        url="local://doc-1",
+        page_number=ExactInteger(),
+    )
+
+    assert citation.page_number == 3
+
+
+def test_public_citation_fields_redact_paths_pii_and_query_secrets():
     citation = Citation(
         label="[1]",
         title="Contact analyst@example.com at /private/report.txt",
-        url="https://alice:password@example.test/paper?api_key=secret",
+        url="https://example.test/paper?api_key=secret",
         source_id="file:///var/lib/rigorousrag/source.pdf",
         snippet="Evidence from 10 Main Street and 192.168.1.20",
     )
@@ -121,10 +141,7 @@ def test_public_citation_fields_redact_credentials_paths_and_pii():
     serialized = json.dumps(payload)
     assert "analyst@example.com" not in serialized
     assert "/private" not in serialized
-    assert "alice" not in payload["url"]
-    assert "password" not in payload["url"]
     assert "api_key=secret" not in payload["url"]
-    assert "@" not in payload["url"].split("/", 3)[2]
     assert "/var/lib" not in serialized
     assert "10 Main Street" not in serialized
     assert "192.168.1.20" not in serialized
@@ -218,7 +235,11 @@ def test_assignment_validation_prevents_post_construction_bypass():
     with pytest.raises(ValidationError):
         citation.url = "file:///private/evidence.pdf"
     with pytest.raises(ValidationError):
+        citation.url = "https://alice:password@example.test/evidence"
+    with pytest.raises(ValidationError):
         citation.page_number = True
+    with pytest.raises(ValidationError):
+        citation.page_number = 2.0
     with pytest.raises(ValidationError):
         answer.answer = "   "
     with pytest.raises(ValidationError):
