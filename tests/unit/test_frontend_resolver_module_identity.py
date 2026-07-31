@@ -33,6 +33,28 @@ def test_frontend_directory_rejects_symlinked_resolver_module(tmp_path, monkeypa
         frontend_static.frontend_directory()
 
 
+def test_frontend_directory_rejects_symlinked_package_ancestor(tmp_path, monkeypatch):
+    real_package = tmp_path / "real-package"
+    tools = real_package / "tools"
+    tools.mkdir(parents=True)
+    resolver = tools / "frontend_static.py"
+    resolver.write_text("fixture", encoding="utf-8")
+    _write_frontend(real_package)
+    linked_parent = tmp_path / "linked-package"
+    try:
+        linked_parent.symlink_to(real_package, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("Directory symlinks are unavailable in this environment.")
+    monkeypatch.setattr(
+        frontend_static,
+        "__file__",
+        str(linked_parent / "tools" / "frontend_static.py"),
+    )
+
+    with pytest.raises(RuntimeError, match="symbolic-link or reparse-point"):
+        frontend_static.frontend_directory()
+
+
 def test_frontend_directory_rejects_reparse_flagged_asset(tmp_path, monkeypatch):
     package = tmp_path / "package"
     tools = package / "tools"
@@ -58,4 +80,31 @@ def test_frontend_directory_rejects_reparse_flagged_asset(tmp_path, monkeypatch)
     monkeypatch.setattr(frontend_static.os, "lstat", fake_lstat)
 
     with pytest.raises(RuntimeError, match="regular non-symlink file"):
+        frontend_static.frontend_directory()
+
+
+def test_frontend_directory_rejects_reparse_flagged_package_root(tmp_path, monkeypatch):
+    package = tmp_path / "package"
+    tools = package / "tools"
+    tools.mkdir(parents=True)
+    resolver = tools / "frontend_static.py"
+    resolver.write_text("fixture", encoding="utf-8")
+    _write_frontend(package)
+    original_lstat = frontend_static.os.lstat
+
+    class ReparseInfo:
+        def __init__(self, info):
+            self.st_mode = info.st_mode
+            self.st_file_attributes = frontend_static._FILE_ATTRIBUTE_REPARSE_POINT
+
+    def fake_lstat(path):
+        info = original_lstat(path)
+        if Path(path) == package:
+            return ReparseInfo(info)
+        return info
+
+    monkeypatch.setattr(frontend_static, "__file__", str(resolver))
+    monkeypatch.setattr(frontend_static.os, "lstat", fake_lstat)
+
+    with pytest.raises(RuntimeError, match="real non-symlink directory"):
         frontend_static.frontend_directory()
