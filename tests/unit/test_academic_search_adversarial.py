@@ -40,8 +40,22 @@ def test_zero_year_range_is_encoded_without_truthiness_loss():
     assert "year=0-1" in download.call_args.args[0]
 
 
-def test_provider_key_is_trimmed_before_header_use(monkeypatch):
-    monkeypatch.setenv("SEMANTIC_SCHOLAR_API_KEY", "  provider-key  ")
+def test_provider_key_must_be_canonical_before_header_use(monkeypatch):
+    for value in (
+        "  provider-key  ",
+        "provider-key\t",
+        "provider-key\x01",
+        "provider-key\x7f",
+    ):
+        monkeypatch.setenv("SEMANTIC_SCHOLAR_API_KEY", value)
+        with patch("tools.academic_search.safe_download") as download:
+            with pytest.raises(AcademicSearchError, match="key is invalid"):
+                academic_search("query")
+        download.assert_not_called()
+
+
+def test_canonical_provider_key_is_forwarded_unchanged(monkeypatch):
+    monkeypatch.setenv("SEMANTIC_SCHOLAR_API_KEY", "provider-key")
     with patch(
         "tools.academic_search.safe_download",
         return_value=_payload([]),
