@@ -45,3 +45,5 @@ jobs:
           git diff --cached --check
           git commit -m "Harden telemetry identity and rotation boundaries"
           git push origin HEAD:main
+
+# Direct-main trigger update.
