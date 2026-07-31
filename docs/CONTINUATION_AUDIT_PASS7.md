@@ -9,7 +9,7 @@ Draft PR: #1
 This pass re-read the concrete implementation boundaries carried forward after pass six
 and compared them against the actual branch head rather than the stale pull-request
 summary. It then followed the new frontend, release-lock, operator-repair, durable-text,
-and verification surfaces for adjacent correctness failures.
+privacy, and verification surfaces for adjacent correctness failures.
 
 This record describes source changes and regression contracts. It is not a declaration
 that the final exact head has passed every executable release gate. PR #1 remains draft
@@ -110,7 +110,7 @@ New tests persist newline, tab, carriage-return, and DEL-bearing fields, verify 
 normalized public values, require the repair scan to consider the row valid, and verify
 500/2,000-character ceilings after normalization.
 
-## 5. Exact-head verification is one unconditional PR-observable workflow
+## 5. Exact-head verification is one unconditional observable workflow
 
 ### Finding
 
@@ -120,9 +120,9 @@ Three partially overlapping workflows existed:
 - the pass-six exact-head workflow;
 - the release-lock workflow, which also contained a Linux test job.
 
-The connector could observe only pull-request-triggered runs, while some exact-head work
-was duplicated in push-triggered workflows. The release workflow also had path filters
-that could skip configuration-only changes.
+Some exact-head work was duplicated, while path filters could skip configuration-only
+changes. Separate workflow identities also made it harder to establish one authoritative
+merge decision.
 
 ### Correction
 
@@ -131,14 +131,51 @@ that could skip configuration-only changes.
   `.github/workflows/release-locks.yml`;
 - renamed it `Exact-head verification and release locks`;
 - made it unconditional for every pull request;
-- retained branch pushes, version tags, and manual dispatch;
+- retained branch pushes, version tags, merge queues, and manual dispatch;
 - kept full-history, event-aware whitespace comparison;
 - retained per-job dependency checks, compilation, fatal Ruff checks, pytest/branch
   coverage, hash-only lock installation dry runs, and artifacts;
 - removed the two duplicate workflows instead of consuming redundant runners.
 
-The repository now has one authoritative 15-job merge gate. No lightweight compatibility
-check is substituted for the actual verification work.
+The repository now has one authoritative 16-job merge gate: one registration job, three
+Linux jobs, two Windows jobs, one container job, and nine release-lock jobs. No
+lightweight compatibility check is substituted for the actual verification work.
+
+## 6. Executable testing found a sentence-final email redaction defect
+
+### Finding
+
+A superseded exact-head run completed the full Python 3.12 suite and reported:
+
+- 713 collected tests;
+- 711 passing tests;
+- two failures;
+- 76.25% measured branch coverage, above the configured 50% floor;
+- successful dependency installation, `pip check`, compilation, and fatal Ruff checks.
+
+Both failures had one root cause. `mask_metadata_text()` used an email pattern whose final
+negative lookahead treated a period as a possible continuation of the email address. A
+normal sentence such as `Contact alice@example.com.` therefore failed to match. The
+address survived both OCR-document finalization and semantic-section reconstruction.
+
+### Correction
+
+- each domain label must now end in an alphanumeric character;
+- internal subdomain dots and hyphens remain supported;
+- common local-part characters and plus addressing remain supported;
+- the final boundary blocks a larger identifier without rejecting ordinary punctuation;
+- periods, commas, closing brackets, semicolons, colons, and newlines remain in the text
+  while the address is replaced with `[REDACTED_EMAIL]`;
+- because ingestion, nested metadata, telemetry, scientific result sanitization, and
+  durable public text share this primitive, the correction applies consistently rather
+  than only to the two failing tests.
+
+### Regression contract
+
+The original integration and OCR tests remain unchanged and must now pass. New direct
+regressions cover sentence-final periods, commas, brackets, semicolons, colons, subdomains,
+plus addressing, nested metadata, and incomplete email-like values that must not be
+masked.
 
 ## Verification status
 
@@ -146,8 +183,10 @@ Observed before the final pass-seven commits:
 
 - all nine Linux/Windows/macOS Python 3.10–3.12 release-lock jobs succeeded on prior
   exact heads;
-- dependency installation, `pip check`, compilation, and fatal Ruff checks completed
-  successfully in an earlier Linux exact-head job before later commits superseded it.
+- dependency installation, `pip check`, compilation, and fatal Ruff checks succeeded in
+  the Python 3.12 full-suite run;
+- 711 of 713 tests passed and measured branch coverage was 76.25%;
+- the only two failures were the shared email-boundary defect corrected above.
 
 Still required on the final pass-seven head:
 
