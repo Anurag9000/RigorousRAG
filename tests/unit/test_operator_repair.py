@@ -151,7 +151,10 @@ def test_valid_job_cannot_be_retired_by_corrupt_row_tool(tmp_path):
         )
 
 
-def test_cli_lists_corrupt_rows_without_private_path(tmp_path, capsys):
+def test_cli_lists_corrupt_rows_with_scan_metadata_and_without_private_path(
+    tmp_path,
+    capsys,
+):
     database = tmp_path / "jobs.sqlite3"
     store = JobStore(path=database)
     private_source = str(tmp_path / "private" / "secret.pdf")
@@ -160,6 +163,9 @@ def test_cli_lists_corrupt_rows_without_private_path(tmp_path, capsys):
     assert main(["--job-db", str(database), "list"]) == 0
     captured = capsys.readouterr()
     payload = json.loads(captured.out)
-    assert len(payload) == 1
+    assert len(payload["records"]) == 1
+    assert payload["scanned_rows"] == 1
+    assert payload["next_after_rowid"] is None
+    assert payload["complete"] is True
     assert private_source not in captured.out
     assert "secret.pdf" not in captured.out
