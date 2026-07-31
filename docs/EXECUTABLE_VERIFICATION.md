@@ -12,16 +12,16 @@ The first release-lock runs exposed and corrected three independent workflow def
 3. a `shell: python` Actions step executed from a temporary directory and could not import
    the repository's `scripts` package.
 
-The final lock generator:
+The lock generator subsequently gained additional source-level controls:
 
-- installs an isolated `pip>=25,<26` and pip-tools 7.6 toolchain;
-- resolves with backtracking;
-- pins unsafe bootstrap packages rather than leaving warnings;
-- emits exact SHA-256 hashes;
-- publishes its verified absolute output path directly through `GITHUB_OUTPUT`;
-- validates every requirement is exactly pinned and hashed;
-- performs a `pip --require-hashes --no-deps --dry-run` installation check;
-- uploads the generated lock artifact.
+- resolution from an immutable bounded requirements snapshot;
+- rejection of resolver options, nested files, URLs, alternate indexes, and local paths;
+- removal of ambient pip, proxy, Python-path, certificate, keyring, and cache authority;
+- public-PyPI authority selected explicitly;
+- identity-stable generated-output reads;
+- atomic verified publication;
+- identity-stable bounded `GITHUB_OUTPUT` append;
+- strict no-follow verifier reads for every existing path component.
 
 Observed successful run:
 
@@ -34,8 +34,8 @@ Observed successful run:
   artifact upload.
 
 A later superseded run, `30603463220`, again completed all nine lock jobs successfully.
-Pass seven subsequently hardened verifier path/identity handling, so every final lock job
-must regenerate and revalidate its artifact on the final head.
+Passes seven and eight hardened the generator and verifier after those runs, so these
+results are historical evidence rather than final release certification.
 
 ## First full Linux suite
 
@@ -65,7 +65,7 @@ corrected defect, not a passing release certificate.
 
 ## Consolidated exact-head workflow
 
-All release gates now live in one unconditional pull-request workflow,
+All release gates now live in one unconditional workflow,
 `.github/workflows/release-locks.yml`, named `Exact-head verification and release locks`.
 It contains 16 jobs:
 
@@ -76,14 +76,34 @@ It contains 16 jobs:
 - Docker Compose validation and container build;
 - nine Linux/Windows/macOS Python 3.10–3.12 release-lock jobs.
 
-The workflow runs for every pull request, branch pushes, version tags, merge queues, and
-manual dispatches. A single concurrency group cancels superseded runs. The older duplicate
-CI and exact-head workflows were removed so one check suite is authoritative.
+The workflow runs for every pull request, branch push, version tag, merge queue, and manual
+dispatch. Third-party actions are pinned to immutable official release commits and
+checkout credential persistence is disabled. A single concurrency group cancels
+superseded runs. The older duplicate CI and exact-head workflows were removed so one check
+suite is authoritative.
+
+## Pass-eight source-level regressions
+
+Pass eight added or expanded tests for:
+
+- lexical frontend module/package/asset symlink and reparse-point refusal;
+- exact integer semantics across configuration, rate limiting, bounded execution,
+  scheduling, request-body limits, and upload byte ceilings;
+- boolean clock rejection;
+- periodic scheduler wall-clock rechecks;
+- readiness SQLite URI escaping, database/parent identity, reparse refusal, short writes,
+  and safe probe cleanup;
+- malformed/conflicting/excessive HTTP framing rejected before application execution;
+- owner upload root/owner/file redirection and identity boundaries.
+
+These are committed test contracts, not observed passes. No current-head pull-request
+workflow run is exposed through the available connector. The execution container also
+cannot clone the branch because DNS resolution for `github.com` fails. No pass-eight test
+success is therefore asserted here.
 
 ## Current release boundary
 
 No merge-readiness claim is permitted until the consolidated workflow succeeds against
-the final pull-request head after the privacy, lock-verifier, frontend, repair-scan, job
-text, and workflow corrections. Every failure must be fixed and the entire 16-job workflow
-rerun. The final diff and documentation must then be re-audited before PR #1 is moved out
-of draft.
+one final pull-request head after all pass-seven and pass-eight changes. Every failure must
+be fixed and the entire 16-job workflow rerun. The final diff and documentation must then
+be re-audited before PR #1 is moved out of draft.
