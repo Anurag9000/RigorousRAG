@@ -1,10 +1,10 @@
-"""Bind the legacy relative frontend mount to the repository's verified asset directory.
+"""Resolve and validate RigorousRAG's bundled frontend assets.
 
-``server_app`` historically constructs ``StaticFiles(directory="frontend")``. That path
-is relative to the process working directory and therefore fails when the service is
-launched outside the repository root. Importing this module installs one narrow,
-idempotent adapter on FastAPI's ``StaticFiles`` class: only the exact legacy sentinel
-``"frontend"`` is replaced, while every other caller and path keeps normal semantics.
+The production service calls :func:`frontend_directory` directly. The optional
+``install_portable_frontend_staticfiles`` adapter exists only for compatibility with
+legacy code that still constructs ``StaticFiles(directory="frontend")``. It is narrow and
+idempotent: only that exact sentinel is rebound, while all other callers retain FastAPI's
+normal path semantics.
 """
 
 from __future__ import annotations
@@ -26,28 +26,40 @@ def _contains_ascii_control(value: str) -> bool:
     return any(ord(character) < 32 or ord(character) == 127 for character in value)
 
 
-def frontend_directory() -> Path:
-    """Return the verified repository-relative frontend directory."""
+def _safe_regular_file(path: Path, *, label: str) -> None:
+    try:
+        info = os.lstat(path)
+    except OSError as exc:
+        raise RuntimeError(f"{label} is unavailable.") from exc
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+        raise RuntimeError(f"{label} must be a regular non-symlink file.")
 
-    candidate = Path(__file__).parent.parent / _LEGACY_FRONTEND_SENTINEL
+
+def frontend_directory() -> Path:
+    """Return the verified module-relative frontend directory."""
+
+    try:
+        module_file = Path(__file__).resolve(strict=True)
+    except OSError as exc:
+        raise RuntimeError("The frontend resolver module is unavailable.") from exc
+    _safe_regular_file(module_file, label="The frontend resolver module")
+
+    candidate = module_file.parent.parent / _LEGACY_FRONTEND_SENTINEL
     absolute = Path(os.path.abspath(candidate))
     try:
         directory_info = os.lstat(absolute)
     except OSError as exc:
         raise RuntimeError("The bundled frontend directory is unavailable.") from exc
     if stat.S_ISLNK(directory_info.st_mode) or not stat.S_ISDIR(directory_info.st_mode):
-        raise RuntimeError("The bundled frontend path must be a regular directory.")
+        raise RuntimeError("The bundled frontend path must be a real directory.")
 
     for filename in _REQUIRED_FRONTEND_FILES:
         if _contains_ascii_control(filename):  # defensive invariant
             raise RuntimeError("A bundled frontend filename is invalid.")
-        path = absolute / filename
-        try:
-            info = os.lstat(path)
-        except OSError as exc:
-            raise RuntimeError("A required bundled frontend asset is unavailable.") from exc
-        if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
-            raise RuntimeError("A required bundled frontend asset is unsafe.")
+        _safe_regular_file(
+            absolute / filename,
+            label=f"Bundled frontend asset {filename}",
+        )
     return absolute
 
 
