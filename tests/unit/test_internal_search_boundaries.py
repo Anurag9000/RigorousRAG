@@ -1,4 +1,8 @@
 import json
+import os
+from decimal import Decimal
+from fractions import Fraction
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -14,7 +18,16 @@ def test_direct_arguments_are_validated_before_engine_initialization(monkeypatch
     for query, limit in (
         (object(), 5),
         ("q" * 2001, 5),
+        ("bad\x00query", 5),
+        ("bad\nquery", 5),
+        ("bad\rquery", 5),
+        ("bad\tquery", 5),
+        ("bad\x7fquery", 5),
         ("query", "bad"),
+        ("query", True),
+        ("query", 1.5),
+        ("query", Decimal("1.5")),
+        ("query", Fraction(3, 2)),
         ("query", 0),
         ("query", 21),
     ):
@@ -23,6 +36,19 @@ def test_direct_arguments_are_validated_before_engine_initialization(monkeypatch
 
     assert internal_search.search_internal("   ") == []
     initializer.assert_not_called()
+
+
+def test_exact_index_protocol_limit_is_accepted(monkeypatch):
+    class ExactInteger:
+        def __index__(self):
+            return 3
+
+    engine = MagicMock()
+    engine.search.return_value = []
+    monkeypatch.setattr(internal_search, "get_engine", lambda: engine)
+
+    assert internal_search.search_internal("question", limit=ExactInteger()) == []
+    engine.search.assert_called_once_with("question", limit=3)
 
 
 def test_search_filters_malformed_hits_and_bounds_results(monkeypatch):
@@ -42,12 +68,68 @@ def test_search_filters_malformed_hits_and_bounds_results(monkeypatch):
     assert citations[0].metadata["combined_score"] == 0.9
 
 
+def test_invalid_citation_hit_does_not_abort_later_valid_hit(monkeypatch):
+    hits = [
+        SearchHit(
+            1,
+            "https://alice:password@example.test/private",
+            "Unsafe",
+            "evidence",
+            0.9,
+            0.8,
+            0.1,
+            10,
+        ),
+        SearchHit(2, "https://b.test", "B", "evidence", 0.8, 0.7, 0.1, 10),
+    ]
+    engine = MagicMock()
+    engine.search.return_value = hits
+    monkeypatch.setattr(internal_search, "get_engine", lambda: engine)
+
+    citations = internal_search.search_internal("question", limit=2)
+
+    assert [citation.url for citation in citations] == ["https://b.test"]
+
+
 def test_strict_manifest_reader_rejects_nonstandard_json(tmp_path):
     manifest = tmp_path / "snapshot_manifest.json"
     manifest.write_text('{"generation":NaN}', encoding="utf-8")
 
     assert internal_search._read_manifest(manifest) is None
     assert internal_search._manifest_member_paths(tmp_path, manifest) == []
+
+
+def test_manifest_reader_rejects_replacement_during_read(tmp_path, monkeypatch):
+    generation = "a" * 32
+    manifest = tmp_path / "snapshot_manifest.json"
+    payload = json.dumps(
+        {
+            "generation": generation,
+            "files": {
+                "crawl": {"name": f"crawl_state.{generation}.json"},
+                "index": {"name": f"index.{generation}.json"},
+                "pagerank": {"name": f"pagerank.{generation}.json"},
+            },
+            "padding": "x" * 70_000,
+        }
+    )
+    manifest.write_text(payload, encoding="utf-8")
+    original_read = internal_search.os.read
+    replaced = False
+
+    def replacing_read(descriptor, amount):
+        nonlocal replaced
+        chunk = original_read(descriptor, amount)
+        if chunk and not replaced:
+            replaced = True
+            replacement = tmp_path / "replacement.json"
+            replacement.write_text(payload, encoding="utf-8")
+            replacement.replace(manifest)
+        return chunk
+
+    monkeypatch.setattr(internal_search.os, "read", replacing_read)
+
+    assert internal_search._read_manifest(manifest) is None
 
 
 def test_storage_signature_rejects_symlinked_parent(tmp_path):
@@ -59,8 +141,33 @@ def test_storage_signature_rejects_symlinked_parent(tmp_path):
     except (OSError, NotImplementedError):
         pytest.skip("Symlinks are unavailable in this environment.")
 
-    with pytest.raises(ValueError, match="symbolic-link components"):
+    with pytest.raises(ValueError, match="symbolic-link or reparse-point"):
         internal_search._storage_signature(link / "nested")
+
+
+def test_storage_signature_rejects_reparse_flagged_root(tmp_path, monkeypatch):
+    root = tmp_path / "classic"
+    root.mkdir()
+    original_lstat = internal_search.os.lstat
+
+    class ReparseInfo:
+        def __init__(self, info):
+            self.st_mode = info.st_mode
+            self.st_dev = info.st_dev
+            self.st_ino = info.st_ino
+            self.st_ctime_ns = info.st_ctime_ns
+            self.st_mtime_ns = info.st_mtime_ns
+            self.st_size = info.st_size
+            self.st_file_attributes = internal_search._FILE_ATTRIBUTE_REPARSE_POINT
+
+    def fake_lstat(path):
+        info = original_lstat(path)
+        return ReparseInfo(info) if Path(path) == root else info
+
+    monkeypatch.setattr(internal_search.os, "lstat", fake_lstat)
+
+    with pytest.raises(ValueError, match="reparse-point"):
+        internal_search._storage_signature(root)
 
 
 def test_engine_reload_closes_superseded_instance(monkeypatch, tmp_path):
@@ -111,3 +218,12 @@ def test_manifest_member_names_must_match_generation_exactly(tmp_path):
     )
 
     assert internal_search._manifest_member_paths(tmp_path, manifest) == []
+
+
+def test_nonregular_generation_member_has_invalid_signature(tmp_path):
+    member = tmp_path / "index.json"
+    member.mkdir()
+
+    identity = internal_search._file_identity(member)
+
+    assert identity[1:] == (-2, -2, -2, -2, -2)
