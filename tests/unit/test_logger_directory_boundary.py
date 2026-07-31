@@ -1,5 +1,6 @@
 import json
 from contextlib import contextmanager
+from types import SimpleNamespace
 
 import pytest
 
@@ -90,3 +91,24 @@ def test_parent_swap_does_not_redirect_lock_or_append(monkeypatch, tmp_path):
     assert list(outside.iterdir()) == []
     assert (moved / "usage.jsonl").is_file()
     assert json.loads((moved / "usage.jsonl").read_text(encoding="utf-8"))["type"] == "event"
+
+def test_reparse_parent_component_is_detected_without_resolution(
+    monkeypatch, tmp_path
+):
+    parent = tmp_path / "state"
+    parent.mkdir()
+    original_lstat = type(parent).lstat
+
+    def reparse_lstat(self):
+        metadata = original_lstat(self)
+        if self == parent:
+            return SimpleNamespace(
+                st_mode=metadata.st_mode,
+                st_file_attributes=logger._WINDOWS_REPARSE_POINT,
+                st_dev=metadata.st_dev,
+                st_ino=metadata.st_ino,
+            )
+        return metadata
+
+    monkeypatch.setattr(type(parent), "lstat", reparse_lstat)
+    assert logger._has_symlink_component(parent) is True

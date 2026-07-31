@@ -1,5 +1,9 @@
 import json
 import os
+import stat
+from decimal import Decimal
+from fractions import Fraction
+from types import SimpleNamespace
 
 import pytest
 
@@ -179,3 +183,98 @@ def test_malformed_telemetry_integer_environment_uses_default(monkeypatch):
     )
 
     assert value == 17
+
+def test_telemetry_numeric_helpers_require_exact_integer_semantics():
+    class ExactIndex:
+        def __index__(self):
+            return 7
+
+    assert logger._nonnegative_integer(ExactIndex()) == 7
+    assert logger._nonnegative_integer(Decimal("1.5")) == 0
+    assert logger._nonnegative_integer(Fraction(3, 2)) == 0
+    assert logger._nonnegative_integer(True) == 0
+    assert logger._finite_nonnegative(True) == 0.0
+
+
+def test_reparse_metadata_is_never_treated_as_regular(monkeypatch, tmp_path):
+    path = tmp_path / "metrics.jsonl"
+    metadata = SimpleNamespace(
+        st_mode=stat.S_IFREG | 0o600,
+        st_file_attributes=logger._WINDOWS_REPARSE_POINT,
+        st_dev=1,
+        st_ino=2,
+    )
+    monkeypatch.setattr(logger, "_member_stat", lambda *_args: metadata)
+
+    assert logger._regular_or_missing(path) is False
+
+
+def test_append_refuses_visible_path_identity_change_before_write(
+    monkeypatch, tmp_path
+):
+    path = tmp_path / "metrics.jsonl"
+    path.write_bytes(b"before")
+    before = path.lstat()
+    changed = SimpleNamespace(
+        st_mode=before.st_mode,
+        st_file_attributes=0,
+        st_dev=before.st_dev,
+        st_ino=before.st_ino + 1,
+    )
+    observed = iter((before, changed))
+    monkeypatch.setattr(logger, "_member_stat", lambda *_args: next(observed))
+
+    with pytest.raises(OSError, match="identity"):
+        logger._append_line(path, b"after\n")
+
+    assert path.read_bytes() == b"before"
+
+
+def test_process_lock_refuses_visible_identity_change_after_open(
+    monkeypatch, tmp_path
+):
+    destination = tmp_path / "metrics.jsonl"
+    lock_path = tmp_path / ".metrics.jsonl.lock"
+    real_member_stat = logger._member_stat
+    calls = 0
+
+    def changed_lock(path, parent_fd):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return None
+        actual = real_member_stat(path, parent_fd)
+        assert actual is not None
+        return SimpleNamespace(
+            st_mode=actual.st_mode,
+            st_file_attributes=0,
+            st_dev=actual.st_dev,
+            st_ino=actual.st_ino + 1,
+        )
+
+    monkeypatch.setattr(logger, "_member_stat", changed_lock)
+    with pytest.raises(OSError, match="identity"):
+        with logger._process_log_lock(destination):
+            raise AssertionError("lock body must not execute")
+    assert lock_path.exists()
+
+
+def test_rotation_replace_refuses_replaced_source(tmp_path):
+    source = tmp_path / "metrics.jsonl"
+    destination = tmp_path / "metrics.jsonl.1"
+    source.write_bytes(b"original")
+    expected = source.lstat()
+    source.unlink()
+    source.write_bytes(b"replacement")
+
+    with pytest.raises(OSError, match="source changed"):
+        logger._replace_member(
+            source,
+            destination,
+            None,
+            expected_source=expected,
+            expected_destination=None,
+        )
+
+    assert source.read_bytes() == b"replacement"
+    assert not destination.exists()
