@@ -64,7 +64,8 @@ jobs:
               tests/unit/test_evaluation_foundation.py \
               tests/unit/test_rag_tool_hybrid.py \
               tests/unit/test_rag_tool_direct_boundaries.py \
-              tests/unit/test_rag_tool_backend_shapes.py \
+              tests/unit/test_rag_tool_backend_boundaries.py \
+              tests/unit/test_rag_tool_boundaries.py \
               tests/unit/test_rag_adversarial_boundaries.py \
               tests/unit/test_deployment_parity.py \
               --no-cov -q >> /tmp/wave1.log 2>&1
@@ -92,6 +93,7 @@ jobs:
             scripts/capability_wave1_core.py \
             scripts/capability_wave1_tests_docs.py \
             .github/workflows/one-shot-capability-wave1.yml
+          git rm -f docs/CAPABILITY_WAVE1_FAILURE.md
           git diff --cached --check
           git commit -m "Add hybrid retrieval and evaluation foundation"
           git push origin HEAD:main
@@ -119,5 +121,3 @@ jobs:
           git add docs/CAPABILITY_WAVE1_FAILURE.md
           git commit -m "Update capability wave one failure" || exit 0
           git push origin HEAD:main
-
-# Triggered after installation on main.
