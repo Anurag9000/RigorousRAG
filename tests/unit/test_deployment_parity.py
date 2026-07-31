@@ -2,6 +2,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
+EXACT_HEAD_WORKFLOW = ROOT / ".github" / "workflows" / "release-locks.yml"
 
 
 def test_active_runtime_settings_are_exposed_in_env_and_compose():
@@ -43,12 +44,33 @@ def test_active_runtime_settings_are_exposed_in_env_and_compose():
         )
 
 
-def test_ci_fetches_history_before_merge_base_whitespace_check():
-    workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(
-        encoding="utf-8"
-    )
+def test_exact_head_workflow_fetches_history_before_whitespace_check():
+    workflow = EXACT_HEAD_WORKFLOW.read_text(encoding="utf-8")
 
     assert "fetch-depth: 0" in workflow
     assert "git merge-base HEAD" in workflow
     assert "git diff --check" in workflow
     assert "git diff --check HEAD^" not in workflow
+
+
+def test_exact_head_workflow_is_unconditional_and_complete():
+    workflow = EXACT_HEAD_WORKFLOW.read_text(encoding="utf-8")
+
+    assert "name: Exact-head verification and release locks" in workflow
+    assert "  pull_request:\n" in workflow
+    assert "  merge_group:\n" in workflow
+    assert "paths:" not in workflow.split("permissions:", 1)[0]
+    assert "python-version: [\"3.10\", \"3.11\", \"3.12\"]" in workflow
+    assert "runs-on: windows-latest" in workflow
+    assert "docker compose config --quiet" in workflow
+    assert "docker build --tag rigorousrag:ci ." in workflow
+    assert "os: [ubuntu-latest, windows-latest, macos-latest]" in workflow
+    assert "python scripts/verify_release_lock.py" in workflow
+    assert "--require-hashes" in workflow
+
+
+def test_obsolete_duplicate_workflows_are_absent():
+    workflow_dir = ROOT / ".github" / "workflows"
+
+    assert not (workflow_dir / "ci.yml").exists()
+    assert not (workflow_dir / "exact-head-verification.yml").exists()
