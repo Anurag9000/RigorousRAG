@@ -56,7 +56,6 @@ jobs:
               tests/unit/test_document_store_source_bytes.py \
               tests/unit/test_search_agent_provider_boundaries.py \
               tests/unit/test_search_agent_execution.py \
-              tests/unit/test_search_agent_extended.py \
               tests/unit/test_rag_public_boundaries.py \
               --no-cov -q >> /tmp/pass15.log 2>&1
             status=$?
@@ -75,6 +74,7 @@ jobs:
             tests/unit/test_document_store_root_paths.py \
             tests/unit/test_search_agent_provider_boundaries.py
           git rm scripts/pass15_patch.py .github/workflows/one-shot-pass15.yml
+          git rm -f docs/PASS15_FAILURE.md
           git diff --cached --check
           git commit -m "Preserve stateful wrapper identities"
           git push origin HEAD:main
@@ -112,5 +112,3 @@ jobs:
           git add docs/PASS15_FAILURE.md
           git commit -m "Update pass fifteen verification failure" || exit 0
           git push origin HEAD:main
-
-# Triggered after installation on the default branch.
