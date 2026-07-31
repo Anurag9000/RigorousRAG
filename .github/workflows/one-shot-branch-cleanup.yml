@@ -77,3 +77,5 @@ jobs:
               sha: response.data.sha,
               branch: 'main',
             });
+
+# Second direct-main push ensures the already-installed workflow receives a push event.
