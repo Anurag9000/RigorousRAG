@@ -4,11 +4,8 @@ from __future__ import annotations
 
 import itertools
 import json
+import operator
 from typing import Any, Awaitable, Callable, Dict
-
-from tools.frontend_static import install_portable_frontend_staticfiles
-
-install_portable_frontend_staticfiles()
 
 ASGIReceive = Callable[..., Awaitable[Dict[str, Any]]]
 ASGISend = Callable[..., Awaitable[None]]
@@ -17,6 +14,9 @@ ASGIApp = Callable[[Dict[str, Any], ASGIReceive, ASGISend], Awaitable[None]]
 _MISSING_VISUAL_DOCUMENT_ERROR = "The requested document was not found for this owner."
 _MAX_REQUEST_BODY_BYTES = 1_000_000_000
 _MAX_HEADER_FIELDS = 1000
+_MAX_HEADER_NAME_BYTES = 256
+_MAX_HEADER_VALUE_BYTES = 8192
+_MAX_CONTENT_LENGTH_DIGITS = 20
 
 
 class RequestBodyTooLarge(Exception):
@@ -24,23 +24,22 @@ class RequestBodyTooLarge(Exception):
 
 
 class InvalidRequestBody(Exception):
-    """Raised internally for malformed ASGI request-body messages."""
+    """Raised internally for malformed ASGI request-body messages or framing."""
 
 
 def _positive_integer(value: Any) -> int:
     if isinstance(value, bool):
         raise ValueError("max_bytes must be an integer.")
     try:
-        parsed = int(value)
+        parsed = operator.index(value)
     except (TypeError, ValueError, OverflowError) as exc:
         raise ValueError("max_bytes must be an integer.") from exc
-    if isinstance(value, float) and not value.is_integer():
-        raise ValueError("max_bytes must be an integer.")
-    if not 1 <= parsed <= _MAX_REQUEST_BODY_BYTES:
+    result = int(parsed)
+    if not 1 <= result <= _MAX_REQUEST_BODY_BYTES:
         raise ValueError(
             f"max_bytes must be between 1 and {_MAX_REQUEST_BODY_BYTES}."
         )
-    return parsed
+    return result
 
 
 class RequestBodyLimitMiddleware:
@@ -54,48 +53,59 @@ class RequestBodyLimitMiddleware:
 
     @staticmethod
     def _content_length(scope: Dict[str, Any]) -> int | None:
+        """Return one unambiguous length, or raise for malformed HTTP framing."""
+
         if not isinstance(scope, dict):
-            return None
+            raise InvalidRequestBody
         try:
             headers = scope.get("headers", [])
-        except Exception:
-            return None
+        except Exception as exc:
+            raise InvalidRequestBody from exc
         if isinstance(headers, (str, bytes, bytearray)):
-            return None
+            raise InvalidRequestBody
         try:
-            fields = list(
-                itertools.islice(iter(headers), _MAX_HEADER_FIELDS + 1)
-            )
-        except Exception:
-            return None
+            fields = list(itertools.islice(iter(headers), _MAX_HEADER_FIELDS + 1))
+        except Exception as exc:
+            raise InvalidRequestBody from exc
         if len(fields) > _MAX_HEADER_FIELDS:
-            return None
-        values: list[bytes] = []
+            raise InvalidRequestBody
+
+        values: list[int] = []
         for field in fields:
             if not isinstance(field, (tuple, list)) or len(field) != 2:
-                return None
+                raise InvalidRequestBody
             name, value = field
             if not isinstance(name, bytes) or not isinstance(value, bytes):
-                return None
-            if name.lower() == b"content-length":
-                values.append(value)
-        if not values:
-            return None
-        parsed_values: list[int] = []
-        for value in values:
+                raise InvalidRequestBody
+            if (
+                not name
+                or len(name) > _MAX_HEADER_NAME_BYTES
+                or len(value) > _MAX_HEADER_VALUE_BYTES
+            ):
+                raise InvalidRequestBody
+            if name.lower() != b"content-length":
+                continue
+            if not value or len(value) > _MAX_CONTENT_LENGTH_DIGITS:
+                raise InvalidRequestBody
             try:
                 decoded = value.decode("ascii")
-                if not decoded or decoded.strip() != decoded:
-                    return None
-                parsed = int(decoded)
-            except (UnicodeDecodeError, ValueError, OverflowError):
-                return None
+            except UnicodeDecodeError as exc:
+                raise InvalidRequestBody from exc
+            if not decoded.isdigit():
+                raise InvalidRequestBody
+            try:
+                parsed = int(decoded, 10)
+            except (ValueError, OverflowError) as exc:
+                raise InvalidRequestBody from exc
             if parsed < 0:
-                return None
-            parsed_values.append(parsed)
-        if len(set(parsed_values)) != 1:
+                raise InvalidRequestBody
+            values.append(parsed)
+
+        if not values:
             return None
-        return parsed_values[0]
+        if len(set(values)) != 1:
+            raise InvalidRequestBody
+        return values[0]
 
     @staticmethod
     async def _json_error(
@@ -167,7 +177,16 @@ class RequestBodyLimitMiddleware:
         if scope_type != "http":
             await self.app(scope, receive, send)
             return
-        declared = self._content_length(scope)
+        try:
+            declared = self._content_length(scope)
+        except InvalidRequestBody:
+            await self._json_error(
+                send,
+                status=400,
+                detail="Malformed request headers.",
+                close=True,
+            )
+            return
         if declared is not None and declared > self.max_bytes:
             await self._reject(send)
             return
