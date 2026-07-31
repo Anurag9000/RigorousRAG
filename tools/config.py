@@ -3,23 +3,20 @@
 from __future__ import annotations
 
 import math
+import operator
 import os
+import re
 from typing import Any, Optional
 
 _MAX_ENV_NAME_CHARS = 200
+_ENVIRONMENT_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,199}$")
 
 
 def _environment_name(value: Any) -> str:
-    if not isinstance(value, str):
-        raise ValueError("Environment variable names must be strings.")
-    if (
-        not value
-        or len(value) > _MAX_ENV_NAME_CHARS
-        or "=" in value
-        or "\x00" in value
-    ):
+    if not isinstance(value, str) or not _ENVIRONMENT_NAME_RE.fullmatch(value):
         raise ValueError(
-            "Environment variable names must contain 1-200 valid characters."
+            "Environment variable names must contain 1-200 ASCII letters, digits, or "
+            "underscores and may not begin with a digit."
         )
     return value
 
@@ -28,12 +25,10 @@ def _integer_parameter(value: Any, label: str) -> int:
     if isinstance(value, bool):
         raise ValueError(f"{label} must be an integer.")
     try:
-        parsed = int(value)
+        parsed = operator.index(value)
     except (TypeError, ValueError, OverflowError) as exc:
         raise ValueError(f"{label} must be an integer.") from exc
-    if isinstance(value, float) and not value.is_integer():
-        raise ValueError(f"{label} must be an integer.")
-    return parsed
+    return int(parsed)
 
 
 def _float_parameter(value: Any, label: str) -> float:
