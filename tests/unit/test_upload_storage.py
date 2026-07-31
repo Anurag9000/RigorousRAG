@@ -1,9 +1,13 @@
 import io
 import os
 import stat
+from decimal import Decimal
+from fractions import Fraction
+from pathlib import Path
 
 import pytest
 
+import tools.upload_storage as upload_storage
 from tools.upload_storage import (
     UploadStorageError,
     read_owner_file,
@@ -54,7 +58,15 @@ def test_oversized_stream_removes_partial_owner_file(tmp_path):
 def test_invalid_limits_and_nonbyte_streams_fail_without_partial_file(tmp_path):
     root = tmp_path / "uploads"
     root.mkdir()
-    for value in (0, True, 1.5, "bad", 1_000_000_001):
+    for value in (
+        0,
+        True,
+        1.5,
+        Decimal("1.5"),
+        Fraction(3, 2),
+        "bad",
+        1_000_000_001,
+    ):
         with pytest.raises(UploadStorageError, match="max_bytes"):
             store_owner_stream(
                 io.BytesIO(b"evidence"),
@@ -75,6 +87,25 @@ def test_invalid_limits_and_nonbyte_streams_fail_without_partial_file(tmp_path):
     assert list((root / "alice").iterdir()) == []
 
 
+def test_exact_index_protocol_limit_is_accepted(tmp_path):
+    class ExactInteger:
+        def __index__(self):
+            return 100
+
+    root = tmp_path / "uploads"
+    root.mkdir()
+
+    stored = store_owner_stream(
+        io.BytesIO(b"evidence"),
+        upload_root=root,
+        owner_id="alice",
+        suffix=".txt",
+        max_bytes=ExactInteger(),
+    )
+
+    assert stored.read_bytes() == b"evidence"
+
+
 def test_store_refuses_symlinked_root_or_parent(tmp_path):
     outside = tmp_path / "outside"
     outside.mkdir()
@@ -85,7 +116,7 @@ def test_store_refuses_symlinked_root_or_parent(tmp_path):
         pytest.skip("Symlinks are unavailable in this environment.")
 
     for root in (link, link / "nested"):
-        with pytest.raises(UploadStorageError, match="symbolic-link components"):
+        with pytest.raises(UploadStorageError, match="symbolic-link.*components"):
             store_owner_stream(
                 io.BytesIO(b"secret"),
                 upload_root=root,
@@ -94,6 +125,34 @@ def test_store_refuses_symlinked_root_or_parent(tmp_path):
                 max_bytes=100,
             )
     assert list(outside.iterdir()) == []
+
+
+def test_store_refuses_reparse_flagged_root(tmp_path, monkeypatch):
+    root = tmp_path / "uploads"
+    root.mkdir()
+    original_lstat = upload_storage.os.lstat
+
+    class ReparseInfo:
+        def __init__(self, info):
+            self.st_mode = info.st_mode
+            self.st_dev = info.st_dev
+            self.st_ino = info.st_ino
+            self.st_file_attributes = upload_storage._FILE_ATTRIBUTE_REPARSE_POINT
+
+    def fake_lstat(path):
+        info = original_lstat(path)
+        return ReparseInfo(info) if Path(path) == root else info
+
+    monkeypatch.setattr(upload_storage.os, "lstat", fake_lstat)
+
+    with pytest.raises(UploadStorageError, match="reparse-point"):
+        store_owner_stream(
+            io.BytesIO(b"secret"),
+            upload_root=root,
+            owner_id="alice",
+            suffix=".txt",
+            max_bytes=100,
+        )
 
 
 def test_store_refuses_symlinked_owner_directory(tmp_path):
