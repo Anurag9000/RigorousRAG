@@ -140,6 +140,8 @@ def _current_time() -> float:
 
 
 def _safe_public_text(value: Any, *, limit: int, default: str = "") -> str:
+    """Mask and normalize one public durable string to a bounded single line."""
+
     if value is None:
         rendered = default
     elif isinstance(value, str):
@@ -149,7 +151,12 @@ def _safe_public_text(value: Any, *, limit: int, default: str = "") -> str:
             rendered = str(value)
         except Exception:
             rendered = default
-    return mask_metadata_text(rendered).strip()[:limit]
+    masked = mask_metadata_text(rendered)
+    without_controls = "".join(
+        " " if ord(character) < 32 or ord(character) == 127 else character
+        for character in masked
+    )
+    return without_controls.strip()[:limit]
 
 
 def _validate_stored_attempts(value: Any) -> int:
