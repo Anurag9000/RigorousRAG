@@ -20,8 +20,21 @@ from urllib.parse import urlparse
 from tools import security as _implementation
 
 
-_original_safe_upload_suffix = _implementation.safe_upload_suffix
-_original_validate_public_url = _implementation.validate_public_url
+if not hasattr(_implementation, "_boundary_original_safe_upload_suffix"):
+    _implementation._boundary_original_safe_upload_suffix = (
+        _implementation.safe_upload_suffix
+    )
+if not hasattr(_implementation, "_boundary_original_validate_public_url"):
+    _implementation._boundary_original_validate_public_url = (
+        _implementation.validate_public_url
+    )
+
+_original_safe_upload_suffix = (
+    _implementation._boundary_original_safe_upload_suffix
+)
+_original_validate_public_url = (
+    _implementation._boundary_original_validate_public_url
+)
 
 
 def _contains_ascii_control(value: str) -> bool:
@@ -206,10 +219,13 @@ def hostname_matches(hostname: str, allowed_domains: Iterable[str]) -> bool:
         )
     except Exception:
         return False
-    for raw_domain in candidates:
-        domain = _allowed_domain(raw_domain)
-        if domain and (host == domain or host.endswith(f".{domain}")):
-            return True
+    try:
+        for raw_domain in candidates:
+            domain = _allowed_domain(raw_domain)
+            if domain and (host == domain or host.endswith(f".{domain}")):
+                return True
+    except Exception:
+        return False
     return False
 
 
@@ -222,38 +238,52 @@ def _sanitize_request_headers(
         raise _implementation.SecurityError(
             "Remote request headers must be a mapping."
         )
-    if len(headers) > _implementation._MAX_REQUEST_HEADERS:
+    try:
+        header_count = len(headers)
+    except Exception as exc:
+        raise _implementation.SecurityError(
+            "Remote request headers are invalid."
+        ) from exc
+    if header_count > _implementation._MAX_REQUEST_HEADERS:
         raise _implementation.SecurityError(
             f"At most {_implementation._MAX_REQUEST_HEADERS} request headers are allowed."
         )
     sanitized: Dict[str, str] = {}
-    for raw_name, raw_value in headers.items():
-        if not isinstance(raw_name, str) or not isinstance(raw_value, str):
-            raise _implementation.SecurityError(
-                "Remote request header names and values must be strings."
-            )
-        if raw_name != raw_name.strip() or raw_value != raw_value.strip():
-            raise _implementation.SecurityError(
-                "Remote request headers must already be canonical."
-            )
-        lowered = raw_name.lower()
-        if not _implementation._HEADER_NAME_RE.fullmatch(raw_name):
-            raise _implementation.SecurityError(
-                "Remote request header names contain invalid characters."
-            )
-        if lowered in _implementation._FORBIDDEN_CALLER_HEADERS:
-            raise _implementation.SecurityError(
-                f"Caller-controlled header '{raw_name}' is not allowed."
-            )
-        if len(raw_value) > _implementation._MAX_HEADER_VALUE_CHARS:
-            raise _implementation.SecurityError(
-                "Remote request header values exceed the size limit."
-            )
-        if _contains_ascii_control(raw_value):
-            raise _implementation.SecurityError(
-                "Remote request headers may not contain control characters."
-            )
-        sanitized[raw_name] = raw_value
+    try:
+        items = headers.items()
+        for raw_name, raw_value in items:
+            if not isinstance(raw_name, str) or not isinstance(raw_value, str):
+                raise _implementation.SecurityError(
+                    "Remote request header names and values must be strings."
+                )
+            if raw_name != raw_name.strip() or raw_value != raw_value.strip():
+                raise _implementation.SecurityError(
+                    "Remote request headers must already be canonical."
+                )
+            lowered = raw_name.lower()
+            if not _implementation._HEADER_NAME_RE.fullmatch(raw_name):
+                raise _implementation.SecurityError(
+                    "Remote request header names contain invalid characters."
+                )
+            if lowered in _implementation._FORBIDDEN_CALLER_HEADERS:
+                raise _implementation.SecurityError(
+                    f"Caller-controlled header '{raw_name}' is not allowed."
+                )
+            if len(raw_value) > _implementation._MAX_HEADER_VALUE_CHARS:
+                raise _implementation.SecurityError(
+                    "Remote request header values exceed the size limit."
+                )
+            if _contains_ascii_control(raw_value):
+                raise _implementation.SecurityError(
+                    "Remote request headers may not contain control characters."
+                )
+            sanitized[raw_name] = raw_value
+    except _implementation.SecurityError:
+        raise
+    except Exception as exc:
+        raise _implementation.SecurityError(
+            "Remote request headers are invalid."
+        ) from exc
     return sanitized
 
 
@@ -270,8 +300,13 @@ def _bounded_response_headers(headers: Any) -> Dict[str, str]:
         for raw_name, raw_value in candidates:
             if not isinstance(raw_name, str) or not isinstance(raw_value, str):
                 continue
-            name = raw_name[:200]
-            value = raw_value[: _implementation._MAX_HEADER_VALUE_CHARS]
+            if (
+                len(raw_name) > 200
+                or len(raw_value) > _implementation._MAX_HEADER_VALUE_CHARS
+            ):
+                continue
+            name = raw_name
+            value = raw_value
             if (
                 not _implementation._HEADER_NAME_RE.fullmatch(name)
                 or _contains_ascii_control(value)

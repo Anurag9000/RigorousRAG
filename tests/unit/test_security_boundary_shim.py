@@ -131,3 +131,65 @@ def test_boundary_module_is_loaded_once_and_public_functions_are_patched():
     assert security.parse_api_key_owners.__module__ == "tools.security_boundary"
     assert security.validate_public_url.__module__ == "tools.security_boundary"
     assert security.hostname_matches.__module__ == "tools.security_boundary"
+
+def test_boundary_reload_is_idempotent_and_nonrecursive(monkeypatch):
+    import importlib
+
+    from tools import security_boundary
+
+    original_upload = security._boundary_original_safe_upload_suffix
+    original_url = security._boundary_original_validate_public_url
+    for _ in range(3):
+        importlib.reload(security_boundary)
+
+    assert security._boundary_original_safe_upload_suffix is original_upload
+    assert security._boundary_original_validate_public_url is original_url
+    assert security.safe_upload_suffix("paper.PDF") == ".pdf"
+    monkeypatch.setattr(
+        security,
+        "_resolved_addresses",
+        lambda *_args: {security.ipaddress.ip_address("93.184.216.34")},
+    )
+    assert security.validate_public_url("https://example.test/paper") == (
+        "https://example.test/paper"
+    )
+
+
+def test_hostname_matcher_contains_hostile_iterators():
+    class HostileDomains:
+        def __iter__(self):
+            yield "other.test"
+            raise RuntimeError("private iterator failure")
+
+    assert security.hostname_matches("papers.example.test", HostileDomains()) is False
+
+
+def test_request_header_mapping_failures_are_generic_and_contained():
+    from collections.abc import Mapping
+
+    class HostileLength(Mapping):
+        def __getitem__(self, key):
+            raise KeyError(key)
+
+        def __iter__(self):
+            return iter(())
+
+        def __len__(self):
+            raise RuntimeError("private length failure")
+
+    with pytest.raises(security.SecurityError, match="headers are invalid") as captured:
+        security._sanitize_request_headers(HostileLength())
+    assert "private length" not in str(captured.value)
+
+
+def test_response_headers_reject_oversized_names_and_values_without_collisions():
+    long_name = "X-" + "A" * 250
+    long_value = "v" * (security._MAX_HEADER_VALUE_CHARS + 1)
+    bounded = security._bounded_response_headers(
+        {
+            "X-Good": "value",
+            long_name: "ignored",
+            "X-Long": long_value,
+        }
+    )
+    assert bounded == {"X-Good": "value"}
