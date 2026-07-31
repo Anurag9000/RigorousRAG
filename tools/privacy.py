@@ -11,7 +11,18 @@ import math
 import re
 from typing import Any, Dict, Iterator, MutableSet, Tuple
 
-_EMAIL_RE = re.compile(r"(?<![\w.+-])[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}(?![\w.-])")
+# Require each domain label to end in an alphanumeric character so ordinary trailing
+# sentence punctuation (for example ``alice@example.com.``) is not consumed as part of
+# the address. The final lookahead blocks a larger identifier without rejecting commas,
+# periods, closing brackets, or other punctuation that may immediately follow an email.
+_EMAIL_RE = re.compile(
+    r"(?<![\w.+-])"
+    r"[A-Za-z0-9][A-Za-z0-9._%+-]{0,63}@"
+    r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
+    r"(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*"
+    r"\.[A-Za-z]{2,63}"
+    r"(?![\w@-])"
+)
 _PHONE_RE = re.compile(r"(?<!\w)(?:\+?\d{1,3}[\s().-]*)?(?:\d[\s().-]*){7,14}\d(?!\w)")
 _ISO_DATE_RE = re.compile(r"(?:19|20)\d{2}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])")
 _IPV4_RE = re.compile(
