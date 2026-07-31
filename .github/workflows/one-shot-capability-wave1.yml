@@ -1,0 +1,121 @@
+name: One-shot capability wave one
+
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/one-shot-capability-wave1.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: one-shot-capability-wave-one-main
+  cancel-in-progress: true
+
+jobs:
+  implement:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install development dependencies
+        run: python -m pip install --upgrade pip && python -m pip install -r requirements-dev.txt
+      - name: Apply and verify capability wave one
+        id: verify
+        shell: bash
+        run: |
+          set +e
+          : > /tmp/wave1.log
+          python scripts/capability_wave1_core.py >> /tmp/wave1.log 2>&1
+          status=$?
+          if [[ $status -eq 0 ]]; then
+            python scripts/capability_wave1_tests_docs.py >> /tmp/wave1.log 2>&1
+            status=$?
+          fi
+          if [[ $status -eq 0 ]]; then
+            python -m compileall -q \
+              tools/hybrid_retrieval.py tools/reranking.py tools/rag_tool.py \
+              evaluation experiments scripts/run_retrieval_benchmarks.py \
+              tests/unit/test_hybrid_retrieval.py \
+              tests/unit/test_evaluation_foundation.py \
+              tests/unit/test_rag_tool_hybrid.py >> /tmp/wave1.log 2>&1
+            status=$?
+          fi
+          if [[ $status -eq 0 ]]; then
+            python -m ruff check \
+              tools/hybrid_retrieval.py tools/reranking.py tools/rag_tool.py \
+              evaluation experiments scripts/run_retrieval_benchmarks.py \
+              tests/unit/test_hybrid_retrieval.py \
+              tests/unit/test_evaluation_foundation.py \
+              tests/unit/test_rag_tool_hybrid.py \
+              --select E9,F63,F7,F82 >> /tmp/wave1.log 2>&1
+            status=$?
+          fi
+          if [[ $status -eq 0 ]]; then
+            python -m pytest \
+              tests/unit/test_hybrid_retrieval.py \
+              tests/unit/test_evaluation_foundation.py \
+              tests/unit/test_rag_tool_hybrid.py \
+              tests/unit/test_rag_tool_direct_boundaries.py \
+              tests/unit/test_rag_tool_backend_shapes.py \
+              tests/unit/test_rag_adversarial_boundaries.py \
+              tests/unit/test_deployment_parity.py \
+              --no-cov -q >> /tmp/wave1.log 2>&1
+            status=$?
+          fi
+          cat /tmp/wave1.log
+          echo "status=${status}" >> "$GITHUB_OUTPUT"
+      - name: Commit verified capability wave directly to main
+        if: steps.verify.outputs.status == '0'
+        shell: bash
+        run: |
+          git config user.name "RigorousRAG Capability Engineering"
+          git config user.email "actions@users.noreply.github.com"
+          git add \
+            tools/hybrid_retrieval.py tools/reranking.py tools/rag_tool.py \
+            evaluation experiments scripts/run_retrieval_benchmarks.py \
+            tests/unit/test_hybrid_retrieval.py \
+            tests/unit/test_evaluation_foundation.py \
+            tests/unit/test_rag_tool_hybrid.py \
+            .github/workflows/release-locks.yml \
+            tests/unit/test_deployment_parity.py \
+            README.md docs/REMEDIATION_STATUS.md \
+            docs/CAPABILITY_EXPANSION_ROADMAP.md docs/TODO.md
+          git rm \
+            scripts/capability_wave1_core.py \
+            scripts/capability_wave1_tests_docs.py \
+            .github/workflows/one-shot-capability-wave1.yml
+          git diff --cached --check
+          git commit -m "Add hybrid retrieval and evaluation foundation"
+          git push origin HEAD:main
+      - name: Publish bounded failure diagnostics
+        if: steps.verify.outputs.status != '0'
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import subprocess
+
+          log = Path('/tmp/wave1.log').read_text(encoding='utf-8', errors='replace')
+          diff = subprocess.run(['git', 'diff'], text=True, capture_output=True).stdout
+          Path('docs/CAPABILITY_WAVE1_FAILURE.md').write_text(
+              '# Capability wave one diagnostic\n\n```text\n'
+              + log[-50000:]
+              + '\n```\n\n```diff\n'
+              + diff[-50000:]
+              + '\n```\n',
+              encoding='utf-8',
+          )
+          PY
+          git config user.name "RigorousRAG Capability Engineering"
+          git config user.email "actions@users.noreply.github.com"
+          git add docs/CAPABILITY_WAVE1_FAILURE.md
+          git commit -m "Update capability wave one failure" || exit 0
+          git push origin HEAD:main
