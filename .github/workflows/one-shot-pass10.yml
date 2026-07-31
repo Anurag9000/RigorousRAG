@@ -1,0 +1,162 @@
+name: One-shot pass ten remediation
+
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/one-shot-pass10.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  remediate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Apply pass ten patches
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path: str, old: str, new: str) -> None:
+              target = Path(path)
+              text = target.read_text(encoding="utf-8")
+              if old not in text:
+                  raise SystemExit(f"Expected patch anchor missing in {path}: {old[:80]!r}")
+              target.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+          def append_once(path: str, marker: str, addition: str) -> None:
+              target = Path(path)
+              text = target.read_text(encoding="utf-8")
+              if marker not in text:
+                  target.write_text(text.rstrip() + "\n\n" + addition.strip() + "\n", encoding="utf-8")
+
+          # Operator repair: bound/normalize reasons and reject non-finite audit clocks.
+          replace_once(
+              "tools/operator_repair.py",
+              "_AUDIT_REASON_CHARS = 500\n",
+              "_AUDIT_REASON_CHARS = 500\n_MAX_AUDIT_REASON_INPUT_CHARS = 10_000\n",
+          )
+          replace_once(
+              "tools/operator_repair.py",
+              '''def _safe_public_text(value: Any, *, limit: int, default: str) -> str:\n    if isinstance(value, str):\n        rendered = value\n    elif value is None:\n        rendered = default\n    else:\n        rendered = type(value).__name__\n    return mask_metadata_text(rendered).strip()[:limit] or default\n''',
+              '''def _safe_public_text(value: Any, *, limit: int, default: str) -> str:\n    if isinstance(value, str):\n        rendered = value\n    elif value is None:\n        rendered = default\n    else:\n        rendered = type(value).__name__\n    return mask_metadata_text(rendered).strip()[:limit] or default\n\n\ndef _normalized_audit_reason(value: str) -> str:\n    if len(value) > _MAX_AUDIT_REASON_INPUT_CHARS:\n        raise ValueError(\n            f"reason may contain at most {_MAX_AUDIT_REASON_INPUT_CHARS:,} characters."\n        )\n    masked = mask_metadata_text(value)\n    control_normalized = "".join(\n        " " if ord(character) < 32 or ord(character) == 127 else character\n        for character in masked\n    )\n    return " ".join(control_normalized.split())[:_AUDIT_REASON_CHARS]\n''',
+          )
+          replace_once(
+              "tools/operator_repair.py",
+              '''    if not isinstance(reason, str):\n        raise ValueError("reason must be a string.")\n    public_reason = mask_metadata_text(reason).strip()[:_AUDIT_REASON_CHARS]\n    if not public_reason:\n        raise ValueError("reason must not be empty.")\n\n    with store._lock, store._connect() as connection:  # noqa: SLF001 - operator boundary\n''',
+              '''    if not isinstance(reason, str):\n        raise ValueError("reason must be a string.")\n    public_reason = _normalized_audit_reason(reason)\n    if not public_reason:\n        raise ValueError("reason must not be empty.")\n    repaired_at = time.time()\n    if (\n        isinstance(repaired_at, bool)\n        or not isinstance(repaired_at, (int, float))\n        or not math.isfinite(float(repaired_at))\n        or float(repaired_at) < 0\n    ):\n        raise RuntimeError("The operator audit clock returned an invalid timestamp.")\n    repaired_at = float(repaired_at)\n\n    with store._lock, store._connect() as connection:  # noqa: SLF001 - operator boundary\n''',
+          )
+          replace_once(
+              "tools/operator_repair.py",
+              "            (time.time(), rowid, fingerprint, public_reason, int(source_preserved)),\n",
+              "            (repaired_at, rowid, fingerprint, public_reason, int(source_preserved)),\n",
+          )
+          append_once(
+              "tests/unit/test_operator_repair.py",
+              "test_retirement_audit_reason_is_single_line_masked_and_clock_is_finite",
+              '''def test_retirement_audit_reason_is_single_line_masked_and_clock_is_finite(\n    tmp_path,\n):\n    store = JobStore(path=tmp_path / "jobs.sqlite3")\n    rowid = _insert_corrupt_row(store, str(tmp_path / "private.pdf"))\n    record = list_corrupt_jobs(store)[0]\n\n    retire_corrupt_job(\n        store,\n        rowid=rowid,\n        fingerprint=record.fingerprint,\n        confirmation=f"RETIRE-{rowid}-{record.fingerprint[:12]}",\n        reason="retire\\napi_key=top-secret\\x1b[31m row",\n    )\n\n    with store._lock, store._connect() as connection:  # noqa: SLF001\n        audit = connection.execute(\n            "SELECT repaired_at, reason FROM operator_repairs"\n        ).fetchone()\n    assert audit is not None\n    assert math.isfinite(float(audit["repaired_at"]))\n    assert float(audit["repaired_at"]) >= 0\n    assert "\\n" not in audit["reason"]\n    assert "\\r" not in audit["reason"]\n    assert "\\x1b" not in audit["reason"]\n    assert "top-secret" not in audit["reason"]\n\n\ndef test_nonfinite_repair_clock_preserves_corrupt_row(tmp_path, monkeypatch):\n    store = JobStore(path=tmp_path / "jobs.sqlite3")\n    rowid = _insert_corrupt_row(store, str(tmp_path / "private.pdf"))\n    record = list_corrupt_jobs(store)[0]\n    monkeypatch.setattr("tools.operator_repair.time.time", lambda: float("nan"))\n\n    with pytest.raises(RuntimeError, match="audit clock"):\n        retire_corrupt_job(\n            store,\n            rowid=rowid,\n            fingerprint=record.fingerprint,\n            confirmation=f"RETIRE-{rowid}-{record.fingerprint[:12]}",\n            reason="retire malformed recovery row",\n        )\n\n    with store._lock, store._connect() as connection:  # noqa: SLF001\n        assert connection.execute(\n            "SELECT 1 FROM jobs WHERE rowid=?", (rowid,)\n        ).fetchone() is not None\n        table = connection.execute(\n            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='operator_repairs'"\n        ).fetchone()\n    assert table is None\n''',
+          )
+          replace_once(
+              "tests/unit/test_operator_repair.py",
+              "import json\nimport time\n",
+              "import json\nimport math\nimport time\n",
+          )
+
+          # Service configuration: reject Windows reparse components before importing server_app.
+          replace_once(
+              "server.py",
+              "import os\nimport sys\nimport time\n",
+              "import os\nimport stat\nimport sys\nimport time\n",
+          )
+          replace_once(
+              "server.py",
+              "from typing import Any, Mapping, Optional\n\nimport uvicorn\n",
+              "from typing import Any, Mapping, Optional\n\n_WINDOWS_REPARSE_POINT = getattr(stat, \"FILE_ATTRIBUTE_REPARSE_POINT\", 0x400)\n\nimport uvicorn\n",
+          )
+          replace_once(
+              "server.py",
+              '''    for component in (absolute, *absolute.parents):\n        if component.is_symlink():\n            raise RuntimeError(f"{name} may not contain symbolic-link components.")\n''',
+              '''    for component in (absolute, *absolute.parents):\n        try:\n            metadata = component.lstat()\n        except FileNotFoundError:\n            continue\n        except OSError as exc:\n            raise RuntimeError(f"{name} could not be inspected safely.") from exc\n        attributes = int(getattr(metadata, "st_file_attributes", 0))\n        if stat.S_ISLNK(metadata.st_mode) or bool(\n            attributes & _WINDOWS_REPARSE_POINT\n        ):\n            raise RuntimeError(\n                f"{name} may not contain symbolic-link components or reparse points."\n            )\n''',
+          )
+          append_once(
+              "tests/unit/test_server_configuration.py",
+              "test_reparse_service_path_component_is_rejected_before_server_app_import",
+              '''def test_reparse_service_path_component_is_rejected_before_server_app_import(\n    tmp_path,\n):\n    target = tmp_path / "reparse-root"\n    target.mkdir()\n    environment = _base_environment(tmp_path)\n    environment["UPLOAD_DIR"] = str(target)\n    environment["REPARSE_TARGET"] = str(target)\n\n    result = _run_server_import(\n        r"""\nimport os\nimport pathlib\nimport types\n\ntarget = os.path.abspath(os.environ["REPARSE_TARGET"])\noriginal_lstat = pathlib.Path.lstat\ndef reparse_lstat(self):\n    metadata = original_lstat(self)\n    if os.path.abspath(self) == target:\n        return types.SimpleNamespace(\n            st_mode=metadata.st_mode,\n            st_file_attributes=0x400,\n        )\n    return metadata\npathlib.Path.lstat = reparse_lstat\nimport server\n""",\n        environment,\n    )\n\n    assert result.returncode != 0\n    assert "UPLOAD_DIR" in result.stderr\n    assert "reparse points" in result.stderr\n''',
+          )
+
+          # Trusted catalogue: canonical text and authority-only HTTPS seeds.
+          replace_once(
+              "trusted_sources.py",
+              "_HOST_LABEL_RE = re.compile(r\"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$\")\n\n\ndef _canonical_hostname",
+              "_HOST_LABEL_RE = re.compile(r\"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$\")\n\n\ndef _contains_ascii_control(value: str) -> bool:\n    return any(ord(character) < 32 or ord(character) == 127 for character in value)\n\n\ndef _canonical_hostname",
+          )
+          replace_once(
+              "trusted_sources.py",
+              "    if any(character.isspace() or ord(character) < 33 for character in value):\n",
+              "    if any(character.isspace() or ord(character) < 33 or ord(character) == 127 for character in value):\n",
+          )
+          replace_once(
+              "trusted_sources.py",
+              '''    rendered = value.strip()\n    if (\n        not rendered\n        or len(rendered) > _MAX_URL_CHARS\n        or any(ord(character) < 32 or ord(character) == 127 for character in rendered)\n    ):\n''',
+              '''    rendered = value\n    if (\n        not rendered\n        or rendered != rendered.strip()\n        or len(rendered) > _MAX_URL_CHARS\n        or _contains_ascii_control(rendered)\n        or "\\\\" in rendered\n    ):\n''',
+          )
+          replace_once(
+              "trusted_sources.py",
+              '''        or parsed.params\n        or parsed.query\n        or parsed.fragment\n    ):\n        raise ValueError("Allowed domains must contain hostnames only.")\n''',
+              '''        or parsed.params\n        or parsed.query\n        or parsed.fragment\n    ):\n        raise ValueError("Allowed domains must contain hostnames only.")\n''',
+          ) if False else None
+          replace_once(
+              "trusted_sources.py",
+              '''    if parsed.fragment:\n        raise ValueError("Trusted source seeds may not contain fragments.")\n''',
+              '''    if parsed.query:\n        raise ValueError("Trusted source seeds may not contain query strings.")\n    if parsed.fragment:\n        raise ValueError("Trusted source seeds may not contain fragments.")\n''',
+          )
+          replace_once(
+              "trusted_sources.py",
+              '''        if not isinstance(self.name, str) or not self.name.strip() or len(self.name) > 200:\n            raise ValueError("Source-category names must contain 1-200 characters.")\n''',
+              '''        if (\n            not isinstance(self.name, str)\n            or not self.name.strip()\n            or len(self.name) > 200\n            or _contains_ascii_control(self.name)\n        ):\n            raise ValueError("Source-category names must contain 1-200 valid characters.")\n''',
+          )
+          replace_once(
+              "trusted_sources.py",
+              '''            or not self.description.strip()\n            or len(self.description) > 2000\n        ):\n''',
+              '''            or not self.description.strip()\n            or len(self.description) > 2000\n            or _contains_ascii_control(self.description)\n        ):\n''',
+          )
+          append_once(
+              "tests/unit/test_trusted_sources_boundaries.py",
+              "test_catalogue_text_and_seed_canonicality_is_strict",
+              '''def test_catalogue_text_and_seed_canonicality_is_strict():\n    for name, description in (("Bad\\nName", "description"), ("Name", "bad\\x7fdescription")):\n        with pytest.raises(ValueError):\n            SourceCategory(name=name, description=description, seeds=())\n\n    for seed in (\n        " https://example.test/",\n        "https://example.test/ ",\n        "https://example.test/path?token=value",\n        "https://example.test\\\\attacker.test/",\n        "https://example.test/unsafe\\x7fpath",\n    ):\n        with pytest.raises(ValueError):\n            SourceCategory(\n                name="Name",\n                description="description",\n                seeds=(seed,),\n            )\n''',
+          )
+          PY
+      - name: Install development dependencies
+        run: python -m pip install --upgrade pip && python -m pip install -r requirements-dev.txt
+      - name: Compile patched modules
+        run: python -m compileall -q tools/operator_repair.py server.py trusted_sources.py tests/unit/test_operator_repair.py tests/unit/test_server_configuration.py tests/unit/test_trusted_sources_boundaries.py
+      - name: Run focused regressions
+        run: >-
+          python -m pytest
+          tests/unit/test_operator_repair.py
+          tests/unit/test_operator_repair_scan.py
+          tests/unit/test_server_configuration.py
+          tests/unit/test_trusted_sources_boundaries.py
+          --no-cov -q
+      - name: Commit verified remediation directly to main
+        shell: bash
+        run: |
+          git config user.name "RigorousRAG Remediation"
+          git config user.email "actions@users.noreply.github.com"
+          git add tools/operator_repair.py server.py trusted_sources.py \
+            tests/unit/test_operator_repair.py \
+            tests/unit/test_server_configuration.py \
+            tests/unit/test_trusted_sources_boundaries.py
+          git diff --cached --check
+          git commit -m "Harden operator audit and trusted service paths"
+          git push origin HEAD:main
