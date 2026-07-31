@@ -69,20 +69,29 @@ jobs:
               raise SystemExit("Authoritative workflow still targets obsolete agent branches.")
           if "branches: [main]" not in workflow:
               raise SystemExit("Authoritative workflow no longer targets main.")
+
+          forbidden = (
+              "agent/exhaustive-remediation",
+              "PR #1 must remain draft",
+          )
+          stale = []
+          for root in (Path("docs"), Path(".github/workflows")):
+              for path in root.rglob("*"):
+                  if not path.is_file():
+                      continue
+                  if path.name == "one-shot-pass16.yml":
+                      continue
+                  if path.name.startswith("CONTINUATION_AUDIT") or (
+                      path.name.startswith("PASS") and path.name.endswith("_FAILURE.md")
+                  ):
+                      continue
+                  text = path.read_text(encoding="utf-8", errors="replace")
+                  if any(marker in text for marker in forbidden):
+                      stale.append(str(path))
+          if stale:
+              raise SystemExit("Stale active-branch or draft-PR claims remain: " + ", ".join(stale))
           PY
             status=$?
-          fi
-          if [[ $status -eq 0 ]]; then
-            grep -R "agent/exhaustive-remediation\|PR #1 must remain draft\|Branch:.*agent/" \
-              docs .github/workflows --exclude='CONTINUATION_AUDIT*.md' \
-              --exclude='PASS*_FAILURE.md' >> /tmp/pass16.log 2>&1
-            grep_status=$?
-            if [[ $grep_status -eq 0 ]]; then
-              echo "Stale active-branch or draft-PR claims remain." >> /tmp/pass16.log
-              status=1
-            elif [[ $grep_status -ne 1 ]]; then
-              status=$grep_status
-            fi
           fi
           cat /tmp/pass16.log
           echo "status=${status}" >> "$GITHUB_OUTPUT"
