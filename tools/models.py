@@ -5,6 +5,7 @@ from __future__ import annotations
 import ipaddress
 import itertools
 import math
+import operator
 import re
 from typing import Any, Dict, List, Literal, Optional
 from urllib.parse import urlsplit, urlunsplit
@@ -34,6 +35,7 @@ _MAX_METADATA_ITEMS = 100
 _MAX_CITATIONS = 100
 _MAX_WARNINGS = 100
 _MAX_CITATION_URL_CHARS = 4096
+_MAX_PAGE_NUMBER = 1_000_000
 _HOST_LABEL_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 
 
@@ -131,7 +133,12 @@ def _validated_public_hostname(hostname: str) -> str:
     if (
         not lowered
         or len(lowered) > 253
-        or any(character.isspace() or ord(character) < 33 for character in lowered)
+        or any(
+            character.isspace()
+            or ord(character) < 33
+            or ord(character) == 127
+            for character in lowered
+        )
     ):
         raise ValueError("Public citation URLs must contain a valid hostname.")
     if lowered in {"localhost", "localhost.localdomain"} or lowered.endswith(
@@ -174,6 +181,8 @@ def _safe_citation_url(value: Any) -> str:
         raise ValueError("Citation URLs may contain at most 4,096 characters.")
     if any(ord(character) < 32 or ord(character) == 127 for character in raw):
         raise ValueError("Citation URLs may not contain control characters.")
+    if "\\" in raw:
+        raise ValueError("Citation URLs may not contain backslashes.")
     try:
         parsed = urlsplit(raw)
         port = parsed.port
@@ -184,14 +193,14 @@ def _safe_citation_url(value: Any) -> str:
         raise ValueError(
             "Citation URLs must use http, https, or local schemes."
         )
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError("Citation URLs may not contain credentials.")
 
     safe_path = _mask_url_path(parsed.path)
     safe_query = _mask_url_query(parsed.query)
     safe_fragment = mask_metadata_text(parsed.fragment)
 
     if scheme == "local":
-        if parsed.username is not None or parsed.password is not None:
-            raise ValueError("Local citation URLs may not contain credentials.")
         target = f"{parsed.netloc}{parsed.path}".strip("/")
         if not target:
             raise ValueError("Local citation URLs must identify a source.")
@@ -261,7 +270,7 @@ class Citation(BaseModel):
     source_id: Optional[str] = Field(default=None, max_length=4096)
     doc_id: Optional[str] = Field(default=None, max_length=200)
     chunk_id: Optional[str] = Field(default=None, max_length=500)
-    page_number: Optional[int] = Field(default=None, ge=1)
+    page_number: Optional[int] = Field(default=None, ge=1, le=_MAX_PAGE_NUMBER)
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("label", mode="before")
@@ -336,9 +345,15 @@ class Citation(BaseModel):
     @field_validator("page_number", mode="before")
     @classmethod
     def validate_page_number(cls, value: Any) -> Any:
+        if value is None:
+            return None
         if isinstance(value, bool):
             raise ValueError("page_number must be an integer.")
-        return value
+        try:
+            parsed = operator.index(value)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("page_number must be an integer.") from exc
+        return int(parsed)
 
     @field_validator("metadata", mode="before")
     @classmethod
