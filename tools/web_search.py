@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import itertools
 import json
+import operator
 import os
 import re
 from typing import Any, Iterable, List, Optional
 from urllib.parse import urlparse
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from tools.config import bounded_int_env
 from tools.models import Citation
@@ -33,6 +34,8 @@ _HOST_LABEL_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 
 
 class WebSearchInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     query: str = Field(..., min_length=1, max_length=2000)
     allowed_domains: Optional[List[str]] = Field(
         default=None,
@@ -55,18 +58,21 @@ class WebSearchError(RuntimeError):
     pass
 
 
+def _contains_ascii_control(value: str) -> bool:
+    return any(ord(character) < 32 or ord(character) == 127 for character in value)
+
+
 def _bounded_limit(value: object) -> int:
     if isinstance(value, bool):
         raise ValueError("limit must be an integer.")
     try:
-        parsed = int(value)
+        parsed = operator.index(value)
     except (TypeError, ValueError, OverflowError) as exc:
         raise ValueError("limit must be an integer.") from exc
-    if isinstance(value, float) and not value.is_integer():
-        raise ValueError("limit must be an integer.")
-    if not 1 <= parsed <= 10:
+    limit = int(parsed)
+    if not 1 <= limit <= 10:
         raise ValueError("limit must be between 1 and 10.")
-    return parsed
+    return limit
 
 
 def _bounded_query(value: Any) -> str:
@@ -75,7 +81,7 @@ def _bounded_query(value: Any) -> str:
     query = value.strip()
     if not query:
         return ""
-    if len(query) > 2000 or "\x00" in query:
+    if len(query) > 2000 or _contains_ascii_control(query):
         raise ValueError("Web-search queries may contain at most 2,000 valid characters.")
     return query
 
@@ -87,7 +93,9 @@ def _canonical_domain(value: Any) -> str:
     if (
         not rendered
         or len(rendered) > 253
+        or _contains_ascii_control(rendered)
         or any(character.isspace() for character in rendered)
+        or "\\" in rendered
     ):
         raise ValueError("Allowed domains must be valid hostnames.")
     try:
@@ -137,7 +145,27 @@ def _bounded_domains(values: Optional[Iterable[str]]) -> List[str]:
     return domains
 
 
+def _provider_key() -> str:
+    raw = os.getenv("SERPER_API_KEY", "")
+    if not raw:
+        raise WebSearchError(
+            "Web search is unavailable because SERPER_API_KEY is not configured."
+        )
+    if (
+        not isinstance(raw, str)
+        or raw != raw.strip()
+        or len(raw) > 4096
+        or _contains_ascii_control(raw)
+    ):
+        raise WebSearchError("The configured web-search provider key is invalid.")
+    return raw
+
+
 def _strict_provider_json(content: bytes) -> dict[str, Any]:
+    if not isinstance(content, bytes):
+        raise WebSearchError(
+            "The web-search provider returned invalid JSON."
+        )
     try:
         decoded = content.decode("utf-8")
         payload = json.loads(
@@ -168,16 +196,7 @@ def web_search(
         return []
     domains = _bounded_domains(allowed_domains)
     requested = _bounded_limit(limit)
-    api_key = os.getenv("SERPER_API_KEY", "").strip()
-    if not api_key:
-        raise WebSearchError(
-            "Web search is unavailable because SERPER_API_KEY is not configured."
-        )
-    if (
-        len(api_key) > 4096
-        or any(character in api_key for character in ("\x00", "\r", "\n"))
-    ):
-        raise WebSearchError("The configured web-search provider key is invalid.")
+    api_key = _provider_key()
     try:
         downloaded = safe_download(
             _SERPER_ENDPOINT,
@@ -205,41 +224,54 @@ def web_search(
         raise WebSearchError(
             "The web-search provider returned an invalid result structure."
         )
+    try:
+        candidates = itertools.islice(iter(organic), _MAX_RESULT_CANDIDATES)
+    except Exception as exc:
+        raise WebSearchError(
+            "The web-search provider returned an invalid result structure."
+        ) from exc
     citations: List[Citation] = []
-    for result in organic[:_MAX_RESULT_CANDIDATES]:
-        if not isinstance(result, dict):
-            continue
-        raw_link = result.get("link")
-        if not isinstance(raw_link, str):
-            continue
-        link = raw_link.strip()
-        if not link:
-            continue
-        try:
-            parsed = urlparse(link)
-            hostname = parsed.hostname or ""
-        except ValueError:
-            continue
-        if domains and (not hostname or not hostname_matches(hostname, domains)):
-            continue
-        try:
-            public_url = validate_public_url(link)
-        except Exception:
-            continue
-        raw_title = result.get("title")
-        title = raw_title.strip() if isinstance(raw_title, str) else "Untitled result"
-        raw_snippet = result.get("snippet")
-        snippet = raw_snippet.strip() if isinstance(raw_snippet, str) else ""
-        citations.append(
-            Citation(
-                label=f"[{len(citations) + 1}]",
-                title=title[:500] or "Untitled result",
-                url=public_url,
-                source_type="web_search",
-                snippet=snippet[:4000] or None,
-                source_id=public_url,
-            )
-        )
-        if len(citations) >= requested:
-            break
+    try:
+        for result in candidates:
+            if not isinstance(result, dict):
+                continue
+            raw_link = result.get("link")
+            if not isinstance(raw_link, str):
+                continue
+            link = raw_link.strip()
+            if not link:
+                continue
+            try:
+                parsed = urlparse(link)
+                hostname = parsed.hostname or ""
+            except ValueError:
+                continue
+            if domains and (not hostname or not hostname_matches(hostname, domains)):
+                continue
+            try:
+                public_url = validate_public_url(link)
+            except Exception:
+                continue
+            raw_title = result.get("title")
+            title = raw_title.strip() if isinstance(raw_title, str) else "Untitled result"
+            raw_snippet = result.get("snippet")
+            snippet = raw_snippet.strip() if isinstance(raw_snippet, str) else ""
+            try:
+                citation = Citation(
+                    label=f"[{len(citations) + 1}]",
+                    title=title[:500] or "Untitled result",
+                    url=public_url,
+                    source_type="web_search",
+                    snippet=snippet[:4000] or None,
+                    source_id=public_url,
+                )
+            except Exception:
+                continue
+            citations.append(citation)
+            if len(citations) >= requested:
+                break
+    except Exception as exc:
+        raise WebSearchError(
+            "The web-search provider returned an invalid result structure."
+        ) from exc
     return citations
