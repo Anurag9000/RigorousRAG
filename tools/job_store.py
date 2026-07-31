@@ -72,6 +72,21 @@ def _absolute_without_resolution(value: str | os.PathLike[str], label: str) -> P
     return Path(os.path.abspath(candidate))
 
 
+def _stored_absolute_path(value: Any, label: str) -> Path:
+    """Validate a durable source path without rebinding it to the current cwd."""
+
+    if not isinstance(value, str):
+        raise ValueError(f"{label} must be an absolute filesystem path string.")
+    if (
+        not value
+        or len(value) > _MAX_OWNER_SAFE_PATH_CHARS
+        or _contains_ascii_control(value)
+        or not Path(value).is_absolute()
+    ):
+        raise ValueError(f"{label} must be a valid absolute filesystem path.")
+    return _absolute_without_resolution(value, label)
+
+
 def _safe_database_path(value: str | os.PathLike[str]) -> Path:
     absolute = _absolute_without_resolution(value, "JOB_DB_PATH")
     for component in (absolute, *absolute.parents):
@@ -431,7 +446,7 @@ class JobStore:
             if not explicit_source and existing is not None:
                 stored_source = existing["source_path"]
                 source_path = (
-                    str(_absolute_without_resolution(stored_source, "stored source_path"))
+                    str(_stored_absolute_path(stored_source, "stored source_path"))
                     if stored_source not in (None, "")
                     else None
                 )
@@ -567,7 +582,7 @@ class JobStore:
             source_path = (
                 None
                 if source_value in (None, "")
-                else str(_absolute_without_resolution(source_value, "source_path"))
+                else str(_stored_absolute_path(source_value, "source_path"))
             )
             attempts = _strict_integer(
                 raw.get("attempts"),
@@ -688,7 +703,7 @@ class JobStore:
             if not isinstance(raw_path, str) or not raw_path:
                 continue
             try:
-                paths.add(_absolute_without_resolution(raw_path, "source_path"))
+                paths.add(_stored_absolute_path(raw_path, "source_path"))
             except ValueError:
                 continue
         return paths
