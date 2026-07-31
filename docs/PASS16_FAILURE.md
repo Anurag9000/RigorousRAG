@@ -1,10 +1,9 @@
 # Pass sixteen diagnostic
 
 ```text
-ERROR: file or directory not found: tests/unit/test_documentation_consistency.py
-
-
-no tests ran in 0.00s
+......                                                                   [100%]
+6 passed in 0.05s
+Missing remediation-status marker: 3130208e7957fda91e1e480672d02ef332778237
 
 ```
 
