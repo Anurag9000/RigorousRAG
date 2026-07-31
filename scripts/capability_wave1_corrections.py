@@ -26,3 +26,9 @@ replace_once(
     '''            "top_k": args.top_k,\n            "candidate_pool": args.top_k,\n''',
     '''            "top_k": args.top_k,\n            "candidate_pool": [max(args.top_k)],\n''',
 )
+
+replace_once(
+    "tools/rag_tool.py",
+    '''        metadata_owner = metadata.get("owner_id")\n        source_id = metadata.get("doc_id")\n        if metadata_owner != owner or not isinstance(source_id, str):\n            continue\n''',
+    '''        try:\n            metadata_owner = metadata.get("owner_id")\n            source_id = metadata.get("doc_id")\n        except Exception:\n            continue\n        if metadata_owner != owner or not isinstance(source_id, str):\n            continue\n''',
+)
