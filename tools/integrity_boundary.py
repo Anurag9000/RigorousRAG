@@ -18,6 +18,7 @@ from typing import Any, Iterable, List, Optional, Tuple
 import fitz
 
 from tools.config import bounded_int_env
+from tools.security import normalize_owner_id
 
 for _name, _default, _minimum, _maximum in (
     ("VISUAL_MAX_PDF_PAGES", 500, 1, 5000),
@@ -39,6 +40,30 @@ _original_compare_papers = _implementation.compare_papers
 _original_generate_comparison_matrix = _implementation.generate_comparison_matrix
 
 
+def _contains_ascii_control(value: str) -> bool:
+    return any(ord(character) < 32 or ord(character) == 127 for character in value)
+
+
+def _bounded_text(
+    value: Any,
+    label: str,
+    *,
+    max_length: int,
+) -> str:
+    if not isinstance(value, str):
+        raise ValueError(f"{label} must be a string.")
+    bounded = value.strip()
+    if (
+        not bounded
+        or len(bounded) > max_length
+        or _contains_ascii_control(bounded)
+    ):
+        raise ValueError(
+            f"{label} must contain between 1 and {max_length:,} valid characters."
+        )
+    return bounded
+
+
 def _bounded_values(
     values: Iterable[Any],
     label: str,
@@ -57,13 +82,7 @@ def _bounded_values(
         raise ValueError(f"{label} supports at most {max_items} items.")
     bounded: List[str] = []
     for raw in raw_values:
-        value = str(raw or "").strip()
-        if not value:
-            continue
-        if len(value) > max_length:
-            raise ValueError(
-                f"Each {label} item may contain at most {max_length} characters."
-            )
+        value = _bounded_text(raw, f"Each {label} item", max_length=max_length)
         if value not in bounded:
             bounded.append(value)
     return bounded
@@ -77,9 +96,7 @@ def _extract_figure_region(pdf_bytes: bytes, figure_id: str) -> Tuple[str, int, 
     payload = bytes(pdf_bytes)
     if not payload or len(payload) > DEFAULT_MAX_UPLOAD_BYTES:
         raise ValueError("The retained PDF source bytes are missing or oversized.")
-    needle = (figure_id or "").strip()
-    if not needle or len(needle) > 200:
-        raise ValueError("figure_id must contain between 1 and 200 characters.")
+    needle = _bounded_text(figure_id, "figure_id", max_length=200)
     try:
         document = fitz.open(stream=payload, filetype="pdf")
     except Exception as exc:
@@ -170,16 +187,22 @@ def check_visual_entailment(
 ) -> str:
     """Check one figure using the exact bytes verified by the private registry."""
 
-    metadata = _implementation._document_metadata(doc_id, owner_id)
+    claim = _bounded_text(claim_text, "claim_text", max_length=10_000)
+    figure = _bounded_text(figure_id, "figure_id", max_length=200)
+    document_id = _bounded_text(doc_id, "doc_id", max_length=200)
+    owner = normalize_owner_id(owner_id)
+    model_name = _bounded_text(model, "model", max_length=200)
+
+    metadata = _implementation._document_metadata(document_id, owner)
     source_bytes = _implementation.get_document_store().source_bytes(
-        owner_id=owner_id,
-        doc_id=doc_id,
+        owner_id=owner,
+        doc_id=document_id,
     )
     if source_bytes is None:
         return _implementation._json(
             _implementation.VisualEntailmentResult(
-                claim_text=claim_text,
-                figure_id=figure_id,
+                claim_text=claim,
+                figure_id=figure,
                 verdict=_implementation.EntailmentVerdict.INSUFFICIENT,
                 rationale=(
                     "No retained owner-scoped PDF source is available. Re-ingest with "
@@ -192,13 +215,13 @@ def check_visual_entailment(
     try:
         image_b64, page_number, caption_text = _implementation._extract_figure_region(
             source_bytes,
-            figure_id,
+            figure,
         )
     except Exception as exc:
         return _implementation._json(
             _implementation.VisualEntailmentResult(
-                claim_text=claim_text,
-                figure_id=figure_id,
+                claim_text=claim,
+                figure_id=figure,
                 verdict=_implementation.EntailmentVerdict.INSUFFICIENT,
                 rationale=str(exc),
                 confidence=1.0,
@@ -207,15 +230,15 @@ def check_visual_entailment(
         )
     citation = _implementation._document_citation(
         metadata,
-        doc_id=doc_id,
-        snippet=caption_text or f"Figure region for {figure_id}",
+        doc_id=document_id,
+        snippet=caption_text or f"Figure region for {figure}",
         page_number=page_number,
-        source_id=f"{doc_id}:page:{page_number}:{figure_id}",
+        source_id=f"{document_id}:page:{page_number}:{figure}",
     )
     if client is None:
         result = _implementation.VisualEntailmentResult(
-            claim_text=claim_text,
-            figure_id=figure_id,
+            claim_text=claim,
+            figure_id=figure,
             verdict=_implementation.EntailmentVerdict.INSUFFICIENT,
             rationale="A vision-capable model is not configured.",
             confidence=1.0,
@@ -233,7 +256,7 @@ def check_visual_entailment(
         user_content = [
             {
                 "type": "text",
-                "text": f"Claim: {claim_text}\nFigure label: {figure_id}\n{prompt}",
+                "text": f"Claim: {claim}\nFigure label: {figure}\n{prompt}",
             },
             {
                 "type": "image_url",
@@ -246,7 +269,7 @@ def check_visual_entailment(
         try:
             raw = _implementation._completion(
                 client,
-                model=model,
+                model=model_name,
                 system="You are a conservative scientific figure reviewer.",
                 user=user_content,
                 max_tokens=700,
@@ -255,8 +278,8 @@ def check_visual_entailment(
             parsed = _implementation._parse_json_object(raw)
             parsed.update(
                 {
-                    "claim_text": claim_text,
-                    "figure_id": figure_id,
+                    "claim_text": claim,
+                    "figure_id": figure,
                     "page_number": page_number,
                     "evidence_note": caption_text or None,
                 }
@@ -264,8 +287,8 @@ def check_visual_entailment(
             result = _implementation.VisualEntailmentResult(**parsed)
         except Exception as exc:
             result = _implementation.VisualEntailmentResult(
-                claim_text=claim_text,
-                figure_id=figure_id,
+                claim_text=claim,
+                figure_id=figure,
                 verdict=_implementation.EntailmentVerdict.UNCERTAIN,
                 rationale=f"Vision analysis failed: {type(exc).__name__}.",
                 confidence=0.0,
@@ -291,15 +314,15 @@ def compare_papers(
         max_items=10,
         max_length=200,
     )
-    question = str(query or "").strip()
-    if not question or len(question) > 10_000:
-        raise ValueError("query must contain between 1 and 10,000 characters.")
+    question = _bounded_text(query, "query", max_length=10_000)
+    owner = normalize_owner_id(owner_id)
+    model_name = _bounded_text(model, "model", max_length=200)
     return _original_compare_papers(
         documents,
         question,
-        owner_id=owner_id,
+        owner_id=owner,
         client=client,
-        model=model,
+        model=model_name,
     )
 
 
@@ -323,12 +346,14 @@ def generate_comparison_matrix(
         max_items=12,
         max_length=500,
     )
+    owner = normalize_owner_id(owner_id)
+    model_name = _bounded_text(model, "model", max_length=200)
     return _original_generate_comparison_matrix(
         documents,
         bounded_metrics,
-        owner_id=owner_id,
+        owner_id=owner,
         client=client,
-        model=model,
+        model=model_name,
     )
 
 
