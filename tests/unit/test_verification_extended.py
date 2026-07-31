@@ -81,6 +81,16 @@ def test_marker_scan_and_issue_count_are_hard_bounded():
     assert issues[-1]["type"] == "issue_limit_reached"
 
 
+def test_exact_issue_capacity_is_not_falsely_reported_as_truncated():
+    exact_markers = " ".join(f"[m{index}]" for index in range(500))
+
+    issues = verify_citations(exact_markers, [])
+
+    assert len(issues) == 500
+    assert all(issue["type"] == "missing_source" for issue in issues)
+    assert issues[-1]["label"] == "[m499]"
+
+
 def test_direct_answer_and_citation_inputs_are_bounded_before_iteration():
     with pytest.raises(ValueError, match="answer must be a string"):
         verify_citations(object(), [])
