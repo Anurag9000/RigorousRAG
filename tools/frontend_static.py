@@ -20,38 +20,86 @@ _LEGACY_FRONTEND_SENTINEL = "frontend"
 _REQUIRED_FRONTEND_FILES = ("index.html", "app.js", "lifecycle.js", "preload.js")
 _INSTALL_MARKER = "_rigorousrag_frontend_adapter_installed"
 _ORIGINAL_MARKER = "_rigorousrag_original_init"
+_MAX_PATH_CHARS = 4096
+_FILE_ATTRIBUTE_REPARSE_POINT = 0x0400
 
 
 def _contains_ascii_control(value: str) -> bool:
     return any(ord(character) < 32 or ord(character) == 127 for character in value)
 
 
+def _is_link_or_reparse(info: os.stat_result) -> bool:
+    attributes = int(getattr(info, "st_file_attributes", 0) or 0)
+    return stat.S_ISLNK(info.st_mode) or bool(attributes & _FILE_ATTRIBUTE_REPARSE_POINT)
+
+
+def _lexical_absolute(value: str | os.PathLike[str], *, label: str) -> Path:
+    try:
+        rendered = os.fspath(value)
+    except TypeError as exc:
+        raise RuntimeError(f"{label} is unavailable.") from exc
+    if (
+        not isinstance(rendered, str)
+        or not rendered
+        or len(rendered) > _MAX_PATH_CHARS
+        or _contains_ascii_control(rendered)
+    ):
+        raise RuntimeError(f"{label} is invalid or too long.")
+    candidate = Path(rendered)
+    if not candidate.is_absolute():
+        candidate = Path.cwd() / candidate
+    return Path(os.path.abspath(candidate))
+
+
+def _safe_lexical_ancestry(path: Path, *, label: str) -> None:
+    """Reject redirected existing components without resolving through them first."""
+
+    for component in (path, *path.parents):
+        try:
+            info = os.lstat(component)
+        except FileNotFoundError as exc:
+            raise RuntimeError(f"{label} is unavailable.") from exc
+        except OSError as exc:
+            raise RuntimeError(f"{label} could not be inspected safely.") from exc
+        if _is_link_or_reparse(info):
+            raise RuntimeError(
+                f"{label} may not contain symbolic-link or reparse-point components."
+            )
+
+
 def _safe_regular_file(path: Path, *, label: str) -> None:
+    _safe_lexical_ancestry(path, label=label)
     try:
         info = os.lstat(path)
     except OSError as exc:
         raise RuntimeError(f"{label} is unavailable.") from exc
-    if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+    if _is_link_or_reparse(info) or not stat.S_ISREG(info.st_mode):
         raise RuntimeError(f"{label} must be a regular non-symlink file.")
 
 
-def frontend_directory() -> Path:
-    """Return the verified module-relative frontend directory."""
-
+def _safe_directory(path: Path, *, label: str) -> None:
+    _safe_lexical_ancestry(path, label=label)
     try:
-        module_file = Path(__file__).resolve(strict=True)
+        info = os.lstat(path)
     except OSError as exc:
-        raise RuntimeError("The frontend resolver module is unavailable.") from exc
+        raise RuntimeError(f"{label} is unavailable.") from exc
+    if _is_link_or_reparse(info) or not stat.S_ISDIR(info.st_mode):
+        raise RuntimeError(f"{label} must be a real non-symlink directory.")
+
+
+def frontend_directory() -> Path:
+    """Return the verified lexical module-relative frontend directory."""
+
+    module_file = _lexical_absolute(__file__, label="The frontend resolver module")
     _safe_regular_file(module_file, label="The frontend resolver module")
 
-    candidate = module_file.parent.parent / _LEGACY_FRONTEND_SENTINEL
-    absolute = Path(os.path.abspath(candidate))
-    try:
-        directory_info = os.lstat(absolute)
-    except OSError as exc:
-        raise RuntimeError("The bundled frontend directory is unavailable.") from exc
-    if stat.S_ISLNK(directory_info.st_mode) or not stat.S_ISDIR(directory_info.st_mode):
-        raise RuntimeError("The bundled frontend path must be a real directory.")
+    tools_directory = module_file.parent
+    package_root = tools_directory.parent
+    _safe_directory(tools_directory, label="The frontend resolver package directory")
+    _safe_directory(package_root, label="The frontend package root")
+
+    absolute = package_root / _LEGACY_FRONTEND_SENTINEL
+    _safe_directory(absolute, label="The bundled frontend directory")
 
     for filename in _REQUIRED_FRONTEND_FILES:
         if _contains_ascii_control(filename):  # defensive invariant
