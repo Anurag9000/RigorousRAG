@@ -2,8 +2,8 @@
 
 The store deliberately exposes a small state-machine API. Every public write validates
 identifiers, clocks, retry values, transition legality, and public text before opening a
-transaction. Recovery reads treat durable rows as untrusted and skip malformed records
-rather than replaying them.
+transaction. Every read treats durable rows as untrusted and fails closed on malformed
+records rather than replaying or returning them.
 """
 
 from __future__ import annotations
@@ -528,17 +528,98 @@ class JobStore:
             )
             return int(cursor.rowcount) == 1
 
+    @staticmethod
+    def _sanitize_internal_record(raw: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Validate one complete durable row without silently repairing corruption."""
+
+        try:
+            job_id = _job_identifier(raw.get("job_id"))
+            owner_id = normalize_owner_id(raw.get("owner_id"))
+            status = raw.get("status")
+            if not isinstance(status, str) or status not in _ALLOWED_STATUSES:
+                return None
+            filename = raw.get("filename")
+            if (
+                not isinstance(filename, str)
+                or not filename
+                or len(filename) > _MAX_FILENAME_CHARS
+                or _contains_ascii_control(filename)
+            ):
+                return None
+            message = raw.get("message")
+            if message is not None and (
+                not isinstance(message, str)
+                or len(message) > _MAX_MESSAGE_CHARS
+                or _contains_ascii_control(message)
+            ):
+                return None
+            doc_value = raw.get("doc_id")
+            doc_id = (
+                None
+                if doc_value in (None, "")
+                else _document_identifier(doc_value)
+            )
+            if status in {"finalizing", "success"} and doc_id is None:
+                return None
+            if status not in {"finalizing", "success"} and doc_id is not None:
+                return None
+            source_value = raw.get("source_path")
+            source_path = (
+                None
+                if source_value in (None, "")
+                else str(_absolute_without_resolution(source_value, "source_path"))
+            )
+            attempts = _strict_integer(
+                raw.get("attempts"),
+                "attempts",
+                minimum=0,
+                maximum=_MAX_ATTEMPTS,
+            )
+            next_attempt_at = _finite_timestamp(
+                raw.get("next_attempt_at"),
+                "next_attempt_at",
+            )
+            created_at = _finite_timestamp(raw.get("created_at"), "created_at")
+            updated_at = _finite_timestamp(raw.get("updated_at"), "updated_at")
+        except (TypeError, ValueError):
+            return None
+        return {
+            "job_id": job_id,
+            "owner_id": owner_id,
+            "status": status,
+            "filename": filename,
+            "message": message,
+            "doc_id": doc_id,
+            "source_path": source_path,
+            "attempts": attempts,
+            "next_attempt_at": next_attempt_at,
+            "created_at": created_at,
+            "updated_at": updated_at,
+        }
+
     def get(self, job_id: str, owner_id: str) -> Optional[Dict[str, Any]]:
         owner = normalize_owner_id(owner_id)
         identifier = _job_identifier(job_id)
         self.prune()
         with self._lock, self._connect() as connection:
             row = connection.execute(
-                "SELECT job_id, status, filename, message, doc_id "
-                "FROM jobs WHERE job_id=? AND owner_id=?",
+                """
+                SELECT job_id, owner_id, status, filename, message, doc_id,
+                       source_path, attempts, next_attempt_at, created_at, updated_at
+                FROM jobs WHERE job_id=? AND owner_id=?
+                """,
                 (identifier, owner),
             ).fetchone()
-        return dict(row) if row is not None else None
+        record = self._sanitize_internal_record(dict(row)) if row is not None else None
+        if record is None:
+            return None
+        return {
+            "job_id": record["job_id"],
+            "status": record["status"],
+            "filename": record["filename"],
+            "message": record["message"],
+            "doc_id": record["doc_id"],
+        }
 
     def get_internal(self, job_id: str, owner_id: str) -> Optional[Dict[str, Any]]:
         owner = normalize_owner_id(owner_id)
@@ -552,69 +633,30 @@ class JobStore:
                 """,
                 (identifier, owner),
             ).fetchone()
-        return dict(row) if row is not None else None
+        return self._sanitize_internal_record(dict(row)) if row is not None else None
 
     @staticmethod
     def _sanitize_recovery_record(raw: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        try:
-            job_id = _job_identifier(raw.get("job_id"))
-            owner_id = normalize_owner_id(raw.get("owner_id"))
-            status = raw.get("status")
-            if not isinstance(status, str) or status not in _ACTIVE_STATUSES:
-                return None
-            filename = raw.get("filename")
-            if (
-                not isinstance(filename, str)
-                or not filename
-                or len(filename) > _MAX_FILENAME_CHARS
-                or _contains_ascii_control(filename)
-            ):
-                return None
-            attempts = _strict_integer(
-                raw.get("attempts"),
-                "attempts",
-                minimum=0,
-                maximum=_MAX_ATTEMPTS,
-            )
-            next_attempt_at = _finite_timestamp(
-                raw.get("next_attempt_at"),
-                "next_attempt_at",
-            )
-            source_value = raw.get("source_path")
-            source_path = (
-                None
-                if source_value in (None, "")
-                else str(_absolute_without_resolution(source_value, "source_path"))
-            )
-            doc_value = raw.get("doc_id")
-            doc_id = (
-                None
-                if doc_value in (None, "")
-                else _document_identifier(doc_value)
-            )
-            if status == "finalizing" and doc_id is None:
-                return None
-            if status in {"queued", "processing"} and doc_id is not None:
-                return None
-        except (TypeError, ValueError):
+        record = JobStore._sanitize_internal_record(raw)
+        if record is None or record["status"] not in _ACTIVE_STATUSES:
             return None
         return {
-            "job_id": job_id,
-            "owner_id": owner_id,
-            "status": status,
-            "filename": filename,
-            "doc_id": doc_id,
-            "source_path": source_path,
-            "attempts": attempts,
-            "next_attempt_at": next_attempt_at,
+            "job_id": record["job_id"],
+            "owner_id": record["owner_id"],
+            "status": record["status"],
+            "filename": record["filename"],
+            "doc_id": record["doc_id"],
+            "source_path": record["source_path"],
+            "attempts": record["attempts"],
+            "next_attempt_at": record["next_attempt_at"],
         }
 
     def recoverable(self) -> List[Dict[str, Any]]:
         with self._lock, self._connect() as connection:
             rows = connection.execute(
                 """
-                SELECT job_id, owner_id, status, filename, doc_id,
-                       source_path, attempts, next_attempt_at
+                SELECT job_id, owner_id, status, filename, message, doc_id,
+                       source_path, attempts, next_attempt_at, created_at, updated_at
                 FROM jobs
                 WHERE status IN ('queued', 'processing', 'finalizing')
                 ORDER BY created_at ASC
