@@ -24,6 +24,7 @@ _ENGINE_LOCK = threading.Lock()
 _MAX_MANIFEST_BYTES = 1_000_000
 _MAX_STORAGE_PATH_CHARS = 4096
 _MAX_RESULTS = 20
+_MAX_ENGINE_RELOAD_ATTEMPTS = 3
 _FILE_ATTRIBUTE_REPARSE_POINT = 0x0400
 
 
@@ -253,25 +254,45 @@ def _storage_signature(storage_dir: str | os.PathLike[str]) -> _StorageSignature
     return str(root), identities
 
 
+def _close_engine(engine: Any) -> None:
+    if engine is None:
+        return
+    try:
+        engine.close()
+    except Exception:
+        pass
+
+
 def get_engine() -> AcademicSearchEngine:
-    """Reload the engine when committed or legacy storage identity changes."""
+    """Reload only from storage that remains stable throughout initialization."""
 
     global _ENGINE_INSTANCE, _ENGINE_SIGNATURE
     storage_dir = os.getenv("CLASSIC_STORAGE_DIR", "data")
-    signature = _storage_signature(storage_dir)
     with _ENGINE_LOCK:
-        if _ENGINE_INSTANCE is None or _ENGINE_SIGNATURE != signature:
+        signature = _storage_signature(storage_dir)
+        if _ENGINE_INSTANCE is not None and _ENGINE_SIGNATURE == signature:
+            return _ENGINE_INSTANCE
+
+        for _attempt in range(_MAX_ENGINE_RELOAD_ATTEMPTS):
+            if _ENGINE_INSTANCE is not None and _ENGINE_SIGNATURE == signature:
+                return _ENGINE_INSTANCE
             replacement = AcademicSearchEngine(storage_dir=str(signature[0]))
             replacement_signature = _storage_signature(signature[0])
+            if replacement_signature != signature:
+                _close_engine(replacement)
+                signature = replacement_signature
+                continue
+
             previous = _ENGINE_INSTANCE
             _ENGINE_INSTANCE = replacement
             _ENGINE_SIGNATURE = replacement_signature
-            if previous is not None and previous is not replacement:
-                try:
-                    previous.close()
-                except Exception:
-                    pass
-        return _ENGINE_INSTANCE
+            if previous is not replacement:
+                _close_engine(previous)
+            return replacement
+
+        raise RuntimeError(
+            "Classic search state changed repeatedly during engine initialization."
+        )
 
 
 class InternalSearchInput(BaseModel):
