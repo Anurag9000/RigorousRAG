@@ -1,0 +1,113 @@
+name: One-shot pass sixteen status synchronization
+
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/one-shot-pass16.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: one-shot-pass-sixteen-main
+  cancel-in-progress: true
+
+jobs:
+  synchronize:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install development dependencies
+        run: python -m pip install --upgrade pip && python -m pip install -r requirements-dev.txt
+      - name: Apply and verify status synchronization
+        id: verify
+        shell: bash
+        run: |
+          set +e
+          : > /tmp/pass16.log
+          python scripts/pass16_status_patch.py >> /tmp/pass16.log 2>&1
+          status=$?
+          if [[ $status -eq 0 ]]; then
+            python -m compileall -q tests/unit/test_deployment_parity.py >> /tmp/pass16.log 2>&1
+            status=$?
+          fi
+          if [[ $status -eq 0 ]]; then
+            python -m pytest \
+              tests/unit/test_deployment_parity.py \
+              tests/unit/test_documentation_consistency.py \
+              --no-cov -q >> /tmp/pass16.log 2>&1
+            status=$?
+          fi
+          if [[ $status -eq 0 ]]; then
+            grep -R "agent/exhaustive-remediation\|PR #1 must remain draft\|Branch:.*agent/" \
+              docs .github/workflows --exclude='CONTINUATION_AUDIT*.md' \
+              --exclude='PASS*_FAILURE.md' >> /tmp/pass16.log 2>&1
+            grep_status=$?
+            if [[ $grep_status -eq 0 ]]; then
+              echo "Stale active-branch or draft-PR claims remain." >> /tmp/pass16.log
+              status=1
+            elif [[ $grep_status -ne 1 ]]; then
+              status=$grep_status
+            fi
+          fi
+          cat /tmp/pass16.log
+          echo "status=${status}" >> "$GITHUB_OUTPUT"
+      - name: Commit verified synchronization directly to main
+        if: steps.verify.outputs.status == '0'
+        shell: bash
+        run: |
+          git config user.name "RigorousRAG Remediation"
+          git config user.email "actions@users.noreply.github.com"
+          git add \
+            .github/workflows/release-locks.yml \
+            tests/unit/test_deployment_parity.py \
+            docs/REMEDIATION_STATUS.md \
+            docs/EXECUTABLE_VERIFICATION.md \
+            docs/CONTINUATION_AUDIT_PASS13_TO_15.md
+          git rm scripts/pass16_status_patch.py .github/workflows/one-shot-pass16.yml
+          git diff --cached --check
+          git commit -m "Synchronize main-only remediation status"
+          git push origin HEAD:main
+      - name: Publish bounded failure diagnostics
+        if: steps.verify.outputs.status != '0'
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import subprocess
+
+          log = Path('/tmp/pass16.log').read_text(encoding='utf-8', errors='replace')
+          diff = subprocess.run(
+              [
+                  'git', 'diff', '--',
+                  '.github/workflows/release-locks.yml',
+                  'tests/unit/test_deployment_parity.py',
+                  'docs/REMEDIATION_STATUS.md',
+                  'docs/EXECUTABLE_VERIFICATION.md',
+                  'docs/CONTINUATION_AUDIT_PASS13_TO_15.md',
+              ],
+              text=True,
+              capture_output=True,
+          ).stdout
+          Path('docs/PASS16_FAILURE.md').write_text(
+              '# Pass sixteen diagnostic\n\n```text\n'
+              + log[-40000:]
+              + '\n```\n\n```diff\n'
+              + diff[-40000:]
+              + '\n```\n',
+              encoding='utf-8',
+          )
+          PY
+          git config user.name "RigorousRAG Remediation"
+          git config user.email "actions@users.noreply.github.com"
+          git add docs/PASS16_FAILURE.md
+          git commit -m "Update pass sixteen verification failure" || exit 0
+          git push origin HEAD:main
