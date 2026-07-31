@@ -1,4 +1,4 @@
-name: Generate release locks
+name: Exact-head verification and release locks
 
 on:
   workflow_dispatch:
@@ -10,12 +10,23 @@ on:
       - scripts/generate_release_lock.py
       - scripts/verify_release_lock.py
       - .github/workflows/release-locks.yml
+      - .github/workflows/exact-head-verification.yml
+      - Dockerfile
+      - docker-compose.yml
+      - ".dockerignore"
+      - "frontend/**"
+      - "docs/**"
       - "**/*.py"
   push:
+    branches: [main, "agent/**"]
     tags: ["v*"]
 
 permissions:
   contents: read
+
+concurrency:
+  group: exact-head-release-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   registration-smoke:
@@ -28,19 +39,56 @@ jobs:
         run: git rev-parse HEAD
 
   linux-test:
-    name: Linux exact-head tests and coverage / Python 3.12
+    name: Linux exact-head tests / Python ${{ matrix.python-version }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+    env:
+      PYTHONHASHSEED: "0"
+      PYTHONDONTWRITEBYTECODE: "1"
+      TOKENIZERS_PARALLELISM: "false"
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      SINGLE_USER_OWNER_ID: ci-user
+      CHROMA_PATH: ${{ runner.temp }}/rigorousrag-vectors
+      JOB_DB_PATH: ${{ runner.temp }}/rigorousrag-jobs.sqlite3
+      DOCUMENT_DB_PATH: ${{ runner.temp }}/rigorousrag-documents.sqlite3
+      UPLOAD_DIR: ${{ runner.temp }}/rigorousrag-uploads
+      CLASSIC_STORAGE_DIR: ${{ runner.temp }}/rigorousrag-classic
+      USAGE_LOG_FILE: ${{ runner.temp }}/rigorousrag-usage.jsonl
+      ORPHAN_CLEANUP_ON_STARTUP: "false"
+      ENABLE_OCR: "false"
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python-version }}
           cache: pip
       - name: Install development dependencies
         run: python -m pip install --upgrade pip && python -m pip install -r requirements-dev.txt
       - name: Verify dependency consistency
         run: python -m pip check
+      - name: Check patch whitespace
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          if [[ "${EVENT_NAME}" == "pull_request" ]]; then
+            comparison_base="$(git merge-base HEAD "origin/${BASE_REF}")"
+          elif [[ "${EVENT_NAME}" == "push" && -n "${BEFORE_SHA}" && ! "${BEFORE_SHA}" =~ ^0+$ ]]; then
+            comparison_base="${BEFORE_SHA}"
+          elif git rev-parse HEAD^ >/dev/null 2>&1; then
+            comparison_base="HEAD^"
+          else
+            comparison_base="$(git rev-list --max-parents=0 HEAD)"
+          fi
+          git diff --check "${comparison_base}...HEAD"
       - name: Compile all Python
         run: python -m compileall -q .
       - name: Run fatal syntax and name lint
@@ -48,8 +96,54 @@ jobs:
       - name: Run tests with branch coverage
         run: python -m pytest
 
+  windows-classic-storage:
+    name: Windows classic storage / Python ${{ matrix.python-version }}
+    runs-on: windows-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.12"]
+    env:
+      PYTHONHASHSEED: "0"
+      PYTHONDONTWRITEBYTECODE: "1"
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      CLASSIC_STORAGE_DIR: ${{ runner.temp }}\rigorousrag-classic
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: Install development dependencies
+        run: python -m pip install --upgrade pip && python -m pip install -r requirements-dev.txt
+      - name: Verify dependency consistency
+        run: python -m pip check
+      - name: Compile classic storage surfaces
+        run: python -m compileall -q storage.py storage_legacy.py Crawler.py Indexer.py Pagerank.py Searching.py
+      - name: Run Windows storage regressions
+        run: >-
+          python -m pytest
+          tests/unit/test_classic_storage_boundaries.py
+          tests/unit/test_storage.py
+          tests/unit/test_storage_root_paths.py
+          tests/unit/test_storage_snapshot_lock.py
+          tests/unit/test_internal_search_reload.py
+          --no-cov
+
+  container:
+    name: Compose and container build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate Compose configuration
+        run: docker compose config --quiet
+      - name: Build container
+        run: docker build --tag rigorousrag:ci .
+
   lock:
-    name: ${{ matrix.os }} / Python ${{ matrix.python-version }}
+    name: Release lock / ${{ matrix.os }} / Python ${{ matrix.python-version }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
