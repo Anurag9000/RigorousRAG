@@ -1,4 +1,7 @@
 import os
+from decimal import Decimal
+from fractions import Fraction
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -40,7 +43,17 @@ def test_direct_query_limit_and_type_are_checked_before_file_access(monkeypatch)
         lambda _path: (_ for _ in ()).throw(AssertionError("file should not be read")),
     )
 
-    for query in (object(), "", "   ", "q" * 2001, "bad\x00query"):
+    for query in (
+        object(),
+        "",
+        "   ",
+        "q" * 2001,
+        "bad\x00query",
+        "bad\nquery",
+        "bad\rquery",
+        "bad\tquery",
+        "bad\x7fquery",
+    ):
         with pytest.raises(ValueError):
             handbook.search_handbook(query)
 
@@ -83,6 +96,33 @@ def test_symlinked_handbook_and_parent_are_refused(monkeypatch, tmp_path):
 
     with pytest.raises(FileNotFoundError, match="unavailable"):
         handbook.search_handbook("policy")
+
+
+def test_reparse_flagged_handbook_is_refused(monkeypatch, tmp_path):
+    path = tmp_path / "handbook.md"
+    path.write_text("privacy policy evidence", encoding="utf-8")
+    original_lstat = handbook.os.lstat
+
+    class ReparseInfo:
+        def __init__(self, info):
+            self.st_mode = info.st_mode
+            self.st_dev = info.st_dev
+            self.st_ino = info.st_ino
+            self.st_ctime_ns = info.st_ctime_ns
+            self.st_mtime_ns = info.st_mtime_ns
+            self.st_size = info.st_size
+            self.st_file_attributes = handbook._FILE_ATTRIBUTE_REPARSE_POINT
+
+    def fake_lstat(value):
+        info = original_lstat(value)
+        return ReparseInfo(info) if Path(value) == path else info
+
+    monkeypatch.setattr(handbook, "HANDBOOK_PATH", path)
+    monkeypatch.setattr(handbook.os, "lstat", fake_lstat)
+    _reset_cache(monkeypatch)
+
+    with pytest.raises(FileNotFoundError, match="unavailable"):
+        handbook.search_handbook("privacy")
 
 
 def test_fifo_handbook_is_refused_without_blocking(monkeypatch, tmp_path):
@@ -144,6 +184,29 @@ def test_same_size_same_mtime_replacement_rebuilds_cache(monkeypatch, tmp_path):
     assert "alpha policy" not in second
 
 
+def test_in_place_mutation_during_read_is_rejected(monkeypatch, tmp_path):
+    path = tmp_path / "handbook.md"
+    path.write_text("a" * 70_000, encoding="utf-8")
+    monkeypatch.setattr(handbook, "HANDBOOK_PATH", path)
+    monkeypatch.setattr(handbook, "HANDBOOK_MAX_BYTES", 100_000)
+    original_read = handbook.os.read
+    mutated = False
+
+    def mutating_read(descriptor, amount):
+        nonlocal mutated
+        chunk = original_read(descriptor, amount)
+        if chunk and not mutated:
+            mutated = True
+            path.write_text("b" * 70_000, encoding="utf-8")
+        return chunk
+
+    monkeypatch.setattr(handbook.os, "read", mutating_read)
+    _reset_cache(monkeypatch)
+
+    with pytest.raises(ValueError, match="changed while it was being read"):
+        handbook.search_handbook("policy")
+
+
 def test_search_validates_top_k_and_ignores_nonfinite_weights():
     index = SimpleNamespace(
         idf={"policy": 1.0, "bad": float("nan")},
@@ -157,6 +220,33 @@ def test_search_validates_top_k_and_ignores_nonfinite_weights():
     assert handbook._search("policy bad", index, chunks, top_k=1) == [
         ("handbook-1", "policy evidence")
     ]
-    for invalid in (True, 0, 11, 1.5, "bad"):
+    for invalid in (
+        True,
+        0,
+        11,
+        1.5,
+        Decimal("1.5"),
+        Fraction(3, 2),
+        "bad",
+    ):
         with pytest.raises(ValueError, match="top_k"):
             handbook._search("policy", index, chunks, top_k=invalid)
+
+
+def test_search_accepts_exact_index_protocol_top_k():
+    class ExactInteger:
+        def __index__(self):
+            return 1
+
+    index = SimpleNamespace(
+        idf={"policy": 1.0},
+        index={"policy": {"handbook-1": 2.0}},
+    )
+    chunks = [("handbook-1", "policy evidence")]
+
+    assert handbook._search(
+        "policy",
+        index,
+        chunks,
+        top_k=ExactInteger(),
+    ) == [("handbook-1", "policy evidence")]
