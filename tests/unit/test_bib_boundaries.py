@@ -1,3 +1,5 @@
+import re
+
 import pytest
 
 import tools.bib as bib
@@ -62,6 +64,19 @@ def test_all_common_latex_special_characters_are_escaped_once():
     assert r"\textbackslash{}" in output
 
 
+def test_ascii_controls_are_removed_before_serialization():
+    output = export_to_bibtex([
+        {
+            "entry_type": "misc",
+            "title": "Alpha\x01Beta\x7fGamma\nDelta\tEpsilon",
+        }
+    ])
+
+    assert "\x01" not in output
+    assert "\x7f" not in output
+    assert "Alpha Beta Gamma Delta Epsilon" in output
+
+
 def test_direct_export_skips_invalid_items_and_caps_at_one_hundred():
     citations = ["not-a-mapping"] + [
         {"entry_type": "misc", "title": f"Reference {index}"}
@@ -91,6 +106,30 @@ def test_infinite_invalid_iterable_is_bounded():
     assert len(inspected) == 1000
 
 
+def test_candidate_dictionary_is_not_copied_or_iterated_wholesale():
+    class NoCopyDictionary(dict):
+        def __iter__(self):
+            raise RuntimeError("must not iterate all keys")
+
+        def keys(self):
+            raise RuntimeError("must not copy all keys")
+
+        def items(self):
+            raise RuntimeError("must not inspect all fields")
+
+    candidate = NoCopyDictionary(
+        entry_type="misc",
+        title="Bounded candidate",
+        authors="Doe, Jane",
+        year=2026,
+    )
+
+    output = export_to_bibtex([candidate])
+
+    assert "title = {Bounded candidate}" in output
+    assert "author = {Doe, Jane}" in output
+
+
 def test_direct_fields_are_bounded_before_escape_and_key_hashing():
     output = export_to_bibtex([
         {
@@ -108,6 +147,22 @@ def test_direct_fields_are_bounded_before_escape_and_key_hashing():
     assert author_line.count("A") == 3000
     assert len(url_line) < 4200
     assert len(output) < 9000
+
+
+def test_year_component_in_key_is_bounded():
+    output = export_to_bibtex([
+        {
+            "entry_type": "misc",
+            "title": "Study",
+            "authors": "Doe, Jane",
+            "year": "1234567890" * 10,
+        }
+    ])
+
+    key = re.match(r"@misc\{([^,]+),", output).group(1)
+    assert "12345678" in key
+    assert "123456789" not in key
+    assert len(key) <= 48
 
 
 def test_credentials_paths_and_pii_are_masked_before_bibtex_escape():
