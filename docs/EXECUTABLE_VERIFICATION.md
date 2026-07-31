@@ -34,8 +34,9 @@ Observed successful run:
   artifact upload.
 
 A later superseded run, `30603463220`, again completed all nine lock jobs successfully.
-Passes seven and eight hardened the generator and verifier after those runs, so these
-results are historical evidence rather than final release certification.
+Passes seven through nine hardened the generator, verifier, workflow, and surrounding
+runtime boundaries after those runs, so these results are historical evidence rather than
+final release certification.
 
 ## First full Linux suite
 
@@ -96,14 +97,33 @@ Pass eight added or expanded tests for:
 - malformed/conflicting/excessive HTTP framing rejected before application execution;
 - owner upload root/owner/file redirection and identity boundaries.
 
-These are committed test contracts, not observed passes. No current-head pull-request
-workflow run is exposed through the available connector. The execution container also
-cannot clone the branch because DNS resolution for `github.com` fails. No pass-eight test
-success is therefore asserted here.
+## Pass-nine source-level regressions
+
+Pass nine added or expanded tests for:
+
+- credential-free citation authority, backslash refusal, exact page numbers, and assignment
+  validation;
+- non-text document-control refusal while preserving layout whitespace;
+- truthful citation-issue overflow reporting;
+- bounded BibTeX candidate-field lookup, control removal, and citation-key construction;
+- immutable handbook reads, reparse refusal, mutation detection, and exact result counts;
+- exact single-page, scholarly-search, public-web-search, internal-search, and uploaded-RAG
+  result limits;
+- canonical provider keys and complete query-control refusal;
+- strict non-byte/malformed provider JSON handling;
+- canonical owner/document provenance for uploaded chunks;
+- hostile scientific-integrity iterable values rejected before retrieval;
+- stable before/after classic-engine signatures during reload;
+- CLI argument, query, model, owner, and terminal-output boundaries.
+
+Pass-eight and pass-nine regressions are committed source contracts, not observed passes.
+No current-head pull-request workflow run is exposed through the available connector. The
+execution container also cannot clone the branch because DNS resolution for `github.com`
+fails. No current-head success is therefore asserted here.
 
 ## Current release boundary
 
 No merge-readiness claim is permitted until the consolidated workflow succeeds against
-one final pull-request head after all pass-seven and pass-eight changes. Every failure must
-be fixed and the entire 16-job workflow rerun. The final diff and documentation must then
-be re-audited before PR #1 is moved out of draft.
+one final pull-request head after all pass-seven, pass-eight, and pass-nine changes. Every
+failure must be fixed and the entire 16-job workflow rerun. The final diff and
+documentation must then be re-audited before PR #1 is moved out of draft.
