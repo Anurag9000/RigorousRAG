@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import operator
 import os
 from typing import Any, Optional
 
@@ -53,22 +54,23 @@ def _bounded_page_bytes(value: Any) -> int:
     if isinstance(value, bool):
         raise ValueError("max_bytes must be an integer.")
     try:
-        parsed = int(value)
+        parsed = operator.index(value)
     except (TypeError, ValueError, OverflowError) as exc:
         raise ValueError("max_bytes must be an integer.") from exc
-    if isinstance(value, float) and not value.is_integer():
-        raise ValueError("max_bytes must be an integer.")
-    if parsed <= 0:
+    limit = int(parsed)
+    if limit <= 0:
         raise ValueError("max_bytes must be positive.")
-    return min(parsed, _MAX_PAGE_BYTES)
+    return min(limit, _MAX_PAGE_BYTES)
 
 
 def _user_agent(value: Any) -> str:
     if not isinstance(value, str):
         raise ValueError("user_agent must be a string.")
-    cleaned = " ".join(
-        value.replace("\x00", " ").replace("\r", " ").replace("\n", " ").split()
+    without_controls = "".join(
+        " " if ord(character) < 32 or ord(character) == 127 else character
+        for character in value
     )
+    cleaned = " ".join(without_controls.split())
     if not cleaned:
         raise ValueError("user_agent is required.")
     return cleaned[:_MAX_USER_AGENT_CHARS]
