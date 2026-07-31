@@ -10,24 +10,26 @@ from __future__ import annotations
 import heapq
 import itertools
 import math
+import operator
 import threading
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Optional, Tuple
+
+_MAX_CLOCK_RECHECK_SECONDS = 60.0
 
 
 def _positive_integer(value: Any, label: str, *, maximum: int) -> int:
     if isinstance(value, bool):
         raise ValueError(f"{label} must be an integer.")
     try:
-        parsed = int(value)
+        parsed = operator.index(value)
     except (TypeError, ValueError, OverflowError) as exc:
         raise ValueError(f"{label} must be an integer.") from exc
-    if isinstance(value, float) and not value.is_integer():
-        raise ValueError(f"{label} must be an integer.")
-    if parsed <= 0:
+    result = int(parsed)
+    if result <= 0:
         raise ValueError(f"{label} must be positive.")
-    return min(parsed, maximum)
+    return min(result, maximum)
 
 
 def _thread_name(value: Any) -> str:
@@ -93,6 +95,8 @@ class DueScheduler:
 
     @staticmethod
     def _deadline(value: object) -> float:
+        if isinstance(value, bool):
+            raise ValueError("Scheduler deadlines must be numeric, not boolean.")
         try:
             deadline = float(value)
         except (TypeError, ValueError, OverflowError) as exc:
@@ -259,7 +263,9 @@ class DueScheduler:
                         continue
                     delay = candidate.due_at - current
                     if delay > 0:
-                        self._condition.wait(timeout=min(delay, 86_400.0))
+                        self._condition.wait(
+                            timeout=min(delay, _MAX_CLOCK_RECHECK_SECONDS)
+                        )
                         continue
                     heapq.heappop(self._heap)
                     if self._current.get(candidate.key) != candidate.sequence:
