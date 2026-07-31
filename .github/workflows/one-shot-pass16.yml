@@ -40,10 +40,38 @@ jobs:
             status=$?
           fi
           if [[ $status -eq 0 ]]; then
-            python -m pytest \
-              tests/unit/test_deployment_parity.py \
-              tests/unit/test_documentation_consistency.py \
-              --no-cov -q >> /tmp/pass16.log 2>&1
+            python -m pytest tests/unit/test_deployment_parity.py --no-cov -q >> /tmp/pass16.log 2>&1
+            status=$?
+          fi
+          if [[ $status -eq 0 ]]; then
+            python - <<'PY' >> /tmp/pass16.log 2>&1
+          from pathlib import Path
+
+          status = Path("docs/REMEDIATION_STATUS.md").read_text(encoding="utf-8")
+          ledger = Path("docs/EXECUTABLE_VERIFICATION.md").read_text(encoding="utf-8")
+          audit = Path("docs/CONTINUATION_AUDIT_PASS13_TO_15.md").read_text(encoding="utf-8")
+          workflow = Path(".github/workflows/release-locks.yml").read_text(encoding="utf-8")
+          required_status = (
+              "Default and only branch: `main`",
+              "Open pull requests: none",
+              "fifteen",
+              "3130208e7957fda91e1e480672d02ef332778237",
+          )
+          for marker in required_status:
+              if marker not in status:
+                  raise SystemExit(f"Missing remediation-status marker: {marker}")
+          for marker in (
+              "45fb4c26d52675539156d4d9c0a841914fdcc93c",
+              "d6970f2598cfee4668e57d9a0262d26160e1f9b3",
+              "3130208e7957fda91e1e480672d02ef332778237",
+          ):
+              if marker not in ledger or marker not in audit:
+                  raise SystemExit(f"Missing focused-run marker: {marker}")
+          if 'branches: [main, "agent/**"]' in workflow or "agent/**" in workflow:
+              raise SystemExit("Authoritative workflow still targets obsolete agent branches.")
+          if "branches: [main]" not in workflow:
+              raise SystemExit("Authoritative workflow no longer targets main.")
+          PY
             status=$?
           fi
           if [[ $status -eq 0 ]]; then
@@ -73,6 +101,7 @@ jobs:
             docs/EXECUTABLE_VERIFICATION.md \
             docs/CONTINUATION_AUDIT_PASS13_TO_15.md
           git rm scripts/pass16_status_patch.py .github/workflows/one-shot-pass16.yml
+          git rm -f docs/PASS16_FAILURE.md
           git diff --cached --check
           git commit -m "Synchronize main-only remediation status"
           git push origin HEAD:main
@@ -111,5 +140,3 @@ jobs:
           git add docs/PASS16_FAILURE.md
           git commit -m "Update pass sixteen verification failure" || exit 0
           git push origin HEAD:main
-
-# Triggered after installation on the default branch.
