@@ -6,7 +6,8 @@ The commands in this module are deliberately conservative:
 * rows are identified by SQLite ``rowid`` plus an exact content fingerprint;
 * retirement requires an exact fingerprint and confirmation token;
 * source files, vectors, and document-registry rows are never deleted implicitly;
-* every retirement is recorded in an append-only audit table in the job database.
+* every retirement is recorded in an append-only audit table in the job database;
+* bounded scans report an explicit continuation cursor instead of implying completeness.
 
 This is recovery tooling for malformed rows that normal startup replay skips. It is not a
 remote API and should only be run by an operator with direct access to the service state.
@@ -32,6 +33,7 @@ from tools.security import normalize_owner_id
 _ALLOWED_STATUSES = frozenset({"queued", "processing", "finalizing", "success", "failed"})
 _MAX_ROWS = 10_000
 _MAX_SCAN_ROWS = 100_000
+_MAX_ROWID = 9_223_372_036_854_775_807
 _SCAN_BATCH_ROWS = 500
 _AUDIT_REASON_CHARS = 500
 
@@ -55,6 +57,22 @@ class CorruptJobRecord:
             "filename": self.filename,
             "source_recorded": self.source_recorded,
             "updated_at": self.updated_at,
+        }
+
+
+@dataclass(frozen=True)
+class CorruptJobScan:
+    records: tuple[CorruptJobRecord, ...]
+    scanned_rows: int
+    next_after_rowid: int | None
+    complete: bool
+
+    def public_dict(self) -> dict[str, Any]:
+        return {
+            "records": [record.public_dict() for record in self.records],
+            "scanned_rows": self.scanned_rows,
+            "next_after_rowid": self.next_after_rowid,
+            "complete": self.complete,
         }
 
 
@@ -229,6 +247,16 @@ def _select_rows(
     ).fetchall()
 
 
+def _has_rows_after(connection: sqlite3.Connection, rowid: int) -> bool:
+    return (
+        connection.execute(
+            "SELECT 1 FROM jobs WHERE rowid > ? ORDER BY rowid ASC LIMIT 1",
+            (rowid,),
+        ).fetchone()
+        is not None
+    )
+
+
 def _public_corrupt_record(row: Mapping[str, Any]) -> CorruptJobRecord | None:
     reasons = _row_reasons(row)
     if not reasons:
@@ -247,34 +275,71 @@ def _public_corrupt_record(row: Mapping[str, Any]) -> CorruptJobRecord | None:
     )
 
 
-def list_corrupt_jobs(store: JobStore, *, limit: int = 1000) -> list[CorruptJobRecord]:
-    """Return up to ``limit`` corrupt rows while scanning a separate bounded prefix."""
+def scan_corrupt_jobs(
+    store: JobStore,
+    *,
+    limit: int = 1000,
+    after_rowid: int = 0,
+    scan_limit: int = _MAX_SCAN_ROWS,
+) -> CorruptJobScan:
+    """Scan one bounded rowid page and expose whether a continuation is required."""
 
     if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= _MAX_ROWS:
         raise ValueError(f"limit must be an integer between 1 and {_MAX_ROWS}.")
+    if (
+        isinstance(after_rowid, bool)
+        or not isinstance(after_rowid, int)
+        or not 0 <= after_rowid <= _MAX_ROWID
+    ):
+        raise ValueError("after_rowid must be an integer between 0 and SQLite's rowid limit.")
+    if (
+        isinstance(scan_limit, bool)
+        or not isinstance(scan_limit, int)
+        or not 1 <= scan_limit <= _MAX_SCAN_ROWS
+    ):
+        raise ValueError(f"scan_limit must be an integer between 1 and {_MAX_SCAN_ROWS}.")
 
     records: list[CorruptJobRecord] = []
     scanned = 0
-    after_rowid = 0
+    last_processed = after_rowid
     with store._lock, store._connect() as connection:  # noqa: SLF001 - operator boundary
-        while len(records) < limit and scanned < _MAX_SCAN_ROWS:
-            batch_limit = min(_SCAN_BATCH_ROWS, _MAX_SCAN_ROWS - scanned)
+        stop = False
+        while len(records) < limit and scanned < scan_limit and not stop:
+            batch_limit = min(_SCAN_BATCH_ROWS, scan_limit - scanned)
             rows = _select_rows(
                 connection,
-                after_rowid=after_rowid,
+                after_rowid=last_processed,
                 limit=batch_limit,
             )
             if not rows:
                 break
-            scanned += len(rows)
-            after_rowid = int(rows[-1]["rowid"])
             for sqlite_row in rows:
+                rowid = int(sqlite_row["rowid"])
+                last_processed = rowid
+                scanned += 1
                 record = _public_corrupt_record(dict(sqlite_row))
                 if record is not None:
                     records.append(record)
                     if len(records) >= limit:
+                        stop = True
                         break
-    return records
+                if scanned >= scan_limit:
+                    stop = True
+                    break
+        has_more = _has_rows_after(connection, last_processed)
+
+    return CorruptJobScan(
+        records=tuple(records),
+        scanned_rows=scanned,
+        next_after_rowid=last_processed if has_more else None,
+        complete=not has_more,
+    )
+
+
+def list_corrupt_jobs(store: JobStore, *, limit: int = 1000) -> list[CorruptJobRecord]:
+    """Compatibility wrapper returning records from the first bounded scan page."""
+
+    return list(scan_corrupt_jobs(store, limit=limit).records)
 
 
 def _ensure_audit_table(connection: sqlite3.Connection) -> None:
@@ -383,6 +448,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     list_parser = subparsers.add_parser("list", help="List sanitized corrupt-row records.")
     list_parser.add_argument("--limit", type=int, default=1000)
+    list_parser.add_argument("--after-rowid", type=int, default=0)
+    list_parser.add_argument("--scan-limit", type=int, default=_MAX_SCAN_ROWS)
 
     retire_parser = subparsers.add_parser(
         "retire", help="Retire one unchanged corrupt row without deleting its source."
@@ -399,8 +466,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         arguments = build_parser().parse_args(_bounded_argv(argv))
         store = JobStore(path=arguments.job_db)
         if arguments.command == "list":
-            records = list_corrupt_jobs(store, limit=arguments.limit)
-            print(json.dumps([record.public_dict() for record in records], indent=2))
+            scan = scan_corrupt_jobs(
+                store,
+                limit=arguments.limit,
+                after_rowid=arguments.after_rowid,
+                scan_limit=arguments.scan_limit,
+            )
+            print(json.dumps(scan.public_dict(), indent=2))
             return 0
         result = retire_corrupt_job(
             store,
