@@ -1,0 +1,93 @@
+name: One-shot pass thirteen remediation
+
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/one-shot-pass13.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: one-shot-pass-thirteen-main
+  cancel-in-progress: true
+
+jobs:
+  remediate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install development dependencies
+        run: python -m pip install --upgrade pip && python -m pip install -r requirements-dev.txt
+      - name: Apply and verify pass thirteen
+        id: verify
+        shell: bash
+        run: |
+          set +e
+          : > /tmp/pass13.log
+          python scripts/pass13_patch.py >> /tmp/pass13.log 2>&1
+          status=$?
+          if [[ $status -eq 0 ]]; then
+            python -m compileall -q tools/security_boundary.py tests/unit/test_security_boundary_shim.py >> /tmp/pass13.log 2>&1
+            status=$?
+          fi
+          if [[ $status -eq 0 ]]; then
+            python -m pytest \
+              tests/unit/test_security_boundary_shim.py \
+              tests/unit/test_security.py \
+              tests/unit/test_security_complete_boundaries.py \
+              tests/unit/test_safe_download_deadline.py \
+              tests/unit/test_safe_download_peer.py \
+              tests/unit/test_safe_download_session_state.py \
+              --no-cov -q >> /tmp/pass13.log 2>&1
+            status=$?
+          fi
+          cat /tmp/pass13.log
+          echo "status=${status}" >> "$GITHUB_OUTPUT"
+      - name: Commit verified remediation directly to main
+        if: steps.verify.outputs.status == '0'
+        shell: bash
+        run: |
+          git config user.name "RigorousRAG Remediation"
+          git config user.email "actions@users.noreply.github.com"
+          git add tools/security_boundary.py tests/unit/test_security_boundary_shim.py
+          git rm scripts/pass13_patch.py .github/workflows/one-shot-pass13.yml
+          git diff --cached --check
+          git commit -m "Make the security boundary reload-safe"
+          git push origin HEAD:main
+      - name: Publish bounded failure diagnostics
+        if: steps.verify.outputs.status != '0'
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import subprocess
+
+          log = Path('/tmp/pass13.log').read_text(encoding='utf-8', errors='replace')
+          diff = subprocess.run(
+              ['git', 'diff', '--', 'tools/security_boundary.py', 'tests/unit/test_security_boundary_shim.py'],
+              text=True,
+              capture_output=True,
+          ).stdout
+          Path('docs/PASS13_FAILURE.md').write_text(
+              '# Pass thirteen diagnostic\n\n```text\n'
+              + log[-30000:]
+              + '\n```\n\n```diff\n'
+              + diff[-30000:]
+              + '\n```\n',
+              encoding='utf-8',
+          )
+          PY
+          git config user.name "RigorousRAG Remediation"
+          git config user.email "actions@users.noreply.github.com"
+          git add docs/PASS13_FAILURE.md
+          git commit -m "Update pass thirteen verification failure" || exit 0
+          git push origin HEAD:main
