@@ -93,4 +93,4 @@ jobs:
           git commit -m "Record pass twelve verification failure" || exit 0
           git push origin HEAD:main
 
-# Installation and tests are both captured for deterministic diagnosis.
+# Matrix paused; focused security verification runs without competing jobs.
