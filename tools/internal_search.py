@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import itertools
 import json
+import operator
 import os
 import stat
 import threading
 from pathlib import Path
 from typing import Any, List, Optional, Tuple
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from Searching import AcademicSearchEngine, SearchHit
 from tools.models import Citation
@@ -23,16 +24,34 @@ _ENGINE_LOCK = threading.Lock()
 _MAX_MANIFEST_BYTES = 1_000_000
 _MAX_STORAGE_PATH_CHARS = 4096
 _MAX_RESULTS = 20
+_FILE_ATTRIBUTE_REPARSE_POINT = 0x0400
+
+
+def _contains_ascii_control(value: str) -> bool:
+    return any(ord(character) < 32 or ord(character) == 127 for character in value)
+
+
+def _is_link_or_reparse(info: os.stat_result) -> bool:
+    attributes = int(getattr(info, "st_file_attributes", 0) or 0)
+    return stat.S_ISLNK(info.st_mode) or bool(attributes & _FILE_ATTRIBUTE_REPARSE_POINT)
+
+
+def _identity(info: os.stat_result) -> tuple[int, int]:
+    return int(info.st_dev), int(info.st_ino)
 
 
 def _absolute_without_resolving(path: str | os.PathLike[str]) -> Path:
     if not isinstance(path, (str, os.PathLike)):
         raise ValueError("CLASSIC_STORAGE_DIR must be a filesystem path.")
-    rendered = os.fspath(path)
+    try:
+        rendered = os.fspath(path)
+    except TypeError as exc:
+        raise ValueError("CLASSIC_STORAGE_DIR must be a filesystem path.") from exc
     if (
-        not rendered
+        not isinstance(rendered, str)
+        or not rendered
         or len(rendered) > _MAX_STORAGE_PATH_CHARS
-        or any(ord(character) < 32 or ord(character) == 127 for character in rendered)
+        or _contains_ascii_control(rendered)
     ):
         raise ValueError("CLASSIC_STORAGE_DIR is invalid or too long.")
     candidate = Path(rendered)
@@ -40,9 +59,17 @@ def _absolute_without_resolving(path: str | os.PathLike[str]) -> Path:
         candidate = Path.cwd() / candidate
     absolute = Path(os.path.abspath(candidate))
     for component in (absolute, *absolute.parents):
-        if component.is_symlink():
+        try:
+            info = os.lstat(component)
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
             raise ValueError(
-                "CLASSIC_STORAGE_DIR may not contain symbolic-link components."
+                "CLASSIC_STORAGE_DIR could not be inspected safely."
+            ) from exc
+        if _is_link_or_reparse(info):
+            raise ValueError(
+                "CLASSIC_STORAGE_DIR may not contain symbolic-link or reparse-point components."
             )
     return absolute
 
@@ -51,7 +78,9 @@ def _file_identity(path: Path) -> _FileIdentity:
     """Return identity that changes on replacement, metadata change, or removal."""
 
     try:
-        info = path.lstat()
+        info = os.lstat(path)
+        if _is_link_or_reparse(info) or not stat.S_ISREG(info.st_mode):
+            return (path.name, -2, -2, -2, -2, -2)
         return (
             path.name,
             int(info.st_dev),
@@ -64,20 +93,59 @@ def _file_identity(path: Path) -> _FileIdentity:
         return (path.name, -1, -1, -1, -1, -1)
 
 
+def _safe_manifest_path(manifest: Path) -> Optional[Path]:
+    try:
+        absolute = Path(os.path.abspath(manifest))
+        for component in (absolute, *absolute.parents):
+            try:
+                info = os.lstat(component)
+            except FileNotFoundError:
+                if component == absolute:
+                    return None
+                continue
+            if _is_link_or_reparse(info):
+                return None
+        return absolute
+    except (OSError, TypeError, ValueError):
+        return None
+
+
 def _read_manifest(manifest: Path) -> Optional[dict[str, Any]]:
+    absolute = _safe_manifest_path(manifest)
+    if absolute is None:
+        return None
+    try:
+        before = os.lstat(absolute)
+    except OSError:
+        return None
+    if (
+        _is_link_or_reparse(before)
+        or not stat.S_ISREG(before.st_mode)
+        or before.st_size <= 0
+        or before.st_size > _MAX_MANIFEST_BYTES
+    ):
+        return None
+    expected_identity = _identity(before)
+    expected_metadata = (
+        int(before.st_ctime_ns),
+        int(before.st_mtime_ns),
+        int(before.st_size),
+    )
     flags = (
         os.O_RDONLY
         | getattr(os, "O_NOFOLLOW", 0)
         | getattr(os, "O_NONBLOCK", 0)
     )
     try:
-        descriptor = os.open(manifest, flags)
+        descriptor = os.open(absolute, flags)
     except OSError:
         return None
     try:
         metadata = os.fstat(descriptor)
         if (
-            not stat.S_ISREG(metadata.st_mode)
+            _is_link_or_reparse(metadata)
+            or not stat.S_ISREG(metadata.st_mode)
+            or _identity(metadata) != expected_identity
             or metadata.st_size <= 0
             or metadata.st_size > _MAX_MANIFEST_BYTES
         ):
@@ -91,24 +159,54 @@ def _read_manifest(manifest: Path) -> Optional[dict[str, Any]]:
             if not chunk:
                 break
             payload.extend(chunk)
-        try:
-            parsed = json.loads(
-                bytes(payload).decode("utf-8"),
-                parse_constant=lambda value: (_ for _ in ()).throw(
-                    ValueError(f"Non-standard JSON constant {value}")
-                ),
-            )
-        except (
-            UnicodeDecodeError,
-            json.JSONDecodeError,
-            TypeError,
-            ValueError,
-            RecursionError,
+            if len(payload) > _MAX_MANIFEST_BYTES:
+                return None
+        opened_after = os.fstat(descriptor)
+        if (
+            _identity(opened_after) != expected_identity
+            or (
+                int(opened_after.st_ctime_ns),
+                int(opened_after.st_mtime_ns),
+                int(opened_after.st_size),
+            ) != expected_metadata
         ):
             return None
-        return parsed if isinstance(parsed, dict) else None
     finally:
         os.close(descriptor)
+    safe_after = _safe_manifest_path(absolute)
+    if safe_after is None:
+        return None
+    try:
+        after = os.lstat(safe_after)
+    except OSError:
+        return None
+    if (
+        _is_link_or_reparse(after)
+        or not stat.S_ISREG(after.st_mode)
+        or _identity(after) != expected_identity
+        or (
+            int(after.st_ctime_ns),
+            int(after.st_mtime_ns),
+            int(after.st_size),
+        ) != expected_metadata
+    ):
+        return None
+    try:
+        parsed = json.loads(
+            bytes(payload).decode("utf-8"),
+            parse_constant=lambda value: (_ for _ in ()).throw(
+                ValueError(f"Non-standard JSON constant {value}")
+            ),
+        )
+    except (
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+        TypeError,
+        ValueError,
+        RecursionError,
+    ):
+        return None
+    return parsed if isinstance(parsed, dict) else None
 
 
 def _manifest_member_paths(root: Path, manifest: Path) -> List[Path]:
@@ -177,6 +275,8 @@ def get_engine() -> AcademicSearchEngine:
 
 
 class InternalSearchInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     query: str = Field(..., min_length=1, max_length=2000)
     limit: int = Field(default=5, ge=1, le=20)
 
@@ -195,11 +295,10 @@ def _bounded_limit(value: Any) -> int:
     if isinstance(value, bool):
         raise ValueError("limit must be an integer.")
     try:
-        numeric = int(value)
+        parsed = operator.index(value)
     except (TypeError, ValueError, OverflowError) as exc:
         raise ValueError("limit must be an integer.") from exc
-    if isinstance(value, float) and not value.is_integer():
-        raise ValueError("limit must be an integer.")
+    numeric = int(parsed)
     if not 1 <= numeric <= _MAX_RESULTS:
         raise ValueError(f"limit must be between 1 and {_MAX_RESULTS}.")
     return numeric
@@ -211,7 +310,7 @@ def search_internal(query: str, limit: int = 5) -> List[Citation]:
     bounded_query = query.strip()
     if not bounded_query:
         return []
-    if len(bounded_query) > 2000 or "\x00" in bounded_query:
+    if len(bounded_query) > 2000 or _contains_ascii_control(bounded_query):
         raise ValueError(
             "Internal-search queries may contain at most 2,000 valid characters."
         )
@@ -224,22 +323,27 @@ def search_internal(query: str, limit: int = 5) -> List[Citation]:
     except Exception:
         return []
     citations: List[Citation] = []
-    for hit in candidates:
-        if not isinstance(hit, SearchHit):
-            continue
-        citations.append(
-            Citation(
-                label=f"[{len(citations) + 1}]",
-                title=hit.title,
-                url=hit.url,
-                source_type="academic_index",
-                snippet=hit.snippet,
-                source_id=hit.url,
-                metadata={
-                    "combined_score": hit.score,
-                    "cosine": hit.cosine,
-                    "pagerank": hit.pagerank,
-                },
-            )
-        )
+    try:
+        for hit in candidates:
+            if not isinstance(hit, SearchHit):
+                continue
+            try:
+                citation = Citation(
+                    label=f"[{len(citations) + 1}]",
+                    title=hit.title,
+                    url=hit.url,
+                    source_type="academic_index",
+                    snippet=hit.snippet,
+                    source_id=hit.url,
+                    metadata={
+                        "combined_score": hit.score,
+                        "cosine": hit.cosine,
+                        "pagerank": hit.pagerank,
+                    },
+                )
+            except Exception:
+                continue
+            citations.append(citation)
+    except Exception:
+        return citations
     return citations
