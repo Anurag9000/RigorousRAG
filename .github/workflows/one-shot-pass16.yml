@@ -111,3 +111,5 @@ jobs:
           git add docs/PASS16_FAILURE.md
           git commit -m "Update pass sixteen verification failure" || exit 0
           git push origin HEAD:main
+
+# Triggered after installation on the default branch.
