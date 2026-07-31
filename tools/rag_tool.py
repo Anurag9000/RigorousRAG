@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import itertools
 import math
+import operator
 from collections.abc import Mapping
 from typing import Any, List, Optional
 
@@ -52,6 +53,7 @@ RAG_SEARCH_TOOL_DEF = {
 }
 
 _MAX_CITATIONS = 50
+_MAX_PAGE_NUMBER = 1_000_000
 
 
 def _contains_ascii_control(value: str) -> bool:
@@ -68,7 +70,7 @@ def _prose(
     if not isinstance(value, str):
         raise ValueError(f"{label} must be a string.")
     rendered = value.strip()
-    if "\x00" in rendered or len(rendered) > maximum:
+    if _contains_ascii_control(rendered) or len(rendered) > maximum:
         raise ValueError(
             f"{label} may contain at most {maximum:,} valid characters."
         )
@@ -96,11 +98,10 @@ def _integer(value: Any, label: str, *, minimum: int, maximum: int) -> int:
     if isinstance(value, bool):
         raise ValueError(f"{label} must be an integer.")
     try:
-        numeric = int(value)
+        parsed = operator.index(value)
     except (TypeError, ValueError, OverflowError) as exc:
         raise ValueError(f"{label} must be an integer.") from exc
-    if isinstance(value, float) and not value.is_integer():
-        raise ValueError(f"{label} must be an integer.")
+    numeric = int(parsed)
     if not minimum <= numeric <= maximum:
         raise ValueError(f"{label} must be between {minimum} and {maximum}.")
     return numeric
@@ -188,7 +189,7 @@ def search_uploaded_docs(
         retrieval_query = generated.strip()
         if not retrieval_query:
             return []
-        if len(retrieval_query) > 20_000 or "\x00" in retrieval_query:
+        if len(retrieval_query) > 20_000 or _contains_ascii_control(retrieval_query):
             raise RuntimeError("The retrieval expansion backend returned invalid text.")
     chunks = rag.query(
         retrieval_query,
@@ -208,7 +209,7 @@ def search_uploaded_docs(
             actual_doc_id = metadata.get("doc_id")
         except Exception:
             continue
-        if not isinstance(metadata_owner, str) or metadata_owner.strip() != owner:
+        if not isinstance(metadata_owner, str) or metadata_owner != owner:
             continue
         if not isinstance(actual_doc_id, str):
             continue
@@ -234,7 +235,7 @@ def search_uploaded_docs(
         if (
             isinstance(page_number, bool)
             or not isinstance(page_number, int)
-            or page_number < 1
+            or not 1 <= page_number <= _MAX_PAGE_NUMBER
         ):
             page_number = None
         raw_chunk_id = _safe_attr(chunk, "id", "")
