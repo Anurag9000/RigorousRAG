@@ -1,8 +1,9 @@
 """Generate one hashed, platform-specific runtime dependency lock.
 
-This script intentionally delegates resolution to ``pip-tools`` in the target operating
-system and Python interpreter. It does not pretend that one lock is portable across
-platforms or Python minors.
+Resolution runs against an immutable bounded snapshot of the checked requirements file and
+publishes through an atomic private-file replacement. The generator intentionally targets
+public PyPI and rejects requirement-file directives that could silently change package
+authority or reopen unsnapshotted local files.
 """
 
 from __future__ import annotations
@@ -10,17 +11,32 @@ from __future__ import annotations
 import argparse
 import os
 import platform
+import re
+import secrets
+import shutil
 import stat
 import subprocess
 import sys
 import sysconfig
+import tempfile
 from pathlib import Path
 from typing import Iterable, Sequence
 
 _MAX_ARGUMENTS = 50
 _MAX_PATH_CHARS = 4096
+_MAX_INPUT_BYTES = 1_000_000
 _MAX_LOCK_BYTES = 20_000_000
+_MAX_GITHUB_OUTPUT_BYTES = 1_000_000
 _FILE_ATTRIBUTE_REPARSE_POINT = 0x0400
+_PUBLIC_INDEX_URL = "https://pypi.org/simple"
+_FORBIDDEN_REQUIREMENT_OPTION = re.compile(
+    r"^(?:"
+    r"--index-url(?:\s|=)|--extra-index-url(?:\s|=)|--trusted-host(?:\s|=)|"
+    r"--find-links(?:\s|=)|--no-index(?:\s|$)|--requirement(?:\s|=)|"
+    r"--constraint(?:\s|=)|-i(?:\s|=)|-f(?:\s|=)|-r(?:\s|=)|-c(?:\s|=)"
+    r")",
+    flags=re.IGNORECASE,
+)
 
 
 def _contains_ascii_control(value: str) -> bool:
@@ -45,7 +61,10 @@ def _bounded_argv(argv: Iterable[str] | None) -> list[str] | None:
 
 
 def _safe_path(value: str | os.PathLike[str], *, label: str) -> Path:
-    rendered = os.fspath(value)
+    try:
+        rendered = os.fspath(value)
+    except TypeError as exc:
+        raise ValueError(f"{label} must be a filesystem path.") from exc
     if (
         not isinstance(rendered, str)
         or not rendered
@@ -85,6 +104,185 @@ def _require_safe_ancestry(path: Path, *, label: str) -> None:
         raise ValueError(f"{label} may not contain symbolic-link or reparse-point components.")
 
 
+def _identity(info: os.stat_result) -> tuple[int, int]:
+    return int(info.st_dev), int(info.st_ino)
+
+
+def _directory_identity(path: Path, *, label: str) -> tuple[int, int]:
+    _require_safe_ancestry(path, label=label)
+    try:
+        info = os.stat(path, follow_symlinks=False)
+    except OSError as exc:
+        raise ValueError(f"{label} is unavailable.") from exc
+    if not stat.S_ISDIR(info.st_mode) or _is_link_or_reparse(info):
+        raise ValueError(f"{label} must be a safe directory.")
+    return _identity(info)
+
+
+def _open_read_flags() -> int:
+    return (
+        os.O_RDONLY
+        | getattr(os, "O_BINARY", 0)
+        | getattr(os, "O_NOINHERIT", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+
+
+def _write_all(descriptor: int, payload: bytes) -> None:
+    offset = 0
+    while offset < len(payload):
+        written = os.write(descriptor, payload[offset:])
+        if written <= 0:
+            raise OSError("A lock file write made no progress.")
+        offset += written
+
+
+def _read_regular_bytes(path: Path, *, label: str, maximum: int) -> bytes:
+    """Read a bounded regular file while verifying one stable identity."""
+
+    absolute = _safe_path(path, label=label)
+    _require_safe_ancestry(absolute, label=label)
+    try:
+        before = os.lstat(absolute)
+    except OSError as exc:
+        raise ValueError(f"{label} must be a safe regular file.") from exc
+    if _is_link_or_reparse(before) or not stat.S_ISREG(before.st_mode):
+        raise ValueError(f"{label} must be a safe regular file.")
+    if before.st_size <= 0 or before.st_size > maximum:
+        raise ValueError(f"{label} is empty or exceeds its byte limit.")
+    expected = _identity(before)
+
+    descriptor = -1
+    try:
+        descriptor = os.open(absolute, _open_read_flags())
+        opened = os.fstat(descriptor)
+        if (
+            _is_link_or_reparse(opened)
+            or not stat.S_ISREG(opened.st_mode)
+            or _identity(opened) != expected
+        ):
+            raise ValueError(f"{label} identity changed while it was being opened.")
+        data = bytearray()
+        while True:
+            remaining = maximum + 1 - len(data)
+            if remaining <= 0:
+                raise ValueError(f"{label} exceeds its byte limit.")
+            chunk = os.read(descriptor, min(64 * 1024, remaining))
+            if not chunk:
+                break
+            data.extend(chunk)
+            if len(data) > maximum:
+                raise ValueError(f"{label} exceeds its byte limit.")
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+    _require_safe_ancestry(absolute, label=label)
+    try:
+        after = os.lstat(absolute)
+    except OSError as exc:
+        raise ValueError(f"{label} changed while it was being read.") from exc
+    if (
+        _is_link_or_reparse(after)
+        or not stat.S_ISREG(after.st_mode)
+        or _identity(after) != expected
+    ):
+        raise ValueError(f"{label} changed while it was being read.")
+    return bytes(data)
+
+
+def _validate_requirements_source(payload: bytes) -> None:
+    try:
+        text = payload.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError("The requirements input must be valid UTF-8.") from exc
+    if any(
+        (ord(character) < 32 and character not in "\t\r\n") or ord(character) == 127
+        for character in text
+    ):
+        raise ValueError("The requirements input contains unsupported control characters.")
+    for raw_line in text.splitlines():
+        stripped = raw_line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        lowered = stripped.lower()
+        if _FORBIDDEN_REQUIREMENT_OPTION.match(stripped):
+            raise ValueError(
+                "The requirements input may not change index authority or include another file."
+            )
+        if (
+            "://" in lowered
+            or lowered.startswith(("git+", "file:", "./", "../", "/"))
+            or re.match(r"^[a-z]:[\\/]", lowered)
+        ):
+            raise ValueError("The requirements input may not contain URL or local-path requirements.")
+
+
+def _exclusive_write(path: Path, payload: bytes, *, label: str) -> None:
+    flags = (
+        os.O_WRONLY
+        | os.O_CREAT
+        | os.O_EXCL
+        | getattr(os, "O_BINARY", 0)
+        | getattr(os, "O_NOINHERIT", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    descriptor = -1
+    try:
+        descriptor = os.open(path, flags, 0o600)
+        opened = os.fstat(descriptor)
+        if _is_link_or_reparse(opened) or not stat.S_ISREG(opened.st_mode):
+            raise ValueError(f"{label} must be a private regular file.")
+        _write_all(descriptor, payload)
+        os.fsync(descriptor)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
+def _publish_lock(
+    destination: Path,
+    payload: bytes,
+    *,
+    expected_parent_identity: tuple[int, int],
+) -> Path:
+    """Publish verified lock bytes through an atomic private-file replacement."""
+
+    if not payload or len(payload) > _MAX_LOCK_BYTES:
+        raise ValueError("The generated lock is empty or exceeds the 20 MB limit.")
+    parent = destination.parent
+    if _directory_identity(parent, label="lock output parent") != expected_parent_identity:
+        raise ValueError("The lock output parent identity changed during generation.")
+    if destination.exists() or destination.is_symlink():
+        info = os.lstat(destination)
+        if _is_link_or_reparse(info) or not stat.S_ISREG(info.st_mode):
+            raise ValueError("The lock output must be absent or a safe regular file.")
+
+    temporary = parent / f".{destination.name}.{secrets.token_hex(16)}.tmp"
+    try:
+        _exclusive_write(temporary, payload, label="temporary lock output")
+        if _directory_identity(parent, label="lock output parent") != expected_parent_identity:
+            raise ValueError("The lock output parent identity changed before publication.")
+        if destination.exists() or destination.is_symlink():
+            info = os.lstat(destination)
+            if _is_link_or_reparse(info) or not stat.S_ISREG(info.st_mode):
+                raise ValueError("The lock output changed to an unsafe entry before publication.")
+        os.replace(temporary, destination)
+        _require_safe_ancestry(destination, label="published lock")
+        final = os.lstat(destination)
+        if _is_link_or_reparse(final) or not stat.S_ISREG(final.st_mode):
+            raise RuntimeError("The published lock is not a safe regular file.")
+        if final.st_size != len(payload):
+            raise RuntimeError("The published lock size differs from the verified bytes.")
+        return destination
+    finally:
+        try:
+            if temporary.exists() and not temporary.is_symlink():
+                temporary.unlink()
+        except OSError:
+            pass
+
+
 def _platform_tag() -> str:
     system = platform.system().strip().lower()
     mapping = {"linux": "linux", "windows": "windows", "darwin": "macos"}
@@ -116,6 +314,59 @@ def _pip_compile_executable() -> Path:
     return candidate
 
 
+def _safe_subprocess_environment() -> dict[str, str]:
+    environment = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.upper().startswith("PIP_")
+    }
+    environment["PIP_DISABLE_PIP_VERSION_CHECK"] = "1"
+    environment["PIP_NO_INPUT"] = "1"
+    environment["PIP_CONFIG_FILE"] = os.devnull
+    return environment
+
+
+def _append_github_output(path: Path, payload: bytes) -> None:
+    """Append one bounded output payload without following a final symlink."""
+
+    parent_identity = _directory_identity(path.parent, label="GITHUB_OUTPUT parent")
+    flags = (
+        os.O_WRONLY
+        | os.O_APPEND
+        | os.O_CREAT
+        | getattr(os, "O_BINARY", 0)
+        | getattr(os, "O_NOINHERIT", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    if path.exists() or path.is_symlink():
+        before = os.lstat(path)
+        if _is_link_or_reparse(before) or not stat.S_ISREG(before.st_mode):
+            raise ValueError("GITHUB_OUTPUT must be a safe regular file.")
+        if before.st_size + len(payload) > _MAX_GITHUB_OUTPUT_BYTES:
+            raise ValueError("GITHUB_OUTPUT exceeds the 1 MB limit.")
+        expected = _identity(before)
+    else:
+        expected = None
+
+    descriptor = -1
+    try:
+        descriptor = os.open(path, flags, 0o600)
+        opened = os.fstat(descriptor)
+        if _is_link_or_reparse(opened) or not stat.S_ISREG(opened.st_mode):
+            raise ValueError("GITHUB_OUTPUT must be a safe regular file.")
+        if expected is not None and _identity(opened) != expected:
+            raise ValueError("GITHUB_OUTPUT identity changed while it was being opened.")
+        if opened.st_size + len(payload) > _MAX_GITHUB_OUTPUT_BYTES:
+            raise ValueError("GITHUB_OUTPUT exceeds the 1 MB limit.")
+        if _directory_identity(path.parent, label="GITHUB_OUTPUT parent") != parent_identity:
+            raise ValueError("GITHUB_OUTPUT parent identity changed before append.")
+        _write_all(descriptor, payload)
+        os.fsync(descriptor)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
 def _write_github_output(destination: Path) -> None:
     """Publish the generated absolute path and artifact name to GitHub Actions."""
 
@@ -123,15 +374,8 @@ def _write_github_output(destination: Path) -> None:
     if not output_value:
         raise RuntimeError("GITHUB_OUTPUT is unavailable.")
     output_path = _safe_path(output_value, label="GITHUB_OUTPUT path")
-    _require_safe_ancestry(output_path.parent, label="GITHUB_OUTPUT parent")
     output_path.parent.mkdir(parents=True, exist_ok=True)
     _require_safe_ancestry(output_path, label="GITHUB_OUTPUT path")
-    if output_path.exists():
-        info = os.stat(output_path, follow_symlinks=False)
-        if not stat.S_ISREG(info.st_mode) or _is_link_or_reparse(info):
-            raise ValueError("GITHUB_OUTPUT must be a safe regular file.")
-        if info.st_size > 1_000_000:
-            raise ValueError("GITHUB_OUTPUT exceeds the 1 MB limit.")
 
     rendered_path = destination.as_posix()
     rendered_name = destination.stem
@@ -142,9 +386,8 @@ def _write_github_output(destination: Path) -> None:
         or len(rendered_name) > 255
     ):
         raise ValueError("Generated workflow output is invalid or too long.")
-    with output_path.open("a", encoding="utf-8", newline="\n") as handle:
-        handle.write(f"path={rendered_path}\n")
-        handle.write(f"name={rendered_name}\n")
+    payload = f"path={rendered_path}\nname={rendered_name}\n".encode("utf-8")
+    _append_github_output(output_path, payload)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -174,49 +417,81 @@ def generate_lock(
 ) -> Path:
     source = _safe_path(input_path, label="input path")
     destination = _safe_path(output_path, label="output path")
-    _require_safe_ancestry(source, label="requirements input")
-    if not source.exists() or not source.is_file():
-        raise ValueError("The requirements input must be a safe regular file.")
-    source_info = os.stat(source, follow_symlinks=False)
-    if not stat.S_ISREG(source_info.st_mode) or _is_link_or_reparse(source_info):
-        raise ValueError("The requirements input must be a safe regular file.")
-    if source_info.st_size > 1_000_000:
-        raise ValueError("The requirements input exceeds the 1 MB limit.")
+    source_bytes = _read_regular_bytes(
+        source,
+        label="requirements input",
+        maximum=_MAX_INPUT_BYTES,
+    )
+    _validate_requirements_source(source_bytes)
     if destination == source:
         raise ValueError("The lock output may not replace the requirements input.")
 
     _require_safe_ancestry(destination.parent, label="lock output parent")
     destination.parent.mkdir(parents=True, exist_ok=True)
+    expected_parent_identity = _directory_identity(
+        destination.parent,
+        label="lock output parent",
+    )
     _require_safe_ancestry(destination, label="lock output")
 
-    command = [
-        str(_pip_compile_executable()),
-        str(source),
-        "--resolver=backtracking",
-        "--generate-hashes",
-        "--allow-unsafe",
-        "--no-annotate",
-        "--no-emit-index-url",
-        "--no-emit-trusted-host",
-        "--output-file",
-        str(destination),
-    ]
-    if upgrade:
-        command.append("--upgrade")
+    staging = Path(
+        tempfile.mkdtemp(prefix=".rigorousrag-lock-", dir=destination.parent)
+    )
+    staging_info = os.lstat(staging)
+    staging_identity = _identity(staging_info)
+    if _is_link_or_reparse(staging_info) or not stat.S_ISDIR(staging_info.st_mode):
+        raise RuntimeError("The private lock staging directory is unsafe.")
+    snapshot = staging / "requirements.in"
+    compiled = staging / "compiled.lock"
+    try:
+        _exclusive_write(snapshot, source_bytes, label="requirements snapshot")
+        command = [
+            str(_pip_compile_executable()),
+            str(snapshot),
+            "--resolver=backtracking",
+            "--generate-hashes",
+            "--allow-unsafe",
+            "--no-annotate",
+            "--index-url",
+            _PUBLIC_INDEX_URL,
+            "--no-emit-index-url",
+            "--no-emit-trusted-host",
+            "--output-file",
+            str(compiled),
+        ]
+        if upgrade:
+            command.append("--upgrade")
 
-    environment = os.environ.copy()
-    environment.setdefault("PIP_DISABLE_PIP_VERSION_CHECK", "1")
-    subprocess.run(command, check=True, env=environment)
-
-    _require_safe_ancestry(destination, label="generated lock")
-    if not destination.exists():
-        raise RuntimeError("pip-tools did not create a safe lock file.")
-    info = os.stat(destination, follow_symlinks=False)
-    if not stat.S_ISREG(info.st_mode) or _is_link_or_reparse(info):
-        raise RuntimeError("The generated lock is not a safe regular file.")
-    if info.st_size <= 0 or info.st_size > _MAX_LOCK_BYTES:
-        raise RuntimeError("The generated lock file is empty or unexpectedly large.")
-    return destination
+        subprocess.run(
+            command,
+            check=True,
+            env=_safe_subprocess_environment(),
+        )
+        compiled_bytes = _read_regular_bytes(
+            compiled,
+            label="generated lock",
+            maximum=_MAX_LOCK_BYTES,
+        )
+        try:
+            compiled_bytes.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise RuntimeError("The generated lock must be valid UTF-8.") from exc
+        return _publish_lock(
+            destination,
+            compiled_bytes,
+            expected_parent_identity=expected_parent_identity,
+        )
+    finally:
+        try:
+            current = os.lstat(staging)
+            if (
+                stat.S_ISDIR(current.st_mode)
+                and not _is_link_or_reparse(current)
+                and _identity(current) == staging_identity
+            ):
+                shutil.rmtree(staging)
+        except OSError:
+            pass
 
 
 def main(argv: Sequence[str] | None = None) -> int:
