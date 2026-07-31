@@ -7,7 +7,7 @@ The commands in this module are deliberately conservative:
 * retirement requires an exact fingerprint and confirmation token;
 * source files, vectors, and document-registry rows are never deleted implicitly;
 * every retirement is recorded in an append-only audit table in the job database;
-* bounded scans report an explicit continuation cursor instead of implying completeness.
+* bounded scans report an explicit continuation cursor and fixed high-water mark.
 
 This is recovery tooling for malformed rows that normal startup replay skips. It is not a
 remote API and should only be run by an operator with direct access to the service state.
@@ -64,6 +64,7 @@ class CorruptJobRecord:
 class CorruptJobScan:
     records: tuple[CorruptJobRecord, ...]
     scanned_rows: int
+    through_rowid: int
     next_after_rowid: int | None
     complete: bool
 
@@ -71,6 +72,7 @@ class CorruptJobScan:
         return {
             "records": [record.public_dict() for record in self.records],
             "scanned_rows": self.scanned_rows,
+            "through_rowid": self.through_rowid,
             "next_after_rowid": self.next_after_rowid,
             "complete": self.complete,
         }
@@ -232,6 +234,7 @@ def _select_rows(
     connection: sqlite3.Connection,
     *,
     after_rowid: int,
+    through_rowid: int,
     limit: int,
 ) -> list[sqlite3.Row]:
     return connection.execute(
@@ -239,19 +242,35 @@ def _select_rows(
         SELECT rowid, job_id, owner_id, status, filename, message, doc_id,
                source_path, attempts, next_attempt_at, created_at, updated_at
         FROM jobs
-        WHERE rowid > ?
+        WHERE rowid > ? AND rowid <= ?
         ORDER BY rowid ASC
         LIMIT ?
         """,
-        (after_rowid, limit),
+        (after_rowid, through_rowid, limit),
     ).fetchall()
 
 
-def _has_rows_after(connection: sqlite3.Connection, rowid: int) -> bool:
+def _maximum_rowid(connection: sqlite3.Connection) -> int:
+    row = connection.execute("SELECT MAX(rowid) AS maximum_rowid FROM jobs").fetchone()
+    value = row["maximum_rowid"] if row is not None else None
+    if value is None:
+        return 0
+    if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= _MAX_ROWID:
+        raise RuntimeError("The durable job rowid range is invalid.")
+    return value
+
+
+def _has_rows_after(
+    connection: sqlite3.Connection,
+    *,
+    rowid: int,
+    through_rowid: int,
+) -> bool:
     return (
         connection.execute(
-            "SELECT 1 FROM jobs WHERE rowid > ? ORDER BY rowid ASC LIMIT 1",
-            (rowid,),
+            "SELECT 1 FROM jobs WHERE rowid > ? AND rowid <= ? "
+            "ORDER BY rowid ASC LIMIT 1",
+            (rowid, through_rowid),
         ).fetchone()
         is not None
     )
@@ -280,9 +299,10 @@ def scan_corrupt_jobs(
     *,
     limit: int = 1000,
     after_rowid: int = 0,
+    through_rowid: int | None = None,
     scan_limit: int = _MAX_SCAN_ROWS,
 ) -> CorruptJobScan:
-    """Scan one bounded rowid page and expose whether a continuation is required."""
+    """Scan one bounded page inside a fixed rowid high-water range."""
 
     if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= _MAX_ROWS:
         raise ValueError(f"limit must be an integer between 1 and {_MAX_ROWS}.")
@@ -292,6 +312,14 @@ def scan_corrupt_jobs(
         or not 0 <= after_rowid <= _MAX_ROWID
     ):
         raise ValueError("after_rowid must be an integer between 0 and SQLite's rowid limit.")
+    if through_rowid is not None and (
+        isinstance(through_rowid, bool)
+        or not isinstance(through_rowid, int)
+        or not 0 <= through_rowid <= _MAX_ROWID
+    ):
+        raise ValueError("through_rowid must be an integer between 0 and SQLite's rowid limit.")
+    if through_rowid is not None and through_rowid < after_rowid:
+        raise ValueError("through_rowid must be greater than or equal to after_rowid.")
     if (
         isinstance(scan_limit, bool)
         or not isinstance(scan_limit, int)
@@ -303,12 +331,16 @@ def scan_corrupt_jobs(
     scanned = 0
     last_processed = after_rowid
     with store._lock, store._connect() as connection:  # noqa: SLF001 - operator boundary
+        fixed_through = _maximum_rowid(connection) if through_rowid is None else through_rowid
+        if fixed_through < after_rowid:
+            raise ValueError("through_rowid must be greater than or equal to after_rowid.")
         stop = False
         while len(records) < limit and scanned < scan_limit and not stop:
             batch_limit = min(_SCAN_BATCH_ROWS, scan_limit - scanned)
             rows = _select_rows(
                 connection,
                 after_rowid=last_processed,
+                through_rowid=fixed_through,
                 limit=batch_limit,
             )
             if not rows:
@@ -326,11 +358,16 @@ def scan_corrupt_jobs(
                 if scanned >= scan_limit:
                     stop = True
                     break
-        has_more = _has_rows_after(connection, last_processed)
+        has_more = _has_rows_after(
+            connection,
+            rowid=last_processed,
+            through_rowid=fixed_through,
+        )
 
     return CorruptJobScan(
         records=tuple(records),
         scanned_rows=scanned,
+        through_rowid=fixed_through,
         next_after_rowid=last_processed if has_more else None,
         complete=not has_more,
     )
@@ -449,6 +486,7 @@ def build_parser() -> argparse.ArgumentParser:
     list_parser = subparsers.add_parser("list", help="List sanitized corrupt-row records.")
     list_parser.add_argument("--limit", type=int, default=1000)
     list_parser.add_argument("--after-rowid", type=int, default=0)
+    list_parser.add_argument("--through-rowid", type=int, default=None)
     list_parser.add_argument("--scan-limit", type=int, default=_MAX_SCAN_ROWS)
 
     retire_parser = subparsers.add_parser(
@@ -470,6 +508,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 store,
                 limit=arguments.limit,
                 after_rowid=arguments.after_rowid,
+                through_rowid=arguments.through_rowid,
                 scan_limit=arguments.scan_limit,
             )
             print(json.dumps(scan.public_dict(), indent=2))
