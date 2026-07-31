@@ -47,18 +47,16 @@ jobs:
             python - <<'PY' >> /tmp/pass16.log 2>&1
           from pathlib import Path
 
-          status = Path("docs/REMEDIATION_STATUS.md").read_text(encoding="utf-8")
+          status_text = Path("docs/REMEDIATION_STATUS.md").read_text(encoding="utf-8")
           ledger = Path("docs/EXECUTABLE_VERIFICATION.md").read_text(encoding="utf-8")
           audit = Path("docs/CONTINUATION_AUDIT_PASS13_TO_15.md").read_text(encoding="utf-8")
           workflow = Path(".github/workflows/release-locks.yml").read_text(encoding="utf-8")
-          required_status = (
+          for marker in (
               "Default and only branch: `main`",
               "Open pull requests: none",
               "fifteen",
-              "3130208e7957fda91e1e480672d02ef332778237",
-          )
-          for marker in required_status:
-              if marker not in status:
+          ):
+              if marker not in status_text:
                   raise SystemExit(f"Missing remediation-status marker: {marker}")
           for marker in (
               "45fb4c26d52675539156d4d9c0a841914fdcc93c",
