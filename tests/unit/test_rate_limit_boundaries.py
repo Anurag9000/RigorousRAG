@@ -1,4 +1,6 @@
 import math
+from decimal import Decimal
+from fractions import Fraction
 
 import pytest
 
@@ -10,15 +12,32 @@ def test_rate_limiter_rejects_malformed_or_out_of_range_configuration():
         {"requests_per_minute": "bad"},
         {"requests_per_minute": True},
         {"requests_per_minute": 1.5},
+        {"requests_per_minute": Decimal("1.5")},
+        {"requests_per_minute": Fraction(3, 2)},
         {"requests_per_minute": 0},
         {"requests_per_minute": 1_000_001},
         {"requests_per_minute": 10, "max_keys": "bad"},
         {"requests_per_minute": 10, "max_keys": False},
         {"requests_per_minute": 10, "max_keys": 1.5},
+        {"requests_per_minute": 10, "max_keys": Decimal("1.5")},
         {"requests_per_minute": 10, "max_keys": 0},
     ):
         with pytest.raises(ValueError):
             SlidingWindowRateLimiter(**arguments)
+
+
+def test_rate_limiter_accepts_exact_index_protocol_settings():
+    class ExactInteger:
+        def __index__(self):
+            return 2
+
+    limiter = SlidingWindowRateLimiter(
+        requests_per_minute=ExactInteger(),
+        max_keys=ExactInteger(),
+    )
+
+    assert limiter.limit == 2
+    assert limiter.max_keys == 2
 
 
 def test_rate_limiter_rejects_invalid_keys_and_clocks():
@@ -29,6 +48,9 @@ def test_rate_limiter_rejects_invalid_keys_and_clocks():
             limiter.retry_after(key)
     for value in (float("nan"), float("inf"), -1):
         with pytest.raises(ValueError, match="finite and non-negative"):
+            limiter.retry_after("alice", now=value)
+    for value in (True, False):
+        with pytest.raises(ValueError, match="not boolean"):
             limiter.retry_after("alice", now=value)
 
 
