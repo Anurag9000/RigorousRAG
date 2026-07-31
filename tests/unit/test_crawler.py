@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
 from bs4 import BeautifulSoup
 
 from Crawler import AcademicCrawler, Page, is_trusted_domain, normalize_url
@@ -34,11 +35,21 @@ def test_crawl_adds_new_seeds_even_with_saved_frontier():
     assert set(result.pages) == {"https://a.test/", "https://b.test/"}
 
 
-def test_rejected_url_is_recorded_as_attempted():
+def test_out_of_allowlist_seed_is_rejected_before_network():
     crawler = AcademicCrawler(allowed_domains=["allowed.test"], request_delay=0)
-    state = crawler.crawl(["https://blocked.test"])
-    assert "https://blocked.test/" in state.visited
-    assert not state.pages
+    crawler._is_allowed_by_robots = MagicMock(
+        side_effect=AssertionError("robots lookup must not run")
+    )
+    crawler._fetch_page = MagicMock(
+        side_effect=AssertionError("page fetch must not run")
+    )
+
+    with pytest.raises(ValueError, match="allowlist"):
+        crawler.crawl(["https://blocked.test"])
+
+    crawler._is_allowed_by_robots.assert_not_called()
+    crawler._fetch_page.assert_not_called()
+    crawler.close()
 
 
 def test_fetch_revalidates_final_redirect_host():
