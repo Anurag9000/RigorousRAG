@@ -52,7 +52,7 @@ def _lexical_absolute(value: str | os.PathLike[str], *, label: str) -> Path:
 
 
 def _safe_lexical_ancestry(path: Path, *, label: str) -> None:
-    """Reject redirected existing components without resolving through them first."""
+    """Reject redirected existing ancestors without resolving through them first."""
 
     for component in (path, *path.parents):
         try:
@@ -68,23 +68,23 @@ def _safe_lexical_ancestry(path: Path, *, label: str) -> None:
 
 
 def _safe_regular_file(path: Path, *, label: str) -> None:
-    _safe_lexical_ancestry(path, label=label)
     try:
         info = os.lstat(path)
     except OSError as exc:
         raise RuntimeError(f"{label} is unavailable.") from exc
     if _is_link_or_reparse(info) or not stat.S_ISREG(info.st_mode):
         raise RuntimeError(f"{label} must be a regular non-symlink file.")
+    _safe_lexical_ancestry(path.parent, label=label)
 
 
 def _safe_directory(path: Path, *, label: str) -> None:
-    _safe_lexical_ancestry(path, label=label)
     try:
         info = os.lstat(path)
     except OSError as exc:
         raise RuntimeError(f"{label} is unavailable.") from exc
     if _is_link_or_reparse(info) or not stat.S_ISDIR(info.st_mode):
         raise RuntimeError(f"{label} must be a real non-symlink directory.")
+    _safe_lexical_ancestry(path.parent, label=label)
 
 
 def frontend_directory() -> Path:
