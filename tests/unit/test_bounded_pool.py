@@ -1,4 +1,6 @@
 import threading
+from decimal import Decimal
+from fractions import Fraction
 
 import pytest
 
@@ -154,9 +156,12 @@ def test_constructor_bounds_and_strictly_validates_limits():
         {"max_workers": "bad", "max_pending": 1},
         {"max_workers": True, "max_pending": 1},
         {"max_workers": 1.5, "max_pending": 2},
+        {"max_workers": Decimal("1.5"), "max_pending": 2},
+        {"max_workers": Fraction(3, 2), "max_pending": 2},
         {"max_workers": 0, "max_pending": 1},
         {"max_workers": 1, "max_pending": False},
         {"max_workers": 1, "max_pending": 1.5},
+        {"max_workers": 1, "max_pending": Decimal("1.5")},
         {"max_workers": 1, "max_pending": 0},
     ]
     for arguments in invalid:
@@ -182,6 +187,23 @@ def test_constructor_bounds_and_strictly_validates_limits():
         assert pool.max_workers == 256
         assert pool.max_pending == 100_000
         assert len(pool._executor._thread_name_prefix) == 100
+    finally:
+        pool.shutdown(wait=True)
+
+
+def test_constructor_accepts_exact_index_protocol_limits():
+    class ExactInteger:
+        def __index__(self):
+            return 2
+
+    pool = BoundedExecutor(
+        max_workers=ExactInteger(),
+        max_pending=ExactInteger(),
+        thread_name_prefix="index-protocol",
+    )
+    try:
+        assert pool.max_workers == 2
+        assert pool.max_pending == 2
     finally:
         pool.shutdown(wait=True)
 
