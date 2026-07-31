@@ -1,8 +1,25 @@
+import os
 from pathlib import Path
 
 import pytest
 
 from scripts import generate_release_lock, verify_release_lock
+
+
+def _hashed_lock(package: str = "requests", version: str = "2.32.4") -> str:
+    return (
+        f"{package}=={version} \\\n"
+        "    --hash=sha256:"
+        + "a" * 64
+        + "\n"
+    )
+
+
+def _write_compiled_output(command, content=None):
+    output_index = command.index("--output-file") + 1
+    output = Path(command[output_index])
+    output.write_text(content or _hashed_lock(), encoding="utf-8")
+    return output
 
 
 def test_verify_release_lock_accepts_pinned_hashed_requirements(tmp_path):
@@ -55,7 +72,7 @@ def test_verify_release_lock_rejects_unreproducible_files(tmp_path, content, mes
         verify_release_lock.verify_lock(lock)
 
 
-def test_generate_release_lock_uses_compile_only_entry_point(tmp_path, monkeypatch):
+def test_generate_release_lock_uses_staged_compile_only_entry_point(tmp_path, monkeypatch):
     source = tmp_path / "requirements.txt"
     source.write_text("requests>=2,<3\n", encoding="utf-8")
     destination = tmp_path / "locks" / "runtime-linux-py312.txt"
@@ -65,14 +82,10 @@ def test_generate_release_lock_uses_compile_only_entry_point(tmp_path, monkeypat
 
     def fake_run(command, check, env):
         calls.append((command, check, env))
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_text(
-            "requests==2.32.4 \\\n"
-            "    --hash=sha256:"
-            + "a" * 64
-            + "\n",
-            encoding="utf-8",
-        )
+        snapshot = Path(command[1])
+        assert snapshot != source
+        assert snapshot.read_text(encoding="utf-8") == "requests>=2,<3\n"
+        _write_compiled_output(command)
 
     monkeypatch.setattr(
         generate_release_lock,
@@ -80,6 +93,8 @@ def test_generate_release_lock_uses_compile_only_entry_point(tmp_path, monkeypat
         lambda: executable,
     )
     monkeypatch.setattr(generate_release_lock.subprocess, "run", fake_run)
+    monkeypatch.setenv("PIP_EXTRA_INDEX_URL", "https://untrusted.invalid/simple")
+    monkeypatch.setenv("PIP_TRUSTED_HOST", "untrusted.invalid")
 
     returned = generate_release_lock.generate_lock(
         input_path=source,
@@ -94,11 +109,84 @@ def test_generate_release_lock_uses_compile_only_entry_point(tmp_path, monkeypat
     assert "piptools" not in command
     assert "--generate-hashes" in command
     assert "--allow-unsafe" in command
+    assert "--index-url" in command
+    assert command[command.index("--index-url") + 1] == "https://pypi.org/simple"
     assert "--no-emit-index-url" in command
     assert "--no-emit-trusted-host" in command
     assert command[-1] == "--upgrade"
     assert environment["PIP_DISABLE_PIP_VERSION_CHECK"] == "1"
+    assert environment["PIP_NO_INPUT"] == "1"
+    assert environment["PIP_CONFIG_FILE"] == os.devnull
+    assert "PIP_EXTRA_INDEX_URL" not in environment
+    assert "PIP_TRUSTED_HOST" not in environment
     assert returned == destination.resolve()
+    assert destination.read_text(encoding="utf-8") == _hashed_lock()
+    assert not list(destination.parent.glob(".rigorousrag-lock-*"))
+
+
+def test_generate_release_lock_snapshot_is_immune_to_source_replacement(tmp_path, monkeypatch):
+    source = tmp_path / "requirements.txt"
+    source.write_text("alpha>=1\n", encoding="utf-8")
+    destination = tmp_path / "locks" / "runtime-linux-py312.txt"
+    executable = tmp_path / "pip-compile"
+    executable.write_text("fixture", encoding="utf-8")
+
+    def fake_run(command, check, env):
+        assert check is True
+        assert env["PIP_CONFIG_FILE"] == os.devnull
+        source.write_text("attacker-package>=9\n", encoding="utf-8")
+        snapshot = Path(command[1])
+        assert snapshot.read_text(encoding="utf-8") == "alpha>=1\n"
+        _write_compiled_output(command, _hashed_lock("alpha", "1.0"))
+
+    monkeypatch.setattr(generate_release_lock, "_pip_compile_executable", lambda: executable)
+    monkeypatch.setattr(generate_release_lock.subprocess, "run", fake_run)
+
+    returned = generate_release_lock.generate_lock(
+        input_path=source,
+        output_path=destination,
+        upgrade=False,
+    )
+
+    assert returned == destination.resolve()
+    assert destination.read_text(encoding="utf-8") == _hashed_lock("alpha", "1.0")
+    assert source.read_text(encoding="utf-8") == "attacker-package>=9\n"
+
+
+@pytest.mark.parametrize(
+    "directive",
+    [
+        "--index-url https://packages.invalid/simple\nrequests>=2\n",
+        "--extra-index-url=https://packages.invalid/simple\nrequests>=2\n",
+        "--trusted-host packages.invalid\nrequests>=2\n",
+        "-r other-requirements.txt\n",
+        "-c constraints.txt\nrequests>=2\n",
+        "package @ https://packages.invalid/package.whl\n",
+        "../local-package\n",
+    ],
+)
+def test_generate_release_lock_rejects_external_authority_and_unsnapshotted_inputs(
+    tmp_path,
+    monkeypatch,
+    directive,
+):
+    source = tmp_path / "requirements.txt"
+    source.write_text(directive, encoding="utf-8")
+    called = False
+
+    def fake_run(*args, **kwargs):
+        nonlocal called
+        called = True
+
+    monkeypatch.setattr(generate_release_lock.subprocess, "run", fake_run)
+
+    with pytest.raises(ValueError, match="index authority|URL or local-path|include another"):
+        generate_release_lock.generate_lock(
+            input_path=source,
+            output_path=tmp_path / "lock.txt",
+            upgrade=False,
+        )
+    assert called is False
 
 
 def test_github_output_contains_absolute_lock_path_and_artifact_name(tmp_path, monkeypatch):
@@ -132,6 +220,23 @@ def test_github_output_refuses_symlink(tmp_path, monkeypatch):
     assert target.read_text(encoding="utf-8") == "unchanged"
 
 
+def test_github_output_refuses_symlinked_ancestor(tmp_path, monkeypatch):
+    destination = tmp_path / "runtime-linux-py312.txt"
+    destination.write_text("fixture", encoding="utf-8")
+    real = tmp_path / "real-output"
+    real.mkdir()
+    linked = tmp_path / "linked-output"
+    try:
+        linked.symlink_to(real, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("Directory symlinks are unavailable in this environment.")
+    monkeypatch.setenv("GITHUB_OUTPUT", str(linked / "github-output.txt"))
+
+    with pytest.raises(ValueError, match="symbolic-link"):
+        generate_release_lock._write_github_output(destination)
+    assert list(real.iterdir()) == []
+
+
 def test_generate_release_lock_refuses_symlinked_output(tmp_path):
     source = tmp_path / "requirements.txt"
     source.write_text("requests>=2,<3\n", encoding="utf-8")
@@ -150,6 +255,68 @@ def test_generate_release_lock_refuses_symlinked_output(tmp_path):
             upgrade=False,
         )
     assert target.read_text(encoding="utf-8") == "unchanged"
+
+
+def test_generate_release_lock_refuses_destination_replaced_during_resolution(
+    tmp_path,
+    monkeypatch,
+):
+    source = tmp_path / "requirements.txt"
+    source.write_text("requests>=2,<3\n", encoding="utf-8")
+    destination = tmp_path / "locks" / "runtime-linux-py312.txt"
+    target = tmp_path / "target.txt"
+    target.write_text("unchanged", encoding="utf-8")
+    executable = tmp_path / "pip-compile"
+    executable.write_text("fixture", encoding="utf-8")
+
+    def fake_run(command, check, env):
+        assert check is True
+        _write_compiled_output(command)
+        try:
+            destination.symlink_to(target)
+        except (OSError, NotImplementedError):
+            pytest.skip("Symlinks are unavailable in this environment.")
+
+    monkeypatch.setattr(generate_release_lock, "_pip_compile_executable", lambda: executable)
+    monkeypatch.setattr(generate_release_lock.subprocess, "run", fake_run)
+
+    with pytest.raises(ValueError, match="unsafe entry"):
+        generate_release_lock.generate_lock(
+            input_path=source,
+            output_path=destination,
+            upgrade=False,
+        )
+    assert target.read_text(encoding="utf-8") == "unchanged"
+
+
+def test_generate_release_lock_refuses_symlinked_generated_output(tmp_path, monkeypatch):
+    source = tmp_path / "requirements.txt"
+    source.write_text("requests>=2,<3\n", encoding="utf-8")
+    destination = tmp_path / "locks" / "runtime-linux-py312.txt"
+    target = tmp_path / "target.txt"
+    target.write_text("unchanged", encoding="utf-8")
+    executable = tmp_path / "pip-compile"
+    executable.write_text("fixture", encoding="utf-8")
+
+    def fake_run(command, check, env):
+        output_index = command.index("--output-file") + 1
+        generated = Path(command[output_index])
+        try:
+            generated.symlink_to(target)
+        except (OSError, NotImplementedError):
+            pytest.skip("Symlinks are unavailable in this environment.")
+
+    monkeypatch.setattr(generate_release_lock, "_pip_compile_executable", lambda: executable)
+    monkeypatch.setattr(generate_release_lock.subprocess, "run", fake_run)
+
+    with pytest.raises(ValueError, match="safe regular file"):
+        generate_release_lock.generate_lock(
+            input_path=source,
+            output_path=destination,
+            upgrade=False,
+        )
+    assert target.read_text(encoding="utf-8") == "unchanged"
+    assert not destination.exists()
 
 
 def test_generate_release_lock_refuses_symlinked_input_ancestor(tmp_path):
