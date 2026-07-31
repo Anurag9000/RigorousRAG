@@ -3,7 +3,8 @@
 ```text
 ......                                                                   [100%]
 6 passed in 0.05s
-Missing remediation-status marker: 3130208e7957fda91e1e480672d02ef332778237
+.github/workflows/one-shot-pass16.yml:            grep -R "agent/exhaustive-remediation\|PR #1 must remain draft\|Branch:.*agent/" \
+Stale active-branch or draft-PR claims remain.
 
 ```
 
