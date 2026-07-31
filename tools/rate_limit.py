@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import operator
 import threading
 import time
 from collections import deque
@@ -13,14 +14,13 @@ def _positive_integer(value: object, label: str) -> int:
     if isinstance(value, bool):
         raise ValueError("Rate-limit settings must be integers.")
     try:
-        parsed = int(value)
+        parsed = operator.index(value)
     except (TypeError, ValueError, OverflowError) as exc:
         raise ValueError("Rate-limit settings must be integers.") from exc
-    if isinstance(value, float) and not value.is_integer():
-        raise ValueError("Rate-limit settings must be integers.")
-    if not 1 <= parsed <= 1_000_000:
+    result = int(parsed)
+    if not 1 <= result <= 1_000_000:
         raise ValueError(f"{label} must be between 1 and 1,000,000.")
-    return parsed
+    return result
 
 
 class SlidingWindowRateLimiter:
@@ -56,6 +56,8 @@ class SlidingWindowRateLimiter:
 
     @staticmethod
     def _time(value: object) -> float:
+        if isinstance(value, bool):
+            raise ValueError("Rate-limit time must be numeric, not boolean.")
         try:
             current = float(value)
         except (TypeError, ValueError, OverflowError) as exc:
