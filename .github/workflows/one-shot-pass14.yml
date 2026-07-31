@@ -36,6 +36,37 @@ jobs:
           python scripts/pass14_patch.py >> /tmp/pass14.log 2>&1
           status=$?
           if [[ $status -eq 0 ]]; then
+            python - <<'PY' >> /tmp/pass14.log 2>&1
+          from pathlib import Path
+
+          boundary = Path("tools/integrity_boundary.py")
+          text = boundary.read_text(encoding="utf-8")
+          old = '''        image_b64, page_number, caption_text = _extract_figure_region(
+              source_bytes,
+              figure,
+          )
+          '''
+          new = '''        image_b64, page_number, caption_text = _implementation._extract_figure_region(
+              source_bytes,
+              figure,
+          )
+          '''
+          if old not in text:
+              raise SystemExit("Expected visual-entailment patch seam is missing.")
+          boundary.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+          tests = Path("tests/unit/test_rag_public_boundaries.py")
+          test_text = tests.read_text(encoding="utf-8")
+          if "rag_module._WINDOWS_REPARSE_POINT" not in test_text:
+              raise SystemExit("Expected reparse regression constant is missing.")
+          tests.write_text(
+              test_text.replace("rag_module._WINDOWS_REPARSE_POINT", "0x400", 1),
+              encoding="utf-8",
+          )
+          PY
+            status=$?
+          fi
+          if [[ $status -eq 0 ]]; then
             python -m compileall -q \
               tools/integrity_boundary.py tools/integrity.py tools/rag.py \
               tests/unit/test_compatibility_reload_boundaries.py \
@@ -67,6 +98,7 @@ jobs:
             tests/unit/test_compatibility_reload_boundaries.py \
             tests/unit/test_rag_public_boundaries.py
           git rm scripts/pass14_patch.py .github/workflows/one-shot-pass14.yml
+          git rm -f docs/PASS14_FAILURE.md
           git diff --cached --check
           git commit -m "Make compatibility layers reimport-safe"
           git push origin HEAD:main
@@ -103,5 +135,3 @@ jobs:
           git add docs/PASS14_FAILURE.md
           git commit -m "Update pass fourteen verification failure" || exit 0
           git push origin HEAD:main
-
-# Triggered after installation on the default branch.
