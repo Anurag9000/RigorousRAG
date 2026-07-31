@@ -3,6 +3,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 EXACT_HEAD_WORKFLOW = ROOT / ".github" / "workflows" / "release-locks.yml"
+EXACT_HEAD_REPORTER = ROOT / ".github" / "workflows" / "exact-head-report.yml"
 _CHECKOUT_PIN = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"
 _SETUP_PYTHON_PIN = "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97"
 _UPLOAD_ARTIFACT_PIN = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
@@ -82,6 +83,22 @@ def test_exact_head_workflow_pins_third_party_actions_by_commit():
     assert "actions/setup-python@v" not in workflow
     assert "actions/upload-artifact@v" not in workflow
     assert workflow.count("persist-credentials: false") == 5
+
+
+def test_exact_head_reporter_only_publishes_the_current_main_head():
+    workflow = EXACT_HEAD_REPORTER.read_text(encoding="utf-8")
+
+    assert "HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}" in workflow
+    assert 'if [[ "${HEAD_BRANCH}" != "main" ]]' in workflow
+    assert 'current_main="$(git rev-parse HEAD)"' in workflow
+    assert 'if [[ "${current_main}" != "${HEAD_SHA}" ]]' in workflow
+    assert "git fetch --no-tags origin main" in workflow
+    assert 'if [[ "$(git rev-parse origin/main)" != "${HEAD_SHA}" ]]' in workflow
+    assert workflow.count("if: steps.eligibility.outputs.publish == 'true'") == 2
+    assert 'r"push|workflow_dispatch"' in workflow
+    assert "pull_request|merge_group" not in workflow.split(
+        "run_url = bounded", 1
+    )[0].split("event_name = bounded", 1)[1]
 
 
 def test_obsolete_duplicate_workflows_are_absent():
