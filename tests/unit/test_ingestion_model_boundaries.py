@@ -1,6 +1,8 @@
 import itertools
 import json
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
+from fractions import Fraction
 
 import pytest
 from pydantic import ValidationError
@@ -77,6 +79,8 @@ def test_required_identifiers_mime_and_text_are_strict():
         ("mime_type", "not-a-mime"),
         ("text", object()),
         ("text", "bad\x00text"),
+        ("text", "bad\x01text"),
+        ("text", "bad\x7ftext"),
     ):
         with pytest.raises(ValidationError):
             _document(**{field: value})
@@ -84,6 +88,18 @@ def test_required_identifiers_mime_and_text_are_strict():
         _document(id="d" * 201)
     with pytest.raises(ValidationError):
         _document(mime_type="m" * 201)
+
+
+def test_document_text_preserves_normal_layout_whitespace():
+    value = "line one\nline two\tcell\r\nline three"
+
+    document = _document(
+        text=value,
+        sections=[DocumentSection(title="Layout", content=value)],
+    )
+
+    assert document.text == value
+    assert document.sections[0].content == value
 
 
 def test_created_at_requires_timezone_and_is_normalized_to_utc():
@@ -152,12 +168,18 @@ def test_metadata_item_count_is_bounded_with_marker_on_assignment():
 
 
 def test_section_fields_and_extra_inputs_are_strict():
-    with pytest.raises(ValidationError, match="page_number"):
-        DocumentSection(title="Section", content="evidence", page_number=True)
+    for page_number in (True, 2.0, Decimal("2"), Fraction(4, 2), 0, 1_000_001):
+        with pytest.raises(ValidationError, match="page_number"):
+            DocumentSection(
+                title="Section",
+                content="evidence",
+                page_number=page_number,
+            )
     with pytest.raises(ValidationError, match="content"):
         DocumentSection(title="Section", content=object())
-    with pytest.raises(ValidationError, match="content"):
-        DocumentSection(title="Section", content="bad\x00content")
+    for content in ("bad\x00content", "bad\x01content", "bad\x7fcontent"):
+        with pytest.raises(ValidationError, match="content"):
+            DocumentSection(title="Section", content=content)
     with pytest.raises(ValidationError):
         DocumentSection(title="Empty", content="")
     with pytest.raises(ValidationError, match="Extra inputs"):
@@ -166,6 +188,21 @@ def test_section_fields_and_extra_inputs_are_strict():
             content="evidence",
             unexpected=True,
         )
+
+
+def test_section_page_number_accepts_exact_index_protocol():
+    class ExactInteger:
+        def __index__(self):
+            return 3
+
+    section = DocumentSection(
+        title="Section",
+        content="evidence",
+        page_number=ExactInteger(),
+    )
+    section.page_number = ExactInteger()
+
+    assert section.page_number == 3
 
 
 def test_section_count_and_infinite_iterables_are_bounded_before_materialization():
