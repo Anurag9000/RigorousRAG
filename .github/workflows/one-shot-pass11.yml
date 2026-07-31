@@ -9,6 +9,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: one-shot-pass-eleven-main
+  cancel-in-progress: true
+
 jobs:
   remediate:
     runs-on: ubuntu-latest
@@ -21,19 +25,31 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-      - name: Apply exact-anchor patches
-        run: python scripts/pass11_patch.py
       - name: Install development dependencies
         run: python -m pip install --upgrade pip && python -m pip install -r requirements-dev.txt
-      - name: Compile patched modules
-        run: python -m compileall -q tools/logger.py tests/unit/test_logger_boundaries.py tests/unit/test_logger_directory_boundary.py
-      - name: Run focused regressions
-        run: >-
-          python -m pytest
-          tests/unit/test_logger_boundaries.py
-          tests/unit/test_logger_directory_boundary.py
-          --no-cov -q
+      - name: Apply and verify with captured diagnostics
+        id: verify
+        shell: bash
+        run: |
+          set +e
+          : > /tmp/pass11.log
+          python scripts/pass11_patch.py >> /tmp/pass11.log 2>&1
+          status=$?
+          if [[ $status -eq 0 ]]; then
+            python -m compileall -q tools/logger.py tests/unit/test_logger_boundaries.py tests/unit/test_logger_directory_boundary.py >> /tmp/pass11.log 2>&1
+            status=$?
+          fi
+          if [[ $status -eq 0 ]]; then
+            python -m pytest \
+              tests/unit/test_logger_boundaries.py \
+              tests/unit/test_logger_directory_boundary.py \
+              --no-cov -q >> /tmp/pass11.log 2>&1
+            status=$?
+          fi
+          cat /tmp/pass11.log
+          echo "status=${status}" >> "$GITHUB_OUTPUT"
       - name: Commit verified remediation directly to main
+        if: steps.verify.outputs.status == '0'
         shell: bash
         run: |
           git config user.name "RigorousRAG Remediation"
@@ -45,5 +61,21 @@ jobs:
           git diff --cached --check
           git commit -m "Harden telemetry identity and rotation boundaries"
           git push origin HEAD:main
-
-# Direct-main trigger update.
+      - name: Publish bounded failure diagnostics
+        if: steps.verify.outputs.status != '0'
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          log = Path('/tmp/pass11.log').read_text(encoding='utf-8', errors='replace')
+          diff = Path('/tmp/pass11.diff')
+          import subprocess
+          result = subprocess.run(['git', 'diff', '--', 'tools/logger.py', 'tests/unit/test_logger_boundaries.py', 'tests/unit/test_logger_directory_boundary.py'], text=True, capture_output=True)
+          payload = '# Pass eleven diagnostic\n\n```text\n' + log[-30000:] + '\n```\n\n```diff\n' + result.stdout[-30000:] + '\n```\n'
+          Path('docs/PASS11_FAILURE.md').write_text(payload, encoding='utf-8')
+          PY
+          git config user.name "RigorousRAG Remediation"
+          git config user.email "actions@users.noreply.github.com"
+          git add docs/PASS11_FAILURE.md
+          git commit -m "Record pass eleven verification failure"
+          git push origin HEAD:main
