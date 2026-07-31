@@ -3,19 +3,6 @@ name: Exact-head verification and release locks
 on:
   workflow_dispatch:
   pull_request:
-    paths:
-      - requirements.txt
-      - requirements-dev.txt
-      - requirements-lock.txt
-      - scripts/generate_release_lock.py
-      - scripts/verify_release_lock.py
-      - .github/workflows/release-locks.yml
-      - Dockerfile
-      - docker-compose.yml
-      - ".dockerignore"
-      - "frontend/**"
-      - "docs/**"
-      - "**/*.py"
   push:
     branches: [main, "agent/**"]
     tags: ["v*"]
