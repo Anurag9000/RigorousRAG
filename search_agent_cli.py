@@ -11,12 +11,19 @@ from typing import Iterable, Optional
 from search_agent import SearchAgent
 from tools.models import AgentAnswer, Citation
 from tools.privacy import mask_metadata_text
+from tools.security import normalize_owner_id
 
 _MAX_QUERY_CHARS = 20_000
 _MAX_DISPLAY_CHARS = 100_000
 _MAX_CITATIONS = 100
 _MAX_WARNINGS = 100
 _MAX_CLI_ARGUMENTS = 10_000
+_MAX_CLI_ARGUMENT_CHARS = 20_000
+_MAX_MODEL_CHARS = 200
+
+
+def _contains_ascii_control(value: str) -> bool:
+    return any(ord(character) < 32 or ord(character) == 127 for character in value)
 
 
 def _bounded_query(value: object) -> str:
@@ -25,12 +32,10 @@ def _bounded_query(value: object) -> str:
     query = value.strip()
     if not query:
         raise ValueError("The query may not be empty.")
-    if len(query) > _MAX_QUERY_CHARS:
+    if len(query) > _MAX_QUERY_CHARS or _contains_ascii_control(query):
         raise ValueError(
-            f"The query may contain at most {_MAX_QUERY_CHARS:,} characters."
+            f"The query may contain at most {_MAX_QUERY_CHARS:,} valid characters."
         )
-    if "\x00" in query:
-        raise ValueError("The query contains an invalid null character.")
     return query
 
 
@@ -45,8 +50,13 @@ def _bounded_argv(argv: Optional[Iterable[str]]) -> Optional[list[str]]:
         raise ValueError("CLI arguments must be iterable.") from exc
     if len(values) > _MAX_CLI_ARGUMENTS:
         raise ValueError(f"At most {_MAX_CLI_ARGUMENTS:,} CLI arguments are supported.")
-    if any(not isinstance(value, str) or "\x00" in value for value in values):
-        raise ValueError("CLI arguments must be valid strings.")
+    if any(
+        not isinstance(value, str)
+        or len(value) > _MAX_CLI_ARGUMENT_CHARS
+        or _contains_ascii_control(value)
+        for value in values
+    ):
+        raise ValueError("CLI arguments must be bounded valid strings.")
     return values
 
 
@@ -80,7 +90,29 @@ def parse_args(argv: Optional[Iterable[str]] = None) -> argparse.Namespace:
 def _display(value: object, limit: int) -> str:
     if not isinstance(value, str):
         return ""
-    return mask_metadata_text(value)[:limit]
+    masked = mask_metadata_text(value)
+    normalized = "".join(
+        " "
+        if ((ord(character) < 32 and character not in "\n\t") or ord(character) == 127)
+        else character
+        for character in masked
+    )
+    return normalized[:limit]
+
+
+def _model_name(value: object) -> str:
+    if not isinstance(value, str):
+        raise ValueError("The model name must be a string.")
+    model = value.strip()
+    if (
+        not model
+        or len(model) > _MAX_MODEL_CHARS
+        or _contains_ascii_control(model)
+    ):
+        raise ValueError(
+            f"The model name must contain 1-{_MAX_MODEL_CHARS} valid characters."
+        )
+    return model
 
 
 def print_result(result: AgentAnswer) -> None:
@@ -124,7 +156,8 @@ def print_result(result: AgentAnswer) -> None:
 def _build_agent(args: argparse.Namespace) -> SearchAgent:
     api_key = os.getenv("OPENAI_API_KEY")
     base_url = os.getenv("OPENAI_BASE_URL")
-    model = args.model
+    model = _model_name(args.model)
+    owner = normalize_owner_id(args.owner_id)
 
     if args.local or args.demo:
         mode_name = "DEMO" if args.demo else "LOCAL"
@@ -146,17 +179,21 @@ def _build_agent(args: argparse.Namespace) -> SearchAgent:
         model=model,
         api_key=api_key,
         base_url=base_url,
-        owner_id=args.owner_id,
+        owner_id=owner,
     )
 
 
 def main(argv: Optional[Iterable[str]] = None) -> int:
     try:
         args = parse_args(argv)
+        single_query = (
+            _bounded_query(args.query)
+            if args.query is not None
+            else None
+        )
         agent = _build_agent(args)
-        if args.query is not None:
-            query = _bounded_query(args.query)
-            result = agent.run(query)
+        if single_query is not None:
+            result = agent.run(single_query)
             print_result(result)
             return 0
 
@@ -178,12 +215,12 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
                 print_result(agent.run(query))
                 print("-" * 40)
             except ValueError as exc:
-                print(f"Invalid query: {exc}")
+                print(f"Invalid query: {_display(str(exc), 500)}")
             except Exception:
                 print("The research request failed. Check the configured local services.")
         return 0
     except ValueError as exc:
-        print(str(exc), file=sys.stderr)
+        print(_display(str(exc), 500), file=sys.stderr)
         return 2
     except Exception:
         print(
