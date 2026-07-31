@@ -10,7 +10,6 @@ on:
       - scripts/generate_release_lock.py
       - scripts/verify_release_lock.py
       - .github/workflows/release-locks.yml
-      - .github/workflows/exact-head-verification.yml
       - Dockerfile
       - docker-compose.yml
       - ".dockerignore"
