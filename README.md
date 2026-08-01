@@ -6,7 +6,9 @@ RigorousRAG is an evidence-oriented academic search and document-research platfo
 - owner-scoped dense and fielded-sparse retrieval over PDF, DOCX, Markdown and text files;
 - authoritative vector+sparse+generation manifests and reconciliation tooling;
 - hybrid, adaptive, corrective and bounded multi-hop retrieval;
+- privacy-safe adaptive trace persistence and offline route experiments;
 - confidence calibration, risk-coverage and abstention analysis;
+- strict local HotpotQA, 2WikiMultiHopQA and MuSiQue evaluation adapters;
 - an OpenAI-compatible request-scoped research agent;
 - bounded scholarly, web, page, handbook and scientific-analysis tools;
 - crash-recoverable ingestion, optional bounded OCR and retained-source management;
@@ -45,10 +47,13 @@ graph LR
     ResearchPool --> Agent[Request-scoped agent]
     Agent --> Adaptive[Adaptive/corrective planner]
     Adaptive --> Hybrid[Dense+sparse corpus retrieval]
+    Adaptive --> Trace[Privacy-safe trace store]
+    Adaptive --> RouteEval[Offline route experiments]
     Agent --> MultiHop[Bounded decomposition DAG]
     MultiHop --> Budget[Global estimated-cost allocator]
     Budget --> Adaptive
     MultiHop --> Metrics[Answer/support/path/lineage metrics]
+    Benchmarks[HotpotQA / 2Wiki / MuSiQue] --> Metrics
     Agent --> PublicTools[Scholarly, web, page, handbook]
     Agent --> Science[Scientific evidence tools]
     Science --> Registry
@@ -85,13 +90,22 @@ Detailed architecture and trust boundaries are in [Goals and Architecture](docs/
 - weighted/RRF fusion, MMR and optional reranking;
 - BEIR-style evaluation and resumable experiment records.
 
-### Adaptive and multi-hop retrieval
+### Adaptive retrieval, traces and route experiments
 
 - query intent and complexity analysis;
 - evidence sufficiency using score, diversity, provenance and generation signals;
 - bounded corrective attempts with cost estimates and traces;
 - conservative abstention when evidence remains insufficient;
-- Brier score, ECE, reliability bins, isotonic calibration and risk-coverage analysis;
+- privacy-safe SQLite trace persistence using query hashes and bounded aggregate records;
+- strict filtering of private/internal fields from public adaptive payloads;
+- offline reproducible dense, sparse, hybrid, web and scholarly route fixtures;
+- router/oracle success, route accuracy, utility, latency/cost proxy and regret reports;
+- Brier score, ECE, reliability bins, isotonic calibration and risk-coverage analysis.
+
+The route experiment harness verifies routing mechanics and report reproducibility. It does not establish calibrated production routing until representative connected experiments, repeated seeds and promotion thresholds are completed.
+
+### Multi-hop retrieval and evaluation
+
 - bounded deterministic or strict-schema model-assisted query decomposition;
 - validated acyclic dependency graphs with stable fingerprints;
 - parallel independent hops and serial dependent batches;
@@ -99,9 +113,13 @@ Detailed architecture and trust boundaries are in [Goals and Architecture](docs/
 - a hard global estimated-cost ceiling with minimum-attempt reservation and per-hop allocation;
 - immutable hop/source/document/page lineage;
 - evidence joins without synthetic citations or source collapse;
-- answer exact match/token F1, document/support precision-recall-F1, path completeness, hop coverage, lineage validity and abstention metrics.
+- answer exact match/token F1 and document/support precision-recall-F1;
+- page, section, field, source, sentence and paragraph support locators;
+- path completeness, hop coverage, lineage validity and abstention metrics;
+- strict local HotpotQA, 2WikiMultiHopQA and MuSiQue JSON/JSONL adapters;
+- dataset byte fingerprints, UTF-8/size/nesting limits, duplicate-key/NaN refusal and symlink/reparse protection.
 
-The public multi-hop module is implemented and focused-tested; full agent/API/browser registration remains an explicit integration task. Estimated cost is currently a deterministic workload proxy, not a measured token, latency or monetary-cost model.
+The public multi-hop module is implemented and focused-tested; full agent/API/browser registration remains an explicit integration task. Estimated cost is a deterministic workload proxy, not measured token, latency or monetary cost. Dataset adapters validate formats but do not download data or establish license suitability.
 
 ### Scientific and public evidence tools
 
@@ -152,7 +170,7 @@ Copy `.env.example` and set only values needed for the deployment. Important gro
 | Query/tool admission | `QUERY_WORKERS`, `QUERY_MAX_PENDING`, `MAX_CONCURRENT_TOOL_WORKERS`, `MAX_PENDING_TOOL_TASKS` |
 | Upload/ingestion | `MAX_REQUEST_BODY_BYTES`, `MAX_UPLOAD_BYTES`, `INGEST_WORKERS`, `INGEST_MAX_ATTEMPTS` |
 | Parsing/OCR | `MAX_PDF_PAGES`, `MAX_EXTRACTED_CHARS`, `MAX_DOCX_MEMBERS`, `ENABLE_OCR`, `OCR_MAX_PAGES` |
-| Storage | `CHROMA_PATH`, sparse/generation database paths, registry/job database paths |
+| Storage | `CHROMA_PATH`, sparse/generation/registry/job database paths, optional `ADAPTIVE_TRACE_DB_PATH` |
 | Network | `MAX_REMOTE_DOWNLOAD_BYTES`, `REMOTE_REQUEST_TIMEOUT_SECONDS`, `MAX_REMOTE_REDIRECTS` |
 | Deployment | `RIGOROUSRAG_BIND_ADDRESS`, `RIGOROUSRAG_PORT` |
 
@@ -242,7 +260,7 @@ The exact-head workflow additionally covers Python/platform release locks and Wi
 
 ### Current verification state
 
-Release readiness is **not claimed**. Focused decomposition, model-boundary, budgeting, multi-hop execution and evaluation verification passed 30 local tests and Python compilation, but Ruff was unavailable locally. No complete green workflow is observable through the available connector for the latest exact `main` SHA, and the constrained execution environment cannot resolve GitHub hosts to perform a clean clone. See [Current Remediation Status](docs/REMEDIATION_STATUS.md).
+Release readiness is **not claimed**. Focused decomposition, model-boundary, budgeting, multi-hop execution, evaluation and dataset-adapter verification passed **35 local tests**, and Python compilation passed for those seven modules and tests. Ruff was unavailable locally. No complete green workflow is observable through the available connector for the latest exact `main` SHA, and the constrained execution environment cannot resolve GitHub hosts to perform a clean clone. See [Current Remediation Status](docs/REMEDIATION_STATUS.md).
 
 ## Known limitations
 
@@ -258,6 +276,7 @@ Release readiness is **not claimed**. Focused decomposition, model-boundary, bud
 - Estimated cost is not measured latency, token or monetary cost.
 - Retrieval and citation lineage do not prove answer entailment.
 - The heuristic answer-support metric does not prove entailment.
+- Dataset-format validation does not establish dataset quality, representativeness or licensing.
 
 ## Roadmap
 
