@@ -1,15 +1,23 @@
 # Bounded multi-hop retrieval
 
-RigorousRAG now includes a deterministic foundation for decomposing complex uploaded-document questions into an acyclic dependency graph and executing that graph without losing citation lineage.
+RigorousRAG includes a bounded foundation for decomposing complex uploaded-document questions into an acyclic dependency graph and executing that graph without losing citation lineage.
 
 ## Components
 
 - `tools/query_decomposition.py`
   - validates the original query and every subquestion;
-  - supports explicit operator/model proposals or deterministic heuristic decomposition;
+  - supports explicit proposals or deterministic heuristic decomposition;
   - extracts bounded entity and temporal constraints;
   - rejects duplicate IDs, missing dependencies, cycles, controls and oversized values;
   - emits stable topological batches, terminal nodes and a SHA-256 plan fingerprint.
+- `tools/decomposition_model.py`
+  - accepts at most one bounded planning response from an OpenAI-compatible client;
+  - uses a closed JSON schema that allows planning fields only;
+  - rejects answers, citations, URLs and unsupported fields;
+  - hashes the provider response without retaining model-authored evidence;
+  - falls back to deterministic decomposition on provider or validation failure;
+  - reports bounded token/entity/time/redundancy/parallelism/depth diagnostics;
+  - does not treat its quality score as proof of optimality.
 - `tools/multihop_retrieval.py`
   - runs independent nodes in the same batch concurrently;
   - runs dependent batches only after their prerequisites resolve;
@@ -31,7 +39,12 @@ RigorousRAG now includes a deterministic foundation for decomposing complex uplo
 
 ```mermaid
 graph TD
-    Q[Complex query] --> D[Validated decomposition plan]
+    Q[Complex query] --> P{Planning mode}
+    P -->|Deterministic| D[Validated decomposition plan]
+    P -->|Model proposal| S[Closed-schema validation]
+    S -->|Valid| D
+    S -->|Invalid/provider failure| F[Deterministic fallback]
+    F --> D
     D --> B1[Independent batch]
     B1 --> H1[Hop 1 adaptive retrieval]
     B1 --> H2[Hop 2 adaptive retrieval]
@@ -47,6 +60,19 @@ graph TD
 ```
 
 A topological batch is a set of nodes whose dependencies are already resolved. Nodes inside one batch may run in parallel. Batches run serially. The executor does not let a dependent node run when a required prerequisite has no evidence unless the caller explicitly disables that safeguard.
+
+## Model-planning trust boundary
+
+Model-assisted planning is optional and does not grant evidence authority. The provider may only propose:
+
+- `question_id`;
+- `text`;
+- `depends_on`;
+- `entities`;
+- `temporal_constraints`;
+- `relation`.
+
+The response root may contain only `subquestions`. Every node is passed through the same bounded DAG validator used for deterministic plans. Unsupported fields such as an answer or citation fail closed. Only a SHA-256 response digest, a generic fallback reason and plan diagnostics are retained.
 
 ## Citation-lineage rule
 
@@ -74,7 +100,8 @@ Raw prerequisite passages are not concatenated into the query. The propagated te
 
 ## Failure behavior
 
-- Invalid decomposition proposals fail before retrieval.
+- Invalid deterministic or model-proposed decompositions fail before retrieval.
+- Provider failures and malformed model JSON fall back deterministically.
 - Cyclic or dangling dependency graphs fail closed.
 - A malformed retrieval collection becomes a hop error.
 - A timed-out hop publishes no late evidence.
@@ -83,6 +110,19 @@ Raw prerequisite passages are not concatenated into the query. The propagated te
 - The final result abstains when terminal hops produce no evidence.
 
 Python threads cannot forcibly terminate provider code that ignores deadlines. The executor records the timeout and refuses late evidence, but host-level isolation is still required for forcible termination.
+
+## Plan-quality diagnostics
+
+The deterministic quality report measures bounded structural signals:
+
+- original-query token coverage by leaf retrieval questions;
+- explicit entity retention;
+- temporal constraint retention;
+- pairwise lexical redundancy;
+- available parallelism;
+- maximum graph depth.
+
+The aggregate score is a diagnostic for experiments and regression tests. It is not a learned judge and is not evidence that one decomposition is semantically best.
 
 ## Verification committed
 
@@ -101,14 +141,17 @@ Focused contracts cover:
 - timeout behavior without fabricated evidence;
 - public adaptive multi-hop execution;
 - bounded dependency-term propagation;
-- citation/lineage payload separation.
+- citation/lineage payload separation;
+- strict model-proposal schema acceptance and rejection;
+- provider-response digesting;
+- deterministic provider fallback;
+- bounded plan-quality diagnostics.
 
-The focused local suite passed 12 tests. This is not a substitute for the complete exact-head repository matrix.
+The focused local suite passed 18 tests. Python compilation passed for the four new modules and tests. This is not a substitute for the complete exact-head repository matrix.
 
 ## Remaining multi-hop work
 
-- model-assisted decomposition under a strict schema and deterministic fallback;
-- learned decomposition ranking;
+- learned decomposition ranking and benchmark-calibrated plan selection;
 - dynamic entity resolution and temporal normalization;
 - graph-aware retrieval budgets across heterogeneous corpora;
 - web/scholarly/uploaded-document cross-corpus hops;
@@ -119,7 +162,7 @@ The focused local suite passed 12 tests. This is not a substitute for the comple
 
 ## Non-claims
 
-- A valid dependency graph does not prove that the decomposition is semantically optimal.
+- A valid dependency graph or high diagnostic score does not prove that the decomposition is semantically optimal.
 - A cross-hop join does not prove that two passages support the same claim.
 - Retrieval success does not prove answer correctness.
 - Citation lineage does not prove semantic entailment.
