@@ -43,7 +43,7 @@ def build():
 
 def test_shadow_claim_excludes_validated_tasks_and_claims_planned_work(tmp_path):
     journal = MigrationJournal(tmp_path / "journal.sqlite3")
-    first, second = journal.seed((candidate("doc-1", 1), candidate("doc-2", 2)), now=1.0)
+    first = journal.seed((candidate("doc-1", 1),), now=1.0)[0]
     claimed = journal.claim(
         owner_id="alice",
         worker_id="validator",
@@ -57,6 +57,7 @@ def test_shadow_claim_excludes_validated_tasks_and_claims_planned_work(tmp_path)
         validation_digest="e" * 64,
         now=3.0,
     )
+    second = journal.seed((candidate("doc-2", 2),), now=3.5)[0]
     shadow_claim = claim_shadow_build_task(
         journal,
         owner_id="alice",
