@@ -7,11 +7,23 @@ import math
 import operator
 import re
 from collections import Counter
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from typing import Any
 
 from tools.adaptive_rag_tool import search_uploaded_docs_adaptive
-from tools.multihop_retrieval import HopEvidence, MultiHopResult, run_multihop_retrieval
+from tools.decomposition_model import (
+    DecompositionDecision,
+    propose_decomposition,
+    score_decomposition_plan,
+)
+from tools.multihop_budget import MultiHopBudget, allocate_multihop_budget
+from tools.multihop_retrieval import (
+    EvidenceJoin,
+    HopEvidence,
+    HopTrace,
+    MultiHopResult,
+    run_multihop_retrieval,
+)
 from tools.query_decomposition import Subquestion, build_decomposition_plan
 
 _MAX_QUERY_CHARS = 10_000
@@ -93,17 +105,33 @@ MULTIHOP_RAG_SEARCH_TOOL_DEF = {
                     "maximum": 600,
                     "default": 30,
                 },
+                "use_model_decomposition": {
+                    "type": "boolean",
+                    "default": False,
+                },
+                "decomposition_model": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200,
+                    "default": "gpt-4o-mini",
+                },
                 "max_attempts": {
                     "type": "integer",
                     "minimum": 1,
                     "maximum": 6,
                     "default": 3,
                 },
+                "max_total_estimated_cost": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 100000,
+                    "default": 1200,
+                },
                 "max_estimated_cost": {
                     "type": "integer",
                     "minimum": 1,
-                    "maximum": 5000,
-                    "default": 240,
+                    "maximum": 10000,
+                    "default": 500,
                 },
             },
             "required": ["query"],
@@ -171,6 +199,33 @@ def _hop_query(question: Subquestion, dependencies: tuple[HopEvidence, ...]) -> 
     return "\n".join(parts)[:_MAX_QUERY_CHARS]
 
 
+@dataclass(frozen=True)
+class MultiHopRAGResult:
+    retrieval: MultiHopResult
+    decomposition: DecompositionDecision
+    budget: MultiHopBudget
+
+    @property
+    def evidence(self) -> tuple[HopEvidence, ...]:
+        return self.retrieval.evidence
+
+    @property
+    def traces(self) -> tuple[HopTrace, ...]:
+        return self.retrieval.traces
+
+    @property
+    def joins(self) -> tuple[EvidenceJoin, ...]:
+        return self.retrieval.joins
+
+    @property
+    def terminal_evidence_count(self) -> int:
+        return self.retrieval.terminal_evidence_count
+
+    @property
+    def abstain(self) -> bool:
+        return self.retrieval.abstain
+
+
 def search_uploaded_docs_multihop(
     query: str,
     *,
@@ -180,12 +235,15 @@ def search_uploaded_docs_multihop(
     per_hop_limit: int = 8,
     max_workers: int = 4,
     hop_timeout_seconds: float = 30.0,
+    use_model_decomposition: bool = False,
+    decomposition_model: str = "gpt-4o-mini",
     max_attempts: int = 3,
-    max_estimated_cost: int = 240,
+    max_total_estimated_cost: int = 1_200,
+    max_estimated_cost: int = 500,
     agent_client: Any = None,
     expansion_model: str = "gpt-4o-mini",
     diversity_lambda: float = 0.82,
-) -> MultiHopResult:
+) -> MultiHopRAGResult:
     """Execute adaptive uploaded-document retrieval over a bounded decomposition DAG."""
 
     question_limit = _integer(max_subquestions, "max_subquestions", 1, 12)
@@ -193,8 +251,39 @@ def search_uploaded_docs_multihop(
     workers = _integer(max_workers, "max_workers", 1, 16)
     timeout = _positive_float(hop_timeout_seconds, "hop_timeout_seconds", 600.0)
     attempts = _integer(max_attempts, "max_attempts", 1, 6)
-    estimated_cost = _integer(max_estimated_cost, "max_estimated_cost", 1, 5000)
-    plan = build_decomposition_plan(query, max_subquestions=question_limit)
+    total_cost = _integer(
+        max_total_estimated_cost,
+        "max_total_estimated_cost",
+        1,
+        100_000,
+    )
+    per_hop_cost = _integer(max_estimated_cost, "max_estimated_cost", 1, 10_000)
+    if not isinstance(use_model_decomposition, bool):
+        raise ValueError("use_model_decomposition must be a boolean.")
+    deterministic = build_decomposition_plan(query, max_subquestions=question_limit)
+    if use_model_decomposition:
+        decision = propose_decomposition(
+            deterministic.query,
+            client=agent_client,
+            model=decomposition_model,
+            max_subquestions=question_limit,
+        )
+    else:
+        decision = DecompositionDecision(
+            plan=deterministic,
+            used_model=False,
+            fallback_reason=None,
+            response_digest=None,
+            quality=score_decomposition_plan(deterministic),
+        )
+    plan = decision.plan
+    budget = allocate_multihop_budget(
+        plan,
+        top_k=result_limit,
+        total_limit=total_cost,
+        per_hop_limit=per_hop_cost,
+    )
+    budget_by_id = budget.by_id()
 
     def retrieve(
         question: Subquestion,
@@ -206,14 +295,14 @@ def search_uploaded_docs_multihop(
             doc_id=doc_id,
             top_k=result_limit,
             max_attempts=attempts,
-            max_estimated_cost=estimated_cost,
+            max_estimated_cost=budget_by_id[question.question_id].max_estimated_cost,
             agent_client=agent_client,
             expansion_model=expansion_model,
             diversity_lambda=diversity_lambda,
         )
         return adaptive.evidence
 
-    return run_multihop_retrieval(
+    retrieval = run_multihop_retrieval(
         plan,
         search=retrieve,
         max_workers=workers,
@@ -221,6 +310,7 @@ def search_uploaded_docs_multihop(
         hop_timeout_seconds=timeout,
         require_dependency_evidence=True,
     )
+    return MultiHopRAGResult(retrieval, decision, budget)
 
 
 def _citation_payload(value: Any) -> dict[str, Any] | None:
@@ -235,13 +325,14 @@ def _citation_payload(value: Any) -> dict[str, Any] | None:
     return None
 
 
-def multihop_result_payload(result: MultiHopResult) -> dict[str, Any]:
+def multihop_result_payload(result: MultiHopRAGResult) -> dict[str, Any]:
     """Serialize bounded traces while keeping citations and lineage separate."""
 
-    if not isinstance(result, MultiHopResult):
-        raise ValueError("result must be a MultiHopResult.")
+    if not isinstance(result, MultiHopRAGResult):
+        raise ValueError("result must be a MultiHopRAGResult.")
+    retrieval = result.retrieval
     evidence: list[dict[str, Any]] = []
-    for item in result.evidence:
+    for item in retrieval.evidence:
         citation = _citation_payload(item.raw)
         if citation is None:
             continue
@@ -259,19 +350,34 @@ def multihop_result_payload(result: MultiHopResult) -> dict[str, Any]:
             }
         )
     return {
-        "plan_fingerprint": result.plan_fingerprint,
+        "plan_fingerprint": retrieval.plan_fingerprint,
+        "decomposition": {
+            "used_model": result.decomposition.used_model,
+            "fallback_reason": result.decomposition.fallback_reason,
+            "response_digest": result.decomposition.response_digest,
+            "quality": asdict(result.decomposition.quality),
+            "subquestions": [
+                asdict(item) for item in result.decomposition.plan.subquestions
+            ],
+            "batches": [list(batch) for batch in result.decomposition.plan.batches],
+            "terminal_questions": list(
+                result.decomposition.plan.terminal_questions
+            ),
+        },
+        "budget": asdict(result.budget),
         "evidence": evidence,
-        "traces": [asdict(trace) for trace in result.traces],
-        "joins": [asdict(join) for join in result.joins],
-        "terminal_questions": list(result.terminal_questions),
-        "terminal_evidence_count": result.terminal_evidence_count,
-        "exhausted": result.exhausted,
-        "abstain": result.abstain,
+        "traces": [asdict(trace) for trace in retrieval.traces],
+        "joins": [asdict(join) for join in retrieval.joins],
+        "terminal_questions": list(retrieval.terminal_questions),
+        "terminal_evidence_count": retrieval.terminal_evidence_count,
+        "exhausted": retrieval.exhausted,
+        "abstain": retrieval.abstain,
     }
 
 
 __all__ = [
     "MULTIHOP_RAG_SEARCH_TOOL_DEF",
+    "MultiHopRAGResult",
     "multihop_result_payload",
     "search_uploaded_docs_multihop",
 ]
