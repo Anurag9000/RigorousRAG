@@ -8,7 +8,7 @@ This is the authoritative capability-expansion ledger for `main`. A checked impl
 
 - Development is committed directly to `main`.
 - No feature branches or pull requests are used.
-- Implementation, tests, documentation, configuration and TODO state must remain aligned.
+- Implementation, tests, documentation, configuration and TODO state remain aligned.
 - Release claims require the authoritative exact-head workflow on one unchanged `main` SHA.
 
 ## Wave 1 — retrieval and evaluation foundation
@@ -30,8 +30,7 @@ This is the authoritative capability-expansion ledger for `main`. A checked impl
 ### Focused verification evidence
 
 - 12 Wave 1 tests passed in the local constrained harness.
-- Compilation and AST parsing passed for the Wave 1 changed surfaces.
-- Ruff and the complete repository matrix were not established in that local environment.
+- Compilation and AST parsing passed for changed Wave 1 surfaces.
 
 ## Wave 2A — embedding governance and persistent sparse index
 
@@ -49,7 +48,7 @@ This is the authoritative capability-expansion ledger for `main`. A checked impl
 
 - 21 Wave 2A tests and 33 combined Wave 1+2A tests passed in the local constrained harness.
 
-## Wave 2B — authoritative durable generations
+## Wave 2B — authoritative four-store lifecycle foundation
 
 ### Implemented
 
@@ -69,24 +68,60 @@ This is the authoritative capability-expansion ledger for `main`. A checked impl
 - [x] Bounded operator scan/plan CLI.
 - [x] Exact-confirmation cleanup for deleted-generation residue.
 - [x] Independent runtime paths for vector, sparse and generation databases.
+- [x] Durable retained-registry replacement/deletion outbox.
+- [x] Deterministic owner/document lifecycle operation IDs.
+- [x] Planned, index-committed, registry-committed, completed and failed phases.
+- [x] Worker leases, renewal, release, retry ceilings and generic failure types.
+- [x] Exact generation sequence/content-hash reconciliation.
+- [x] Crash recovery after index commit without duplicate vector/sparse writes.
+- [x] Pending deletion identity reuse after the generation sequence changes.
+- [x] Private cleanup-intent journal persisted before registry mutation.
+- [x] Idempotent retained-source cleanup after process crashes.
+- [x] Startup reconciliation before the first RAG retrieval layer is served.
+- [x] API/durable-job retained-source lifecycle coordination.
+- [x] Batch retained-source copy bridge with owner/byte identity validation.
+- [x] One-use context-local batch source intent and temporary private source binding.
+- [x] Redundant batch registration short-circuit before a second SQLite write.
+- [x] Privacy-safe lifecycle pending/status/reconcile/retry CLI.
+- [x] Exact-confirmation reset of failed lifecycle operations.
+- [x] Configurable lifecycle outbox, cleanup journal, claim limit and lease duration.
 
 ### Tests/contracts committed
 
 - generation-store lifecycle, sequence, corruption and identity tests;
-- vector snapshot/restore tests;
-- deterministic sparse-field tests;
+- vector snapshot/restore and deterministic sparse-field tests;
 - three-store replacement/deletion/compensation tests;
 - authoritative public/raw deletion tests;
-- document-service integration tests;
-- batch registry-failure restoration tests;
-- reconciliation CLI tests.
+- document-service and batch restoration tests;
+- lifecycle operation ID, phase and immutable-field tests;
+- lease, renewal, release, retry and generic failure tests;
+- exact replacement/deletion generation checks;
+- registry failure replay without reindexing;
+- cleanup intent ordering and already-absent cleanup replay;
+- deletion operation-ID reuse and duplicate-delete refusal;
+- database/parent identity and symlink/reparse refusal;
+- startup reconciliation before RAG construction;
+- root-scoped idempotent source removal;
+- operator CLI privacy, bounds and confirmation tests;
+- batch owner/byte identity and one-use context tests;
+- idempotent batch registration short-circuit tests;
+- import-hook behavior for modules that replace themselves in `sys.modules`.
+
+### Focused verification evidence
+
+- The partial local lifecycle core/runtime/boundary/import suite passed 22 tests.
+- The batch-source bridge and lifecycle operator CLI passed 10 additional focused local tests.
+- Python compilation passed for the locally exercised lifecycle modules and tests.
+- Full exact-head, Windows and multi-process fault injection remains required.
 
 ### Still open in Wave 2B
 
-- [ ] Include the retained-document registry as a fourth coordinated participant or durable outbox consumer.
-- [ ] Startup reconciliation and resumable repair execution.
-- [ ] Adoption/reindex workflows for existing pre-manifest documents.
-- [ ] Fault-injection execution on the exact current repository head.
+- [ ] Retention/compaction policy for completed lifecycle operations.
+- [ ] Privacy-safe operator audit export and job/lifecycle correlation reports.
+- [ ] Periodic reconciliation or distributed leadership for multi-process deployment.
+- [ ] Retained-source reindex for vector-only, sparse-only and manifest-only states.
+- [ ] Explicitly reviewed adoption for verified aligned pre-manifest stores.
+- [ ] Exact-head fault injection at every vector/sparse/manifest/registry/cleanup phase.
 
 ## Wave 2C — corpus-level hybrid retrieval
 
@@ -104,17 +139,6 @@ This is the authoritative capability-expansion ledger for `main`. A checked impl
 - [x] Explicit `corpus-sparse` and `corpus-hybrid` agent-tool modes.
 - [x] Protected citation metadata precedence.
 - [x] Partial expanded-query failure containment.
-
-### Tests/contracts committed
-
-- sparse-only recall beyond the dense pool;
-- stale generation rejection;
-- cross-owner and hash/profile mismatch rejection;
-- document filter propagation;
-- deleted/missing manifest rejection;
-- corpus-mode routing and provenance;
-- protected metadata behavior;
-- partial and total expanded-query failures.
 
 ### Still open in Wave 2C
 
@@ -182,17 +206,6 @@ This is the authoritative capability-expansion ledger for `main`. A checked impl
 - [x] Dependency-free isotonic confidence calibration.
 - [x] Risk-coverage curves and abstention-threshold selection.
 
-### Tests/contracts committed
-
-- exact/comparison/method/temporal routing behavior;
-- evidence-sufficiency boundaries and corrective-plan ceilings;
-- hostile input, iterator and provider-failure containment;
-- trace-store lifecycle, isolation, corruption and privacy behavior;
-- adaptive API payload filtering and persistence behavior;
-- route selection, oracle comparison, regret and adapter-failure behavior;
-- strict reproducible route fixture and CLI behavior;
-- reliability bins, calibration metrics and abstention thresholds.
-
 ### Still open in Wave 3
 
 - [ ] Representative benchmark calibration of evidence coefficients and decision thresholds.
@@ -202,7 +215,7 @@ This is the authoritative capability-expansion ledger for `main`. A checked impl
 - [ ] Repeated-seed adaptive-policy ablations, confidence intervals and promotion gates.
 - [ ] Trace retention, compaction, export and dashboards.
 
-## Wave 4 — decomposition, budgeted multi-hop retrieval and benchmark foundation
+## Wave 4 — decomposition, heterogeneous multi-hop and benchmark foundation
 
 ### Implemented
 
@@ -222,40 +235,44 @@ This is the authoritative capability-expansion ledger for `main`. A checked impl
 - [x] Public adaptive uploaded-document multi-hop tool.
 - [x] Citation and lineage separation in serialized output.
 - [x] Terminal-evidence abstention.
-- [x] Strict closed-schema parsing of model-proposed decomposition DAGs.
-- [x] One bounded model-planning call with deterministic fallback.
-- [x] Provider-response SHA-256 digest without retaining model-authored evidence.
-- [x] Generic fallback reasons without provider-detail disclosure.
-- [x] Deterministic token/entity/time/redundancy/parallelism/depth quality diagnostics.
-- [x] Hard global estimated-cost ceiling across all uploaded-document hops.
-- [x] Minimum viable attempt reservation and impossible-budget refusal before retrieval.
-- [x] DAG-aware weighted remainder allocation, per-hop caps and unused-budget accounting.
-- [x] Public result payload with plan, quality, budget, traces, joins and citation lineage.
+- [x] Strict closed-schema model-assisted decomposition with deterministic fallback.
+- [x] Provider-response digest without retaining model-authored evidence.
+- [x] Structural plan-quality diagnostics.
+- [x] Hard global estimated-cost ceiling across uploaded-document hops.
+- [x] Minimum viable attempt reservation and impossible-budget refusal.
+- [x] DAG-aware weighted allocation and unused-budget accounting.
+- [x] Heterogeneous uploaded/web/scholarly multi-hop routing.
+- [x] Production adapters for uploaded dense/sparse/hybrid, web and scholarly routes.
+- [x] Global estimated-workload, latency and monetary planning budgets.
+- [x] Privacy-safe multi-hop trace persistence.
+- [x] One authoritative agent tool with `single`, `adaptive`, `multihop` and `heterogeneous` strategies.
+- [x] Closed strategy schema, server owner injection and bounded argument validation.
+- [x] Citation-only strategy publication through the existing evidence registry.
+- [x] Adaptive and multi-hop abstention preventing weak citation publication.
+- [x] Agent evidence deduplication/relabeling, API serialization and browser safe-DOM propagation.
 - [x] Unicode answer normalization, answer exact match and token F1.
 - [x] Document and support precision, recall and F1.
 - [x] Page, section, field, source, sentence and paragraph support locators.
 - [x] Complete support-path, hop-coverage and citation-lineage validity metrics.
 - [x] Abstention-aware macro aggregation and explicitly heuristic answer-support score.
-- [x] Strict HotpotQA and 2WikiMultiHopQA local adapters.
-- [x] Strict MuSiQue JSON/JSONL local adapter.
-- [x] Dataset SHA-256 fingerprints, bounded UTF-8 reads, duplicate-key/NaN refusal and symlink/reparse defenses.
+- [x] Strict HotpotQA, 2WikiMultiHopQA and MuSiQue local adapters.
+- [x] Dataset byte fingerprints, bounded UTF-8 reads, duplicate-key/NaN refusal and path defenses.
 
 ### Focused verification evidence
 
 - 35 focused decomposition, model-boundary, budget, executor, public-tool, evaluation and dataset-adapter tests passed locally.
-- Python compilation passed for the seven new modules and focused tests.
-- Ruff was unavailable in the constrained local environment.
+- Strategy harnesses exercised all four retrieval strategies, import/reload behavior, abstention, lineage and live dispatcher validation.
+- Python compilation passed for locally exercised strategy and multi-hop surfaces.
 
 ### Still open in Wave 4
 
 - [ ] Learned plan ranking and benchmark-calibrated plan selection.
 - [ ] Entity resolution and normalized temporal ranges.
-- [ ] Heterogeneous uploaded/web/scholarly multi-hop execution.
-- [ ] Global backend, latency, token and monetary-cost allocation across heterogeneous hops.
+- [ ] Measured rather than estimated cross-backend token/latency/monetary allocation.
 - [ ] Custom scientific multi-document adapters and governed dataset cards.
 - [ ] Semantic claim-support and entailment metrics per hop and final answer.
 - [ ] Multi-hop ablation reports and historical regression thresholds.
-- [ ] Full agent/API/browser registration and integration tests.
+- [ ] Exact-head end-to-end API/browser tests with real authoritative generations and connected providers.
 
 ## Verification status
 
@@ -266,19 +283,19 @@ The main-only exact-head workflow is configured for:
 - Compose validation and container build;
 - nine platform/Python release-lock jobs.
 
-The repository currently has only `main`, and the historical pull requests are closed. A green complete result is not observable for the latest exact `main` head through the available connector, and the constrained execution environment cannot clone GitHub because DNS resolution fails. Release readiness is therefore not claimed.
+The repository currently has only `main`, and historical pull requests are closed. A complete green result is not observable for the latest exact `main` head through the available connector, and the constrained execution environment cannot clone GitHub because DNS resolution fails. Release readiness is therefore not claimed.
 
 ## Permanent non-claims
 
 - Retrieval rank is not proof of factual correctness.
 - Citation presence is not proof of entailment.
 - Storage-generation alignment is provenance, not truth.
-- A decomposition graph or structural quality score is not proof that the question was decomposed optimally.
-- Cross-hop evidence grouping is not proof of a shared claim.
+- A lifecycle outbox is not a distributed atomic transaction or consensus system.
+- A decomposition graph or structural quality score is not proof of optimal decomposition.
+- Cross-hop evidence grouping is not proof of shared claim support.
 - The answer-support score is token/support-recall multiplication, not semantic entailment.
 - Offline route fixtures prove harness behavior, not calibrated production routing.
-- Estimated cost is a deterministic workload proxy, not measured token, latency or monetary cost.
+- Estimated resource values are planning proxies, not measured token, latency or monetary cost.
 - Learned rerankers may encode bias and require benchmark validation.
 - Regex masking is not certified de-identification.
-- SQLite/process-local transactions are not distributed exactly-once infrastructure.
 - Scientific conclusions require source inspection, expert review and replication.
