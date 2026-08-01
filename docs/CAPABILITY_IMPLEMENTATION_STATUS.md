@@ -169,6 +169,83 @@ This is the authoritative capability-expansion ledger for `main`. A checked impl
 - [ ] Crash/fault injection at every migration phase.
 - [ ] Active-worker pause/resume/cancel semantics.
 
+## Wave 3 — adaptive and corrective RAG
+
+### Implemented
+
+- [x] Deterministic query intent and complexity analysis.
+- [x] Retrieval-mode selection for exact, comparative, temporal, quantitative, method, evidence and explanatory questions.
+- [x] Evidence-count, document-diversity, score, provenance and generation signals.
+- [x] Explicit sufficient, weak, insufficient and empty evidence decisions.
+- [x] Corrective retrieval plans with bounded attempts and estimated cost.
+- [x] Bounded execution over dense, corpus-sparse and corpus-hybrid modes.
+- [x] Accumulated-evidence deduplication and total ceilings.
+- [x] Per-attempt error containment and trace records.
+- [x] Public adaptive uploaded-document tool and JSON-safe trace payload.
+- [x] Conservative abstention after exhausted insufficient retrieval.
+- [x] Reliability reports with Brier score, ECE and maximum calibration gap.
+- [x] Dependency-free isotonic confidence calibration.
+- [x] Risk-coverage curves and abstention-threshold selection.
+
+### Tests/contracts committed
+
+- exact/comparison/method/temporal routing behavior;
+- evidence-sufficiency decision boundaries;
+- plan attempt/cost ceilings;
+- hostile input and iterator containment;
+- adaptive execution success, retries and total failures;
+- evidence deduplication and trace payloads;
+- reliability bins and calibration metrics;
+- monotonic isotonic calibration;
+- tied-threshold risk-coverage behavior;
+- feasible and infeasible abstention thresholds.
+
+### Still open in Wave 3
+
+- [ ] Representative benchmark calibration of evidence coefficients and decision thresholds.
+- [ ] Versioned runtime calibrator installation and corpus/profile selection.
+- [ ] Explicit domain classifier and domain-specialized policies.
+- [ ] Uploaded/web/scholarly routing experiments.
+- [ ] Adaptive-policy ablations, confidence intervals and promotion gates.
+
+## Wave 4 — decomposition and multi-hop retrieval foundation
+
+### Implemented
+
+- [x] Validated bounded subquestion model.
+- [x] Deterministic heuristic decomposition and explicit proposed-plan support.
+- [x] Entity and temporal constraint extraction.
+- [x] Duplicate, dangling and cyclic graph refusal.
+- [x] Stable SHA-256 plan fingerprints.
+- [x] Topological parallel batches and terminal-node detection.
+- [x] Bounded parallel independent hops and serial dependent batches.
+- [x] Worker, timeout, per-hop, dependency-evidence and total-evidence ceilings.
+- [x] Per-hop failure and timeout containment.
+- [x] Missing-prerequisite evidence skip policy.
+- [x] Immutable hop/source/document/page lineage.
+- [x] Cross-hop document/source grouping without synthetic citation creation.
+- [x] Bounded lexical constraint propagation from prerequisite evidence.
+- [x] Public adaptive uploaded-document multi-hop tool.
+- [x] Citation and lineage separation in serialized output.
+- [x] Terminal-evidence abstention.
+
+### Focused verification evidence
+
+- 12 focused decomposition, executor and public-tool tests passed locally.
+- Python compilation passed for the three new modules and focused tests.
+- Ruff was unavailable in the constrained local environment.
+
+### Still open in Wave 4
+
+- [ ] Strict-schema model-assisted decomposition with deterministic fallback.
+- [ ] Learned plan ranking and plan-quality scoring.
+- [ ] Entity resolution and normalized temporal ranges.
+- [ ] Heterogeneous uploaded/web/scholarly multi-hop execution.
+- [ ] Global backend/latency/cost allocation across hops.
+- [ ] HotpotQA, 2WikiMultiHopQA, MuSiQue and scientific multi-document adapters.
+- [ ] Decomposition, hop-recall, path-support, answer-support and citation metrics.
+- [ ] Full agent/API/browser registration and integration tests.
+
 ## Verification status
 
 The main-only exact-head workflow is configured for:
@@ -178,13 +255,15 @@ The main-only exact-head workflow is configured for:
 - Compose validation and container build;
 - nine platform/Python release-lock jobs.
 
-The workflow isolates vector, sparse, generation, job, document, upload, classic and telemetry state. A green result is not currently observable for the latest head, so release readiness is not claimed.
+The repository currently has only `main`, and the historical pull requests are closed. A green complete result is not observable for the latest exact `main` head through the available connector, and the constrained execution environment cannot clone GitHub because DNS resolution fails. Release readiness is therefore not claimed.
 
 ## Permanent non-claims
 
 - Retrieval rank is not proof of factual correctness.
 - Citation presence is not proof of entailment.
 - Storage-generation alignment is provenance, not truth.
+- A decomposition graph is not proof that the question was decomposed optimally.
+- Cross-hop evidence grouping is not proof of a shared claim.
 - Learned rerankers may encode bias and require benchmark validation.
 - Regex masking is not certified de-identification.
 - SQLite/process-local transactions are not distributed exactly-once infrastructure.
