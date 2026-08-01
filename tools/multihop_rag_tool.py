@@ -24,6 +24,7 @@ from tools.multihop_retrieval import (
     MultiHopResult,
     run_multihop_retrieval,
 )
+from tools.public_payload import public_model_payload
 from tools.query_decomposition import Subquestion, build_decomposition_plan
 
 _MAX_QUERY_CHARS = 10_000
@@ -31,40 +32,11 @@ _MAX_PROPAGATED_TERMS = 16
 _MAX_PROPAGATED_TERM_CHARS = 80
 _TOKEN_RE = re.compile(r"[A-Za-z0-9]+(?:[._:/+-][A-Za-z0-9]+)*")
 _STOPWORDS = {
-    "about",
-    "after",
-    "also",
-    "among",
-    "and",
-    "are",
-    "because",
-    "before",
-    "between",
-    "could",
-    "evidence",
-    "find",
-    "from",
-    "have",
-    "into",
-    "more",
-    "most",
-    "question",
-    "relevant",
-    "should",
-    "system",
-    "that",
-    "their",
-    "there",
-    "these",
-    "this",
-    "those",
-    "using",
-    "what",
-    "when",
-    "where",
-    "which",
-    "with",
-    "would",
+    "about", "after", "also", "among", "and", "are", "because", "before",
+    "between", "could", "evidence", "find", "from", "have", "into", "more",
+    "most", "question", "relevant", "should", "system", "that", "their",
+    "there", "these", "this", "those", "using", "what", "when", "where",
+    "which", "with", "would",
 }
 
 MULTIHOP_RAG_SEARCH_TOOL_DEF = {
@@ -82,22 +54,13 @@ MULTIHOP_RAG_SEARCH_TOOL_DEF = {
                 "query": {"type": "string", "minLength": 1, "maxLength": 10_000},
                 "doc_id": {"type": "string", "minLength": 1, "maxLength": 200},
                 "max_subquestions": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "maximum": 12,
-                    "default": 8,
+                    "type": "integer", "minimum": 1, "maximum": 12, "default": 8
                 },
                 "per_hop_limit": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "maximum": 50,
-                    "default": 8,
+                    "type": "integer", "minimum": 1, "maximum": 50, "default": 8
                 },
                 "max_workers": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "maximum": 16,
-                    "default": 4,
+                    "type": "integer", "minimum": 1, "maximum": 16, "default": 4
                 },
                 "hop_timeout_seconds": {
                     "type": "number",
@@ -105,10 +68,13 @@ MULTIHOP_RAG_SEARCH_TOOL_DEF = {
                     "maximum": 600,
                     "default": 30,
                 },
-                "use_model_decomposition": {
-                    "type": "boolean",
-                    "default": False,
+                "global_timeout_seconds": {
+                    "type": "number",
+                    "exclusiveMinimum": 0,
+                    "maximum": 3600,
+                    "default": 120,
                 },
+                "use_model_decomposition": {"type": "boolean", "default": False},
                 "decomposition_model": {
                     "type": "string",
                     "minLength": 1,
@@ -116,10 +82,7 @@ MULTIHOP_RAG_SEARCH_TOOL_DEF = {
                     "default": "gpt-4o-mini",
                 },
                 "max_attempts": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "maximum": 6,
-                    "default": 3,
+                    "type": "integer", "minimum": 1, "maximum": 6, "default": 3
                 },
                 "max_total_estimated_cost": {
                     "type": "integer",
@@ -190,7 +153,9 @@ def _propagated_terms(
 
 def _hop_query(question: Subquestion, dependencies: tuple[HopEvidence, ...]) -> str:
     parts = [question.text]
-    constraints = tuple(dict.fromkeys((*question.entities, *question.temporal_constraints)))
+    constraints = tuple(
+        dict.fromkeys((*question.entities, *question.temporal_constraints))
+    )
     if constraints:
         parts.append("Constraints: " + ", ".join(constraints))
     propagated = _propagated_terms(question, dependencies)
@@ -235,6 +200,7 @@ def search_uploaded_docs_multihop(
     per_hop_limit: int = 8,
     max_workers: int = 4,
     hop_timeout_seconds: float = 30.0,
+    global_timeout_seconds: float = 120.0,
     use_model_decomposition: bool = False,
     decomposition_model: str = "gpt-4o-mini",
     max_attempts: int = 3,
@@ -249,7 +215,12 @@ def search_uploaded_docs_multihop(
     question_limit = _integer(max_subquestions, "max_subquestions", 1, 12)
     result_limit = _integer(per_hop_limit, "per_hop_limit", 1, 50)
     workers = _integer(max_workers, "max_workers", 1, 16)
-    timeout = _positive_float(hop_timeout_seconds, "hop_timeout_seconds", 600.0)
+    hop_timeout = _positive_float(
+        hop_timeout_seconds, "hop_timeout_seconds", 600.0
+    )
+    global_timeout = _positive_float(
+        global_timeout_seconds, "global_timeout_seconds", 3_600.0
+    )
     attempts = _integer(max_attempts, "max_attempts", 1, 6)
     total_cost = _integer(
         max_total_estimated_cost,
@@ -257,10 +228,15 @@ def search_uploaded_docs_multihop(
         1,
         100_000,
     )
-    per_hop_cost = _integer(max_estimated_cost, "max_estimated_cost", 1, 10_000)
+    per_hop_cost = _integer(
+        max_estimated_cost, "max_estimated_cost", 1, 10_000
+    )
     if not isinstance(use_model_decomposition, bool):
         raise ValueError("use_model_decomposition must be a boolean.")
-    deterministic = build_decomposition_plan(query, max_subquestions=question_limit)
+
+    deterministic = build_decomposition_plan(
+        query, max_subquestions=question_limit
+    )
     if use_model_decomposition:
         decision = propose_decomposition(
             deterministic.query,
@@ -295,7 +271,9 @@ def search_uploaded_docs_multihop(
             doc_id=doc_id,
             top_k=result_limit,
             max_attempts=attempts,
-            max_estimated_cost=budget_by_id[question.question_id].max_estimated_cost,
+            max_estimated_cost=budget_by_id[
+                question.question_id
+            ].max_estimated_cost,
             agent_client=agent_client,
             expansion_model=expansion_model,
             diversity_lambda=diversity_lambda,
@@ -307,22 +285,11 @@ def search_uploaded_docs_multihop(
         search=retrieve,
         max_workers=workers,
         per_hop_limit=result_limit,
-        hop_timeout_seconds=timeout,
+        hop_timeout_seconds=hop_timeout,
+        global_timeout_seconds=global_timeout,
         require_dependency_evidence=True,
     )
     return MultiHopRAGResult(retrieval, decision, budget)
-
-
-def _citation_payload(value: Any) -> dict[str, Any] | None:
-    if hasattr(value, "model_dump"):
-        try:
-            payload = value.model_dump(mode="json", exclude_none=True)
-            return payload if isinstance(payload, dict) else None
-        except Exception:
-            return None
-    if isinstance(value, dict):
-        return dict(value)
-    return None
 
 
 def multihop_result_payload(result: MultiHopRAGResult) -> dict[str, Any]:
@@ -333,7 +300,7 @@ def multihop_result_payload(result: MultiHopRAGResult) -> dict[str, Any]:
     retrieval = result.retrieval
     evidence: list[dict[str, Any]] = []
     for item in retrieval.evidence:
-        citation = _citation_payload(item.raw)
+        citation = public_model_payload(item.raw)
         if citation is None:
             continue
         evidence.append(
@@ -357,9 +324,12 @@ def multihop_result_payload(result: MultiHopRAGResult) -> dict[str, Any]:
             "response_digest": result.decomposition.response_digest,
             "quality": asdict(result.decomposition.quality),
             "subquestions": [
-                asdict(item) for item in result.decomposition.plan.subquestions
+                asdict(item)
+                for item in result.decomposition.plan.subquestions
             ],
-            "batches": [list(batch) for batch in result.decomposition.plan.batches],
+            "batches": [
+                list(batch) for batch in result.decomposition.plan.batches
+            ],
             "terminal_questions": list(
                 result.decomposition.plan.terminal_questions
             ),
