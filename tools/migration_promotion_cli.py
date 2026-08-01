@@ -7,9 +7,11 @@ import json
 import os
 import stat
 import sys
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from tools.migration_benchmark import fixture_from_mapping, run_promotion_benchmark
 from tools.migration_promotion import (
     PromotionPolicy,
     evaluate_promotion,
@@ -23,6 +25,7 @@ from tools.migration_types import digest, exact_integer, identifier
 
 _REPARSE = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
 _MAX_INPUT_BYTES = 2_000_000
+_MAX_FIXTURE_BYTES = 50_000_000
 _MAX_PATH = 4096
 
 
@@ -76,19 +79,26 @@ def _pairs(values: list[tuple[str, Any]]) -> dict[str, Any]:
     return result
 
 
-def _read_object(value: str | os.PathLike[str], label: str) -> Mapping[str, Any]:
+def _read_object(
+    value: str | os.PathLike[str],
+    label: str,
+    *,
+    max_bytes: int = _MAX_INPUT_BYTES,
+) -> Mapping[str, Any]:
+    if isinstance(max_bytes, bool) or not isinstance(max_bytes, int) or max_bytes <= 0:
+        raise ValueError("max_bytes must be a positive integer.")
     path = _path(value)
     before = path.lstat()
     if _redirecting(before) or not stat.S_ISREG(before.st_mode):
         raise ValueError(f"{label} must be a regular file.")
-    if before.st_size <= 0 or before.st_size > _MAX_INPUT_BYTES:
+    if before.st_size <= 0 or before.st_size > max_bytes:
         raise ValueError(f"{label} exceeds the byte limit.")
     with path.open("rb") as handle:
         opened = os.fstat(handle.fileno())
         if (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
             raise ValueError(f"{label} changed before reading.")
-        payload = handle.read(_MAX_INPUT_BYTES + 1)
-    if len(payload) > _MAX_INPUT_BYTES:
+        payload = handle.read(max_bytes + 1)
+    if len(payload) > max_bytes:
         raise ValueError(f"{label} exceeds the byte limit.")
     after = path.lstat()
     if (
@@ -145,6 +155,17 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate.add_argument("--evidence-file", required=True)
     evaluate.add_argument("--policy-file")
 
+    evaluate_fixture = commands.add_parser(
+        "evaluate-fixture",
+        help=(
+            "Generate paired benchmark evidence from a governed fixture and evaluate "
+            "one validated shadow in the same process."
+        ),
+    )
+    evaluate_fixture.add_argument("task_id")
+    evaluate_fixture.add_argument("--fixture-file", required=True)
+    evaluate_fixture.add_argument("--policy-file")
+
     status = commands.add_parser("status", help="Read one current or historical report.")
     status.add_argument("task_id")
     status.add_argument("--report-digest")
@@ -162,28 +183,37 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _evaluate(args: argparse.Namespace) -> int:
-    task_id = identifier(args.task_id, "task_id", 64)
+def _task_context(task_id: str) -> tuple[Any, Any, Any] | None:
     journal = get_migration_journal()
     task = journal.get(task_id)
     if task is None:
-        _print({"error": "not_found", "task_id": task_id}, stream=sys.stderr)
-        return 1
+        return None
     manifest = get_migration_shadow_store().validate(task_id)
-    evidence = evidence_from_mapping(
-        _read_object(args.evidence_file, "promotion evidence")
-    )
-    policy = (
-        policy_from_mapping(_read_object(args.policy_file, "promotion policy"))
-        if args.policy_file
-        else PromotionPolicy()
-    )
     from tools.sparse_runtime import get_generation_store
 
     generation = get_generation_store().current(
         owner_id=task.owner_id,
         doc_id=task.doc_id,
     )
+    return task, manifest, generation
+
+
+def _policy(path: str | None) -> PromotionPolicy:
+    return (
+        policy_from_mapping(_read_object(path, "promotion policy"))
+        if path
+        else PromotionPolicy()
+    )
+
+
+def _persist_evaluation(
+    *,
+    task: Any,
+    manifest: Any,
+    generation: Any,
+    evidence: Any,
+    policy: PromotionPolicy,
+) -> Any:
     report = evaluate_promotion(
         task=task,
         manifest=manifest,
@@ -191,8 +221,61 @@ def _evaluate(args: argparse.Namespace) -> int:
         evidence=evidence,
         policy=policy,
     )
-    persisted = get_migration_promotion_store().write(report)
+    return get_migration_promotion_store().write(report)
+
+
+def _evaluate(args: argparse.Namespace) -> int:
+    task_id = identifier(args.task_id, "task_id", 64)
+    context = _task_context(task_id)
+    if context is None:
+        _print({"error": "not_found", "task_id": task_id}, stream=sys.stderr)
+        return 1
+    task, manifest, generation = context
+    evidence = evidence_from_mapping(
+        _read_object(args.evidence_file, "promotion evidence")
+    )
+    persisted = _persist_evaluation(
+        task=task,
+        manifest=manifest,
+        generation=generation,
+        evidence=evidence,
+        policy=_policy(args.policy_file),
+    )
     _print(_summary(persisted))
+    return 0 if persisted.decision == "eligible" else 1
+
+
+def _evaluate_fixture(args: argparse.Namespace) -> int:
+    task_id = identifier(args.task_id, "task_id", 64)
+    context = _task_context(task_id)
+    if context is None:
+        _print({"error": "not_found", "task_id": task_id}, stream=sys.stderr)
+        return 1
+    task, manifest, generation = context
+    fixture = fixture_from_mapping(
+        _read_object(
+            args.fixture_file,
+            "promotion benchmark fixture",
+            max_bytes=_MAX_FIXTURE_BYTES,
+        )
+    )
+    if fixture.task_id != task_id:
+        raise ValueError("benchmark fixture task_id does not match the requested task.")
+    benchmark = run_promotion_benchmark(fixture)
+    persisted = _persist_evaluation(
+        task=task,
+        manifest=manifest,
+        generation=generation,
+        evidence=benchmark.evidence,
+        policy=_policy(args.policy_file),
+    )
+    payload = _summary(persisted)
+    payload["benchmark_generated"] = True
+    payload["paired_delta_intervals"] = {
+        name: asdict(interval)
+        for name, interval in benchmark.delta_intervals.items()
+    }
+    _print(payload)
     return 0 if persisted.decision == "eligible" else 1
 
 
@@ -255,6 +338,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         args = parser.parse_args(argv)
         if args.command == "evaluate":
             return _evaluate(args)
+        if args.command == "evaluate-fixture":
+            return _evaluate_fixture(args)
         if args.command == "status":
             return _status(args)
         if args.command == "history":
