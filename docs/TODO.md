@@ -94,16 +94,32 @@ This backlog is ordered by dependency and risk. Checked items have committed imp
 - [x] Require validation digests before committed state.
 - [x] Reclaim expired running and validated tasks.
 - [x] Add inventory, seed, status and owner-verified cancel commands.
-- [x] Refuse execution/cutover until shadow validation exists.
-- [ ] Write shadow vector and sparse generations without replacing current state.
-- [ ] Reparse retained sources through the privacy-finalized ingestion pipeline.
-- [ ] Construct target-profile encoder adapters explicitly.
-- [ ] Validate counts, hashes, provenance, quality and resource budgets.
-- [ ] Persist shadow artifact identities and experiment metadata.
-- [ ] Atomically cut over the durable current pointer.
-- [ ] Keep rollback references and bounded shadow retention.
+- [x] Refuse live cutover until isolated validation and promotion gates exist.
+- [x] Write task-isolated manifest-last vector and sparse shadow artifacts without replacing current state.
+- [x] Reparse retained sources through the current privacy-finalized ingestion pipeline.
+- [x] Revalidate owner/source-byte document identity before shadow construction.
+- [x] Construct explicit target-profile encoder adapters.
+- [x] Refuse adapter-required profiles until a named adapter factory is registered.
+- [x] Build one-to-one vector and sparse rows with field/page/section provenance.
+- [x] Validate finite vectors, dimensions, counts, content hashes and target profile fingerprints.
+- [x] Recheck the source generation before and after shadow construction.
+- [x] Persist immutable shadow artifact identities, digests, sizes and validation manifests.
+- [x] Add atomic build-only claiming that excludes already-validated tasks.
+- [x] Add no-cutover shadow build/validate/remove CLI commands.
+- [x] Add conservative aggregate quality and resource promotion policy.
+- [x] Require exact task/manifest/journal/evidence/source-generation alignment for promotion reports.
+- [x] Evaluate recall, nDCG, MRR, support recall, citation precision and abstention accuracy.
+- [x] Evaluate p95 latency, peak memory, storage and estimated-cost ratios.
+- [x] Persist append-only promotion reports with immutable history and an atomic current pointer.
+- [x] Add strict evidence/policy JSON, deterministic reason codes and no-cutover promotion CLI.
+- [ ] Add a repository-owned benchmark runner that produces promotion evidence from governed query fixtures.
+- [ ] Add confidence intervals, statistical tests and practical-effect thresholds produced by that runner.
+- [ ] Replace estimated resource values with measured latency, memory, storage and monetary accounting where available.
+- [ ] Atomically cut over vector, sparse and durable current-generation state.
+- [ ] Keep exact rollback references and verify rollback before releasing old state.
+- [ ] Add bounded shadow and promotion-report retention/compaction.
 - [ ] Add active-worker pause/resume/cancel semantics.
-- [ ] Test crash recovery at every migration phase.
+- [ ] Test crash recovery at every build, report, cutover and rollback phase.
 
 ## Wave 3 — adaptive and corrective RAG
 
@@ -203,22 +219,24 @@ This backlog is ordered by dependency and risk. Checked items have committed imp
 
 ## Wave 8 — models and datasets
 
-- [ ] Dense embedding adapter interface.
+- [x] Explicit dense embedding adapter interface and process-local adapter registry.
+- [ ] Governed production adapters for Instructor, SPECTER2, BGE-M3 and future adapter-required profiles.
 - [ ] Learned sparse retrieval adapter.
 - [ ] Late-interaction/ColBERT-style adapter.
 - [ ] Cross-encoder and listwise reranker interfaces.
-- [ ] Multilingual and scientific-domain model profiles.
+- [ ] Additional multilingual and scientific-domain model profiles.
 - [ ] Public, scientific, multilingual, multimodal and adversarial dataset cards.
 - [ ] License, version, checksum and split governance.
 
 ## Wave 9 — experimentation and observability
 
-- [ ] Repeated runs, seeds and confidence intervals.
+- [ ] Repository-owned repeated runs, seeds and confidence intervals.
 - [ ] Statistical tests and practical-effect thresholds.
-- [ ] Latency, throughput, memory and measured cost.
+- [ ] Measured latency, throughput, memory, storage and monetary cost.
 - [ ] Retrieval, citation, entailment and abstention dashboards.
 - [ ] Per-stage traces and bounded failure artifacts.
-- [ ] Historical regression baselines and promotion gates.
+- [x] Versioned conservative promotion-policy and append-only report foundation.
+- [ ] Historical regression baselines and automatic promotion gates from repository-owned benchmark output.
 
 ## Wave 10 — distributed production architecture
 
@@ -242,4 +260,5 @@ This backlog is ordered by dependency and risk. Checked items have committed imp
 - [ ] Clean-clone CLI/API/batch ingestion, deletion, reconciliation and retrieval smoke tests.
 - [ ] Concurrency and fault injection across vector, sparse, manifest, registry and cleanup journals.
 - [ ] Adaptive and heterogeneous multi-hop integration tests against authoritative generations.
+- [ ] Migration shadow, promotion-report, cutover and rollback fault injection against authoritative generations.
 - [ ] Final line-by-line regression audit of one unchanged exact `main` SHA.
