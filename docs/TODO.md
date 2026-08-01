@@ -121,12 +121,19 @@ This backlog is ordered by dependency and risk. Checked items have committed imp
 - [x] Strict-schema model-assisted decomposition with deterministic fallback.
 - [x] Provider-response digesting without retaining model-authored evidence.
 - [x] Deterministic token/entity/time/redundancy/parallelism/depth plan-quality diagnostics.
+- [x] Hard global estimated-cost allocation across uploaded-document adaptive hops.
+- [x] Minimum-attempt reservation and fail-fast impossible-budget checks.
+- [x] Weighted DAG-aware remainder allocation, per-hop caps and unused-budget reporting.
+- [x] Answer exact-match and Unicode token-F1 metrics.
+- [x] Document and support precision/recall/F1 metrics.
+- [x] Complete-support-path, hop-coverage and citation-lineage metrics.
+- [x] Abstention-aware macro aggregation and explicitly heuristic answer-support score.
 - [ ] Add learned decomposition selection and plan-quality ranking.
 - [ ] Add entity resolution and normalized temporal ranges.
 - [ ] Add uploaded/web/scholarly heterogeneous multi-hop routing.
-- [ ] Add global cost allocation across hops and retrieval backends.
+- [ ] Add global budget allocation across heterogeneous retrieval backends, latency and monetary cost.
 - [ ] Add HotpotQA, 2WikiMultiHopQA, MuSiQue and scientific multi-document dataset adapters.
-- [ ] Add decomposition, hop-recall, path-support, answer-support and citation metrics.
+- [ ] Add semantic claim-support and entailment metrics per hop and final answer.
 - [ ] Add multi-hop ablation reports and historical regression thresholds.
 - [ ] Register the public tool with the full agent/API/browser surfaces after integration tests.
 
