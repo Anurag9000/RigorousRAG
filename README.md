@@ -46,7 +46,9 @@ graph LR
     Agent --> Adaptive[Adaptive/corrective planner]
     Adaptive --> Hybrid[Dense+sparse corpus retrieval]
     Agent --> MultiHop[Bounded decomposition DAG]
-    MultiHop --> Adaptive
+    MultiHop --> Budget[Global estimated-cost allocator]
+    Budget --> Adaptive
+    MultiHop --> Metrics[Answer/support/path/lineage metrics]
     Agent --> PublicTools[Scholarly, web, page, handbook]
     Agent --> Science[Scientific evidence tools]
     Science --> Registry
@@ -90,13 +92,16 @@ Detailed architecture and trust boundaries are in [Goals and Architecture](docs/
 - bounded corrective attempts with cost estimates and traces;
 - conservative abstention when evidence remains insufficient;
 - Brier score, ECE, reliability bins, isotonic calibration and risk-coverage analysis;
-- bounded query decomposition into an acyclic dependency graph;
+- bounded deterministic or strict-schema model-assisted query decomposition;
+- validated acyclic dependency graphs with stable fingerprints;
 - parallel independent hops and serial dependent batches;
 - entity/time constraints and bounded dependency-derived lexical hints;
+- a hard global estimated-cost ceiling with minimum-attempt reservation and per-hop allocation;
 - immutable hop/source/document/page lineage;
-- evidence joins without synthetic citations or source collapse.
+- evidence joins without synthetic citations or source collapse;
+- answer exact match/token F1, document/support precision-recall-F1, path completeness, hop coverage, lineage validity and abstention metrics.
 
-The public multi-hop module is implemented and focused-tested; full agent/API/browser registration remains an explicit integration task.
+The public multi-hop module is implemented and focused-tested; full agent/API/browser registration remains an explicit integration task. Estimated cost is currently a deterministic workload proxy, not a measured token, latency or monetary-cost model.
 
 ### Scientific and public evidence tools
 
@@ -237,7 +242,7 @@ The exact-head workflow additionally covers Python/platform release locks and Wi
 
 ### Current verification state
 
-Release readiness is **not claimed**. Focused decomposition/multi-hop verification passed 12 local tests and Python compilation, but Ruff was unavailable locally. No complete green workflow is observable through the available connector for the latest exact `main` SHA, and the constrained execution environment cannot resolve GitHub hosts to perform a clean clone. See [Current Remediation Status](docs/REMEDIATION_STATUS.md).
+Release readiness is **not claimed**. Focused decomposition, model-boundary, budgeting, multi-hop execution and evaluation verification passed 30 local tests and Python compilation, but Ruff was unavailable locally. No complete green workflow is observable through the available connector for the latest exact `main` SHA, and the constrained execution environment cannot resolve GitHub hosts to perform a clean clone. See [Current Remediation Status](docs/REMEDIATION_STATUS.md).
 
 ## Known limitations
 
@@ -249,8 +254,10 @@ Release readiness is **not claimed**. Focused decomposition/multi-hop verificati
 - Application SSRF controls should be paired with network egress policy.
 - Process-local schedulers, executors, rate limits, SQLite stores and compensation are not distributed exactly-once infrastructure.
 - Fusion, routing, calibration and abstention thresholds require representative benchmark promotion gates.
-- A valid multi-hop plan does not prove optimal decomposition.
+- A valid multi-hop plan or structural quality score does not prove optimal decomposition.
+- Estimated cost is not measured latency, token or monetary cost.
 - Retrieval and citation lineage do not prove answer entailment.
+- The heuristic answer-support metric does not prove entailment.
 
 ## Roadmap
 
