@@ -33,16 +33,14 @@ def _document(tmp_path, *, metadata=None, text="evidence"):
 def test_bounded_source_hash_matches_regular_file(tmp_path):
     source = tmp_path / "paper.txt"
     source.write_bytes(b"evidence")
-
-    digest = _bounded_source_sha256(source, max_bytes=100)
-
-    assert digest == hashlib.sha256(b"evidence").hexdigest()
+    assert _bounded_source_sha256(source, max_bytes=100) == hashlib.sha256(
+        b"evidence"
+    ).hexdigest()
 
 
 def test_bounded_source_hash_rejects_oversized_replacement(tmp_path):
     source = tmp_path / "paper.txt"
     source.write_bytes(b"x" * 101)
-
     with pytest.raises(ValueError, match="byte limit"):
         _bounded_source_sha256(source, max_bytes=100)
 
@@ -55,7 +53,6 @@ def test_bounded_source_hash_refuses_symlink_swap(tmp_path):
         os.symlink(target, link)
     except OSError:
         pytest.skip("Symlinks are unavailable on this platform.")
-
     with pytest.raises(ValueError, match="unavailable"):
         _bounded_source_sha256(link, max_bytes=100)
 
@@ -63,16 +60,17 @@ def test_bounded_source_hash_refuses_symlink_swap(tmp_path):
 def test_bounded_source_hash_rejects_invalid_limit(tmp_path):
     source = tmp_path / "paper.txt"
     source.write_bytes(b"evidence")
-
     for invalid in (0, True, 1.5, "bad"):
-        with pytest.raises(ValueError, match="positive integer|positive"):
+        with pytest.raises(ValueError, match="integer|between"):
             _bounded_source_sha256(source, max_bytes=invalid)
 
 
 def test_summary_sample_validates_limits_and_samples_document_regions(tmp_path):
-    document = _document(tmp_path, text="a" * 3000 + "middle" + "z" * 3000)
+    document = _document(
+        tmp_path,
+        text="a" * 3000 + "middle" + "z" * 3000,
+    )
     sample = _summary_sample(document, max_chars=900)
-
     assert "[BEGINNING]" in sample
     assert "[MIDDLE]" in sample
     assert "[END]" in sample
@@ -81,7 +79,10 @@ def test_summary_sample_validates_limits_and_samples_document_regions(tmp_path):
         _summary_sample(document, max_chars=0)
 
 
-def test_document_metadata_cannot_override_protected_index_fields(tmp_path):
+def test_document_metadata_cannot_override_protected_index_fields(
+    tmp_path,
+    monkeypatch,
+):
     document = _document(
         tmp_path,
         metadata={
@@ -96,15 +97,18 @@ def test_document_metadata_cannot_override_protected_index_fields(tmp_path):
     )
     captured = {}
 
-    class FakeRag:
-        def add_document(self, **kwargs):
-            captured.update(kwargs)
-            return 1
+    def commit(_document_value, **kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(vector_rows=1)
 
+    monkeypatch.setattr(
+        "tools.document_service.commit_finalized_document",
+        commit,
+    )
     indexed = index_document(
         document,
         owner_id="alice",
-        rag=FakeRag(),
+        rag=object(),
         job_id="job-1",
     )
 
@@ -117,6 +121,10 @@ def test_document_metadata_cannot_override_protected_index_fields(tmp_path):
     assert metadata["job_id"] == "job-1"
     assert metadata["llm_summary"] != "attacker summary"
     assert metadata["custom"] == "kept"
+    assert captured["audit_metadata"] == {
+        "job_id": "job-1",
+        "operation": "ingestion",
+    }
 
 
 def test_summary_provider_output_is_bounded_masked_and_failure_safe(tmp_path):
@@ -138,9 +146,7 @@ def test_summary_provider_output_is_bounded_masked_and_failure_safe(tmp_path):
             completions=SimpleNamespace(create=lambda **_kwargs: response)
         )
     )
-
     summary = summarize_document(document, client=client, model="model")
-
     assert len(summary) <= 2000
     assert "password" not in summary
     assert "api_key=secret" not in summary
@@ -157,14 +163,19 @@ def test_summary_provider_output_is_bounded_masked_and_failure_safe(tmp_path):
         summarize_document(document, client=client, model="m" * 201)
 
 
-def test_invalid_job_id_or_chunk_count_is_rejected(tmp_path):
+def test_invalid_job_id_or_chunk_count_is_rejected(tmp_path, monkeypatch):
     document = _document(tmp_path)
-
-    class BadRag:
-        def add_document(self, **_kwargs):
-            return -1
-
     with pytest.raises(ValueError, match="job_id"):
-        index_document(document, owner_id="alice", rag=BadRag(), job_id="j" * 201)
+        index_document(
+            document,
+            owner_id="alice",
+            rag=object(),
+            job_id="j" * 201,
+        )
+
+    monkeypatch.setattr(
+        "tools.document_service.commit_finalized_document",
+        lambda *_args, **_kwargs: SimpleNamespace(vector_rows=-1),
+    )
     with pytest.raises(ValueError, match="chunk_count"):
-        index_document(document, owner_id="alice", rag=BadRag())
+        index_document(document, owner_id="alice", rag=object())
