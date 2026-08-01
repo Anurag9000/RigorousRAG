@@ -84,7 +84,7 @@ This backlog is ordered by dependency and risk. Checked items have committed imp
 - [ ] Add reranker cascades with latency, memory and cost budgets.
 - [ ] Add dense/sparse/hybrid ablation reports and regression thresholds.
 
-## Wave 2D — profile migration and reindex
+## Wave 2D — profile migration, promotion and cutover preparation
 
 - [x] Inventory current manifests by target profile and durable source sequence.
 - [x] Classify retained-source eligibility without exposing source paths.
@@ -94,7 +94,7 @@ This backlog is ordered by dependency and risk. Checked items have committed imp
 - [x] Require validation digests before committed state.
 - [x] Reclaim expired running and validated tasks.
 - [x] Add inventory, seed, status and owner-verified cancel commands.
-- [x] Refuse live cutover until isolated validation and promotion gates exist.
+- [x] Refuse live cutover until isolated validation, promotion and rollback prerequisites exist.
 - [x] Write task-isolated manifest-last vector and sparse shadow artifacts without replacing current state.
 - [x] Reparse retained sources through the current privacy-finalized ingestion pipeline.
 - [x] Revalidate owner/source-byte document identity before shadow construction.
@@ -112,14 +112,34 @@ This backlog is ordered by dependency and risk. Checked items have committed imp
 - [x] Evaluate p95 latency, peak memory, storage and estimated-cost ratios.
 - [x] Persist append-only promotion reports with immutable history and an atomic current pointer.
 - [x] Add strict evidence/policy JSON, deterministic reason codes and no-cutover promotion CLI.
-- [ ] Add a repository-owned benchmark runner that produces promotion evidence from governed query fixtures.
-- [ ] Add confidence intervals, statistical tests and practical-effect thresholds produced by that runner.
-- [ ] Replace estimated resource values with measured latency, memory, storage and monetary accounting where available.
-- [ ] Atomically cut over vector, sparse and durable current-generation state.
-- [ ] Keep exact rollback references and verify rollback before releasing old state.
-- [ ] Add bounded shadow and promotion-report retention/compaction.
+- [x] Add a repository-owned paired query-ID-only benchmark producer.
+- [x] Enforce the same ordered benchmark contract across repeated runs.
+- [x] Compute contract-only benchmark fingerprints independent of model outputs/resources.
+- [x] Compute signed paired 95% confidence intervals across repeated runs.
+- [x] Add paired lower-bound non-inferiority gates for all six quality metrics.
+- [x] Add optional lower-bound practical-gain thresholds.
+- [x] Bind statistical assessment/policy digests into the final promotion report without changing its schema.
+- [x] Add direct in-process `evaluate-fixture` benchmark plus aggregate/statistical promotion flow.
+- [x] Add hashes/counts-only cutover preflight identities.
+- [x] Require an eligible paired-statistical report before preflight.
+- [x] Re-capture and hash complete current vector/sparse rollback snapshots during preflight.
+- [x] Require exact current generation sequence/profile/content and snapshot count/generation alignment.
+- [x] Persist append-only preflight history and an atomic current pointer.
+- [x] Add plan/status/history and failed/cancelled cleanup CLI with explicit `mutation_performed: false`.
+- [ ] Execute governed benchmark fixtures against the actual current and shadow retrieval stacks.
+- [ ] Measure wall-clock latency, process/device memory, storage and provider billing rather than accepting supplied resource observations.
+- [ ] Add reviewed bootstrap/permutation tests and multiple-comparison controls where appropriate.
+- [ ] Add governed production adapters for Instructor, SPECTER2, BGE-M3 and future adapter-required profiles.
+- [ ] Add a protected durable rollback-artifact store containing complete vector and sparse snapshots.
+- [ ] Define rollback encryption/key-management, retention and secure-deletion policy.
+- [ ] Add a durable cutover journal with exclusive leases and idempotency keys.
+- [ ] Atomically publish vector, sparse and durable current-generation state without exposing an unvalidated mixed generation.
+- [ ] Validate the new authoritative generation before marking the migration committed.
+- [ ] Add automatic rollback and exact rollback-identity verification after every failed publication phase.
+- [ ] Keep old state until rollback and new-generation verification pass.
+- [ ] Add bounded shadow/report/preflight/rollback retention and compaction.
 - [ ] Add active-worker pause/resume/cancel semantics.
-- [ ] Test crash recovery at every build, report, cutover and rollback phase.
+- [ ] Test crash recovery at every build, report, preflight, cutover and rollback phase.
 
 ## Wave 3 — adaptive and corrective RAG
 
@@ -230,13 +250,16 @@ This backlog is ordered by dependency and risk. Checked items have committed imp
 
 ## Wave 9 — experimentation and observability
 
-- [ ] Repository-owned repeated runs, seeds and confidence intervals.
-- [ ] Statistical tests and practical-effect thresholds.
+- [x] Query-contract paired fixture aggregation across repeated runs and seeds.
+- [x] Signed paired 95% confidence-interval foundation.
+- [x] Versioned non-inferiority and optional practical-gain policies.
+- [x] Versioned conservative aggregate promotion policy and append-only report foundation.
+- [ ] Repository-owned orchestration that executes repeated current/shadow runs rather than consuming collected outputs.
+- [ ] Bootstrap/permutation tests, multiple-comparison controls and reviewed practical-effect governance.
 - [ ] Measured latency, throughput, memory, storage and monetary cost.
 - [ ] Retrieval, citation, entailment and abstention dashboards.
 - [ ] Per-stage traces and bounded failure artifacts.
-- [x] Versioned conservative promotion-policy and append-only report foundation.
-- [ ] Historical regression baselines and automatic promotion gates from repository-owned benchmark output.
+- [ ] Historical regression baselines and automatic promotion gates from real-stack benchmark output.
 
 ## Wave 10 — distributed production architecture
 
@@ -260,5 +283,6 @@ This backlog is ordered by dependency and risk. Checked items have committed imp
 - [ ] Clean-clone CLI/API/batch ingestion, deletion, reconciliation and retrieval smoke tests.
 - [ ] Concurrency and fault injection across vector, sparse, manifest, registry and cleanup journals.
 - [ ] Adaptive and heterogeneous multi-hop integration tests against authoritative generations.
-- [ ] Migration shadow, promotion-report, cutover and rollback fault injection against authoritative generations.
+- [ ] Migration shadow, promotion, statistical and preflight tests against real authoritative current/shadow retrieval runs.
+- [ ] Protected rollback-artifact, cutover and rollback fault injection.
 - [ ] Final line-by-line regression audit of one unchanged exact `main` SHA.
