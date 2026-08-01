@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import hashlib
+import itertools
 import json
+import math
 from collections.abc import Callable, Mapping
 from dataclasses import asdict
 from typing import Any
@@ -18,6 +20,7 @@ from tools.sparse_fields import build_sparse_fields
 from tools.upload_storage import validated_owner_file_path
 
 _BUILDER_CONTRACT = "rigorousrag-migration-shadow-builder-v1"
+_MAX_VECTOR_DIMENSIONS = 1_000_000
 
 
 def _parse_retained_source(source_path: str, owner_id: str) -> Any:
@@ -50,11 +53,13 @@ def _parser_fingerprint(document: Any) -> str:
             value = raw_metadata.get(key)
             if value is None or isinstance(value, (bool, int, str)):
                 metadata[key] = value
+    sections = getattr(document, "sections", ())
+    section_count = len(sections) if hasattr(sections, "__len__") else None
     payload = json.dumps(
         {
             "contract": _BUILDER_CONTRACT,
             "metadata": metadata,
-            "section_count": len(tuple(getattr(document, "sections", ()))),
+            "section_count": section_count,
         },
         ensure_ascii=False,
         sort_keys=True,
@@ -72,6 +77,40 @@ def _field_row(field: Any) -> dict[str, Any]:
     if not isinstance(row, dict):
         raise ValueError("sparse field serialization is invalid.")
     return row
+
+
+def _validated_vector(
+    value: Any,
+    *,
+    dimensions: int | None,
+) -> list[float]:
+    if isinstance(value, (str, bytes, bytearray)):
+        raise RuntimeError("migration encoder returned an invalid vector.")
+    try:
+        raw = list(
+            itertools.islice(
+                iter(value),
+                _MAX_VECTOR_DIMENSIONS + 1,
+            )
+        )
+    except Exception as exc:
+        raise RuntimeError("migration encoder returned an invalid vector.") from exc
+    if not raw or len(raw) > _MAX_VECTOR_DIMENSIONS:
+        raise RuntimeError("migration encoder returned an invalid vector dimension.")
+    if dimensions is not None and len(raw) != dimensions:
+        raise RuntimeError("migration encoder vector dimensions do not match the profile.")
+    result: list[float] = []
+    for item in raw:
+        if isinstance(item, bool):
+            raise RuntimeError("migration encoder returned a non-finite vector.")
+        try:
+            numeric = float(item)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise RuntimeError("migration encoder returned a non-finite vector.") from exc
+        if not math.isfinite(numeric):
+            raise RuntimeError("migration encoder returned a non-finite vector.")
+        result.append(numeric)
+    return result
 
 
 class MigrationShadowBuilder:
@@ -150,14 +189,21 @@ class MigrationShadowBuilder:
 
         vector_rows: list[dict[str, Any]] = []
         sparse_rows: list[dict[str, Any]] = []
-        for field, vector in zip(fields, vectors, strict=True):
+        inferred_dimensions: int | None = profile.dimensions
+        for field, raw_vector in zip(fields, vectors, strict=True):
+            vector = _validated_vector(
+                raw_vector,
+                dimensions=inferred_dimensions,
+            )
+            if inferred_dimensions is None:
+                inferred_dimensions = len(vector)
             sparse = _field_row(field)
             sparse_rows.append(sparse)
             vector_rows.append(
                 {
                     "row_id": field.field_id,
                     "text": field.text,
-                    "embedding": list(vector),
+                    "embedding": vector,
                     "metadata": {
                         "owner_id": owner,
                         "doc_id": task.doc_id,
