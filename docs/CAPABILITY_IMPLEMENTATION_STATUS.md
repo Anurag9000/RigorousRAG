@@ -2,84 +2,147 @@
 
 Last updated: 2026-08-01
 
-This ledger is the authoritative capability-expansion status for `main`. It complements the historical remediation audits. A checked item means source and focused local tests were completed and committed; it does not imply that the repository-wide exact-head release matrix has passed.
+This is the authoritative capability-expansion ledger for `main`. A checked implementation item means source and focused tests/contracts were committed. It does not mean the complete exact-head release matrix passed.
 
 ## Repository policy
 
 - Development is committed directly to `main`.
-- No feature branches or pull requests are used for this repository.
-- Commits must keep implementation, tests, documentation, configuration and this ledger aligned.
-- Release claims require the authoritative exact-head workflow to pass on one unchanged `main` SHA.
+- No feature branches or pull requests are used.
+- Implementation, tests, documentation, configuration and TODO state must remain aligned.
+- Release claims require the authoritative exact-head workflow on one unchanged `main` SHA.
 
 ## Wave 1 — retrieval and evaluation foundation
 
 ### Implemented
 
-- [x] Typed, bounded retrieval candidates and component score traces.
-- [x] Candidate-pool BM25 with correct document-frequency counting.
-- [x] Reciprocal-rank fusion and normalized weighted-score fusion.
-- [x] MMR relevance/diversity selection with source caps.
-- [x] Dense, lexical and hybrid uploaded-document ranking modes.
-- [x] Dependency-free heuristic reranker.
-- [x] Lazy optional cross-encoder reranker with fail-safe fallback.
-- [x] Owner and document filtering before any fusion or reranking.
-- [x] Backward-compatible dense/no-reranker default behavior.
-- [x] Preservation of raw dense relevance alongside fused/component scores.
-- [x] Strict handling of hostile metadata mappings, malformed iterables and non-finite scores.
-- [x] Normalized BEIR-style corpus/query/qrels loader.
-- [x] Precision, recall, hit-rate, reciprocal-rank, MAP and NDCG metrics.
-- [x] Citation precision, recall, F1, coverage and unsupported-citation rate.
-- [x] Deterministic experiment matrices with stable run IDs.
-- [x] Immutable resumable SQLite experiment results.
+- [x] Typed bounded retrieval candidates and component traces.
+- [x] Candidate-pool BM25 with document-frequency counting.
+- [x] Reciprocal-rank and weighted-score fusion.
+- [x] MMR relevance/diversity selection.
+- [x] Dense, lexical and candidate-pool hybrid modes.
+- [x] Heuristic and optional cross-encoder rerankers.
+- [x] Backward-compatible dense defaults.
+- [x] BEIR-style corpus/query/qrels loader.
+- [x] Retrieval and citation metrics.
+- [x] Deterministic experiment matrices and immutable resumable results.
 - [x] Offline BM25 benchmark CLI.
-- [x] Focused regression tests for ranking, evaluation, persistence and adapter boundaries.
 
-### Verification completed
+### Focused verification evidence
 
-- 12 focused tests passed locally.
-- Python compilation passed for all Wave 1 modules, CLI and tests.
-- AST parsing passed for every changed Python file.
-- Git object IDs were compared with the locally tested bytes before atomic commits.
+- 12 Wave 1 tests passed in the local constrained harness.
+- Compilation and AST parsing passed for the Wave 1 changed surfaces.
+- Ruff and the complete repository matrix were not established in that local environment.
 
-### Verification not claimed
+## Wave 2A — embedding governance and persistent sparse index
 
-- Ruff could not run in the constrained local environment because it was not installed and external package resolution was unavailable.
-- The full repository test matrix, coverage matrix, Windows jobs, Compose validation and Docker build have not yet run on the final Wave 1 head.
-- The exact-head workflow remains the release authority.
+### Implemented
 
-## Wave 2 — persistent hybrid index and model registry
+- [x] Declarative embedding-profile registry with seven built-in families.
+- [x] Compatibility aliases and stable profile fingerprints.
+- [x] Strict operator-defined profiles.
+- [x] Persistent owner-scoped fielded sparse index.
+- [x] Transactional replacement, optimistic generations and exact restore/delete.
+- [x] Page, section, field, frequency and token-position provenance.
+- [x] Strict metadata JSON, corruption refusal and path/database identity checks.
 
-### Wave 2A implemented
+### Focused verification evidence
 
-- [x] Declarative embedding profile registry with seven built-ins, operator profiles, compatibility aliases and schema fingerprints.
-- [x] Persistent owner-scoped fielded sparse index with transparent BM25-style scoring.
-- [x] Transactional replacement, optimistic generations, exact snapshots/restores and scoped deletion.
-- [x] Page, section, field, term-frequency and token-position provenance.
-- [x] Strict metadata/configuration JSON, corruption refusal and filesystem identity defenses.
-- [x] 21 focused Wave 2A tests and 33 combined focused Wave 1+2A tests.
+- 21 Wave 2A tests and 33 combined Wave 1+2A tests passed in the local constrained harness.
 
-The sparse index remains non-authoritative until Wave 2B's cross-store coordinator is wired.
+## Wave 2B — authoritative durable generations
 
-### Wave 2B next implementation slice
+### Implemented
 
-- [ ] Vector document snapshots and exact restore.
-- [ ] Compensating vector+sparse replacement coordinator under an owner/document lock.
-- [ ] Coordinated vector+sparse deletion with prior-generation restoration on failure.
-- [ ] Generation manifests recording profile fingerprints, content hashes and store generations.
-- [ ] Ingestion, batch CLI, retry and recovery integration.
-- [ ] Reconciliation scans and dry-run repair tooling for cross-store drift.
+- [x] Complete bounded vector-generation snapshots and exact restoration.
+- [x] Deterministic sparse-field extraction.
+- [x] Vector+sparse replacement and deletion compensation.
+- [x] Append-only generation history and optimistic current pointers.
+- [x] One reentrant owner/document lock across vector, sparse and manifest operations.
+- [x] Active, deleted and restored durable generation states.
+- [x] Profile fingerprint, content hash, vector row and sparse generation manifests.
+- [x] Privacy-finalized authoritative document commit boundary.
+- [x] API/durable-worker ingestion through the shared document service.
+- [x] Reload-idempotent public authoritative deletion.
+- [x] Raw internal vector deletion for compensation without lifecycle recursion.
+- [x] Batch ingestion snapshot/restore across vector, sparse and manifest state.
+- [x] Drift reconciliation for store/manifest categories.
+- [x] Bounded operator scan/plan CLI.
+- [x] Exact-confirmation cleanup for deleted-generation residue.
+- [x] Independent runtime paths for vector, sparse and generation databases.
 
-### Wave 2C next implementation slice
+### Tests/contracts committed
 
-- [ ] Corpus-level dense+sparse candidate generation rather than candidate-pool-only lexical scoring.
-- [ ] RRF/calibrated fusion, reranker cascades, MMR, filters and complete score traces.
-- [ ] Reindex and embedding-profile migration commands with shadow validation and cutover.
+- generation-store lifecycle, sequence, corruption and identity tests;
+- vector snapshot/restore tests;
+- deterministic sparse-field tests;
+- three-store replacement/deletion/compensation tests;
+- authoritative public/raw deletion tests;
+- document-service integration tests;
+- batch registry-failure restoration tests;
+- reconciliation CLI tests.
+
+### Still open in Wave 2B
+
+- [ ] Include the retained-document registry as a fourth coordinated participant or durable outbox consumer.
+- [ ] Startup reconciliation and resumable repair execution.
+- [ ] Adoption/reindex workflows for existing pre-manifest documents.
+- [ ] Fault-injection execution on the exact current repository head.
+
+## Wave 2C — corpus-level hybrid retrieval
+
+### Implemented
+
+- [x] Independent dense and persistent sparse corpus candidate generation.
+- [x] Document-level weighted fusion.
+- [x] Durable current-generation validation before evidence publication.
+- [x] Dense owner/content-hash/profile validation.
+- [x] Sparse generation/profile validation.
+- [x] Dense chunk and sparse field evidence materialization.
+- [x] Page, section, field, frequency and position traces.
+- [x] Bounded MMR evidence selection.
+- [x] Optional second-stage reranking.
+- [x] Explicit `corpus-sparse` and `corpus-hybrid` agent-tool modes.
+- [x] Protected citation metadata precedence.
+- [x] Partial expanded-query failure containment.
+
+### Tests/contracts committed
+
+- sparse-only recall beyond the dense pool;
+- stale generation rejection;
+- cross-owner and hash/profile mismatch rejection;
+- document filter propagation;
+- deleted/missing manifest rejection;
+- corpus-mode routing and provenance;
+- protected metadata behavior;
+- partial and total expanded-query failures.
+
+### Still open in Wave 2C
+
+- [ ] Benchmark-calibrated fusion weights.
+- [ ] Independent-corpus reciprocal-rank fusion.
+- [ ] Explicit per-document/source caps.
+- [ ] Date, MIME, field, section and provenance filters.
+- [ ] Multi-stage reranker cascades with latency/cost budgets.
+- [ ] Profile migration, shadow reindex and atomic cutover.
+- [ ] Dense/sparse/hybrid comparative benchmark reports.
+
+## Verification status
+
+The main-only exact-head workflow is configured for:
+
+- Linux Python 3.10, 3.11 and 3.12 full suites;
+- Windows classic-storage regressions on Python 3.10 and 3.12;
+- Compose validation and container build;
+- nine platform/Python release-lock jobs.
+
+The workflow now isolates vector, sparse, generation, job, document, upload, classic and telemetry state. A green result is not currently observable for the latest head, so release readiness is not claimed.
 
 ## Permanent non-claims
 
 - Retrieval rank is not proof of factual correctness.
-- Citation presence is not proof that a claim is entailed.
-- Heuristic and learned rerankers may encode bias and require benchmark validation.
+- Citation presence is not proof of entailment.
+- Storage-generation alignment is provenance, not truth.
+- Learned rerankers may encode bias and require benchmark validation.
 - Regex masking is not certified de-identification.
 - SQLite/process-local transactions are not distributed exactly-once infrastructure.
 - Scientific conclusions require source inspection, expert review and replication.
