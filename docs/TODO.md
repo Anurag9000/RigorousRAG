@@ -89,21 +89,44 @@ This backlog is ordered by dependency and risk. Checked items have committed imp
 
 ## Wave 3 — adaptive and corrective RAG
 
-- [ ] Evidence-sufficiency and retrieval-quality signals.
-- [ ] Query intent/domain/complexity router.
-- [ ] Corrective retrieval loops with strict iteration and cost ceilings.
-- [ ] Confidence calibration and abstention policies.
-- [ ] Dense/sparse/web/scholarly routing experiments.
-- [ ] Route traces and failure diagnostics.
+- [x] Evidence-sufficiency and retrieval-quality signals.
+- [x] Query intent, complexity and retrieval-mode routing policy.
+- [x] Corrective retrieval plans with strict attempt and estimated-cost ceilings.
+- [x] Bounded corrective-plan execution with accumulated-evidence limits.
+- [x] Public adaptive uploaded-document retrieval tool and bounded trace payload.
+- [x] Route traces and contained per-attempt failure diagnostics.
+- [x] Brier score, reliability bins, ECE and maximum calibration-gap reports.
+- [x] Dependency-free isotonic confidence calibration.
+- [x] Risk-coverage curves and abstention-threshold selection.
+- [x] Conservative abstention after insufficient terminal evidence.
+- [ ] Calibrate evidence-sufficiency coefficients on representative datasets.
+- [ ] Install a versioned runtime calibrator selected by benchmark and corpus profile.
+- [ ] Add explicit domain classification and domain-specific routing policies.
+- [ ] Add dense/sparse/web/scholarly routing experiments.
+- [ ] Add adaptive-policy ablations, confidence intervals and promotion thresholds.
 
 ## Wave 4 — decomposition and multi-hop retrieval
 
-- [ ] Bounded query decomposition.
-- [ ] Dependency graph for subquestions.
-- [ ] Parallel independent hops and serial dependent hops.
-- [ ] Entity and temporal constraint propagation.
-- [ ] Evidence joining without citation laundering.
-- [ ] Multi-hop benchmark datasets and metrics.
+- [x] Bounded deterministic query decomposition.
+- [x] Validated acyclic dependency graph for subquestions.
+- [x] Stable plan fingerprints, topological batches and terminal-node detection.
+- [x] Parallel independent hops and serial dependent batches.
+- [x] Bounded worker, timeout, per-hop, dependency and total-evidence budgets.
+- [x] Entity and temporal constraint extraction and propagation.
+- [x] Bounded lexical hint propagation from prerequisite evidence.
+- [x] Evidence joining without citation laundering or source-identity collapse.
+- [x] Per-hop source/document/page lineage and contained failures.
+- [x] Public adaptive uploaded-document multi-hop tool and lineage payload.
+- [x] Abstention when terminal hops provide no evidence.
+- [ ] Add strict-schema model-assisted decomposition with deterministic fallback.
+- [ ] Add learned decomposition selection and plan-quality scoring.
+- [ ] Add entity resolution and normalized temporal ranges.
+- [ ] Add uploaded/web/scholarly heterogeneous multi-hop routing.
+- [ ] Add global cost allocation across hops and retrieval backends.
+- [ ] Add HotpotQA, 2WikiMultiHopQA, MuSiQue and scientific multi-document dataset adapters.
+- [ ] Add decomposition, hop-recall, path-support, answer-support and citation metrics.
+- [ ] Add multi-hop ablation reports and historical regression thresholds.
+- [ ] Register the public tool with the full agent/API/browser surfaces after integration tests.
 
 ## Wave 5 — evidence graph
 
@@ -172,4 +195,5 @@ This backlog is ordered by dependency and risk. Checked items have committed imp
 - [ ] Docker image build and readiness smoke tests.
 - [ ] Clean-clone CLI/API ingestion, deletion, reconciliation and retrieval smoke tests.
 - [ ] Concurrency and fault injection across vector, sparse, manifest and registry boundaries.
+- [ ] Adaptive and multi-hop integration tests against authoritative corpus generations.
 - [ ] Final line-by-line regression audit of one unchanged exact `main` SHA.
