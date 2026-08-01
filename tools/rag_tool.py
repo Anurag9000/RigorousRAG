@@ -1,4 +1,4 @@
-"""Agent tool for owner-scoped uploaded-document retrieval."""
+"""Owner-scoped uploaded-document retrieval with candidate and corpus modes."""
 
 from __future__ import annotations
 
@@ -8,19 +8,30 @@ import operator
 from collections.abc import Mapping
 from typing import Any, List, Optional
 
+from tools.corpus_hybrid_retrieval import CorpusEvidence, retrieve_corpus_evidence
 from tools.hybrid_retrieval import RetrievalCandidate, rank_candidates
 from tools.models import Citation
 from tools.rag import get_rag_layer
 from tools.reranking import build_reranker
 from tools.security import normalize_owner_id
+from tools.sparse_runtime import get_generation_store, get_sparse_index
+
+_RETRIEVAL_MODES = {
+    "dense",
+    "lexical",
+    "hybrid",
+    "corpus-sparse",
+    "corpus-hybrid",
+}
+_RERANKERS = {"none", "heuristic", "cross-encoder"}
 
 RAG_SEARCH_TOOL_DEF = {
     "type": "function",
     "function": {
         "name": "search_uploaded_docs",
         "description": (
-            "Search only the authenticated user's uploaded documents. Optionally "
-            "restrict retrieval to one document ID and use bounded hybrid ranking."
+            "Search the authenticated user's uploaded documents using dense, "
+            "candidate-pool hybrid, or generation-validated corpus retrieval."
         ),
         "parameters": {
             "type": "object",
@@ -29,48 +40,34 @@ RAG_SEARCH_TOOL_DEF = {
                     "type": "string",
                     "minLength": 1,
                     "maxLength": 10_000,
-                    "description": "Question or topic to search for.",
                 },
                 "doc_id": {
                     "type": "string",
                     "minLength": 1,
                     "maxLength": 200,
-                    "description": "Optional exact document ID from the document library.",
                 },
-                "use_hyde": {
-                    "type": "boolean",
-                    "description": "Use one hypothetical evidence passage to improve recall.",
-                    "default": False,
-                },
-                "use_multi_query": {
-                    "type": "boolean",
-                    "description": "Generate a small number of alternative retrieval queries.",
-                    "default": False,
-                },
+                "use_hyde": {"type": "boolean", "default": False},
+                "use_multi_query": {"type": "boolean", "default": False},
                 "retrieval_mode": {
                     "type": "string",
-                    "enum": ["dense", "lexical", "hybrid"],
-                    "description": "Dense ordering, candidate-pool BM25, or fused hybrid ranking.",
+                    "enum": sorted(_RETRIEVAL_MODES),
                     "default": "dense",
                 },
                 "reranker": {
                     "type": "string",
-                    "enum": ["none", "heuristic", "cross-encoder"],
-                    "description": "Optional bounded second-stage reranker.",
+                    "enum": sorted(_RERANKERS),
                     "default": "none",
                 },
                 "candidate_pool": {
                     "type": "integer",
                     "minimum": 1,
                     "maximum": 50,
-                    "description": "Dense candidate pool before lexical fusion and diversity selection.",
                     "default": 20,
                 },
                 "diversity_lambda": {
                     "type": "number",
                     "minimum": 0.0,
                     "maximum": 1.0,
-                    "description": "MMR relevance weight; 1.0 disables redundancy penalty.",
                     "default": 0.82,
                 },
             },
@@ -88,12 +85,20 @@ def _contains_ascii_control(value: str) -> bool:
     return any(ord(character) < 32 or ord(character) == 127 for character in value)
 
 
-def _prose(value: Any, label: str, *, maximum: int, allow_empty: bool = False) -> str:
+def _prose(
+    value: Any,
+    label: str,
+    *,
+    maximum: int,
+    allow_empty: bool = False,
+) -> str:
     if not isinstance(value, str):
         raise ValueError(f"{label} must be a string.")
     rendered = value.strip()
     if _contains_ascii_control(rendered) or len(rendered) > maximum:
-        raise ValueError(f"{label} may contain at most {maximum:,} valid characters.")
+        raise ValueError(
+            f"{label} may contain at most {maximum:,} valid characters."
+        )
     if not rendered and not allow_empty:
         raise ValueError(f"{label} is required.")
     return rendered
@@ -103,8 +108,14 @@ def _identifier(value: Any, label: str, *, maximum: int) -> str:
     if not isinstance(value, str):
         raise ValueError(f"{label} must be a string.")
     rendered = value.strip()
-    if not rendered or len(rendered) > maximum or _contains_ascii_control(rendered):
-        raise ValueError(f"{label} must contain 1-{maximum} valid characters.")
+    if (
+        not rendered
+        or len(rendered) > maximum
+        or _contains_ascii_control(rendered)
+    ):
+        raise ValueError(
+            f"{label} must contain 1-{maximum} valid characters."
+        )
     return rendered
 
 
@@ -112,10 +123,9 @@ def _integer(value: Any, label: str, *, minimum: int, maximum: int) -> int:
     if isinstance(value, bool):
         raise ValueError(f"{label} must be an integer.")
     try:
-        parsed = operator.index(value)
+        numeric = int(operator.index(value))
     except (TypeError, ValueError, OverflowError) as exc:
         raise ValueError(f"{label} must be an integer.") from exc
-    numeric = int(parsed)
     if not minimum <= numeric <= maximum:
         raise ValueError(f"{label} must be between {minimum} and {maximum}.")
     return numeric
@@ -123,7 +133,9 @@ def _integer(value: Any, label: str, *, minimum: int, maximum: int) -> int:
 
 def _choice(value: Any, label: str, allowed: set[str]) -> str:
     if not isinstance(value, str) or value not in allowed:
-        raise ValueError(f"{label} must be one of: {', '.join(sorted(allowed))}.")
+        raise ValueError(
+            f"{label} must be one of: {', '.join(sorted(allowed))}."
+        )
     return value
 
 
@@ -162,15 +174,165 @@ def _bounded_chunks(values: Any, maximum: int) -> List[Any]:
     if values is None:
         return []
     if isinstance(values, (str, bytes, bytearray)):
-        raise RuntimeError("The vector backend returned an invalid chunk collection.")
+        raise RuntimeError(
+            "The vector backend returned an invalid chunk collection."
+        )
     try:
         return list(itertools.islice(iter(values), maximum))
     except Exception as exc:
-        raise RuntimeError("The vector backend returned an invalid chunk collection.") from exc
+        raise RuntimeError(
+            "The vector backend returned an invalid chunk collection."
+        ) from exc
 
 
 def _metadata(value: Any) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
+
+
+def _expanded_queries(
+    rag: Any,
+    query: str,
+    *,
+    use_multi_query: bool,
+    agent_client: Any,
+    model: str,
+) -> list[str]:
+    if not use_multi_query:
+        return [query]
+    raw = rag.generate_expanded_queries(
+        query,
+        agent_client,
+        model=model,
+        count=3,
+    )
+    if raw is None or isinstance(raw, (str, bytes, bytearray)):
+        return [query]
+    result = [query]
+    try:
+        for value in itertools.islice(iter(raw), 4):
+            if not isinstance(value, str):
+                continue
+            candidate = value.strip()
+            if (
+                candidate
+                and len(candidate) <= 20_000
+                and not _contains_ascii_control(candidate)
+                and candidate not in result
+            ):
+                result.append(candidate)
+    except Exception:
+        return [query]
+    return result
+
+
+def _corpus_citations(
+    queries: list[str],
+    *,
+    owner: str,
+    document_id: str | None,
+    rag: Any,
+    mode: str,
+    reranker_name: str,
+    pool: int,
+    requested: int,
+    diversity: float,
+) -> list[Citation]:
+    sparse = get_sparse_index()
+    generations = get_generation_store()
+    merged: dict[str, CorpusEvidence] = {}
+    corpus_mode = "sparse" if mode == "corpus-sparse" else "hybrid"
+    for current_query in queries[:4]:
+        evidence = retrieve_corpus_evidence(
+            current_query,
+            owner_id=owner,
+            rag=rag,
+            sparse=sparse,
+            generations=generations,
+            doc_id=document_id,
+            mode=corpus_mode,
+            top_k=pool,
+            dense_pool=pool,
+            sparse_pool=pool,
+            diversity_lambda=diversity,
+        )
+        for item in evidence:
+            prior = merged.get(item.evidence_id)
+            if prior is None or item.score > prior.score:
+                merged[item.evidence_id] = item
+
+    rows = list(merged.values())
+    if reranker_name != "none" and rows:
+        reranker = build_reranker(reranker_name)
+        ranked = rank_candidates(
+            queries[0],
+            [
+                RetrievalCandidate(
+                    item.evidence_id,
+                    item.text,
+                    item.doc_id,
+                    item.score,
+                )
+                for item in rows
+            ],
+            mode="dense",
+            top_k=requested,
+            reranker=reranker.score,
+            diversity_lambda=diversity,
+            max_per_source=requested,
+            dense_weight=0.75,
+            reranker_weight=0.25,
+        )
+        order = [item.candidate.candidate_id for item in ranked]
+        rows_by_id = {item.evidence_id: item for item in rows}
+        rows = [rows_by_id[identifier] for identifier in order]
+    else:
+        rows = sorted(
+            rows,
+            key=lambda item: (item.score, item.evidence_id),
+            reverse=True,
+        )[:requested]
+
+    citations: list[Citation] = []
+    for item in rows[:requested]:
+        title_value = item.metadata.get("filename")
+        title = (
+            title_value[:500]
+            if isinstance(title_value, str) and title_value.strip()
+            else "Uploaded document"
+        )
+        try:
+            citations.append(
+                Citation(
+                    label=f"[{len(citations) + 1}]",
+                    title=title,
+                    url=f"local://{item.doc_id}",
+                    source_type="uploaded_document",
+                    snippet=item.text[:4_000],
+                    quote=item.text[:4_000],
+                    source_id=item.evidence_id,
+                    doc_id=item.doc_id,
+                    chunk_id=item.evidence_id,
+                    page_number=item.page_number,
+                    metadata={
+                        "section_title": item.section,
+                        "relevance": round(item.dense_score, 6),
+                        "fused_score": round(item.score, 6),
+                        "dense_score": round(item.dense_score, 6),
+                        "sparse_score": round(item.sparse_score, 6),
+                        "retrieval_mode": mode,
+                        "reranker": reranker_name,
+                        "generation_sequence": item.generation_sequence,
+                        "embedding_profile_fingerprint": (
+                            item.profile_fingerprint
+                        ),
+                        "evidence_kind": item.source_kind,
+                        **dict(item.metadata),
+                    },
+                )
+            )
+        except Exception:
+            continue
+    return citations
 
 
 def search_uploaded_docs(
@@ -188,43 +350,93 @@ def search_uploaded_docs(
     candidate_pool: int = 20,
     diversity_lambda: float = 0.82,
 ) -> List[Citation]:
-    """Retrieve evidence with mandatory owner/document provenance checks.
+    """Retrieve evidence after owner, document, and backend validation."""
 
-    Dense/no-reranker mode intentionally preserves the historical ordering and raw
-    relevance contract.  Lexical and hybrid modes rerank only the already scoped dense
-    candidate pool; the persistent corpus-level sparse index is a separate capability.
-    """
-
-    retrieval_query = _prose(query, "query", maximum=10_000, allow_empty=True)
+    retrieval_query = _prose(
+        query,
+        "query",
+        maximum=10_000,
+        allow_empty=True,
+    )
     if not retrieval_query:
         return []
     if not isinstance(owner_id, str):
         raise ValueError("owner_id must be a string.")
     owner = normalize_owner_id(owner_id)
-    document_id = _identifier(doc_id, "doc_id", maximum=200) if doc_id is not None else None
+    document_id = (
+        _identifier(doc_id, "doc_id", maximum=200)
+        if doc_id is not None
+        else None
+    )
     if not isinstance(use_hyde, bool):
         raise ValueError("use_hyde must be a boolean.")
     if not isinstance(use_multi_query, bool):
         raise ValueError("use_multi_query must be a boolean.")
     model = _identifier(expansion_model, "expansion_model", maximum=200)
-    requested = _integer(n_results, "n_results", minimum=1, maximum=_MAX_CITATIONS)
-    mode = _choice(retrieval_mode, "retrieval_mode", {"dense", "lexical", "hybrid"})
-    reranker_name = _choice(reranker, "reranker", {"none", "heuristic", "cross-encoder"})
-    pool = max(requested, _integer(candidate_pool, "candidate_pool", minimum=1, maximum=_MAX_CITATIONS))
+    requested = _integer(
+        n_results,
+        "n_results",
+        minimum=1,
+        maximum=_MAX_CITATIONS,
+    )
+    mode = _choice(retrieval_mode, "retrieval_mode", _RETRIEVAL_MODES)
+    reranker_name = _choice(reranker, "reranker", _RERANKERS)
+    pool = max(
+        requested,
+        _integer(
+            candidate_pool,
+            "candidate_pool",
+            minimum=1,
+            maximum=_MAX_CITATIONS,
+        ),
+    )
     diversity = _unit_float(diversity_lambda, "diversity_lambda")
 
     rag = get_rag_layer()
     if use_hyde:
-        generated = rag.generate_hyde_query(retrieval_query, agent_client, model=model)
+        generated = rag.generate_hyde_query(
+            retrieval_query,
+            agent_client,
+            model=model,
+        )
         if not isinstance(generated, str):
-            raise RuntimeError("The retrieval expansion backend returned invalid text.")
+            raise RuntimeError(
+                "The retrieval expansion backend returned invalid text."
+            )
         retrieval_query = generated.strip()
-        if not retrieval_query:
-            return []
-        if len(retrieval_query) > 20_000 or _contains_ascii_control(retrieval_query):
-            raise RuntimeError("The retrieval expansion backend returned invalid text.")
+        if (
+            not retrieval_query
+            or len(retrieval_query) > 20_000
+            or _contains_ascii_control(retrieval_query)
+        ):
+            raise RuntimeError(
+                "The retrieval expansion backend returned invalid text."
+            )
+    queries = _expanded_queries(
+        rag,
+        retrieval_query,
+        use_multi_query=use_multi_query,
+        agent_client=agent_client,
+        model=model,
+    )
+    if mode.startswith("corpus-"):
+        return _corpus_citations(
+            queries,
+            owner=owner,
+            document_id=document_id,
+            rag=rag,
+            mode=mode,
+            reranker_name=reranker_name,
+            pool=pool,
+            requested=requested,
+            diversity=diversity,
+        )
 
-    backend_limit = requested if mode == "dense" and reranker_name == "none" else pool
+    backend_limit = (
+        requested
+        if mode == "dense" and reranker_name == "none"
+        else pool
+    )
     chunks = rag.query(
         retrieval_query,
         n_results=backend_limit,
@@ -234,7 +446,6 @@ def search_uploaded_docs(
         agent_client=agent_client,
         expansion_model=model,
     )
-
     records: dict[str, dict[str, Any]] = {}
     order: list[str] = []
     for chunk in _bounded_chunks(chunks, backend_limit):
@@ -254,7 +465,11 @@ def search_uploaded_docs(
         if not isinstance(actual_doc_id, str):
             continue
         actual_doc_id = actual_doc_id.strip()
-        if not actual_doc_id or len(actual_doc_id) > 200 or _contains_ascii_control(actual_doc_id):
+        if (
+            not actual_doc_id
+            or len(actual_doc_id) > 200
+            or _contains_ascii_control(actual_doc_id)
+        ):
             continue
         if document_id is not None and actual_doc_id != document_id:
             continue
@@ -262,15 +477,32 @@ def search_uploaded_docs(
         if not isinstance(raw_chunk_id, str):
             continue
         chunk_id = raw_chunk_id.strip()
-        if not chunk_id or len(chunk_id) > 500 or _contains_ascii_control(chunk_id) or chunk_id in records:
+        if (
+            not chunk_id
+            or len(chunk_id) > 500
+            or _contains_ascii_control(chunk_id)
+            or chunk_id in records
+        ):
             continue
         raw_text = _safe_attr(chunk, "text", "")
-        chunk_text = raw_text[:4000] if isinstance(raw_text, str) else ""
-        parent_text = raw_parent[:4000] if isinstance(raw_parent, str) else chunk_text
-        if isinstance(page_number, bool) or not isinstance(page_number, int) or not 1 <= page_number <= _MAX_PAGE_NUMBER:
+        chunk_text = raw_text[:4_000] if isinstance(raw_text, str) else ""
+        parent_text = (
+            raw_parent[:4_000]
+            if isinstance(raw_parent, str)
+            else chunk_text
+        )
+        if (
+            isinstance(page_number, bool)
+            or not isinstance(page_number, int)
+            or not 1 <= page_number <= _MAX_PAGE_NUMBER
+        ):
             page_number = None
         dense_score = _finite_score(_safe_attr(chunk, "score", 0.0))
-        source_id = parent_id if isinstance(parent_id, str) and parent_id.strip() else actual_doc_id
+        source_id = (
+            parent_id
+            if isinstance(parent_id, str) and parent_id.strip()
+            else actual_doc_id
+        )
         try:
             candidate = RetrievalCandidate(
                 candidate_id=chunk_id,
@@ -294,7 +526,14 @@ def search_uploaded_docs(
         order.append(chunk_id)
 
     if mode == "dense" and reranker_name == "none":
-        ranked_rows = [(identifier, records[identifier]["dense_score"], {"dense": records[identifier]["dense_score"]}) for identifier in order[:requested]]
+        ranked_rows = [
+            (
+                identifier,
+                records[identifier]["dense_score"],
+                {"dense": records[identifier]["dense_score"]},
+            )
+            for identifier in order[:requested]
+        ]
     else:
         built = build_reranker(reranker_name)
         rerank_callable = None if reranker_name == "none" else built.score
@@ -307,13 +546,24 @@ def search_uploaded_docs(
             diversity_lambda=diversity,
             max_per_source=requested,
         )
-        ranked_rows = [(item.candidate.candidate_id, item.score, item.components) for item in ranked]
+        ranked_rows = [
+            (
+                item.candidate.candidate_id,
+                item.score,
+                item.components,
+            )
+            for item in ranked
+        ]
 
     citations: List[Citation] = []
     for chunk_id, fused_score, components in ranked_rows:
         row = records[chunk_id]
         filename = row["filename"]
-        title = filename[:500] if isinstance(filename, str) and filename.strip() else "Uploaded document"
+        title = (
+            filename[:500]
+            if isinstance(filename, str) and filename.strip()
+            else "Uploaded document"
+        )
         section_title = row["section_title"]
         try:
             citation = Citation(
@@ -328,12 +578,25 @@ def search_uploaded_docs(
                 chunk_id=chunk_id,
                 page_number=row["page_number"],
                 metadata={
-                    "section_title": section_title[:500] if isinstance(section_title, str) else None,
+                    "section_title": (
+                        section_title[:500]
+                        if isinstance(section_title, str)
+                        else None
+                    ),
                     "relevance": round(row["dense_score"], 6),
                     "fused_score": round(_finite_score(fused_score), 6),
-                    "dense_score": round(_finite_score(components.get("dense", 0.0)), 6),
-                    "lexical_score": round(_finite_score(components.get("lexical", 0.0)), 6),
-                    "reranker_score": round(_finite_score(components.get("reranker", 0.0)), 6),
+                    "dense_score": round(
+                        _finite_score(components.get("dense", 0.0)),
+                        6,
+                    ),
+                    "lexical_score": round(
+                        _finite_score(components.get("lexical", 0.0)),
+                        6,
+                    ),
+                    "reranker_score": round(
+                        _finite_score(components.get("reranker", 0.0)),
+                        6,
+                    ),
                     "retrieval_mode": mode,
                     "reranker": reranker_name,
                 },
