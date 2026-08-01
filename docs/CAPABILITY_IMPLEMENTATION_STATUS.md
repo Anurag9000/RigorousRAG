@@ -144,19 +144,6 @@ This is the authoritative capability-expansion ledger for `main`. A checked impl
 - [x] Inventory, seed, status and cancel CLI commands.
 - [x] No execution or cutover command before shadow validation exists.
 
-### Tests/contracts committed
-
-- real embedding-profile alias use;
-- profile-drift reason classification;
-- private-path absence;
-- stable task IDs;
-- journal seed/claim/renew/validate/commit/fail/cancel behavior;
-- lease-expiry recovery;
-- retry ceilings;
-- database identity replacement;
-- cross-owner cancellation refusal before mutation;
-- generic operator error output.
-
 ### Still open in Wave 2D
 
 - [ ] Shadow vector and sparse stores isolated by task.
@@ -169,7 +156,7 @@ This is the authoritative capability-expansion ledger for `main`. A checked impl
 - [ ] Crash/fault injection at every migration phase.
 - [ ] Active-worker pause/resume/cancel semantics.
 
-## Wave 3 — adaptive and corrective RAG
+## Wave 3 — adaptive, corrective and route-experiment foundation
 
 ### Implemented
 
@@ -183,6 +170,14 @@ This is the authoritative capability-expansion ledger for `main`. A checked impl
 - [x] Per-attempt error containment and trace records.
 - [x] Public adaptive uploaded-document tool and JSON-safe trace payload.
 - [x] Conservative abstention after exhausted insufficient retrieval.
+- [x] Privacy-safe SQLite adaptive trace store with owner/run isolation.
+- [x] Optional runtime trace database configuration.
+- [x] Query hashing and aggregate trace persistence without raw query/evidence storage.
+- [x] Strict private-key filtering and provider-failure containment in public adaptive payloads.
+- [x] Offline route adapters and benchmark harness for dense, corpus-sparse, corpus-hybrid, web and scholarly routes.
+- [x] Strict local route fixtures with duplicate-key, nonstandard-number and symlink/reparse refusal.
+- [x] Query-free/evidence-free JSON reports.
+- [x] Router/oracle success, route accuracy, cost/latency utility, route aggregates and regret.
 - [x] Reliability reports with Brier score, ECE and maximum calibration gap.
 - [x] Dependency-free isotonic confidence calibration.
 - [x] Risk-coverage curves and abstention-threshold selection.
@@ -190,25 +185,24 @@ This is the authoritative capability-expansion ledger for `main`. A checked impl
 ### Tests/contracts committed
 
 - exact/comparison/method/temporal routing behavior;
-- evidence-sufficiency decision boundaries;
-- plan attempt/cost ceilings;
-- hostile input and iterator containment;
-- adaptive execution success, retries and total failures;
-- evidence deduplication and trace payloads;
-- reliability bins and calibration metrics;
-- monotonic isotonic calibration;
-- tied-threshold risk-coverage behavior;
-- feasible and infeasible abstention thresholds.
+- evidence-sufficiency boundaries and corrective-plan ceilings;
+- hostile input, iterator and provider-failure containment;
+- trace-store lifecycle, isolation, corruption and privacy behavior;
+- adaptive API payload filtering and persistence behavior;
+- route selection, oracle comparison, regret and adapter-failure behavior;
+- strict reproducible route fixture and CLI behavior;
+- reliability bins, calibration metrics and abstention thresholds.
 
 ### Still open in Wave 3
 
 - [ ] Representative benchmark calibration of evidence coefficients and decision thresholds.
 - [ ] Versioned runtime calibrator installation and corpus/profile selection.
-- [ ] Explicit domain classifier and domain-specialized policies.
-- [ ] Uploaded/web/scholarly routing experiments.
-- [ ] Adaptive-policy ablations, confidence intervals and promotion gates.
+- [ ] Validated domain classifier and domain-specialized policies.
+- [ ] Connected production-scale uploaded/web/scholarly route experiments.
+- [ ] Repeated-seed adaptive-policy ablations, confidence intervals and promotion gates.
+- [ ] Trace retention, compaction, export and dashboards.
 
-## Wave 4 — decomposition and multi-hop retrieval foundation
+## Wave 4 — decomposition, budgeted multi-hop retrieval and benchmark foundation
 
 ### Implemented
 
@@ -239,13 +233,17 @@ This is the authoritative capability-expansion ledger for `main`. A checked impl
 - [x] Public result payload with plan, quality, budget, traces, joins and citation lineage.
 - [x] Unicode answer normalization, answer exact match and token F1.
 - [x] Document and support precision, recall and F1.
+- [x] Page, section, field, source, sentence and paragraph support locators.
 - [x] Complete support-path, hop-coverage and citation-lineage validity metrics.
 - [x] Abstention-aware macro aggregation and explicitly heuristic answer-support score.
+- [x] Strict HotpotQA and 2WikiMultiHopQA local adapters.
+- [x] Strict MuSiQue JSON/JSONL local adapter.
+- [x] Dataset SHA-256 fingerprints, bounded UTF-8 reads, duplicate-key/NaN refusal and symlink/reparse defenses.
 
 ### Focused verification evidence
 
-- 30 focused decomposition, model-boundary, budget, executor, public-tool and evaluation tests passed locally.
-- Python compilation passed for the six new modules and focused tests.
+- 35 focused decomposition, model-boundary, budget, executor, public-tool, evaluation and dataset-adapter tests passed locally.
+- Python compilation passed for the seven new modules and focused tests.
 - Ruff was unavailable in the constrained local environment.
 
 ### Still open in Wave 4
@@ -253,8 +251,8 @@ This is the authoritative capability-expansion ledger for `main`. A checked impl
 - [ ] Learned plan ranking and benchmark-calibrated plan selection.
 - [ ] Entity resolution and normalized temporal ranges.
 - [ ] Heterogeneous uploaded/web/scholarly multi-hop execution.
-- [ ] Global backend, latency and monetary-cost allocation across heterogeneous hops.
-- [ ] HotpotQA, 2WikiMultiHopQA, MuSiQue and scientific multi-document adapters.
+- [ ] Global backend, latency, token and monetary-cost allocation across heterogeneous hops.
+- [ ] Custom scientific multi-document adapters and governed dataset cards.
 - [ ] Semantic claim-support and entailment metrics per hop and final answer.
 - [ ] Multi-hop ablation reports and historical regression thresholds.
 - [ ] Full agent/API/browser registration and integration tests.
@@ -275,9 +273,11 @@ The repository currently has only `main`, and the historical pull requests are c
 - Retrieval rank is not proof of factual correctness.
 - Citation presence is not proof of entailment.
 - Storage-generation alignment is provenance, not truth.
-- A decomposition graph or quality score is not proof that the question was decomposed optimally.
+- A decomposition graph or structural quality score is not proof that the question was decomposed optimally.
 - Cross-hop evidence grouping is not proof of a shared claim.
-- The answer-support score is token/support recall multiplication, not semantic entailment.
+- The answer-support score is token/support-recall multiplication, not semantic entailment.
+- Offline route fixtures prove harness behavior, not calibrated production routing.
+- Estimated cost is a deterministic workload proxy, not measured token, latency or monetary cost.
 - Learned rerankers may encode bias and require benchmark validation.
 - Regex masking is not certified de-identification.
 - SQLite/process-local transactions are not distributed exactly-once infrastructure.
