@@ -55,6 +55,58 @@ def evidence(recall=0.81):
     }
 
 
+def benchmark_fixture():
+    relevant = {
+        "query_id": "q1",
+        "relevant_ids": ["d1"],
+        "current_ranked_ids": ["d1"],
+        "shadow_ranked_ids": ["d1"],
+        "support_total": 1,
+        "current_support_found": 1,
+        "shadow_support_found": 1,
+        "current_citation_count": 1,
+        "current_valid_citation_count": 1,
+        "shadow_citation_count": 1,
+        "shadow_valid_citation_count": 1,
+        "should_abstain": False,
+        "current_abstained": False,
+        "shadow_abstained": False,
+    }
+    abstention = {
+        "query_id": "q2",
+        "relevant_ids": [],
+        "current_ranked_ids": [],
+        "shadow_ranked_ids": [],
+        "support_total": 0,
+        "current_support_found": 0,
+        "shadow_support_found": 0,
+        "current_citation_count": 0,
+        "current_valid_citation_count": 0,
+        "shadow_citation_count": 0,
+        "shadow_valid_citation_count": 0,
+        "should_abstain": True,
+        "current_abstained": True,
+        "shadow_abstained": True,
+    }
+    return {
+        "task_id": E,
+        "validation_digest": D,
+        "source_sequence": 4,
+        "source_content_sha256": C,
+        "vector_count": 3,
+        "sparse_count": 3,
+        "rank_cutoff": 1,
+        "runs": [
+            {
+                "seed": 1,
+                "cases": [relevant, abstention],
+                "current_resources": resources(),
+                "shadow_resources": resources(),
+            }
+        ],
+    }
+
+
 def fixtures(state="validated"):
     task = SimpleNamespace(
         task_id=E,
@@ -123,6 +175,44 @@ def test_evaluate_persists_eligible_report_without_paths(
     assert output["reason_codes"] == []
     assert "source_path" not in json.dumps(output)
     assert store.read(E).report_digest == output["report_digest"]
+
+
+def test_evaluate_fixture_generates_evidence_and_persists_report(
+    tmp_path, monkeypatch, capsys
+):
+    _task, _manifest, _generation, store = install(monkeypatch, tmp_path)
+    fixture_path = tmp_path / "fixture.json"
+    fixture_path.write_text(json.dumps(benchmark_fixture()))
+    policy_path = tmp_path / "policy.json"
+    policy_path.write_text(
+        json.dumps(
+            {
+                "min_query_count": 2,
+                "min_repeated_runs": 1,
+                "min_seed_count": 1,
+            }
+        )
+    )
+    assert (
+        cli.main(
+            [
+                "evaluate-fixture",
+                E,
+                "--fixture-file",
+                str(fixture_path),
+                "--policy-file",
+                str(policy_path),
+            ]
+        )
+        == 0
+    )
+    output, error = parse(capsys)
+    assert error is None
+    assert output["decision"] == "eligible"
+    assert output["benchmark_generated"] is True
+    assert output["paired_delta_intervals"]["recall_at_k"]["mean"] == 0.0
+    assert store.read(E).report_digest == output["report_digest"]
+    assert "source_path" not in json.dumps(output)
 
 
 def test_blocked_evaluation_returns_one_and_history_status_work(
