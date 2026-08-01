@@ -1,12 +1,3 @@
-import importlib.util
-import sys
-import types
-
-if importlib.util.find_spec("tools.adaptive_rag_tool") is None:
-    stub = types.ModuleType("tools.adaptive_rag_tool")
-    stub.search_uploaded_docs_adaptive = lambda *args, **kwargs: None
-    sys.modules["tools.adaptive_rag_tool"] = stub
-
 from tools import multihop_rag_tool
 from tools.multihop_rag_tool import multihop_result_payload, search_uploaded_docs_multihop
 
