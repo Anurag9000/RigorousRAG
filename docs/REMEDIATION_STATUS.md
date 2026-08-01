@@ -30,7 +30,9 @@ The live repository covers:
 - embedding profiles and migration-control planning;
 - adaptive/corrective retrieval, evidence sufficiency and abstention;
 - confidence calibration and risk-coverage analysis;
-- bounded query decomposition and provenance-preserving multi-hop retrieval;
+- bounded deterministic and strict model-assisted query decomposition;
+- provenance-preserving multi-hop retrieval with a hard global estimated-cost ceiling;
+- answer, document, support-path, hop, lineage and abstention evaluation metrics;
 - scholarly/web/page/handbook and scientific-analysis tools;
 - request-scoped agent, FastAPI, browser, CLI and container surfaces;
 - release-lock generation and exact-head workflow configuration.
@@ -51,7 +53,8 @@ The live repository covers:
 | Classic persistence | Manifest-last immutable generations, hashes, counts, locks, strict JSON and identity-bound storage roots. |
 | Multi-store generations | Vector and sparse snapshots, append-only generation history, compensation, drift scans and bounded reconciliation planning. |
 | Adaptive RAG | Query routing, evidence signals, bounded corrective attempts, trace records, failure containment and abstention. |
-| Multi-hop RAG | Validated DAGs, topological batches, bounded parallel/serial execution, constraint propagation and immutable per-hop citation lineage. |
+| Multi-hop RAG | Closed-schema plans, validated DAGs, hard global estimated-cost allocation, bounded parallel/serial execution, constraint propagation and immutable per-hop citation lineage. |
+| Evaluation | Answer EM/token-F1, document/support P/R/F1, support-path completeness, hop coverage, lineage validity, abstention and bounded macro aggregation. |
 | Frontend/deployment | Safe DOM rendering, session-only credentials, local assets, readiness probes, non-root read-only container and loopback default. |
 | Reproducibility | Immutable requirements snapshots, hash locks, authority stripping, atomic publication and immutable workflow pins. |
 
@@ -65,7 +68,7 @@ The live repository covers:
 - Wave 2C: generation-validated corpus hybrid retrieval foundation.
 - Wave 2D: migration inventory, planning and durable journal/control plane.
 - Wave 3: adaptive/corrective retrieval and calibration foundation.
-- Wave 4: bounded decomposition and uploaded-document multi-hop foundation.
+- Wave 4: bounded decomposition, global estimated-cost allocation, uploaded-document multi-hop execution and evaluation foundation.
 
 Detailed checked/open items are in:
 
@@ -78,10 +81,10 @@ Detailed checked/open items are in:
 
 Historical remediation runs established substantial test and lock-matrix evidence, but they do not certify the current head.
 
-For the new decomposition/multi-hop continuation:
+For the decomposition/multi-hop continuation:
 
-- 12 focused tests passed locally;
-- Python compilation passed for the three new modules and focused tests;
+- 30 focused tests passed locally;
+- Python compilation passed for the six new modules and focused tests;
 - Ruff was unavailable in the constrained local environment.
 
 ## Exact-head release status
@@ -103,12 +106,13 @@ No complete green result is currently observable through the available connector
 2. Coordinate the retained-document registry as a fourth transaction participant or durable outbox consumer.
 3. Run startup reconciliation and implement resumable repair/adoption workflows.
 4. Execute shadow profile migrations, validate artifacts and implement atomic cutover/rollback.
-5. Benchmark and calibrate dense/sparse fusion, adaptive policy and abstention thresholds.
+5. Benchmark and calibrate dense/sparse fusion, adaptive policy, decomposition quality and abstention thresholds.
 6. Add filters, independent-corpus fusion, source caps and reranker cascades.
-7. Add heterogeneous uploaded/web/scholarly multi-hop routing and benchmarks.
-8. Build evidence graph, multimodal scientific ingestion and structured evidence intelligence.
-9. Add repeated-run statistical/resource observability and promotion gates.
-10. Complete the exact-head release matrix and final regression audit.
+7. Add heterogeneous uploaded/web/scholarly multi-hop routing with measured cross-backend latency/cost budgets.
+8. Add multi-hop benchmark adapters and semantic support/entailment evaluation.
+9. Build evidence graph, multimodal scientific ingestion and structured evidence intelligence.
+10. Add repeated-run statistical/resource observability and promotion gates.
+11. Complete the exact-head release matrix and final regression audit.
 
 ## Residual architectural and scientific limitations
 
@@ -123,6 +127,8 @@ These are disclosed rather than falsely marked complete:
 - OCR, reading order, tables, formulas, scanned captions and multi-panel interpretation remain heuristic;
 - regex masking is not certified de-identification;
 - retrieval rank, generation alignment and citation presence do not prove semantic support;
-- a valid decomposition plan does not prove optimal decomposition;
+- a valid decomposition plan or structural score does not prove optimal decomposition;
+- the estimated-cost ceiling is a deterministic workload proxy, not measured token, latency or monetary cost;
 - cross-hop grouping does not prove a shared claim;
+- the heuristic answer-support score does not prove entailment;
 - scientific outputs require source inspection, expert review and replication.
