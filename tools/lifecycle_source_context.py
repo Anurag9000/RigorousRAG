@@ -97,10 +97,19 @@ def install_document_store_source_boundary(module: ModuleType) -> None:
         raise ImportError("document store boundary is unavailable.")
     if not hasattr(document_store, "_lifecycle_original_copy_source"):
         document_store._lifecycle_original_copy_source = document_store.copy_source
-    original = document_store._lifecycle_original_copy_source
+    if not hasattr(document_store, "_lifecycle_original_register"):
+        document_store._lifecycle_original_register = document_store.register
+    original_copy = document_store._lifecycle_original_copy_source
+    original_register = document_store._lifecycle_original_register
 
-    def copy_source(self: Any, *, owner_id: str, source_path: Any, max_bytes: int = DEFAULT_MAX_UPLOAD_BYTES):
-        copied = original(
+    def copy_source(
+        self: Any,
+        *,
+        owner_id: str,
+        source_path: Any,
+        max_bytes: int = DEFAULT_MAX_UPLOAD_BYTES,
+    ):
+        copied = original_copy(
             self,
             owner_id=owner_id,
             source_path=source_path,
@@ -109,8 +118,45 @@ def install_document_store_source_boundary(module: ModuleType) -> None:
         remember_retained_source(owner_id=owner_id, source_path=copied)
         return copied
 
+    def register(
+        self: Any,
+        *,
+        owner_id: str,
+        doc_id: str,
+        filename: str,
+        mime_type: str,
+        source_path: str | Path | None = None,
+    ):
+        candidate = (
+            validated_owner_file_path(self.upload_root, source_path)
+            if source_path is not None
+            else None
+        )
+        if source_path is None or candidate is not None:
+            current = self.get(owner_id=owner_id, doc_id=doc_id)
+            current_path = str((current or {}).get("source_path") or "") or None
+            candidate_path = str(candidate) if candidate is not None else None
+            current_mime = str((current or {}).get("mime_type") or "")
+            requested_mime = str(mime_type or "application/octet-stream")[:200]
+            if (
+                current is not None
+                and current_path == candidate_path
+                and current_mime == requested_mime
+            ):
+                return None
+        return original_register(
+            self,
+            owner_id=owner_id,
+            doc_id=doc_id,
+            filename=filename,
+            mime_type=mime_type,
+            source_path=source_path,
+        )
+
     copy_source._rigorousrag_lifecycle_source_boundary = True
+    register._rigorousrag_lifecycle_source_boundary = True
     document_store.copy_source = copy_source
+    document_store.register = register
 
 
 def install_document_service_source_boundary(module: ModuleType) -> None:
