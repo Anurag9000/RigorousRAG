@@ -5,7 +5,7 @@ on:
   pull_request:
   merge_group:
   push:
-    branches: [main, "agent/**"]
+    branches: [main]
     tags: ["v*"]
 
 permissions:
@@ -42,6 +42,8 @@ jobs:
       PIP_DISABLE_PIP_VERSION_CHECK: "1"
       SINGLE_USER_OWNER_ID: ci-user
       CHROMA_PATH: ${{ runner.temp }}/rigorousrag-vectors
+      SPARSE_INDEX_PATH: ${{ runner.temp }}/rigorousrag-sparse.sqlite3
+      INDEX_GENERATION_DB_PATH: ${{ runner.temp }}/rigorousrag-generations.sqlite3
       JOB_DB_PATH: ${{ runner.temp }}/rigorousrag-jobs.sqlite3
       DOCUMENT_DB_PATH: ${{ runner.temp }}/rigorousrag-documents.sqlite3
       UPLOAD_DIR: ${{ runner.temp }}/rigorousrag-uploads
