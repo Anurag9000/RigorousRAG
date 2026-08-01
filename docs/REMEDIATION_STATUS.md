@@ -1,135 +1,128 @@
-# Exhaustive Remediation Status
+# Current remediation and implementation status
 
-This document is the current status index for the repository-wide remediation begun on
-2026-07-27 and continued through **nine** regression/audit passes. It does not claim that
-the software is defect-free or merge-ready. Detailed findings and changes are recorded in
-`CONTINUATION_AUDIT.md` and `CONTINUATION_AUDIT_PASS2.md` through
-`CONTINUATION_AUDIT_PASS9.md`.
+Last updated: 2026-08-01
 
-## Current repository state
+This document replaces the historical draft-PR status. It reports the live repository state and distinguishes committed implementation from exact-head release certification.
 
-- Branch: `agent/exhaustive-remediation`
-- Draft pull request: #1
-- Pull-request state: open, mergeable, draft
-- Authoritative workflow: `.github/workflows/release-locks.yml`
-- Configured gate: 16 jobs
-- Final-head executable result: **not yet established**
+## Repository state
 
-The branch now covers every product surface in the original inventory:
+- Authoritative branch: `main`
+- Default branch: `main`
+- Live branch inventory: only `main`
+- Historical pull requests: #1–#4 closed
+- Development policy: coherent direct commits to `main`; no new feature branches or pull requests
+- History policy: no force-push or history rewriting
 
-- classic crawler, lexical index, PageRank, generation persistence, internal search, and
-  command-line interfaces;
-- PDF/DOCX/text parsing, bounded OCR, privacy masking, stable source identity, retained
-  files, visual evidence, and vector retrieval;
-- durable ingestion state, retries, scheduling, startup recovery, document registry, and
-  corrupt-row operator recovery;
-- agent orchestration, provider calls, tool admission, evidence provenance, scientific
-  analysis, scholarly/web/page/handbook retrieval, and BibTeX export;
-- FastAPI identity, request framing/body limits, uploads, jobs, models, throttling,
-  deadlines, and frontend assets;
-- browser rendering, session-only credentials, document lifecycle, readiness, telemetry,
-  container deployment, release locks, tests, and documentation.
+The previous `agent/exhaustive-remediation` branch and draft-PR workflow are historical. Their surviving work is represented in `main` history.
+
+## Current product surfaces
+
+The live repository covers:
+
+- classic allowed-domain crawling, TF-IDF, PageRank and generation persistence;
+- PDF/DOCX/Markdown/text ingestion, bounded OCR and privacy masking;
+- private retained-source registry and visual evidence validation;
+- durable jobs, retries, centralized scheduling and startup replay contracts;
+- owner-scoped vector retrieval and document lifecycle;
+- persistent fielded sparse retrieval;
+- authoritative vector+sparse+generation coordination;
+- generation-validated corpus hybrid retrieval;
+- embedding profiles and migration-control planning;
+- adaptive/corrective retrieval, evidence sufficiency and abstention;
+- confidence calibration and risk-coverage analysis;
+- bounded query decomposition and provenance-preserving multi-hop retrieval;
+- scholarly/web/page/handbook and scientific-analysis tools;
+- request-scoped agent, FastAPI, browser, CLI and container surfaces;
+- release-lock generation and exact-head workflow configuration.
 
 ## Implemented critical controls
 
-| Area | Current source contract |
+| Area | Current contract |
 |---|---|
-| Tenant isolation | Server-owned API-key mapping or single-user identity controls every vector, registry, document, comparison, limitation, and visual operation. Caller owner headers cannot select another tenant. |
-| Request admission | Request bodies, malformed framing, running-plus-pending work, timeouts, identifiers, models, evidence, citations, warnings, metadata, and output are bounded. |
-| Upload and retention | Random owner-scoped names, exact byte limits, descriptor-relative POSIX member operations, stable root identities, private modes, `fsync`, and symbolic-link/reparse refusal. |
-| Durable ingestion | SQLite state machine, atomic claims, bounded attempts, durable backoff, one keyed scheduler, startup replay, source re-hashing, immutable parser snapshots, and compensating vector restoration. |
-| Corrupt durable rows | Normal reads fail closed. Fingerprint-bound operator tooling provides sanitized, high-water-marked, keyset-paginated inspection and explicit retirement without implicit source/vector/registry deletion. |
-| Parsing and OCR | PDF page/text/pixel ceilings, DOCX archive/member/ratio ceilings, text limits, bounded OCR attempts and rendering, partial-page provenance, strict public models, and non-text control refusal. |
-| Privacy | Native/OCR text, titles, filenames, metadata, summaries, jobs, scientific results, CLI output, paths, credentials, secrets, contact data, IPs, and non-finite values are best-effort masked. Sentence-final email punctuation is handled correctly. |
-| Retrieval provenance | Every uploaded-document result requires canonical owner/document/chunk metadata. Malformed, cross-owner, non-finite, incomplete, or invalid backend rows are dropped. |
-| Citation authority | Evidence is selected from actual tool output. Credential-bearing or browser-ambiguous citation URLs are rejected; public hosts and exact page numbers are validated. |
-| Provider/network boundary | Public DNS and connected-peer validation, redirect revalidation, proxy suppression, cross-origin secret stripping, safe POST semantics, strict MIME/header/body/deadline limits, and strict provider JSON. |
-| Classic persistence | Immutable generation files, manifest-last commit point, hashes, byte lengths, counts, cross-component checks, process locks, strict JSON, identity-bound roots, and Windows fallback checks. |
-| Frontend/browser | No untrusted `innerHTML`, no third-party runtime scripts/fonts, session-only API key/history, bounded rendering, portable lexical asset resolution, and symlink/reparse refusal for package and assets. |
-| Readiness/deployment | Bounded loopback JSON, identity-stable SQLite checks, safe volume write/fsync/delete probes, non-root read-only container, dropped capabilities, named state volumes, and loopback publishing by default. |
-| Release reproducibility | Immutable requirements snapshots, public-PyPI authority, ambient package/proxy/Python/certificate authority removal, exact pins and hashes, identity-stable lock verification, atomic publication, and immutable action pins. |
+| Tenant isolation | API-key mapping or server-owned single-user identity controls vector, sparse, generation, registry, document and visual operations. Caller owner headers cannot choose another tenant. |
+| Request admission | Request bodies, work queues, timeouts, identifiers, models, evidence, citations, metadata and responses are bounded. |
+| Upload/retention | Random owner-scoped names, exact byte limits, anchored/no-follow operations, stable roots, private modes, fsync and symlink/reparse refusal. |
+| Durable ingestion | SQLite state machine, atomic claims, bounded attempts, durable backoff, centralized scheduling, startup replay, immutable parser snapshots and compensation. |
+| Parsing/OCR | PDF/DOCX/text complexity ceilings, bounded OCR, partial-page provenance and control-character refusal. |
+| Privacy | Native/OCR text, metadata, titles, filenames, summaries, jobs, paths, credentials, contacts and scientific outputs receive best-effort masking. |
+| Retrieval provenance | Uploaded evidence requires owner/document/chunk metadata; authoritative corpus modes validate current generations, content hashes and profiles. |
+| Citation authority | Citations are selected from actual tool evidence; credential-bearing or ambiguous URLs and invalid page provenance are rejected. |
+| Network/provider boundary | Public DNS and connected-peer validation, redirect revalidation, proxy suppression, credential stripping, deadlines, MIME/header/body limits and strict JSON. |
+| Classic persistence | Manifest-last immutable generations, hashes, counts, locks, strict JSON and identity-bound storage roots. |
+| Multi-store generations | Vector and sparse snapshots, append-only generation history, compensation, drift scans and bounded reconciliation planning. |
+| Adaptive RAG | Query routing, evidence signals, bounded corrective attempts, trace records, failure containment and abstention. |
+| Multi-hop RAG | Validated DAGs, topological batches, bounded parallel/serial execution, constraint propagation and immutable per-hop citation lineage. |
+| Frontend/deployment | Safe DOM rendering, session-only credentials, local assets, readiness probes, non-root read-only container and loopback default. |
+| Reproducibility | Immutable requirements snapshots, hash locks, authority stripping, atomic publication and immutable workflow pins. |
 
-## Pass-eight additions
+## Capability status
 
-Pass eight concentrated on runtime and filesystem boundaries:
+### Completed foundations
 
-- lexical frontend module/package/asset identity;
-- exact integer configuration, rate-limit, executor, scheduler, request, and upload limits;
-- boolean clock rejection and bounded scheduler wall-clock rechecks;
-- identity-stable readiness probes and SQLite URI handling;
-- strict malformed/conflicting HTTP framing;
-- reparse-aware owner upload roots and files.
+- Wave 1: hybrid retrieval and evaluation foundation.
+- Wave 2A: embedding governance and persistent sparse index.
+- Wave 2B: authoritative vector+sparse+generation foundation.
+- Wave 2C: generation-validated corpus hybrid retrieval foundation.
+- Wave 2D: migration inventory, planning and durable journal/control plane.
+- Wave 3: adaptive/corrective retrieval and calibration foundation.
+- Wave 4: bounded decomposition and uploaded-document multi-hop foundation.
 
-See `CONTINUATION_AUDIT_PASS8.md`.
+Detailed checked/open items are in:
 
-## Pass-nine additions
+- `docs/CAPABILITY_IMPLEMENTATION_STATUS.md`
+- `docs/TODO.md`
+- `docs/EXHAUSTIVE_MISSION_AUDIT_2026-08-01.md`
+- `docs/MULTIHOP_RETRIEVAL.md`
 
-Pass nine concentrated on public models, providers, retrieval, and output:
+## Current focused verification evidence
 
-- credential-free citation authority and exact page provenance;
-- document/section control-character boundaries;
-- truthful citation-verification overflow reporting;
-- bounded BibTeX candidate lookup and citation keys;
-- immutable handbook reads and mutation-aware caching;
-- strict single-page, scholarly, web, internal, and uploaded-document retrieval inputs;
-- canonical provider keys and strict non-byte/malformed provider JSON;
-- hostile scientific-integrity objects rejected before retrieval;
-- stable before/after classic-engine signatures during reload;
-- CLI validation before provider initialization and terminal-control removal.
+Historical remediation runs established substantial test and lock-matrix evidence, but they do not certify the current head.
 
-See `CONTINUATION_AUDIT_PASS9.md`.
+For the new decomposition/multi-hop continuation:
 
-## Observed executable evidence
+- 12 focused tests passed locally;
+- Python compilation passed for the three new modules and focused tests;
+- Ruff was unavailable in the constrained local environment.
 
-Historical evidence only:
+## Exact-head release status
 
-1. Workflow run `30547701731` completed all nine Linux/Windows/macOS Python
-   3.10–3.12 release-lock jobs successfully.
-2. A later superseded lock matrix again completed all nine combinations.
-3. A superseded Linux Python 3.12 full suite:
-   - collected 713 tests;
-   - passed 711;
-   - measured 76.25% branch coverage;
-   - passed dependency consistency, compilation, and fatal Ruff checks;
-   - failed two tests caused by one shared sentence-final email-masking bug, which was
-     subsequently corrected.
+Release readiness is **not claimed**.
 
-These runs predate later pass-seven, pass-eight, and pass-nine changes. They are not final
-release certification. See `EXECUTABLE_VERIFICATION.md`.
+The configured exact-head matrix includes:
 
-## Required final gate
+- Linux Python 3.10, 3.11 and 3.12 dependency, compile, lint, pytest and coverage jobs;
+- Windows Python 3.10 and 3.12 storage regressions;
+- Docker Compose validation and image build;
+- Linux/Windows/macOS Python 3.10–3.12 lock generation and hash-required dry installation.
 
-PR #1 must remain draft until one final exact head completes:
+No complete green result is currently observable through the available connector for the latest exact `main` SHA. The constrained execution environment cannot clone or download from GitHub because DNS resolution fails. Every release claim must wait for one unchanged `main` head to pass the complete matrix.
 
-- Linux Python 3.10, 3.11, and 3.12 full dependency, whitespace, compilation, fatal Ruff,
-  pytest, and measured coverage checks;
-- Windows Python 3.10 and 3.12 focused classic-storage checks;
-- Docker Compose validation and container build;
-- Linux, Windows, and macOS Python 3.10–3.12 lock generation, verification,
-  `--require-hashes --no-deps --dry-run`, and artifact publication.
+## Highest-priority remaining work
 
-Every failure must be corrected and the entire 16-job workflow rerun. The final diff,
-documentation, and generated artifacts must then be re-audited before the PR leaves draft.
-
-No current-head success is claimed. GitHub has not exposed a pull-request workflow run for
-connector-authored heads, and the available execution container cannot clone the branch
-because DNS resolution for `github.com` fails.
+1. Register and integration-test adaptive and multi-hop tools through the full agent/API/browser response path.
+2. Coordinate the retained-document registry as a fourth transaction participant or durable outbox consumer.
+3. Run startup reconciliation and implement resumable repair/adoption workflows.
+4. Execute shadow profile migrations, validate artifacts and implement atomic cutover/rollback.
+5. Benchmark and calibrate dense/sparse fusion, adaptive policy and abstention thresholds.
+6. Add filters, independent-corpus fusion, source caps and reranker cascades.
+7. Add heterogeneous uploaded/web/scholarly multi-hop routing and benchmarks.
+8. Build evidence graph, multimodal scientific ingestion and structured evidence intelligence.
+9. Add repeated-run statistical/resource observability and promotion gates.
+10. Complete the exact-head release matrix and final regression audit.
 
 ## Residual architectural and scientific limitations
 
-These remain disclosed rather than falsely marked complete:
+These are disclosed rather than falsely marked complete:
 
-- final-path robots policy cannot prevent the redirect response itself from being fetched;
 - provider code already running in a Python thread cannot be forcibly terminated safely;
-- application SSRF controls still require deployment DNS and egress policy;
+- application SSRF controls still require deployment DNS/egress policy;
 - filesystem anchoring is not host isolation or encryption at rest;
 - parser checks are not malware scanning or sandboxing;
 - retained sources are not application-encrypted;
-- process-local admission, scheduling, rate limiting, SQLite stores, and compensating
-  vector writes are not distributed exactly-once infrastructure;
-- OCR quality, reading order, tables, formulas, scanned captions, and multi-panel figure
-  interpretation remain heuristic;
+- process-local admission, scheduling, rate limiting, SQLite state and compensation are not distributed exactly-once infrastructure;
+- OCR, reading order, tables, formulas, scanned captions and multi-panel interpretation remain heuristic;
 - regex masking is not certified de-identification;
-- readiness does not prove model availability or representative semantic retrieval;
-- structural provenance does not prove semantic entailment;
-- scientific outputs require source inspection, expert review, and replication.
+- retrieval rank, generation alignment and citation presence do not prove semantic support;
+- a valid decomposition plan does not prove optimal decomposition;
+- cross-hop grouping does not prove a shared claim;
+- scientific outputs require source inspection, expert review and replication.
