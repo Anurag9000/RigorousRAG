@@ -149,9 +149,9 @@ This is the authoritative capability-expansion ledger for `main`. A checked impl
 - [ ] Multi-stage reranker cascades with latency/cost budgets.
 - [ ] Dense/sparse/hybrid comparative benchmark reports.
 
-## Wave 2D — isolated profile migration and promotion control plane
+## Wave 2D — isolated migration, paired promotion and cutover preflight
 
-### Implemented
+### Planning and journal implemented
 
 - [x] Profile-drift inventory from durable current generations.
 - [x] Retained-source eligibility classification without path disclosure.
@@ -165,6 +165,9 @@ This is the authoritative capability-expansion ledger for `main`. A checked impl
 - [x] Expired running and validated task recovery contracts.
 - [x] Planned/failed cancellation only and owner verification before cancellation.
 - [x] Inventory, seed, status and cancel CLI commands.
+
+### Shadow construction implemented
+
 - [x] Task-isolated manifest-last vector and sparse shadow artifacts.
 - [x] Retained-source reparse through the current privacy-finalized ingestion pipeline.
 - [x] Owner/source-byte identity verification before shadow construction.
@@ -180,36 +183,88 @@ This is the authoritative capability-expansion ledger for `main`. A checked impl
 - [x] Tamper, symlink/reparse, root-identity and strict JSON defenses.
 - [x] Atomic shadow-build claimant that excludes already-validated tasks.
 - [x] Build, validate and failed/cancelled cleanup CLI with no cutover command.
+
+### Repository-owned paired benchmark implemented
+
+- [x] Strict query-ID-only paired current/shadow fixture schema.
+- [x] Exact ordered benchmark contract across repeated runs.
+- [x] Contract-only benchmark fingerprint independent of ranked outputs/resources.
+- [x] Recall@k, nDCG@k, MRR, support recall, citation precision and abstention accuracy.
+- [x] Conservative p95/max resource aggregation and mean estimated cost.
+- [x] Repeated-run and distinct-seed accounting.
+- [x] Signed paired 95% confidence intervals.
+- [x] Strict duplicate-key, nonstandard-number, unknown-field, symlink and file-identity refusal.
+- [x] Atomic aggregate evidence and optional detailed interval-report output.
+- [x] Contract inspection and benchmark script entrypoint.
+
+### Aggregate promotion implemented
+
 - [x] Versioned conservative aggregate promotion policy.
 - [x] Exact task/journal/manifest/evidence/source-generation alignment gates.
-- [x] Quality floors and regression limits for recall, nDCG, MRR, support recall, citation precision and abstention accuracy.
+- [x] Quality floors and maximum point-estimate regressions for six quality metrics.
 - [x] Resource ceilings for p95 latency, peak memory, storage and estimated cost.
 - [x] Minimum query-count, repeated-run, seed-count and confidence-level gates.
 - [x] Deterministic evidence, policy and report digests with bounded reason codes.
 - [x] Append-only promotion-report history and atomic per-task current pointer.
-- [x] Strict evidence/policy JSON and privacy-safe evaluate/status/history/remove CLI.
-- [x] No live generation mutation, cutover or rollback command.
+- [x] Strict aggregate evidence/policy JSON and privacy-safe evaluate/status/history/remove CLI.
+
+### Paired statistical promotion implemented
+
+- [x] Versioned `paired-noninferiority-v1` policy.
+- [x] Minimum paired-run, seed-count and confidence-level requirements.
+- [x] Lower-confidence-bound non-inferiority for recall, nDCG, MRR, support recall, citation precision and abstention accuracy.
+- [x] Optional lower-confidence-bound practical-gain thresholds.
+- [x] Deterministic per-metric assessments and statistical assessment digest.
+- [x] Composite evidence and policy digests attached without changing the stored promotion-report schema.
+- [x] Direct in-process `evaluate-fixture` benchmark plus aggregate/statistical promotion flow.
+- [x] Final blocking whenever either aggregate or statistical gates fail.
+
+### Non-mutating cutover preflight implemented
+
+- [x] Require migration task state `validated`.
+- [x] Require current promotion report `eligible` under `paired-promotion-v1`.
+- [x] Bind exact task/shadow/report owner, document, source sequence, source profile, target profile and validation identities.
+- [x] Re-capture the complete current authoritative vector/sparse/generation snapshot.
+- [x] Require the source generation to remain active/restored with the exact source sequence, profile and content hash.
+- [x] Require the shadow content hash to equal the current authoritative content hash.
+- [x] Hash complete current vector rows and metadata under owner/document scope.
+- [x] Require vector rollback row count equal to the generation record.
+- [x] Hash complete current sparse fields and metadata.
+- [x] Require sparse rollback generation/profile equal to the generation record/task.
+- [x] Derive rollback and target artifact identity digests.
+- [x] Persist only hashes, counts, sequences and fingerprints; do not persist rollback text.
+- [x] Append-only preflight history and atomic per-task current pointer.
+- [x] Plan/status/history and failed/cancelled cleanup CLI.
+- [x] Explicit `mutation_performed: false` in successful operator payloads.
+- [x] No approval, execute, pointer-swap, task-commit or rollback command.
 
 ### Focused verification evidence
 
-- The isolated shadow store/executor contracts cover manifest-last writes, idempotent replay, tamper detection, source-generation races and generic failures.
+- Isolated shadow store/executor contracts cover manifest-last writes, idempotent replay, tamper detection, source-generation races and generic failures.
 - Encoder and retained-source builder contracts cover passage prefixes, adapter-required refusal/registration, exact owner/document identity, one-to-one vector/sparse provenance and malformed custom encoders.
 - Shadow runtime/CLI contracts cover build-only claiming, validated-task exclusion, attempt ceilings, privacy-safe output and no-cutover behavior.
-- The promotion evaluator/store/runtime/CLI constrained harness passed 21 tests.
-- Promotion contracts cover eligible/blocked decisions, benchmark minimums, quality/resource thresholds, zero-baseline refusal, append-only history, tamper detection, strict JSON, path defenses and exact-confirmation cleanup.
-- Full exact-head repository execution, real model loading, governed benchmark generation, Windows and cutover fault injection remain required.
+- The promotion/benchmark/statistical constrained local harness passed **42 tests**.
+- These contracts cover aggregate decisions, paired metric computation, contract fingerprints, signed intervals, non-inferiority, practical gains, direct fixture evaluation, composite digests, append-only history, strict JSON, path defenses and exact-confirmation cleanup.
+- The cutover-preflight constrained local harness passed **15 tests**.
+- Preflight contracts cover source/shadow/report identity binding, eligible-paired-report requirement, complete vector/sparse snapshot hashing, scope/count/generation checks, timestamp-stable digests, append-only history, tamper/path defenses and explicit non-mutation output.
+- Full exact-head repository execution, real model loading, real current/shadow benchmark execution, Windows and cutover/rollback fault injection remain required.
 
 ### Still open in Wave 2D
 
-- [ ] Repository-owned benchmark runner producing aggregate promotion evidence from governed fixtures.
-- [ ] Confidence intervals, statistical tests and practical-effect thresholds generated by that runner.
-- [ ] Measured latency, memory, storage and monetary accounting instead of externally supplied aggregates/proxies.
+- [ ] Execute governed fixtures against the actual current and shadow retrieval stacks rather than consuming collected ranked identifiers.
+- [ ] Measure wall-clock latency, process/device memory, artifact storage and provider billing.
+- [ ] Add reviewed bootstrap/permutation procedures and multiple-comparison controls where scientifically appropriate.
 - [ ] Governed production adapters for Instructor, SPECTER2, BGE-M3 and future adapter-required profiles.
-- [ ] Atomic vector+sparse+generation current-pointer cutover.
-- [ ] Exact rollback references, rollback verification and old-state release rules.
-- [ ] Bounded shadow/report retention and compaction.
+- [ ] Protected durable rollback-artifact store containing complete privacy-finalized vector and sparse snapshots.
+- [ ] Explicit rollback encryption/key-management, retention and secure-deletion policy.
+- [ ] Durable cutover journal with exclusive leases and idempotency keys.
+- [ ] Atomic or compensating vector+sparse+generation publication with no exposed unvalidated mixed state.
+- [ ] Validate the new authoritative generation before marking the migration committed.
+- [ ] Automatic rollback after every failed publication/validation phase.
+- [ ] Exact rollback-identity verification and old-state retention until verification passes.
+- [ ] Bounded shadow/report/preflight/rollback retention and compaction.
 - [ ] Active-worker pause/resume/cancel semantics.
-- [ ] Crash/fault injection at every build, report, cutover and rollback phase.
+- [ ] Crash/fault injection at every build, report, preflight, publication and rollback phase.
 
 ## Wave 3 — adaptive, corrective and route-experiment foundation
 
@@ -324,12 +379,15 @@ The repository currently has only `main`, and historical pull requests are close
 - A lifecycle outbox is not a distributed atomic transaction or consensus system.
 - A migration shadow is not live state.
 - An `eligible` promotion report does not authorize or perform cutover.
-- Externally supplied aggregate benchmark evidence is not a repository-owned measurement pipeline.
+- Paired non-inferiority under one governed fixture does not prove universal non-inferiority.
+- A cutover preflight is not approval or reservation.
+- A rollback identity digest is not a restorable rollback artifact.
+- Collected paired ranked identifiers are not the same as repository-orchestrated real-stack benchmark execution.
+- Estimated or supplied resource values are not measured deployment accounting.
 - A decomposition graph or structural quality score is not proof of optimal decomposition.
 - Cross-hop evidence grouping is not proof of shared claim support.
 - The answer-support score is token/support-recall multiplication, not semantic entailment.
 - Offline route fixtures prove harness behavior, not calibrated production routing.
-- Estimated resource values are planning proxies unless the producer supplies measured accounting.
 - Learned rerankers or embedding adapters may encode bias and require benchmark validation.
 - Regex masking is not certified de-identification.
 - Scientific conclusions require source inspection, expert review and replication.
