@@ -234,10 +234,14 @@ Residual limitations are explicitly documented rather than falsely marked comple
 - isotonic calibration;
 - risk-coverage and abstention-threshold selection.
 
-### 4.8 Decomposition and multi-hop RAG — implemented in this continuation
+### 4.8 Decomposition, budgeted multi-hop retrieval and evaluation — implemented in this continuation
 
 - bounded subquestions;
 - explicit or deterministic heuristic decomposition;
+- strict closed-schema model-assisted decomposition;
+- provider-response digesting without retaining model-authored evidence;
+- deterministic fallback on malformed or unavailable model output;
+- token/entity/time/redundancy/parallelism/depth plan diagnostics;
 - entity and temporal constraints;
 - validated DAGs with cycle/dangling/duplicate refusal;
 - stable fingerprints and topological batches;
@@ -247,9 +251,17 @@ Residual limitations are explicitly documented rather than falsely marked comple
 - per-hop source/document/page lineage;
 - joins without citation laundering;
 - bounded dependency-derived lexical hints;
-- public adaptive multi-hop tool;
+- hard global estimated-cost allocation across all uploaded-document hops;
+- minimum-attempt reservation and impossible-budget refusal before retrieval;
+- weighted remainder allocation, per-hop caps and unused-budget accounting;
+- public adaptive multi-hop result with plan, quality, budget, traces and lineage;
 - terminal-evidence abstention;
-- 12 focused local tests passing.
+- answer exact match and Unicode token F1;
+- document and support precision, recall and F1;
+- complete support-path, hop-coverage and citation-lineage metrics;
+- abstention-aware macro aggregation;
+- explicitly heuristic answer-support scoring;
+- 30 focused local tests passing.
 
 ## 5. Partial or open implementation
 
@@ -273,9 +285,9 @@ The journal/control plane exists, but shadow vector+sparse creation, privacy-fin
 
 The deterministic policy and calibration tools exist, but the coefficients and thresholds have not been promoted from representative repeated benchmark runs into a versioned runtime calibrator. Web/scholarly routing and explicit domain policies remain open.
 
-### 5.6 Multi-hop integration and evaluation
+### 5.6 Multi-hop integration and benchmark completion
 
-The uploaded-document foundation exists, but model-assisted decomposition, entity resolution, heterogeneous backends, benchmark adapters, answer-support metrics and full agent/API/browser registration remain open.
+The uploaded-document planning, cost-allocation, execution and structural evaluation foundation exists. Remaining work includes learned plan ranking, entity resolution, normalized temporal ranges, heterogeneous uploaded/web/scholarly backends, measured cross-backend latency/token/monetary budgets, HotpotQA/2WikiMultiHopQA/MuSiQue/scientific adapters, semantic support/entailment metrics, ablation thresholds and full agent/API/browser registration.
 
 ### 5.7 Evidence graph
 
@@ -441,10 +453,13 @@ Every model or pipeline promotion should record:
 - Confirmed historical PRs are closed.
 - Audited current architecture, TODO, status, recent commits and key retrieval/adaptive surfaces.
 - Identified stale Wave 3 status and historical PR-state documentation.
-- Added decomposition, multi-hop execution and public multi-hop RAG modules.
+- Added deterministic and strict model-assisted decomposition.
+- Added global estimated-cost allocation across multi-hop adaptive retrieval.
+- Added provenance-preserving parallel/serial multi-hop execution and public result payloads.
+- Added answer, document, support-path, hop, citation-lineage and abstention metrics.
 - Added focused tests.
-- Ran local focused tests: 12 passed.
-- Ran Python compilation for the new modules/tests: passed.
+- Ran local focused tests: 30 passed.
+- Ran Python compilation for the six new modules and focused tests: passed.
 - Ruff was unavailable locally.
 - Clean-clone and complete repository verification were not possible because GitHub DNS resolution fails in the execution environment.
 
@@ -453,12 +468,13 @@ Every model or pipeline promotion should record:
 1. Register and integration-test adaptive/multi-hop tools across the agent/API response boundary.
 2. Complete the retained-registry/outbox and startup repair path.
 3. Implement shadow migration execution and atomic cutover.
-4. Build benchmark-calibrated hybrid/adaptive/multi-hop experiment suites.
+4. Build benchmark adapters and calibrated hybrid/adaptive/multi-hop experiment suites.
 5. Add filters, source caps and reranker cascades.
-6. Add heterogeneous multi-hop routing.
-7. Build typed evidence graph and scientific extraction schemas.
-8. Expand multimodal scientific parsing.
-9. Add full observability and promotion gates.
-10. Execute the unchanged exact-head release matrix and only then declare release readiness.
+6. Add heterogeneous multi-hop routing and measured cross-backend budgets.
+7. Add semantic support/entailment evaluation and promotion thresholds.
+8. Build typed evidence graph and scientific extraction schemas.
+9. Expand multimodal scientific parsing.
+10. Add full observability and promotion gates.
+11. Execute the unchanged exact-head release matrix and only then declare release readiness.
 
 The canonical machine-actionable backlog is `docs/TODO.md`; the implementation ledger is `docs/CAPABILITY_IMPLEMENTATION_STATUS.md`.
