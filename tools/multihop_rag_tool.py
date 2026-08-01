@@ -6,6 +6,7 @@ import itertools
 import math
 import operator
 import re
+import time
 from collections import Counter
 from dataclasses import asdict, dataclass
 from typing import Any
@@ -24,6 +25,8 @@ from tools.multihop_retrieval import (
     MultiHopResult,
     run_multihop_retrieval,
 )
+from tools.multihop_trace_runtime import get_multihop_trace_store
+from tools.multihop_trace_store import MultiHopTraceStore
 from tools.public_payload import public_model_payload
 from tools.query_decomposition import Subquestion, build_decomposition_plan
 
@@ -209,9 +212,17 @@ def search_uploaded_docs_multihop(
     agent_client: Any = None,
     expansion_model: str = "gpt-4o-mini",
     diversity_lambda: float = 0.82,
+    trace_store: MultiHopTraceStore | None = None,
+    trace_run_id: str | None = None,
 ) -> MultiHopRAGResult:
     """Execute adaptive uploaded-document retrieval over a bounded decomposition DAG."""
 
+    if trace_store is not None and not isinstance(trace_store, MultiHopTraceStore):
+        raise ValueError("trace_store must be a MultiHopTraceStore or null.")
+    selected_trace_store = (
+        trace_store if trace_store is not None else get_multihop_trace_store()
+    )
+    started_at = time.time()
     question_limit = _integer(max_subquestions, "max_subquestions", 1, 12)
     result_limit = _integer(per_hop_limit, "per_hop_limit", 1, 50)
     workers = _integer(max_workers, "max_workers", 1, 16)
@@ -289,7 +300,20 @@ def search_uploaded_docs_multihop(
         global_timeout_seconds=global_timeout,
         require_dependency_evidence=True,
     )
-    return MultiHopRAGResult(retrieval, decision, budget)
+    result = MultiHopRAGResult(retrieval, decision, budget)
+    if selected_trace_store is not None:
+        selected_trace_store.record_result(
+            owner_id=owner_id,
+            plan=decision.plan,
+            retrieval=retrieval,
+            budget=budget,
+            used_model=decision.used_model,
+            planner_quality=decision.quality.score,
+            run_id=trace_run_id,
+            started_at=started_at,
+            completed_at=time.time(),
+        )
+    return result
 
 
 def multihop_result_payload(result: MultiHopRAGResult) -> dict[str, Any]:
