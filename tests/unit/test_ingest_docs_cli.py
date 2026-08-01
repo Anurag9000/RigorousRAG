@@ -1,6 +1,7 @@
 import argparse
 import json
 import os
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -42,25 +43,35 @@ def _success(path: Path, doc_id: str = "doc-1"):
     return document, IngestionResult(success=True, document=document)
 
 
-def _main_patches(path, output, *, store, rag, result, indexed, args=None):
+@contextmanager
+def _patched_main(path, output, *, store, rag, result, indexed, args=None):
     snapshot = object()
-    patches = [
-        patch(
-            "ingest_docs.parse_args",
-            return_value=args or _args(path, output),
-        ),
-        patch("ingest_docs.get_rag_layer", return_value=rag),
-        patch("ingest_docs.get_document_store", return_value=store),
-        patch("ingest_docs._llm_client", return_value=None),
-        patch("ingest_docs.ingest_file", return_value=result),
-        patch("ingest_docs.index_document", return_value=indexed),
-        patch(
-            "ingest_docs.capture_authoritative_document",
-            return_value=snapshot,
-        ),
-        patch("ingest_docs.restore_authoritative_document"),
-    ]
-    return snapshot, patches
+    with ExitStack() as stack:
+        stack.enter_context(
+            patch(
+                "ingest_docs.parse_args",
+                return_value=args or _args(path, output),
+            )
+        )
+        stack.enter_context(patch("ingest_docs.get_rag_layer", return_value=rag))
+        stack.enter_context(
+            patch("ingest_docs.get_document_store", return_value=store)
+        )
+        stack.enter_context(patch("ingest_docs._llm_client", return_value=None))
+        stack.enter_context(patch("ingest_docs.ingest_file", return_value=result))
+        stack.enter_context(
+            patch("ingest_docs.index_document", return_value=indexed)
+        )
+        capture = stack.enter_context(
+            patch(
+                "ingest_docs.capture_authoritative_document",
+                return_value=snapshot,
+            )
+        )
+        restore = stack.enter_context(
+            patch("ingest_docs.restore_authoritative_document")
+        )
+        yield snapshot, capture, restore
 
 
 def test_collect_files_filters_supported_types_and_output(tmp_path):
@@ -110,16 +121,21 @@ def test_main_writes_privacy_safe_manifest(tmp_path):
     rag = MagicMock()
     store = MagicMock()
     store.register.return_value = None
-    _snapshot, patches = _main_patches(
+    with _patched_main(
         path,
         output,
         store=store,
         rag=rag,
         result=result,
         indexed=indexed,
-    )
-    with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7]:
+    ) as (_snapshot, capture, restore):
         assert main() == 0
+        capture.assert_called_once_with(
+            owner_id="alice",
+            doc_id="doc-1",
+            rag=rag,
+        )
+        restore.assert_not_called()
     payload = json.loads(output.read_text(encoding="utf-8"))
     assert payload[0]["id"] == "doc-1"
     assert payload[0]["chunk_count"] == 3
@@ -134,7 +150,6 @@ def test_main_writes_privacy_safe_manifest(tmp_path):
         mime_type="text/plain",
         source_path=None,
     )
-    patches[7].mock.assert_not_called()
 
 
 def test_main_retains_private_copy_without_manifest_path(tmp_path):
@@ -150,17 +165,15 @@ def test_main_retains_private_copy_without_manifest_path(tmp_path):
     store.copy_source.return_value = retained
     store.register.return_value = str(old)
     store.remove_source.return_value = True
-    args = _args(path, output, retain_sources=True)
-    _snapshot, patches = _main_patches(
+    with _patched_main(
         path,
         output,
         store=store,
         rag=rag,
         result=result,
         indexed=indexed,
-        args=args,
-    )
-    with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7]:
+        args=_args(path, output, retain_sources=True),
+    ):
         assert main() == 0
     payload = json.loads(output.read_text(encoding="utf-8"))
     assert payload[0]["source_retained"] is True
@@ -179,15 +192,14 @@ def test_previous_source_cleanup_failure_is_nonterminal_and_visible(tmp_path):
     store = MagicMock()
     store.register.return_value = "/private/old-source.txt"
     store.remove_source.side_effect = RuntimeError("cleanup failed")
-    _snapshot, patches = _main_patches(
+    with _patched_main(
         path,
         output,
         store=store,
         rag=rag,
         result=result,
         indexed=indexed,
-    )
-    with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7]:
+    ):
         assert main() == 0
     payload = json.loads(output.read_text(encoding="utf-8"))
     assert payload[0]["replacement_cleanup_pending"] is True
@@ -204,20 +216,18 @@ def test_registry_failure_restores_authoritative_generation(tmp_path):
     store = MagicMock()
     store.copy_source.return_value = retained
     store.register.side_effect = RuntimeError("registry down")
-    args = _args(path, None, retain_sources=True, fail_fast=True)
-    snapshot, patches = _main_patches(
+    with _patched_main(
         path,
         None,
         store=store,
         rag=rag,
         result=result,
         indexed=indexed,
-        args=args,
-    )
-    with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7]:
+        args=_args(path, None, retain_sources=True, fail_fast=True),
+    ) as (snapshot, _capture, restore):
         assert main() == 1
+        restore.assert_called_once_with(snapshot, rag=rag)
     store.remove_source.assert_called_once_with(retained)
-    patches[7].mock.assert_called_once_with(snapshot, rag=rag)
     rag.delete_document.assert_not_called()
     rag.collection.upsert.assert_not_called()
 
@@ -229,15 +239,20 @@ def test_index_failure_relies_on_authoritative_internal_rollback(tmp_path):
     rag = MagicMock()
     store = MagicMock()
     snapshot = object()
-    with patch("ingest_docs.parse_args", return_value=_args(path, None, fail_fast=True)), patch(
-        "ingest_docs.get_rag_layer", return_value=rag
-    ), patch("ingest_docs.get_document_store", return_value=store), patch(
-        "ingest_docs._llm_client", return_value=None
-    ), patch("ingest_docs.ingest_file", return_value=result), patch(
-        "ingest_docs.capture_authoritative_document", return_value=snapshot
-    ), patch("ingest_docs.index_document", side_effect=RuntimeError("failed")), patch(
-        "ingest_docs.restore_authoritative_document"
-    ) as restore:
+    with patch(
+        "ingest_docs.parse_args",
+        return_value=_args(path, None, fail_fast=True),
+    ), patch("ingest_docs.get_rag_layer", return_value=rag), patch(
+        "ingest_docs.get_document_store", return_value=store
+    ), patch("ingest_docs._llm_client", return_value=None), patch(
+        "ingest_docs.ingest_file", return_value=result
+    ), patch(
+        "ingest_docs.capture_authoritative_document",
+        return_value=snapshot,
+    ), patch(
+        "ingest_docs.index_document",
+        side_effect=RuntimeError("failed"),
+    ), patch("ingest_docs.restore_authoritative_document") as restore:
         assert main() == 1
     restore.assert_not_called()
     store.register.assert_not_called()
