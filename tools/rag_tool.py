@@ -24,6 +24,15 @@ _RETRIEVAL_MODES = {
     "corpus-hybrid",
 }
 _RERANKERS = {"none", "heuristic", "cross-encoder"}
+_MAX_CITATIONS = 50
+_MAX_PAGE_NUMBER = 1_000_000
+_CORPUS_EXTRA_FIELDS = {
+    "filename",
+    "document_score",
+    "field_type",
+    "term_frequencies",
+    "positions",
+}
 
 RAG_SEARCH_TOOL_DEF = {
     "type": "function",
@@ -77,9 +86,6 @@ RAG_SEARCH_TOOL_DEF = {
     },
 }
 
-_MAX_CITATIONS = 50
-_MAX_PAGE_NUMBER = 1_000_000
-
 
 def _contains_ascii_control(value: str) -> bool:
     return any(ord(character) < 32 or ord(character) == 127 for character in value)
@@ -104,7 +110,7 @@ def _prose(
     return rendered
 
 
-def _identifier(value: Any, label: str, *, maximum: int) -> str:
+def _identifier(value: Any, label: str, maximum: int) -> str:
     if not isinstance(value, str):
         raise ValueError(f"{label} must be a string.")
     rendered = value.strip()
@@ -119,7 +125,7 @@ def _identifier(value: Any, label: str, *, maximum: int) -> str:
     return rendered
 
 
-def _integer(value: Any, label: str, *, minimum: int, maximum: int) -> int:
+def _integer(value: Any, label: str, minimum: int, maximum: int) -> int:
     if isinstance(value, bool):
         raise ValueError(f"{label} must be an integer.")
     try:
@@ -139,7 +145,7 @@ def _choice(value: Any, label: str, allowed: set[str]) -> str:
     return value
 
 
-def _unit_float(value: Any, label: str) -> float:
+def _unit(value: Any, label: str) -> float:
     if isinstance(value, bool):
         raise ValueError(f"{label} must be numeric.")
     try:
@@ -151,6 +157,18 @@ def _unit_float(value: Any, label: str) -> float:
     return numeric
 
 
+def _score(value: Any) -> float:
+    if isinstance(value, bool):
+        return 0.0
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return 0.0
+    if not math.isfinite(numeric):
+        return 0.0
+    return max(0.0, min(numeric, 1.0))
+
+
 def _safe_attr(value: Any, name: str, default: Any = None) -> Any:
     try:
         return getattr(value, name, default)
@@ -158,19 +176,11 @@ def _safe_attr(value: Any, name: str, default: Any = None) -> Any:
         return default
 
 
-def _finite_score(value: Any) -> float:
-    if isinstance(value, bool):
-        return 0.0
-    try:
-        score = float(value)
-    except (TypeError, ValueError, OverflowError):
-        return 0.0
-    if not math.isfinite(score):
-        return 0.0
-    return max(0.0, min(score, 1.0))
+def _metadata(value: Any) -> Mapping[str, Any]:
+    return value if isinstance(value, Mapping) else {}
 
 
-def _bounded_chunks(values: Any, maximum: int) -> List[Any]:
+def _bounded_chunks(values: Any, maximum: int) -> list[Any]:
     if values is None:
         return []
     if isinstance(values, (str, bytes, bytearray)):
@@ -185,26 +195,25 @@ def _bounded_chunks(values: Any, maximum: int) -> List[Any]:
         ) from exc
 
 
-def _metadata(value: Any) -> Mapping[str, Any]:
-    return value if isinstance(value, Mapping) else {}
-
-
 def _expanded_queries(
     rag: Any,
     query: str,
     *,
-    use_multi_query: bool,
+    enabled: bool,
     agent_client: Any,
     model: str,
 ) -> list[str]:
-    if not use_multi_query:
+    if not enabled:
         return [query]
-    raw = rag.generate_expanded_queries(
-        query,
-        agent_client,
-        model=model,
-        count=3,
-    )
+    try:
+        raw = rag.generate_expanded_queries(
+            query,
+            agent_client,
+            model=model,
+            count=3,
+        )
+    except Exception:
+        return [query]
     if raw is None or isinstance(raw, (str, bytes, bytearray)):
         return [query]
     result = [query]
@@ -225,6 +234,48 @@ def _expanded_queries(
     return result
 
 
+def _safe_corpus_extra(value: Mapping[str, Any]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    try:
+        for key in _CORPUS_EXTRA_FIELDS:
+            item = value.get(key)
+            if key == "filename":
+                if isinstance(item, str) and item.strip():
+                    result[key] = item.strip()[:500]
+            elif key == "document_score":
+                result[key] = round(_score(item), 6)
+            elif key == "field_type":
+                if isinstance(item, str) and item.strip():
+                    result[key] = item.strip()[:200]
+            elif key == "term_frequencies" and isinstance(item, Mapping):
+                result[key] = {
+                    str(term)[:200]: _integer(frequency, "frequency", 1, 1_000_000)
+                    for term, frequency in itertools.islice(item.items(), 100)
+                    if isinstance(term, str) and term
+                }
+            elif key == "positions" and isinstance(item, Mapping):
+                positions: dict[str, tuple[int, ...]] = {}
+                for term, raw_positions in itertools.islice(item.items(), 100):
+                    if not isinstance(term, str) or not term:
+                        continue
+                    if isinstance(raw_positions, (str, bytes, bytearray)):
+                        continue
+                    try:
+                        positions[term[:200]] = tuple(
+                            _integer(position, "position", 0, 100_000_000)
+                            for position in itertools.islice(
+                                iter(raw_positions),
+                                1_000,
+                            )
+                        )
+                    except Exception:
+                        continue
+                result[key] = positions
+    except Exception:
+        return {}
+    return result
+
+
 def _corpus_citations(
     queries: list[str],
     *,
@@ -239,26 +290,37 @@ def _corpus_citations(
 ) -> list[Citation]:
     sparse = get_sparse_index()
     generations = get_generation_store()
-    merged: dict[str, CorpusEvidence] = {}
     corpus_mode = "sparse" if mode == "corpus-sparse" else "hybrid"
+    merged: dict[str, CorpusEvidence] = {}
+    errors: list[Exception] = []
+    successes = 0
     for current_query in queries[:4]:
-        evidence = retrieve_corpus_evidence(
-            current_query,
-            owner_id=owner,
-            rag=rag,
-            sparse=sparse,
-            generations=generations,
-            doc_id=document_id,
-            mode=corpus_mode,
-            top_k=pool,
-            dense_pool=pool,
-            sparse_pool=pool,
-            diversity_lambda=diversity,
-        )
+        try:
+            evidence = retrieve_corpus_evidence(
+                current_query,
+                owner_id=owner,
+                rag=rag,
+                sparse=sparse,
+                generations=generations,
+                doc_id=document_id,
+                mode=corpus_mode,
+                top_k=pool,
+                dense_pool=pool,
+                sparse_pool=pool,
+                diversity_lambda=diversity,
+            )
+            successes += 1
+        except Exception as exc:
+            errors.append(exc)
+            continue
         for item in evidence:
+            if not isinstance(item, CorpusEvidence):
+                continue
             prior = merged.get(item.evidence_id)
             if prior is None or item.score > prior.score:
                 merged[item.evidence_id] = item
+    if successes == 0 and errors:
+        raise RuntimeError("Corpus retrieval is unavailable.") from errors[0]
 
     rows = list(merged.values())
     if reranker_name != "none" and rows:
@@ -282,9 +344,12 @@ def _corpus_citations(
             dense_weight=0.75,
             reranker_weight=0.25,
         )
-        order = [item.candidate.candidate_id for item in ranked]
-        rows_by_id = {item.evidence_id: item for item in rows}
-        rows = [rows_by_id[identifier] for identifier in order]
+        by_id = {item.evidence_id: item for item in rows}
+        rows = [
+            by_id[item.candidate.candidate_id]
+            for item in ranked
+            if item.candidate.candidate_id in by_id
+        ]
     else:
         rows = sorted(
             rows,
@@ -294,12 +359,20 @@ def _corpus_citations(
 
     citations: list[Citation] = []
     for item in rows[:requested]:
-        title_value = item.metadata.get("filename")
-        title = (
-            title_value[:500]
-            if isinstance(title_value, str) and title_value.strip()
-            else "Uploaded document"
-        )
+        extra = _safe_corpus_extra(item.metadata)
+        title = extra.pop("filename", "Uploaded document")
+        protected = {
+            "section_title": item.section,
+            "relevance": round(item.dense_score, 6),
+            "fused_score": round(item.score, 6),
+            "dense_score": round(item.dense_score, 6),
+            "sparse_score": round(item.sparse_score, 6),
+            "retrieval_mode": mode,
+            "reranker": reranker_name,
+            "generation_sequence": item.generation_sequence,
+            "embedding_profile_fingerprint": item.profile_fingerprint,
+            "evidence_kind": item.source_kind,
+        }
         try:
             citations.append(
                 Citation(
@@ -313,21 +386,7 @@ def _corpus_citations(
                     doc_id=item.doc_id,
                     chunk_id=item.evidence_id,
                     page_number=item.page_number,
-                    metadata={
-                        "section_title": item.section,
-                        "relevance": round(item.dense_score, 6),
-                        "fused_score": round(item.score, 6),
-                        "dense_score": round(item.dense_score, 6),
-                        "sparse_score": round(item.sparse_score, 6),
-                        "retrieval_mode": mode,
-                        "reranker": reranker_name,
-                        "generation_sequence": item.generation_sequence,
-                        "embedding_profile_fingerprint": (
-                            item.profile_fingerprint
-                        ),
-                        "evidence_kind": item.source_kind,
-                        **dict(item.metadata),
-                    },
+                    metadata={**extra, **protected},
                 )
             )
         except Exception:
@@ -335,116 +394,34 @@ def _corpus_citations(
     return citations
 
 
-def search_uploaded_docs(
+def _candidate_citations(
     query: str,
     *,
-    owner_id: str = "default_user",
-    doc_id: Optional[str] = None,
-    use_hyde: bool = False,
-    use_multi_query: bool = False,
-    agent_client: Optional[Any] = None,
-    expansion_model: str = "gpt-4o-mini",
-    n_results: int = 5,
-    retrieval_mode: str = "dense",
-    reranker: str = "none",
-    candidate_pool: int = 20,
-    diversity_lambda: float = 0.82,
-) -> List[Citation]:
-    """Retrieve evidence after owner, document, and backend validation."""
-
-    retrieval_query = _prose(
-        query,
-        "query",
-        maximum=10_000,
-        allow_empty=True,
-    )
-    if not retrieval_query:
-        return []
-    if not isinstance(owner_id, str):
-        raise ValueError("owner_id must be a string.")
-    owner = normalize_owner_id(owner_id)
-    document_id = (
-        _identifier(doc_id, "doc_id", maximum=200)
-        if doc_id is not None
-        else None
-    )
-    if not isinstance(use_hyde, bool):
-        raise ValueError("use_hyde must be a boolean.")
-    if not isinstance(use_multi_query, bool):
-        raise ValueError("use_multi_query must be a boolean.")
-    model = _identifier(expansion_model, "expansion_model", maximum=200)
-    requested = _integer(
-        n_results,
-        "n_results",
-        minimum=1,
-        maximum=_MAX_CITATIONS,
-    )
-    mode = _choice(retrieval_mode, "retrieval_mode", _RETRIEVAL_MODES)
-    reranker_name = _choice(reranker, "reranker", _RERANKERS)
-    pool = max(
-        requested,
-        _integer(
-            candidate_pool,
-            "candidate_pool",
-            minimum=1,
-            maximum=_MAX_CITATIONS,
-        ),
-    )
-    diversity = _unit_float(diversity_lambda, "diversity_lambda")
-
-    rag = get_rag_layer()
-    if use_hyde:
-        generated = rag.generate_hyde_query(
-            retrieval_query,
-            agent_client,
-            model=model,
-        )
-        if not isinstance(generated, str):
-            raise RuntimeError(
-                "The retrieval expansion backend returned invalid text."
-            )
-        retrieval_query = generated.strip()
-        if (
-            not retrieval_query
-            or len(retrieval_query) > 20_000
-            or _contains_ascii_control(retrieval_query)
-        ):
-            raise RuntimeError(
-                "The retrieval expansion backend returned invalid text."
-            )
-    queries = _expanded_queries(
-        rag,
-        retrieval_query,
-        use_multi_query=use_multi_query,
-        agent_client=agent_client,
-        model=model,
-    )
-    if mode.startswith("corpus-"):
-        return _corpus_citations(
-            queries,
-            owner=owner,
-            document_id=document_id,
-            rag=rag,
-            mode=mode,
-            reranker_name=reranker_name,
-            pool=pool,
-            requested=requested,
-            diversity=diversity,
-        )
-
+    owner: str,
+    document_id: str | None,
+    rag: Any,
+    mode: str,
+    reranker_name: str,
+    pool: int,
+    requested: int,
+    diversity: float,
+    use_multi_query: bool,
+    agent_client: Any,
+    expansion_model: str,
+) -> list[Citation]:
     backend_limit = (
         requested
         if mode == "dense" and reranker_name == "none"
         else pool
     )
     chunks = rag.query(
-        retrieval_query,
+        query,
         n_results=backend_limit,
         owner_id=owner,
         doc_id=document_id,
         use_multi_query=use_multi_query,
         agent_client=agent_client,
-        expansion_model=model,
+        expansion_model=expansion_model,
     )
     records: dict[str, dict[str, Any]] = {}
     order: list[str] = []
@@ -460,29 +437,20 @@ def search_uploaded_docs(
             parent_id = metadata.get("parent_id")
         except Exception:
             continue
-        if not isinstance(metadata_owner, str) or metadata_owner != owner:
+        if metadata_owner != owner or not isinstance(actual_doc_id, str):
             continue
-        if not isinstance(actual_doc_id, str):
-            continue
-        actual_doc_id = actual_doc_id.strip()
-        if (
-            not actual_doc_id
-            or len(actual_doc_id) > 200
-            or _contains_ascii_control(actual_doc_id)
-        ):
+        try:
+            actual_doc_id = _identifier(actual_doc_id, "doc_id", 200)
+        except ValueError:
             continue
         if document_id is not None and actual_doc_id != document_id:
             continue
         raw_chunk_id = _safe_attr(chunk, "id", "")
-        if not isinstance(raw_chunk_id, str):
+        try:
+            chunk_id = _identifier(raw_chunk_id, "chunk_id", 500)
+        except ValueError:
             continue
-        chunk_id = raw_chunk_id.strip()
-        if (
-            not chunk_id
-            or len(chunk_id) > 500
-            or _contains_ascii_control(chunk_id)
-            or chunk_id in records
-        ):
+        if chunk_id in records:
             continue
         raw_text = _safe_attr(chunk, "text", "")
         chunk_text = raw_text[:4_000] if isinstance(raw_text, str) else ""
@@ -497,7 +465,7 @@ def search_uploaded_docs(
             or not 1 <= page_number <= _MAX_PAGE_NUMBER
         ):
             page_number = None
-        dense_score = _finite_score(_safe_attr(chunk, "score", 0.0))
+        dense_score = _score(_safe_attr(chunk, "score", 0.0))
         source_id = (
             parent_id
             if isinstance(parent_id, str) and parent_id.strip()
@@ -535,14 +503,17 @@ def search_uploaded_docs(
             for identifier in order[:requested]
         ]
     else:
-        built = build_reranker(reranker_name)
-        rerank_callable = None if reranker_name == "none" else built.score
+        reranker = (
+            None
+            if reranker_name == "none"
+            else build_reranker(reranker_name).score
+        )
         ranked = rank_candidates(
-            retrieval_query,
+            query,
             [records[identifier]["candidate"] for identifier in order],
             mode=mode,
             top_k=requested,
-            reranker=rerank_callable,
+            reranker=reranker,
             diversity_lambda=diversity,
             max_per_source=requested,
         )
@@ -555,7 +526,7 @@ def search_uploaded_docs(
             for item in ranked
         ]
 
-    citations: List[Citation] = []
+    citations: list[Citation] = []
     for chunk_id, fused_score, components in ranked_rows:
         row = records[chunk_id]
         filename = row["filename"]
@@ -564,44 +535,147 @@ def search_uploaded_docs(
             if isinstance(filename, str) and filename.strip()
             else "Uploaded document"
         )
-        section_title = row["section_title"]
+        section = row["section_title"]
         try:
-            citation = Citation(
-                label=f"[{len(citations) + 1}]",
-                title=title,
-                url=f"local://{row['doc_id']}",
-                source_type="uploaded_document",
-                snippet=row["parent_text"] or None,
-                quote=row["text"] or None,
-                source_id=chunk_id,
-                doc_id=row["doc_id"],
-                chunk_id=chunk_id,
-                page_number=row["page_number"],
-                metadata={
-                    "section_title": (
-                        section_title[:500]
-                        if isinstance(section_title, str)
-                        else None
-                    ),
-                    "relevance": round(row["dense_score"], 6),
-                    "fused_score": round(_finite_score(fused_score), 6),
-                    "dense_score": round(
-                        _finite_score(components.get("dense", 0.0)),
-                        6,
-                    ),
-                    "lexical_score": round(
-                        _finite_score(components.get("lexical", 0.0)),
-                        6,
-                    ),
-                    "reranker_score": round(
-                        _finite_score(components.get("reranker", 0.0)),
-                        6,
-                    ),
-                    "retrieval_mode": mode,
-                    "reranker": reranker_name,
-                },
+            citations.append(
+                Citation(
+                    label=f"[{len(citations) + 1}]",
+                    title=title,
+                    url=f"local://{row['doc_id']}",
+                    source_type="uploaded_document",
+                    snippet=row["parent_text"] or None,
+                    quote=row["text"] or None,
+                    source_id=chunk_id,
+                    doc_id=row["doc_id"],
+                    chunk_id=chunk_id,
+                    page_number=row["page_number"],
+                    metadata={
+                        "section_title": (
+                            section[:500]
+                            if isinstance(section, str)
+                            else None
+                        ),
+                        "relevance": round(row["dense_score"], 6),
+                        "fused_score": round(_score(fused_score), 6),
+                        "dense_score": round(
+                            _score(components.get("dense", 0.0)),
+                            6,
+                        ),
+                        "lexical_score": round(
+                            _score(components.get("lexical", 0.0)),
+                            6,
+                        ),
+                        "reranker_score": round(
+                            _score(components.get("reranker", 0.0)),
+                            6,
+                        ),
+                        "retrieval_mode": mode,
+                        "reranker": reranker_name,
+                    },
+                )
             )
         except Exception:
             continue
-        citations.append(citation)
     return citations
+
+
+def search_uploaded_docs(
+    query: str,
+    *,
+    owner_id: str = "default_user",
+    doc_id: Optional[str] = None,
+    use_hyde: bool = False,
+    use_multi_query: bool = False,
+    agent_client: Optional[Any] = None,
+    expansion_model: str = "gpt-4o-mini",
+    n_results: int = 5,
+    retrieval_mode: str = "dense",
+    reranker: str = "none",
+    candidate_pool: int = 20,
+    diversity_lambda: float = 0.82,
+) -> List[Citation]:
+    """Retrieve evidence after owner, document, and backend validation."""
+
+    retrieval_query = _prose(
+        query,
+        "query",
+        maximum=10_000,
+        allow_empty=True,
+    )
+    if not retrieval_query:
+        return []
+    if not isinstance(owner_id, str):
+        raise ValueError("owner_id must be a string.")
+    owner = normalize_owner_id(owner_id)
+    document_id = (
+        _identifier(doc_id, "doc_id", 200)
+        if doc_id is not None
+        else None
+    )
+    if not isinstance(use_hyde, bool):
+        raise ValueError("use_hyde must be a boolean.")
+    if not isinstance(use_multi_query, bool):
+        raise ValueError("use_multi_query must be a boolean.")
+    model = _identifier(expansion_model, "expansion_model", 200)
+    requested = _integer(n_results, "n_results", 1, _MAX_CITATIONS)
+    mode = _choice(retrieval_mode, "retrieval_mode", _RETRIEVAL_MODES)
+    reranker_name = _choice(reranker, "reranker", _RERANKERS)
+    pool = max(
+        requested,
+        _integer(candidate_pool, "candidate_pool", 1, _MAX_CITATIONS),
+    )
+    diversity = _unit(diversity_lambda, "diversity_lambda")
+
+    rag = get_rag_layer()
+    if use_hyde:
+        generated = rag.generate_hyde_query(
+            retrieval_query,
+            agent_client,
+            model=model,
+        )
+        if not isinstance(generated, str):
+            raise RuntimeError(
+                "The retrieval expansion backend returned invalid text."
+            )
+        retrieval_query = generated.strip()
+        if (
+            not retrieval_query
+            or len(retrieval_query) > 20_000
+            or _contains_ascii_control(retrieval_query)
+        ):
+            raise RuntimeError(
+                "The retrieval expansion backend returned invalid text."
+            )
+    queries = _expanded_queries(
+        rag,
+        retrieval_query,
+        enabled=use_multi_query,
+        agent_client=agent_client,
+        model=model,
+    )
+    if mode.startswith("corpus-"):
+        return _corpus_citations(
+            queries,
+            owner=owner,
+            document_id=document_id,
+            rag=rag,
+            mode=mode,
+            reranker_name=reranker_name,
+            pool=pool,
+            requested=requested,
+            diversity=diversity,
+        )
+    return _candidate_citations(
+        retrieval_query,
+        owner=owner,
+        document_id=document_id,
+        rag=rag,
+        mode=mode,
+        reranker_name=reranker_name,
+        pool=pool,
+        requested=requested,
+        diversity=diversity,
+        use_multi_query=use_multi_query,
+        agent_client=agent_client,
+        expansion_model=model,
+    )
