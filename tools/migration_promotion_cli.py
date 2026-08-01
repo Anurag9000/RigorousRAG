@@ -7,7 +7,6 @@ import json
 import os
 import stat
 import sys
-from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -19,6 +18,12 @@ from tools.migration_promotion import (
     policy_from_mapping,
 )
 from tools.migration_promotion_runtime import get_migration_promotion_store
+from tools.migration_statistical_gate import (
+    StatisticalGatePolicy,
+    attach_statistical_assessment,
+    evaluate_statistical_gate,
+    statistical_policy_from_mapping,
+)
 from tools.migration_runtime import get_migration_journal
 from tools.migration_shadow_runtime import get_migration_shadow_store
 from tools.migration_types import digest, exact_integer, identifier
@@ -158,13 +163,14 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate_fixture = commands.add_parser(
         "evaluate-fixture",
         help=(
-            "Generate paired benchmark evidence from a governed fixture and evaluate "
-            "one validated shadow in the same process."
+            "Produce paired evidence from a governed fixture and apply aggregate "
+            "and statistical promotion gates."
         ),
     )
     evaluate_fixture.add_argument("task_id")
     evaluate_fixture.add_argument("--fixture-file", required=True)
     evaluate_fixture.add_argument("--policy-file")
+    evaluate_fixture.add_argument("--statistical-policy-file")
 
     status = commands.add_parser("status", help="Read one current or historical report.")
     status.add_argument("task_id")
@@ -183,11 +189,45 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _task_context(task_id: str) -> tuple[Any, Any, Any] | None:
+def _evaluate(args: argparse.Namespace) -> int:
+    task_id = identifier(args.task_id, "task_id", 64)
     journal = get_migration_journal()
     task = journal.get(task_id)
     if task is None:
-        return None
+        _print({"error": "not_found", "task_id": task_id}, stream=sys.stderr)
+        return 1
+    manifest = get_migration_shadow_store().validate(task_id)
+    evidence = evidence_from_mapping(
+        _read_object(args.evidence_file, "promotion evidence")
+    )
+    policy = (
+        policy_from_mapping(_read_object(args.policy_file, "promotion policy"))
+        if args.policy_file
+        else PromotionPolicy()
+    )
+    from tools.sparse_runtime import get_generation_store
+
+    generation = get_generation_store().current(
+        owner_id=task.owner_id,
+        doc_id=task.doc_id,
+    )
+    report = evaluate_promotion(
+        task=task,
+        manifest=manifest,
+        generation=generation,
+        evidence=evidence,
+        policy=policy,
+    )
+    persisted = get_migration_promotion_store().write(report)
+    _print(_summary(persisted))
+    return 0 if persisted.decision == "eligible" else 1
+
+
+def _task_context(task_id: str) -> tuple[Any, Any, Any]:
+    journal = get_migration_journal()
+    task = journal.get(task_id)
+    if task is None:
+        raise LookupError(task_id)
     manifest = get_migration_shadow_store().validate(task_id)
     from tools.sparse_runtime import get_generation_store
 
@@ -198,81 +238,77 @@ def _task_context(task_id: str) -> tuple[Any, Any, Any] | None:
     return task, manifest, generation
 
 
-def _policy(path: str | None) -> PromotionPolicy:
-    return (
-        policy_from_mapping(_read_object(path, "promotion policy"))
-        if path
-        else PromotionPolicy()
-    )
-
-
-def _persist_evaluation(
-    *,
-    task: Any,
-    manifest: Any,
-    generation: Any,
-    evidence: Any,
-    policy: PromotionPolicy,
-) -> Any:
-    report = evaluate_promotion(
-        task=task,
-        manifest=manifest,
-        generation=generation,
-        evidence=evidence,
-        policy=policy,
-    )
-    return get_migration_promotion_store().write(report)
-
-
-def _evaluate(args: argparse.Namespace) -> int:
-    task_id = identifier(args.task_id, "task_id", 64)
-    context = _task_context(task_id)
-    if context is None:
-        _print({"error": "not_found", "task_id": task_id}, stream=sys.stderr)
-        return 1
-    task, manifest, generation = context
-    evidence = evidence_from_mapping(
-        _read_object(args.evidence_file, "promotion evidence")
-    )
-    persisted = _persist_evaluation(
-        task=task,
-        manifest=manifest,
-        generation=generation,
-        evidence=evidence,
-        policy=_policy(args.policy_file),
-    )
-    _print(_summary(persisted))
-    return 0 if persisted.decision == "eligible" else 1
-
-
 def _evaluate_fixture(args: argparse.Namespace) -> int:
     task_id = identifier(args.task_id, "task_id", 64)
-    context = _task_context(task_id)
-    if context is None:
+    try:
+        task, manifest, generation = _task_context(task_id)
+    except LookupError:
         _print({"error": "not_found", "task_id": task_id}, stream=sys.stderr)
         return 1
-    task, manifest, generation = context
     fixture = fixture_from_mapping(
         _read_object(
             args.fixture_file,
-            "promotion benchmark fixture",
+            "benchmark fixture",
             max_bytes=_MAX_FIXTURE_BYTES,
         )
     )
     if fixture.task_id != task_id:
         raise ValueError("benchmark fixture task_id does not match the requested task.")
     benchmark = run_promotion_benchmark(fixture)
-    persisted = _persist_evaluation(
+    policy = (
+        policy_from_mapping(_read_object(args.policy_file, "promotion policy"))
+        if args.policy_file
+        else PromotionPolicy()
+    )
+    report = evaluate_promotion(
         task=task,
         manifest=manifest,
         generation=generation,
         evidence=benchmark.evidence,
-        policy=_policy(args.policy_file),
+        policy=policy,
     )
+    statistical_policy = (
+        statistical_policy_from_mapping(
+            _read_object(args.statistical_policy_file, "statistical policy")
+        )
+        if args.statistical_policy_file
+        else StatisticalGatePolicy()
+    )
+    statistical = evaluate_statistical_gate(
+        benchmark,
+        policy=statistical_policy,
+    )
+    report = attach_statistical_assessment(report, statistical)
+    persisted = get_migration_promotion_store().write(report)
     payload = _summary(persisted)
     payload["benchmark_generated"] = True
+    payload["statistical_gate"] = {
+        "decision": statistical.decision,
+        "reason_codes": list(statistical.reason_codes),
+        "assessment_digest": statistical.assessment_digest,
+        "policy_id": statistical.policy_id,
+        "policy_digest": statistical.policy_digest,
+        "metrics": {
+            name: {
+                "mean_delta": metric.mean_delta,
+                "lower_bound": metric.lower_bound,
+                "upper_bound": metric.upper_bound,
+                "sample_count": metric.sample_count,
+                "noninferiority_margin": metric.noninferiority_margin,
+                "practical_gain_threshold": metric.practical_gain_threshold,
+                "noninferior": metric.noninferior,
+                "practical_gain_satisfied": metric.practical_gain_satisfied,
+            }
+            for name, metric in statistical.metrics.items()
+        },
+    }
     payload["paired_delta_intervals"] = {
-        name: asdict(interval)
+        name: {
+            "mean": interval.mean,
+            "lower": interval.lower,
+            "upper": interval.upper,
+            "sample_count": interval.sample_count,
+        }
         for name, interval in benchmark.delta_intervals.items()
     }
     _print(payload)
