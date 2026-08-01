@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import itertools
+import math
 from dataclasses import dataclass
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
@@ -15,6 +17,8 @@ from tools.adaptive_retrieval import (
 from tools.security import normalize_owner_id
 
 _MAX_ACCUMULATED_EVIDENCE = 100
+_MAX_EVIDENCE_ID_CHARS = 500
+_MAX_FINGERPRINT_TEXT_CHARS = 8_000
 
 
 def _attr(value: Any, name: str, default: Any = None) -> Any:
@@ -29,13 +33,79 @@ def _attr(value: Any, name: str, default: Any = None) -> Any:
         return default
 
 
-def _evidence_id(value: Any, index: int) -> str:
+def _safe_identifier(value: Any, maximum: int) -> str:
+    if not isinstance(value, str):
+        return ""
+    rendered = value.strip()
+    if not rendered or any(ord(character) < 32 or ord(character) == 127 for character in rendered):
+        return ""
+    return rendered[:maximum]
+
+
+def _safe_content(value: Any, maximum: int) -> str:
+    if not isinstance(value, str):
+        return ""
+    rendered = value.strip()
+    if not rendered or any(
+        (ord(character) < 32 and character not in "\t\r\n")
+        or ord(character) == 127
+        for character in rendered
+    ):
+        return ""
+    return rendered[:maximum]
+
+
+def _evidence_id(value: Any, attempt_index: int, item_index: int) -> str:
+    """Build a collision-resistant ID without stringifying hostile objects."""
+
     for name in ("chunk_id", "source_id", "evidence_id"):
-        candidate = _attr(value, name, None)
-        if isinstance(candidate, str) and candidate.strip():
-            return candidate.strip()[:500]
-    doc_id = _attr(value, "doc_id", "unknown")
-    return f"{str(doc_id)[:200]}:{index}"
+        candidate = _safe_identifier(_attr(value, name, None), _MAX_EVIDENCE_ID_CHARS)
+        if candidate:
+            doc_id = _safe_identifier(_attr(value, "doc_id", None), 200)
+            digest = hashlib.sha256(
+                "\x1f".join((name, doc_id, candidate)).encode("utf-8")
+            ).hexdigest()
+            return f"explicit:{digest}"
+
+    doc_id = _safe_identifier(_attr(value, "doc_id", None), 200)
+    page = _attr(value, "page_number", None)
+    page_text = (
+        str(page)
+        if isinstance(page, int) and not isinstance(page, bool) and 1 <= page <= 1_000_000
+        else ""
+    )
+    content = ""
+    for name in ("quote", "snippet", "text", "content"):
+        content = _safe_content(_attr(value, name, None), _MAX_FINGERPRINT_TEXT_CHARS)
+        if content:
+            break
+    section = _safe_identifier(_attr(value, "section", None), 500)
+    if doc_id or page_text or content or section:
+        digest = hashlib.sha256(
+            "\x1f".join((doc_id, page_text, section, content)).encode("utf-8")
+        ).hexdigest()
+        return f"derived:{digest}"
+    return f"anonymous:{attempt_index}:{item_index}"
+
+
+def _evidence_score(value: Any) -> float:
+    raw = _attr(value, "score", None)
+    if raw is None:
+        metadata = _attr(value, "metadata", {})
+        if isinstance(metadata, Mapping):
+            try:
+                raw = metadata.get("fused_score", metadata.get("relevance", 0.0))
+            except Exception:
+                raw = 0.0
+    if isinstance(raw, bool):
+        return 0.0
+    try:
+        score = float(raw)
+    except (TypeError, ValueError, OverflowError):
+        return 0.0
+    if not math.isfinite(score):
+        return 0.0
+    return max(0.0, min(score, 1.0))
 
 
 @dataclass(frozen=True)
@@ -95,7 +165,7 @@ def run_adaptive_retrieval(
     accumulated: dict[str, Any] = {}
     traces: list[AdaptiveAttemptTrace] = []
     final_signals = evaluate_evidence(())
-    for attempt in plan.attempts:
+    for attempt_index, attempt in enumerate(plan.attempts):
         error_type: str | None = None
         try:
             returned = _bounded_results(
@@ -118,10 +188,13 @@ def run_adaptive_retrieval(
         except Exception as exc:
             returned = []
             error_type = type(exc).__name__[:200]
-        for index, item in enumerate(returned):
+        for item_index, item in enumerate(returned):
             if len(accumulated) >= _MAX_ACCUMULATED_EVIDENCE:
                 break
-            accumulated[_evidence_id(item, index)] = item
+            evidence_id = _evidence_id(item, attempt_index, item_index)
+            current = accumulated.get(evidence_id)
+            if current is None or _evidence_score(item) > _evidence_score(current):
+                accumulated[evidence_id] = item
         final_signals = evaluate_evidence(accumulated.values())
         traces.append(
             AdaptiveAttemptTrace(
@@ -134,8 +207,8 @@ def run_adaptive_retrieval(
         )
         if final_signals.decision == "sufficient":
             break
-    exhausted = bool(traces) and len(traces) == len(plan.attempts)
     abstain = final_signals.decision != "sufficient"
+    exhausted = abstain and bool(traces) and len(traces) == len(plan.attempts)
     return AdaptiveRetrievalResult(
         evidence=tuple(accumulated.values()),
         traces=tuple(traces),

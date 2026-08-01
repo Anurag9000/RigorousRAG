@@ -10,7 +10,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Iterable
 
-_TOKEN_RE = re.compile(r"[A-Za-z0-9]+(?:[._:/+-][A-Za-z0-9]+)*")
+_TOKEN_RE = re.compile(r"[A-Za-z0-9]+(?:[._:/+\-][A-Za-z0-9]+)*")
 _IDENTIFIER_RE = re.compile(
     r"(?:\b10\.\d{4,9}/\S+\b|\b[A-Z]{2,10}[-_:]?\d{2,}\b|\b\d{4}\.\d{4,5}\b)"
 )
@@ -157,7 +157,11 @@ def analyze_query(query: str) -> QueryAnalysis:
     if (
         not cleaned
         or len(cleaned) > _MAX_QUERY_CHARS
-        or any(ord(character) < 32 and character not in "\t\r\n" for character in cleaned)
+        or any(
+            (ord(character) < 32 and character not in "\t\r\n")
+            or ord(character) == 127
+            for character in cleaned
+        )
     ):
         raise ValueError("query is empty, invalid, or too long.")
     tokens = tuple(token.lower() for token in _TOKEN_RE.findall(cleaned)[:1_000])
@@ -211,7 +215,6 @@ def analyze_query(query: str) -> QueryAnalysis:
 def evaluate_evidence(values: Iterable[Any]) -> EvidenceSignals:
     if isinstance(values, (str, bytes, bytearray)):
         raise ValueError("evidence must be an iterable of evidence records.")
-    rows: list[Any] = []
     try:
         rows = list(itertools.islice(iter(values), _MAX_EVIDENCE + 1))
     except Exception as exc:
@@ -304,27 +307,15 @@ def initial_attempt(query: str, *, top_k: int = 5) -> RetrievalAttempt:
     requested = _integer(top_k, "top_k", 1, 50)
     pool = min(50, max(requested, 12 if analysis.complexity < 0.5 else 24))
     if analysis.intent == "exact_lookup":
-        return RetrievalAttempt(
-            "corpus-sparse",
-            requested,
-            pool,
-            reason="exact_identifier_or_quote",
-        )
+        return RetrievalAttempt("corpus-sparse", requested, pool, reason="exact_identifier_or_quote")
     if analysis.intent in {"comparison", "temporal", "quantitative", "method"}:
         return RetrievalAttempt(
-            "corpus-hybrid",
-            requested,
-            pool,
-            use_multi_query=True,
-            reranker="heuristic",
-            reason=f"complex_{analysis.intent}",
+            "corpus-hybrid", requested, pool, use_multi_query=True,
+            reranker="heuristic", reason=f"complex_{analysis.intent}",
         )
     if analysis.intent in {"evidence_lookup", "explanation"}:
         return RetrievalAttempt(
-            "corpus-hybrid",
-            requested,
-            pool,
-            reranker="heuristic",
+            "corpus-hybrid", requested, pool, reranker="heuristic",
             reason=f"{analysis.intent}_with_provenance",
         )
     return RetrievalAttempt("dense", requested, pool, reason="low_complexity_general")
@@ -346,28 +337,20 @@ def build_corrective_plan(
         raise ValueError("signals must be EvidenceSignals or null.")
     if signals is not None and signals.decision == "sufficient":
         return CorrectivePlan(analysis, signals, (initial,), initial.estimated_cost)
-
     candidates = [initial]
     expanded_pool = min(50, max(initial.candidate_pool * 2, initial.top_k))
     candidates.append(
         RetrievalAttempt(
-            "corpus-hybrid",
-            initial.top_k,
-            expanded_pool,
-            use_multi_query=True,
-            reranker="heuristic",
+            "corpus-hybrid", initial.top_k, expanded_pool,
+            use_multi_query=True, reranker="heuristic",
             reason="broaden_independent_corpus_retrieval",
         )
     )
     if analysis.explanatory and not analysis.exact_identifier:
         candidates.append(
             RetrievalAttempt(
-                "corpus-hybrid",
-                initial.top_k,
-                expanded_pool,
-                use_multi_query=True,
-                use_hyde=True,
-                reranker="heuristic",
+                "corpus-hybrid", initial.top_k, expanded_pool,
+                use_multi_query=True, use_hyde=True, reranker="heuristic",
                 reason="semantic_hypothesis_expansion",
             )
         )
@@ -375,36 +358,24 @@ def build_corrective_plan(
         candidates.append(
             RetrievalAttempt(
                 "corpus-sparse" if analysis.exact_identifier else "corpus-hybrid",
-                initial.top_k,
-                50,
-                use_multi_query=not analysis.exact_identifier,
-                reranker="cross-encoder",
-                reason="high_precision_second_stage",
+                initial.top_k, 50, use_multi_query=not analysis.exact_identifier,
+                reranker="cross-encoder", reason="high_precision_second_stage",
             )
         )
     candidates.append(
         RetrievalAttempt(
-            "corpus-hybrid",
-            min(10, max(initial.top_k, 5)),
-            50,
-            use_multi_query=True,
-            use_hyde=analysis.explanatory,
-            reranker="cross-encoder",
-            reason="final_bounded_retrieval_attempt",
+            "corpus-hybrid", min(10, max(initial.top_k, 5)), 50,
+            use_multi_query=True, use_hyde=analysis.explanatory,
+            reranker="cross-encoder", reason="final_bounded_retrieval_attempt",
         )
     )
-
     selected: list[RetrievalAttempt] = []
     seen: set[tuple[Any, ...]] = set()
     cost = 0
     for attempt in candidates:
         key = (
-            attempt.mode,
-            attempt.top_k,
-            attempt.candidate_pool,
-            attempt.use_multi_query,
-            attempt.use_hyde,
-            attempt.reranker,
+            attempt.mode, attempt.top_k, attempt.candidate_pool,
+            attempt.use_multi_query, attempt.use_hyde, attempt.reranker,
         )
         if key in seen:
             continue
@@ -426,12 +397,6 @@ def build_corrective_plan(
 
 
 __all__ = [
-    "CorrectivePlan",
-    "EvidenceSignals",
-    "QueryAnalysis",
-    "RetrievalAttempt",
-    "analyze_query",
-    "build_corrective_plan",
-    "evaluate_evidence",
-    "initial_attempt",
+    "CorrectivePlan", "EvidenceSignals", "QueryAnalysis", "RetrievalAttempt",
+    "analyze_query", "build_corrective_plan", "evaluate_evidence", "initial_attempt",
 ]
