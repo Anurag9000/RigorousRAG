@@ -70,10 +70,10 @@ def test_manifest_last_shadow_write_and_validation(tmp_path):
     assert store.validate(task().task_id) == manifest
 
 
-def test_identical_existing_shadow_is_reused_with_same_creation_time(tmp_path):
+def test_identical_existing_shadow_is_reused_across_retry_times(tmp_path):
     store = MigrationShadowStore(tmp_path / "shadows")
     first = store.write(task=task(), build=build(), now=5.0)
-    second = store.write(task=task(), build=build(), now=5.0)
+    second = store.write(task=task(), build=build(), now=9.0)
     assert second == first
     assert second.validation_digest == first.validation_digest
 
@@ -97,7 +97,7 @@ def test_vector_or_manifest_tampering_is_detected(tmp_path):
     store.write(task=task(), build=build(), now=5.0)
     manifest_path = directory / "manifest.json"
     payload = json.loads(manifest_path.read_text(encoding="utf-8"))
-    payload["doc_id"] = "different"
+    payload["task_id"] = "f" * 64
     manifest_path.write_text(json.dumps(payload), encoding="utf-8")
     with pytest.raises(RuntimeError, match="task identity"):
         store.validate(task().task_id)
