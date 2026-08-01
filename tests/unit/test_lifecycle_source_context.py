@@ -84,9 +84,17 @@ def test_document_store_boundary_records_successful_copy_only(tmp_path):
     calls = []
 
     class DocumentStore:
+        upload_root = tmp_path
+
         def copy_source(self, *, owner_id, source_path, max_bytes=10):
             calls.append((owner_id, source_path, max_bytes))
             return copied
+
+        def register(self, **kwargs):
+            return "registered"
+
+        def get(self, **kwargs):
+            return None
 
     module.DocumentStore = DocumentStore
     lifecycle_source_context.install_document_store_source_boundary(module)
@@ -101,6 +109,42 @@ def test_document_store_boundary_records_successful_copy_only(tmp_path):
     assert pending.owner_id == "alice"
     assert pending.source_path == str(copied)
     lifecycle_source_context.clear_retained_source()
+
+
+def test_redundant_batch_registration_short_circuits_before_sqlite_write(tmp_path):
+    root, source = owner_file(tmp_path)
+    module = ModuleType("fake_document_store")
+    writes = []
+
+    class DocumentStore:
+        upload_root = root
+
+        def copy_source(self, **kwargs):
+            return source
+
+        def get(self, *, owner_id, doc_id, **kwargs):
+            return {
+                "owner_id": owner_id,
+                "doc_id": doc_id,
+                "source_path": str(source),
+                "mime_type": "application/pdf",
+            }
+
+        def register(self, **kwargs):
+            writes.append(kwargs)
+            return "unexpected"
+
+    module.DocumentStore = DocumentStore
+    lifecycle_source_context.install_document_store_source_boundary(module)
+    result = DocumentStore().register(
+        owner_id="alice",
+        doc_id="doc-1",
+        filename="paper.pdf",
+        mime_type="application/pdf",
+        source_path=source,
+    )
+    assert result is None
+    assert writes == []
 
 
 def test_document_service_boundary_temporarily_binds_verified_copy(
