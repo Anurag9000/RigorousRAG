@@ -110,8 +110,40 @@ def delete_authoritative_document(
     )
 
 
+def install_authoritative_rag_deletion() -> None:
+    """Make public RAG deletion coordinate vector, sparse, and manifest state."""
+
+    from tools.rag import RAGLayer
+
+    current = RAGLayer.delete_document
+    if not hasattr(RAGLayer, "_authoritative_raw_delete_document"):
+        setattr(RAGLayer, "_authoritative_raw_delete_document", current)
+    if getattr(current, "_rigorousrag_authoritative_delete", False):
+        return
+
+    def authoritative_delete(
+        self: Any,
+        *,
+        owner_id: str,
+        doc_id: str,
+    ) -> bool:
+        return delete_authoritative_document(
+            owner_id=owner_id,
+            doc_id=doc_id,
+            rag=self,
+            audit_metadata={"operation": "document_delete"},
+        )
+
+    setattr(authoritative_delete, "_rigorousrag_authoritative_delete", True)
+    RAGLayer.delete_document = authoritative_delete
+
+
+install_authoritative_rag_deletion()
+
+
 __all__ = [
     "AuthoritativeIndexResult",
     "commit_finalized_document",
     "delete_authoritative_document",
+    "install_authoritative_rag_deletion",
 ]
