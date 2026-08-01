@@ -59,7 +59,7 @@ class Documents:
 
 
 def test_inventory_classifies_profile_drift_without_returning_paths(monkeypatch):
-    target = SimpleNamespace(name="target", fingerprint="b" * 64)
+    target = SimpleNamespace(alias="target", fingerprint="b" * 64)
     monkeypatch.setattr(
         "tools.migration_planner.resolve_embedding_profile",
         lambda value: target,
@@ -76,6 +76,7 @@ def test_inventory_classifies_profile_drift_without_returning_paths(monkeypatch)
     by_id = {item.doc_id: item for item in candidates}
     assert by_id["ready"].eligible is True
     assert by_id["ready"].reason == "ready"
+    assert by_id["ready"].target_profile_name == "target"
     assert by_id["already"].reason == "already_target_profile"
     assert by_id["missing"].reason == "retained_source_unavailable"
     assert by_id["deleted"].reason == "deleted"
@@ -85,8 +86,8 @@ def test_inventory_classifies_profile_drift_without_returning_paths(monkeypatch)
 
 def test_task_id_is_stable_and_changes_with_source_or_target(monkeypatch):
     profiles = {
-        "one": SimpleNamespace(name="one", fingerprint="b" * 64),
-        "two": SimpleNamespace(name="two", fingerprint="c" * 64),
+        "one": SimpleNamespace(alias="one", fingerprint="b" * 64),
+        "two": SimpleNamespace(alias="two", fingerprint="c" * 64),
     }
     monkeypatch.setattr(
         "tools.migration_planner.resolve_embedding_profile",
