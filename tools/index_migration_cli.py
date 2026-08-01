@@ -91,9 +91,10 @@ def _payload(args: argparse.Namespace) -> dict[str, Any]:
         }
     if not isinstance(args.task_id, str) or not args.task_id.strip():
         raise ValueError("task-id is required for cancellation.")
-    task = journal.cancel(task_id=args.task_id.strip())
-    if task.owner_id != owner:
-        raise RuntimeError("migration task does not belong to the selected owner.")
+    current = journal.get(args.task_id.strip())
+    if current is None or current.owner_id != owner:
+        raise RuntimeError("migration task is unavailable for the selected owner.")
+    task = journal.cancel(task_id=current.task_id)
     return {"command": "cancel", "owner_id": owner, "task": asdict(task)}
 
 
