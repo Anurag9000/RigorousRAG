@@ -219,7 +219,9 @@ def _f1(precision: float, recall: float) -> float:
     return 2.0 * precision * recall / (precision + recall) if precision + recall else 0.0
 
 
-def _evidence_identity(value: Any) -> tuple[str | None, set[str], str | None, str | None]:
+def _evidence_identity(
+    value: Any,
+) -> tuple[str | None, set[str], str | None, str | None]:
     document_id = _safe_attr(value, "doc_id", None)
     if not isinstance(document_id, str) or not document_id.strip():
         document_id = None
@@ -233,13 +235,36 @@ def _evidence_identity(value: Any) -> tuple[str | None, set[str], str | None, st
     try:
         section = metadata.get("section_title")
         field = metadata.get("field_type")
+        sentence_id = metadata.get("sentence_id", metadata.get("sentence_index"))
+        paragraph_index = metadata.get(
+            "paragraph_index",
+            metadata.get("paragraph_support_idx"),
+        )
+        explicit_locator = metadata.get("locator")
     except Exception:
         section = None
         field = None
+        sentence_id = None
+        paragraph_index = None
+        explicit_locator = None
     if isinstance(section, str) and section.strip():
         locators.add(f"section:{' '.join(section.split())}")
     if isinstance(field, str) and field.strip():
         locators.add(f"field:{' '.join(field.split())}")
+    if (
+        isinstance(sentence_id, int)
+        and not isinstance(sentence_id, bool)
+        and sentence_id >= 0
+    ):
+        locators.add(f"sentence:{sentence_id}")
+    if (
+        isinstance(paragraph_index, int)
+        and not isinstance(paragraph_index, bool)
+        and paragraph_index >= 0
+    ):
+        locators.add(f"paragraph:{paragraph_index}")
+    if isinstance(explicit_locator, str) and explicit_locator.strip():
+        locators.add(" ".join(explicit_locator.split())[:1_000])
     source_id = _safe_attr(value, "source_id", None)
     if isinstance(source_id, str) and source_id.strip():
         source_id = source_id.strip()
@@ -277,7 +302,10 @@ def evaluate_multihop_example(
 
     normalized_prediction = normalize_answer(prediction.answer)
     exact = max(
-        (float(normalized_prediction == normalize_answer(answer)) for answer in example.answers),
+        (
+            float(normalized_prediction == normalize_answer(answer))
+            for answer in example.answers
+        ),
         default=0.0,
     )
     answer_f1 = max(
