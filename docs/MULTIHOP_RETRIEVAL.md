@@ -1,6 +1,6 @@
 # Bounded multi-hop retrieval
 
-RigorousRAG includes a bounded foundation for decomposing complex uploaded-document questions into an acyclic dependency graph and executing that graph without losing citation lineage.
+RigorousRAG includes a bounded foundation for decomposing complex uploaded-document questions into an acyclic dependency graph, allocating one global retrieval budget, executing the graph without losing citation lineage and evaluating answer/support paths on common multi-hop formats.
 
 ## Components
 
@@ -12,57 +12,58 @@ RigorousRAG includes a bounded foundation for decomposing complex uploaded-docum
   - emits stable topological batches, terminal nodes and a SHA-256 plan fingerprint.
 - `tools/decomposition_model.py`
   - accepts at most one bounded planning response from an OpenAI-compatible client;
-  - uses a closed JSON schema that allows planning fields only;
+  - uses a closed JSON schema that permits planning fields only;
   - rejects answers, citations, URLs and unsupported fields;
   - hashes the provider response without retaining model-authored evidence;
   - falls back to deterministic decomposition on provider or validation failure;
-  - reports bounded token/entity/time/redundancy/parallelism/depth diagnostics;
-  - does not treat its quality score as proof of optimality.
+  - reports bounded token/entity/time/redundancy/parallelism/depth diagnostics.
 - `tools/multihop_budget.py`
-  - calculates each hop's minimum viable adaptive-retrieval attempt;
-  - rejects a per-hop ceiling below any minimum;
-  - rejects a global ceiling below the sum of all minimums before retrieval starts;
-  - reserves those minimums and weights remaining capacity by dependency and relation complexity;
-  - enforces per-hop caps and exact total accounting;
-  - records unused capacity when all hop caps are reached.
+  - computes each hop's minimum viable adaptive-retrieval attempt;
+  - rejects impossible per-hop or global ceilings before retrieval starts;
+  - reserves all minima and distributes remaining capacity by DAG/relation complexity;
+  - enforces per-hop caps, exact accounting and unused-budget reporting.
 - `tools/multihop_retrieval.py`
-  - runs independent nodes in the same batch concurrently;
-  - runs dependent batches only after their prerequisites resolve;
+  - runs independent nodes in parallel and dependent batches in topological order;
   - separately supplies dependency evidence to the retrieval callback;
   - bounds workers, timeouts, per-hop results, dependency evidence and total evidence;
   - preserves hop, source, document and page lineage;
-  - contains individual hop failures and timeouts;
-  - skips dependent hops when required evidence is absent;
-  - groups cross-hop evidence without replacing the original source identities.
+  - contains individual failures/timeouts and skips missing-prerequisite paths;
+  - groups cross-hop evidence without replacing original source identities.
 - `tools/multihop_rag_tool.py`
-  - exposes the public `search_uploaded_docs_multihop` tool contract;
+  - exposes `search_uploaded_docs_multihop`;
   - uses deterministic or strict model-assisted decomposition;
-  - allocates one hard global estimated-cost ceiling across the DAG;
-  - gives each hop its recorded adaptive-retrieval budget;
-  - propagates explicit entity/time constraints;
-  - derives only bounded lexical search hints from dependency evidence;
-  - never promotes dependency prose into a new citation;
-  - serializes the plan, diagnostics, budget, citations and lineage separately.
+  - applies one hard global estimated-cost ceiling across the DAG;
+  - propagates explicit constraints and bounded dependency-derived lexical hints;
+  - never promotes dependency prose into a citation;
+  - serializes plan, diagnostics, budget, citations and lineage separately.
 - `tools/multihop_evaluation.py`
   - scores answer exact match and Unicode token F1;
   - scores document and support precision, recall and F1;
+  - recognizes page, section, field, source, sentence and paragraph locators;
   - measures complete support paths, hop coverage and citation-lineage validity;
   - records abstention and macro-aggregates repeated examples;
-  - labels token-F1 multiplied by support recall as a heuristic answer-support score, not entailment.
+  - labels token-F1 multiplied by support recall as a heuristic, not entailment.
+- `tools/multihop_datasets.py`
+  - loads local HotpotQA, 2WikiMultiHopQA and MuSiQue JSON/JSONL;
+  - preserves answer aliases and sentence/paragraph support facts;
+  - records dataset SHA-256 fingerprints;
+  - bounds bytes/examples/nesting and requires UTF-8;
+  - rejects duplicate JSON keys, NaN/Infinity, invalid support references and duplicate IDs;
+  - rejects symlink/reparse paths and non-regular files.
 
 ## Execution model
 
 ```mermaid
 graph TD
     Q[Complex query] --> P{Planning mode}
-    P -->|Deterministic| D[Validated decomposition plan]
+    P -->|Deterministic| D[Validated decomposition DAG]
     P -->|Model proposal| S[Closed-schema validation]
     S -->|Valid| D
     S -->|Invalid/provider failure| F[Deterministic fallback]
     F --> D
-    D --> C[Global cost allocator]
+    D --> C[Global estimated-cost allocator]
     C -->|Impossible| X[Fail before retrieval]
-    C -->|Valid per-hop budgets| B1[Independent batch]
+    C -->|Per-hop budgets| B1[Independent batch]
     B1 --> H1[Hop 1 adaptive retrieval]
     B1 --> H2[Hop 2 adaptive retrieval]
     H1 --> L1[Source-preserving evidence]
@@ -74,14 +75,15 @@ graph TD
     L1 --> J[Provenance-safe joins]
     L2 --> J
     L3 --> J
-    J --> E[Answer, support, path and lineage metrics]
+    J --> E[Answer/support/path/lineage metrics]
+    Dataset[HotpotQA / 2Wiki / MuSiQue] --> E
 ```
 
-A topological batch is a set of nodes whose dependencies are already resolved. Nodes inside one batch may run in parallel. Batches run serially. The executor does not let a dependent node run when a required prerequisite has no evidence unless the caller explicitly disables that safeguard.
+A topological batch contains nodes whose dependencies are already resolved. Nodes within a batch may run in parallel; batches run serially. A dependent node is skipped when a required prerequisite has no evidence unless the caller explicitly disables that safeguard.
 
 ## Model-planning trust boundary
 
-Model-assisted planning is optional and does not grant evidence authority. The provider may only propose:
+The provider may propose only:
 
 - `question_id`;
 - `text`;
@@ -90,134 +92,83 @@ Model-assisted planning is optional and does not grant evidence authority. The p
 - `temporal_constraints`;
 - `relation`.
 
-The response root may contain only `subquestions`. Every node is passed through the same bounded DAG validator used for deterministic plans. Unsupported fields such as an answer or citation fail closed. Only a SHA-256 response digest, a generic fallback reason and plan diagnostics are retained.
+The root may contain only `subquestions`. Every proposal is passed through the same bounded DAG validator used for deterministic plans. Unsupported fields such as answers or citations fail closed. Only a SHA-256 response digest, generic fallback reason and structural diagnostics are retained.
 
 ## Global estimated-cost budget
 
-A per-hop ceiling alone is not a global ceiling because the effective maximum can multiply with the number of subquestions. The allocator therefore operates before retrieval:
+A per-hop ceiling alone can multiply silently with the number of subquestions. The allocator therefore:
 
-1. Build the validated plan.
-2. Compute the initial adaptive attempt and estimated minimum cost for every node.
-3. Refuse a per-hop limit below any node's minimum.
-4. Refuse a total limit below the sum of all minima.
-5. Reserve every minimum.
-6. Allocate the remainder deterministically using dependency count, relation type, entities and temporal constraints.
-7. Stop at each hop's cap and report unallocated capacity.
-8. Pass only that hop's allocation into its adaptive planner.
+1. computes the initial adaptive attempt and minimum estimated cost for every node;
+2. refuses any per-hop limit below a node's minimum;
+3. refuses a total limit below the sum of all minima;
+4. reserves each minimum;
+5. allocates the remainder deterministically using dependencies, relation, entities and temporal constraints;
+6. stops at each per-hop cap and reports unused capacity;
+7. passes only that hop's allocation into its adaptive planner.
 
-The recorded estimate is a deterministic workload proxy used by the existing adaptive retrieval policy. It is not yet a measured token, latency, energy or monetary-cost model. Cross-backend measured-cost allocation remains open.
+This estimate is a deterministic workload proxy, not measured tokens, latency, energy or monetary cost.
 
 ## Citation-lineage rule
 
-A dependency can influence a later search, but it cannot become a synthetic citation. Each returned evidence item retains:
+Dependency evidence may influence a later search but cannot become a synthetic citation. Every returned item retains its retrieving hop, original source identifier, document identifier, page when present, score and untouched underlying evidence object. Joins group compatible evidence without collapsing multiple sources into an invented source or implying entailment.
 
-- the hop that retrieved it;
-- its original source identifier;
-- its original document identifier when present;
-- its original page number when present;
-- its retrieval score;
-- the untouched underlying citation/evidence object.
+## Support-path evaluation
 
-Cross-hop joins group compatible evidence by document or source. They do not collapse several sources into one invented source, do not change citation authority and do not imply entailment.
+The evaluator keeps separate questions separate:
 
-## Bounded constraint propagation
-
-Dependent searches receive:
-
-1. the validated subquestion;
-2. extracted entity constraints;
-3. extracted temporal constraints;
-4. a small deterministic set of lexical terms derived from prerequisite evidence.
-
-Raw prerequisite passages are not concatenated into the query. The propagated term list is bounded and filtered. This reduces prompt-injection and query-amplification risk while still letting later hops use facts discovered by earlier hops as retrieval hints.
-
-## Evaluation contracts
-
-The evaluation module separates several questions that are often incorrectly collapsed into one score:
-
-- Did the generated answer match an accepted answer string?
+- Did the answer match an accepted alias?
 - Were the required documents retrieved?
-- Were the required page/section/source support facts retrieved?
+- Were the exact page/section/field/source/sentence/paragraph support facts retrieved?
 - Was the complete support path present?
-- Did the retrieved evidence cover the required number of hops?
-- Did every citation preserve both a hop and source identity?
+- Did evidence cover the required number of hops?
+- Did citations preserve both hop and source identity?
 - Did the system abstain?
 
-Document and support metrics are distinct. A document can be correct while the cited page or section is wrong. The answer-support score is deliberately named and documented as a heuristic product of token F1 and support recall. It is not semantic entailment.
+A correct document with the wrong sentence or paragraph does not receive full support credit. The answer-support score is explicitly heuristic and does not prove semantic entailment.
+
+## Dataset boundary
+
+The benchmark loader is intentionally local-only. It does not download datasets, infer licenses or silently normalize malformed files. Operators must obtain each dataset under its applicable terms and record source/version/license separately. The loader fingerprints exact source bytes and returns normalized evaluation examples.
 
 ## Failure behavior
 
-- Invalid deterministic or model-proposed decompositions fail before retrieval.
-- Provider failures and malformed model JSON fall back deterministically.
-- Cyclic or dangling dependency graphs fail closed.
-- Impossible global or per-hop estimated-cost budgets fail before any adaptive call.
-- A malformed retrieval collection becomes a hop error.
-- A timed-out hop publishes no late evidence.
-- One failed parallel hop does not erase successful sibling evidence.
-- Dependent hops can be skipped when required evidence is missing.
-- The final result abstains when terminal hops produce no evidence.
+- Invalid deterministic/model-proposed plans fail before retrieval.
+- Provider or model-schema failures fall back deterministically.
+- Cyclic/dangling graphs fail closed.
+- Impossible budgets fail before adaptive calls.
+- Malformed retrieval collections become contained hop errors.
+- Timed-out hops publish no late evidence.
+- One failed parallel hop does not erase successful siblings.
+- Dependent hops can be skipped when prerequisite evidence is missing.
+- Terminal paths without evidence abstain.
+- Malformed, oversized, duplicated, non-finite or path-redirected benchmark files fail closed.
 
-Python threads cannot forcibly terminate provider code that ignores deadlines. The executor records the timeout and refuses late evidence, but host-level isolation is still required for forcible termination.
-
-## Plan-quality diagnostics
-
-The deterministic quality report measures bounded structural signals:
-
-- original-query token coverage by leaf retrieval questions;
-- explicit entity retention;
-- temporal constraint retention;
-- pairwise lexical redundancy;
-- available parallelism;
-- maximum graph depth.
-
-The aggregate score is a diagnostic for experiments and regression tests. It is not a learned judge and is not evidence that one decomposition is semantically best.
+Python threads cannot forcibly terminate provider code that ignores deadlines. Host-level isolation remains necessary for forcible termination.
 
 ## Verification committed
 
-Focused contracts cover:
+Focused contracts cover planning, model-schema validation/fallback, stable fingerprints, DAG rejection, global/per-hop budget accounting, parallel/serial execution, source-preserving joins, error/timeout behavior, dependency-term propagation, payload lineage, answer/support/path/hop/lineage metrics, strict HotpotQA/2Wiki/MuSiQue loading and malformed/path-hostile dataset refusal.
 
-- comparison decomposition into two parallel lookups and one dependent comparison;
-- explicit DAG batching;
-- stable plan fingerprints;
-- duplicate, dangling and cyclic dependency rejection;
-- hostile iterable and boolean-limit rejection;
-- strict model-proposal schema acceptance and rejection;
-- provider-response digesting and deterministic fallback;
-- bounded plan-quality diagnostics;
-- minimum global/per-hop budget reservation and exact accounting;
-- impossible-budget refusal before retrieval;
-- weighted dependent-hop allocation and unused-capacity reporting;
-- parallel evidence preservation;
-- dependent-hop evidence delivery;
-- source-preserving joins;
-- missing-dependency skips;
-- contained backend errors;
-- timeout behavior without fabricated evidence;
-- public adaptive multi-hop execution;
-- bounded dependency-term propagation;
-- citation/lineage payload separation;
-- answer, document, support, path, hop, lineage and abstention metrics;
-- bounded macro aggregation and hostile-input refusal.
-
-The focused local suite passed 30 tests. Python compilation passed for the six new modules and focused tests. This is not a substitute for the complete exact-head repository matrix.
+The focused local suite passed **35 tests**. Python compilation passed for the seven new modules and focused tests. Ruff was unavailable in the constrained local environment. This does not replace the complete exact-head repository matrix.
 
 ## Remaining multi-hop work
 
 - learned decomposition ranking and benchmark-calibrated plan selection;
 - dynamic entity resolution and temporal normalization;
-- graph-aware measured budgets across heterogeneous corpora;
-- web/scholarly/uploaded-document cross-corpus hops;
-- benchmark datasets such as HotpotQA, 2WikiMultiHopQA, MuSiQue and scientific multi-document tasks;
-- semantic support/entailment evaluation per hop and over the final synthesis;
-- latency, monetary cost, memory, coverage and calibration regression gates;
-- agent registration and browser/API presentation after full integration tests.
+- uploaded/web/scholarly heterogeneous hops;
+- measured latency/token/monetary budgets across heterogeneous backends;
+- custom governed scientific multi-document datasets;
+- semantic support/entailment evaluation per hop and final synthesis;
+- repeated ablations, confidence intervals and historical promotion gates;
+- full agent/API/browser registration and integration tests.
 
 ## Non-claims
 
-- A valid dependency graph or high diagnostic score does not prove that the decomposition is semantically optimal.
-- An estimated-cost allocation is not a measured latency, token or monetary budget.
-- A cross-hop join does not prove that two passages support the same claim.
+- A valid graph or high structural diagnostic score does not prove optimal decomposition.
+- Estimated-cost allocation is not a measured resource budget.
+- A cross-hop join does not prove shared claim support.
 - Retrieval success does not prove answer correctness.
-- Citation lineage does not prove semantic entailment.
+- Citation lineage does not prove entailment.
 - The heuristic answer-support score does not prove entailment.
-- Final scientific conclusions still require source inspection, expert review and replication.
+- Dataset-format validation does not establish dataset quality, license suitability or representativeness.
+- Scientific conclusions require source inspection, expert review and replication.
