@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from tools.generation_store import GenerationStore
-from tools.index_coordinator import IndexCoordinator
+from tools.raw_index_coordinator import RawDeleteIndexCoordinator
 from tools.sparse_index import SparseIndex
 from tools.three_store_coordinator import AuthoritativeIndexCoordinator
 
@@ -97,7 +97,7 @@ def get_authoritative_index_coordinator(
         instance = _AUTHORITATIVE.get(key)
         if instance is None:
             instance = AuthoritativeIndexCoordinator(
-                index=IndexCoordinator(rag=rag, sparse=sparse),
+                index=RawDeleteIndexCoordinator(rag=rag, sparse=sparse),
                 generations=generations,
             )
             _AUTHORITATIVE[key] = instance
