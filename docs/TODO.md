@@ -25,14 +25,14 @@ This backlog is ordered by dependency and risk. Checked items have committed imp
 - [x] Symlink/reparse/database identity defenses.
 - [x] Field-weighted BM25 and exact document filtering.
 
-## Wave 2B — authoritative durable generations
+## Wave 2B — authoritative four-store lifecycle
 
 - [x] Public bounded vector generation snapshots and exact restore.
 - [x] Deterministic sparse-field generation.
 - [x] Compensating vector+sparse replacement coordinator.
 - [x] Coordinated raw vector+sparse deletion.
 - [x] Append-only durable generation history and current pointers.
-- [x] One reentrant owner/document lock across all three stores.
+- [x] One reentrant owner/document lock across vector, sparse and generation stores.
 - [x] Content hash, profile fingerprint, vector count and sparse generation manifests.
 - [x] Privacy-finalized document-service integration.
 - [x] API/durable-worker ingestion integration.
@@ -41,11 +41,29 @@ This backlog is ordered by dependency and risk. Checked items have committed imp
 - [x] Drift scan and dry-run repair planning.
 - [x] Bounded reconciliation CLI.
 - [x] Exact-confirmation cleanup of deleted-generation residue.
-- [ ] Add retained-document registry as a fourth transaction participant or durable outbox consumer.
-- [ ] Run startup reconciliation before serving retrieval.
-- [ ] Add resumable repair journal and operator audit records.
+- [x] Durable retained-document registry replacement/deletion outbox.
+- [x] Planned/index-committed/registry-committed/completed/failed state machine.
+- [x] Deterministic owner/document replacement and deletion operation IDs.
+- [x] Worker leases, renewal, release, retry ceilings and generic errors.
+- [x] Exact generation/content-hash reconciliation.
+- [x] Registry replay after index commit without duplicate indexing.
+- [x] Pending deletion identity reuse after generation sequence changes.
+- [x] Private cleanup-intent journal persisted before registry mutation.
+- [x] Idempotent cleanup replay after process crashes or already-absent files.
+- [x] Startup reconciliation before first retrieval-layer construction.
+- [x] API/durable-job retained-source coordination.
+- [x] Batch retained-source copy bridge with owner and byte-identity validation.
+- [x] One-use context-local batch source intent and temporary source binding.
+- [x] Idempotent redundant batch registry short-circuit.
+- [x] Privacy-safe pending/status/reconcile/retry lifecycle CLI.
+- [x] Exact-confirmation retry of failed lifecycle operations.
+- [x] Document lifecycle configuration and runbook.
+- [ ] Add completed-operation retention and compaction policy.
+- [ ] Add privacy-safe operator audit export and job/lifecycle correlation.
+- [ ] Add periodic reconciliation or distributed leadership for multi-process deployment.
 - [ ] Add retained-source reindex for vector-only, sparse-only and manifest-only states.
 - [ ] Add explicitly reviewed adoption for verified aligned pre-manifest stores.
+- [ ] Run exact-head fault injection at every four-store and cleanup phase.
 
 ## Wave 2C — corpus-level hybrid retrieval
 
@@ -55,7 +73,7 @@ This backlog is ordered by dependency and risk. Checked items have committed imp
 - [x] Validate dense owner/content hash/profile metadata.
 - [x] Validate sparse generation/profile metadata.
 - [x] Materialize dense chunks and sparse fields with provenance.
-- [x] Add explicit `corpus-sparse` and `corpus-hybrid` tool modes.
+- [x] Add explicit `corpus-sparse` and `corpus-hybrid` modes.
 - [x] Return dense, sparse, fused, generation and profile traces.
 - [x] Contain partial multi-query failures.
 - [x] Protect ranking/generation citation metadata from evidence overrides.
@@ -76,7 +94,7 @@ This backlog is ordered by dependency and risk. Checked items have committed imp
 - [x] Require validation digests before committed state.
 - [x] Reclaim expired running and validated tasks.
 - [x] Add inventory, seed, status and owner-verified cancel commands.
-- [x] Refuse execution/cutover until shadow validation is available.
+- [x] Refuse execution/cutover until shadow validation exists.
 - [ ] Write shadow vector and sparse generations without replacing current state.
 - [ ] Reparse retained sources through the privacy-finalized ingestion pipeline.
 - [ ] Construct target-profile encoder adapters explicitly.
@@ -97,9 +115,9 @@ This backlog is ordered by dependency and risk. Checked items have committed imp
 - [x] Route traces and contained per-attempt failure diagnostics.
 - [x] Privacy-safe durable adaptive trace store with owner/run isolation.
 - [x] Optional runtime trace-store configuration and bounded trace persistence.
-- [x] Private-key filtering and strict JSON-safe adaptive API payloads.
+- [x] Private-key filtering and strict JSON-safe adaptive payloads.
 - [x] Offline dense/sparse/hybrid/web/scholarly route experiment harness.
-- [x] Strict reproducible route fixtures and query/evidence-free benchmark reports.
+- [x] Strict reproducible route fixtures and query/evidence-free reports.
 - [x] Router/oracle success, route accuracy, cost/latency utility and regret metrics.
 - [x] Brier score, reliability bins, ECE and maximum calibration-gap reports.
 - [x] Dependency-free isotonic confidence calibration.
@@ -107,12 +125,12 @@ This backlog is ordered by dependency and risk. Checked items have committed imp
 - [x] Conservative abstention after insufficient terminal evidence.
 - [ ] Calibrate evidence-sufficiency coefficients on representative datasets.
 - [ ] Install a versioned runtime calibrator selected by benchmark and corpus profile.
-- [ ] Add an explicit learned or validated domain classifier and domain-specific policies.
+- [ ] Add a validated domain classifier and domain-specific policies.
 - [ ] Run representative connected dense/sparse/web/scholarly route experiments.
-- [ ] Add adaptive-policy ablations, repeated seeds, confidence intervals and promotion thresholds.
+- [ ] Add repeated-seed ablations, confidence intervals and promotion thresholds.
 - [ ] Add trace retention, compaction, export and operational dashboards.
 
-## Wave 4 — decomposition and multi-hop retrieval
+## Wave 4 — decomposition and heterogeneous multi-hop retrieval
 
 - [x] Bounded deterministic query decomposition.
 - [x] Validated acyclic dependency graph for subquestions.
@@ -127,27 +145,34 @@ This backlog is ordered by dependency and risk. Checked items have committed imp
 - [x] Abstention when terminal hops provide no evidence.
 - [x] Strict-schema model-assisted decomposition with deterministic fallback.
 - [x] Provider-response digesting without retaining model-authored evidence.
-- [x] Deterministic token/entity/time/redundancy/parallelism/depth plan-quality diagnostics.
-- [x] Hard global estimated-cost allocation across uploaded-document adaptive hops.
+- [x] Structural token/entity/time/redundancy/parallelism/depth diagnostics.
+- [x] Hard global uploaded-document estimated-cost allocation.
 - [x] Minimum-attempt reservation and fail-fast impossible-budget checks.
-- [x] Weighted DAG-aware remainder allocation, per-hop caps and unused-budget reporting.
-- [x] Answer exact-match and Unicode token-F1 metrics.
+- [x] DAG-aware weighted allocation, per-hop caps and unused-budget reporting.
+- [x] Heterogeneous uploaded/web/scholarly multi-hop routing.
+- [x] Production uploaded dense/sparse/hybrid, web and scholarly adapters.
+- [x] Global workload, latency and monetary planning budgets.
+- [x] Privacy-safe multi-hop trace persistence.
+- [x] One authoritative agent tool with single/adaptive/multihop/heterogeneous strategies.
+- [x] Closed strategy schema and bounded dispatcher argument validation.
+- [x] Server-owned Citation-only publication for every strategy.
+- [x] Adaptive/multi-hop abstention before evidence registry publication.
+- [x] Agent deduplication/relabeling, API serialization and safe browser propagation.
+- [x] Answer exact match and Unicode token-F1 metrics.
 - [x] Document and support precision/recall/F1 metrics.
-- [x] Complete-support-path, hop-coverage and citation-lineage metrics.
+- [x] Complete support-path, hop-coverage and citation-lineage metrics.
 - [x] Sentence, paragraph, page, section, field and source support locators.
-- [x] Abstention-aware macro aggregation and explicitly heuristic answer-support score.
-- [x] Strict local HotpotQA adapter with sentence-support preservation.
-- [x] Strict local 2WikiMultiHopQA adapter with sentence-support preservation.
-- [x] Strict local MuSiQue JSON/JSONL adapter with decomposition and paragraph-support preservation.
-- [x] Dataset SHA-256 fingerprints, UTF-8/size limits, duplicate-key/NaN refusal and symlink/reparse protection.
+- [x] Abstention-aware macro aggregation and heuristic answer-support score.
+- [x] Strict local HotpotQA and 2WikiMultiHopQA adapters.
+- [x] Strict local MuSiQue JSON/JSONL adapter.
+- [x] Dataset SHA-256, UTF-8/size limits, duplicate-key/NaN refusal and path defenses.
 - [ ] Add learned decomposition selection and plan-quality ranking.
 - [ ] Add entity resolution and normalized temporal ranges.
-- [ ] Add uploaded/web/scholarly heterogeneous multi-hop routing.
-- [ ] Add global budget allocation across heterogeneous retrieval backends, latency and monetary cost.
-- [ ] Add custom scientific multi-document benchmark adapters and dataset cards.
+- [ ] Replace planning proxies with measured cross-backend resource models.
+- [ ] Add custom scientific multi-document adapters and governed dataset cards.
 - [ ] Add semantic claim-support and entailment metrics per hop and final answer.
 - [ ] Add multi-hop ablation reports and historical regression thresholds.
-- [ ] Register the public tool with the full agent/API/browser surfaces after integration tests.
+- [ ] Run exact-head end-to-end API/browser/provider integration tests.
 
 ## Wave 5 — evidence graph
 
@@ -190,7 +215,7 @@ This backlog is ordered by dependency and risk. Checked items have committed imp
 
 - [ ] Repeated runs, seeds and confidence intervals.
 - [ ] Statistical tests and practical-effect thresholds.
-- [ ] Latency, throughput, memory and cost measurements.
+- [ ] Latency, throughput, memory and measured cost.
 - [ ] Retrieval, citation, entailment and abstention dashboards.
 - [ ] Per-stage traces and bounded failure artifacts.
 - [ ] Historical regression baselines and promotion gates.
@@ -214,7 +239,7 @@ This backlog is ordered by dependency and risk. Checked items have committed imp
 - [ ] Windows compatibility tests.
 - [ ] Docker Compose validation.
 - [ ] Docker image build and readiness smoke tests.
-- [ ] Clean-clone CLI/API ingestion, deletion, reconciliation and retrieval smoke tests.
-- [ ] Concurrency and fault injection across vector, sparse, manifest and registry boundaries.
-- [ ] Adaptive and multi-hop integration tests against authoritative corpus generations.
+- [ ] Clean-clone CLI/API/batch ingestion, deletion, reconciliation and retrieval smoke tests.
+- [ ] Concurrency and fault injection across vector, sparse, manifest, registry and cleanup journals.
+- [ ] Adaptive and heterogeneous multi-hop integration tests against authoritative generations.
 - [ ] Final line-by-line regression audit of one unchanged exact `main` SHA.
