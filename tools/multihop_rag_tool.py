@@ -8,7 +8,7 @@ import operator
 import re
 from collections import Counter
 from dataclasses import asdict
-from typing import Any, Optional
+from typing import Any
 
 from tools.adaptive_rag_tool import search_uploaded_docs_adaptive
 from tools.multihop_retrieval import HopEvidence, MultiHopResult, run_multihop_retrieval
@@ -175,7 +175,7 @@ def search_uploaded_docs_multihop(
     query: str,
     *,
     owner_id: str = "default_user",
-    doc_id: Optional[str] = None,
+    doc_id: str | None = None,
     max_subquestions: int = 8,
     per_hop_limit: int = 8,
     max_workers: int = 4,
