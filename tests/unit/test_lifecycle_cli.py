@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 import json
-from types import SimpleNamespace
 
 from tools import lifecycle_cli
-from tools.lifecycle_outbox import LifecycleOutbox
+from tools.lifecycle_outbox import LifecycleOutbox, LifecycleReconcileResult
 
 HASH = "a" * 64
 
@@ -69,13 +68,13 @@ def test_reconcile_returns_nonzero_for_errors(monkeypatch, capsys):
         lifecycle_cli,
         "reconcile_lifecycle_pending",
         lambda **kwargs: (
-            SimpleNamespace(
+            LifecycleReconcileResult(
                 operation_id="one",
                 outcome="completed",
                 state="completed",
                 source_cleanup_required=None,
             ),
-            SimpleNamespace(
+            LifecycleReconcileResult(
                 operation_id="two",
                 outcome="error",
                 state="index_committed",
