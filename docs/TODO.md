@@ -95,15 +95,22 @@ This backlog is ordered by dependency and risk. Checked items have committed imp
 - [x] Bounded corrective-plan execution with accumulated-evidence limits.
 - [x] Public adaptive uploaded-document retrieval tool and bounded trace payload.
 - [x] Route traces and contained per-attempt failure diagnostics.
+- [x] Privacy-safe durable adaptive trace store with owner/run isolation.
+- [x] Optional runtime trace-store configuration and bounded trace persistence.
+- [x] Private-key filtering and strict JSON-safe adaptive API payloads.
+- [x] Offline dense/sparse/hybrid/web/scholarly route experiment harness.
+- [x] Strict reproducible route fixtures and query/evidence-free benchmark reports.
+- [x] Router/oracle success, route accuracy, cost/latency utility and regret metrics.
 - [x] Brier score, reliability bins, ECE and maximum calibration-gap reports.
 - [x] Dependency-free isotonic confidence calibration.
 - [x] Risk-coverage curves and abstention-threshold selection.
 - [x] Conservative abstention after insufficient terminal evidence.
 - [ ] Calibrate evidence-sufficiency coefficients on representative datasets.
 - [ ] Install a versioned runtime calibrator selected by benchmark and corpus profile.
-- [ ] Add explicit domain classification and domain-specific routing policies.
-- [ ] Add dense/sparse/web/scholarly routing experiments.
-- [ ] Add adaptive-policy ablations, confidence intervals and promotion thresholds.
+- [ ] Add an explicit learned or validated domain classifier and domain-specific policies.
+- [ ] Run representative connected dense/sparse/web/scholarly route experiments.
+- [ ] Add adaptive-policy ablations, repeated seeds, confidence intervals and promotion thresholds.
+- [ ] Add trace retention, compaction, export and operational dashboards.
 
 ## Wave 4 — decomposition and multi-hop retrieval
 
@@ -127,12 +134,17 @@ This backlog is ordered by dependency and risk. Checked items have committed imp
 - [x] Answer exact-match and Unicode token-F1 metrics.
 - [x] Document and support precision/recall/F1 metrics.
 - [x] Complete-support-path, hop-coverage and citation-lineage metrics.
+- [x] Sentence, paragraph, page, section, field and source support locators.
 - [x] Abstention-aware macro aggregation and explicitly heuristic answer-support score.
+- [x] Strict local HotpotQA adapter with sentence-support preservation.
+- [x] Strict local 2WikiMultiHopQA adapter with sentence-support preservation.
+- [x] Strict local MuSiQue JSON/JSONL adapter with decomposition and paragraph-support preservation.
+- [x] Dataset SHA-256 fingerprints, UTF-8/size limits, duplicate-key/NaN refusal and symlink/reparse protection.
 - [ ] Add learned decomposition selection and plan-quality ranking.
 - [ ] Add entity resolution and normalized temporal ranges.
 - [ ] Add uploaded/web/scholarly heterogeneous multi-hop routing.
 - [ ] Add global budget allocation across heterogeneous retrieval backends, latency and monetary cost.
-- [ ] Add HotpotQA, 2WikiMultiHopQA, MuSiQue and scientific multi-document dataset adapters.
+- [ ] Add custom scientific multi-document benchmark adapters and dataset cards.
 - [ ] Add semantic claim-support and entailment metrics per hop and final answer.
 - [ ] Add multi-hop ablation reports and historical regression thresholds.
 - [ ] Register the public tool with the full agent/API/browser surfaces after integration tests.
