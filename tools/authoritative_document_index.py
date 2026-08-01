@@ -8,6 +8,7 @@ from typing import Any, Mapping
 
 from tools.embedding_registry import resolve_embedding_profile
 from tools.generation_store import GenerationRecord
+from tools.index_coordinator import CrossStoreSnapshot, _document_lock
 from tools.security import normalize_owner_id
 from tools.sparse_fields import build_sparse_fields
 from tools.sparse_runtime import get_authoritative_index_coordinator
@@ -44,6 +45,82 @@ class AuthoritativeIndexResult:
     @property
     def vector_rows(self) -> int:
         return self.generation.vector_rows
+
+
+@dataclass(frozen=True)
+class AuthoritativeDocumentSnapshot:
+    owner_id: str
+    doc_id: str
+    stores: CrossStoreSnapshot
+    generation: GenerationRecord | None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "owner_id", normalize_owner_id(self.owner_id))
+        object.__setattr__(self, "doc_id", _identifier(self.doc_id, "doc_id"))
+        if not isinstance(self.stores, CrossStoreSnapshot):
+            raise ValueError("stores must be a CrossStoreSnapshot.")
+        if (
+            self.stores.vector.owner_id != self.owner_id
+            or self.stores.vector.doc_id != self.doc_id
+        ):
+            raise ValueError("snapshot store scope is invalid.")
+        if self.generation is not None and (
+            self.generation.owner_id != self.owner_id
+            or self.generation.doc_id != self.doc_id
+        ):
+            raise ValueError("snapshot generation scope is invalid.")
+
+
+def capture_authoritative_document(
+    *,
+    owner_id: str,
+    doc_id: str,
+    rag: Any,
+    coordinator: AuthoritativeIndexCoordinator | None = None,
+) -> AuthoritativeDocumentSnapshot:
+    owner = normalize_owner_id(owner_id)
+    document_id = _identifier(doc_id, "doc_id")
+    selected = coordinator or get_authoritative_index_coordinator(rag=rag)
+    lock = _document_lock(owner, document_id)
+    with lock:
+        return AuthoritativeDocumentSnapshot(
+            owner,
+            document_id,
+            selected.index.snapshot(owner_id=owner, doc_id=document_id),
+            selected.generations.current(owner_id=owner, doc_id=document_id),
+        )
+
+
+def restore_authoritative_document(
+    snapshot: AuthoritativeDocumentSnapshot,
+    *,
+    rag: Any,
+    coordinator: AuthoritativeIndexCoordinator | None = None,
+) -> None:
+    if not isinstance(snapshot, AuthoritativeDocumentSnapshot):
+        raise ValueError("snapshot must be an AuthoritativeDocumentSnapshot.")
+    selected = coordinator or get_authoritative_index_coordinator(rag=rag)
+    lock = _document_lock(snapshot.owner_id, snapshot.doc_id)
+    with lock:
+        errors = list(
+            selected._restore_index(
+                owner_id=snapshot.owner_id,
+                doc_id=snapshot.doc_id,
+                prior=snapshot.stores,
+            )
+        )
+        errors.extend(
+            selected._restore_generation(
+                owner_id=snapshot.owner_id,
+                doc_id=snapshot.doc_id,
+                prior=snapshot.generation,
+            )
+        )
+        if errors:
+            raise RuntimeError(
+                "Authoritative document restoration was incomplete: "
+                + ", ".join(errors)
+            )
 
 
 def commit_finalized_document(
@@ -142,8 +219,11 @@ install_authoritative_rag_deletion()
 
 
 __all__ = [
+    "AuthoritativeDocumentSnapshot",
     "AuthoritativeIndexResult",
+    "capture_authoritative_document",
     "commit_finalized_document",
     "delete_authoritative_document",
     "install_authoritative_rag_deletion",
+    "restore_authoritative_document",
 ]
