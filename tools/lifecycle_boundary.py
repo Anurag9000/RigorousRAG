@@ -284,15 +284,27 @@ def install_authoritative_lifecycle_boundary(module: ModuleType) -> None:
         with lock:
             current = generations.current(owner_id=owner, doc_id=document)
             registry_record = registry.get(owner_id=owner, doc_id=document)
-            sequence = getattr(current, "sequence", 0)
-            updated = (registry_record or {}).get("updated_at", 0)
-            operation_id = operation_id_for(
-                kind="delete",
-                owner_id=owner,
-                doc_id=document,
-                idempotency_key=f"{sequence}:{updated}",
-            )
             outbox = get_lifecycle_outbox()
+            matching = tuple(
+                item
+                for item in outbox.list_pending(owner_id=owner, limit=10_000)
+                if item.kind == "delete" and item.doc_id == document
+            )
+            if len(matching) > 1:
+                raise RuntimeError(
+                    "multiple pending lifecycle deletions exist for one document."
+                )
+            if matching:
+                operation_id = matching[0].operation_id
+            else:
+                sequence = getattr(current, "sequence", 0)
+                updated = (registry_record or {}).get("updated_at", 0)
+                operation_id = operation_id_for(
+                    kind="delete",
+                    owner_id=owner,
+                    doc_id=document,
+                    idempotency_key=f"{sequence}:{updated}",
+                )
             cleanup = get_cleanup_journal()
             operation = outbox.plan_delete(
                 operation_id=operation_id,
