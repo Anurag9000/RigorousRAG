@@ -1,4 +1,4 @@
-"""Batch document ingestion CLI using the same parsing/indexing services as the API."""
+"""Batch document ingestion through the shared authoritative indexing lifecycle."""
 
 from __future__ import annotations
 
@@ -8,15 +8,19 @@ import os
 import stat
 import sys
 import tempfile
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Iterator, List, Optional
+from typing import Any, Iterable, Iterator, Optional
 
 try:
     from openai import OpenAI
 except ImportError:  # pragma: no cover
     OpenAI = None  # type: ignore[assignment]
 
+from tools.authoritative_document_index import (
+    AuthoritativeDocumentSnapshot,
+    capture_authoritative_document,
+    restore_authoritative_document,
+)
 from tools.document_service import IndexedDocument, index_document
 from tools.document_store import get_document_store
 from tools.ingestion import ingest_file
@@ -26,16 +30,20 @@ from tools.security import normalize_owner_id
 
 _ALLOWED_SUFFIXES = {".pdf", ".docx", ".txt", ".md"}
 _MAX_INPUT_FILES = 10_000
-_MAX_PATH_CHARS = 4096
-_MAX_VECTOR_ROWS = 100_000
-_VECTOR_BATCH_SIZE = 128
+_MAX_PATH_CHARS = 4_096
 _MAX_MANIFEST_BYTES = 50_000_000
-_MAX_VECTOR_TEXT_CHARS = 50_000_000
-_MAX_VECTOR_METADATA_ITEMS = 2000
+_WINDOWS_REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
 
 
 def _contains_ascii_control(value: str) -> bool:
     return any(ord(character) < 32 or ord(character) == 127 for character in value)
+
+
+def _redirecting(metadata: os.stat_result) -> bool:
+    return stat.S_ISLNK(metadata.st_mode) or bool(
+        int(getattr(metadata, "st_file_attributes", 0))
+        & _WINDOWS_REPARSE_POINT
+    )
 
 
 def _lexical_absolute(value: str | os.PathLike[str]) -> Path:
@@ -43,7 +51,8 @@ def _lexical_absolute(value: str | os.PathLike[str]) -> Path:
         raise ValueError("Paths must be strings or path-like values.")
     rendered = os.fspath(value)
     if (
-        not rendered
+        not isinstance(rendered, str)
+        or not rendered
         or len(rendered) > _MAX_PATH_CHARS
         or _contains_ascii_control(rendered)
     ):
@@ -54,37 +63,43 @@ def _lexical_absolute(value: str | os.PathLike[str]) -> Path:
     return Path(os.path.abspath(candidate))
 
 
-def _has_symlink_component(path: Path) -> bool:
+def _has_redirecting_component(path: Path) -> bool:
     absolute = _lexical_absolute(path)
     for component in (absolute, *absolute.parents):
         try:
-            if component.is_symlink():
-                return True
+            metadata = component.lstat()
+        except FileNotFoundError:
+            continue
         except OSError:
+            return True
+        if _redirecting(metadata):
             return True
     return False
 
 
+def _has_symlink_component(path: Path) -> bool:
+    """Compatibility alias retained for existing callers and tests."""
+    return _has_redirecting_component(path)
+
+
 def _regular_supported_file(path: Path) -> bool:
     try:
-        if _has_symlink_component(path):
+        if _has_redirecting_component(path):
             return False
-        info = os.stat(path, follow_symlinks=False)
+        info = path.lstat()
     except (OSError, ValueError):
         return False
     return stat.S_ISREG(info.st_mode) and path.suffix.lower() in _ALLOWED_SUFFIXES
 
 
 def _directory_files(directory: Path, recursive: bool) -> Iterator[Path]:
-    """Yield directory files without materializing an unbounded directory listing."""
-
     stack = [directory]
     inspected = 0
     inspection_limit = max(_MAX_INPUT_FILES * 20, _MAX_INPUT_FILES)
     while stack:
         current = stack.pop()
         try:
-            if _has_symlink_component(current):
+            if _has_redirecting_component(current):
                 continue
             scanner = os.scandir(current)
         except (OSError, ValueError):
@@ -95,7 +110,7 @@ def _directory_files(directory: Path, recursive: bool) -> Iterator[Path]:
                     inspected += 1
                     if inspected > inspection_limit:
                         raise ValueError(
-                            "Directory traversal exceeded the bounded entry-inspection limit."
+                            "Directory traversal exceeded the bounded inspection limit."
                         )
                     try:
                         if entry.is_symlink():
@@ -111,16 +126,14 @@ def _directory_files(directory: Path, recursive: bool) -> Iterator[Path]:
 
 
 def _collect_files(
-    paths: List[str],
+    paths: list[str],
     recursive: bool,
     output_path: Optional[Path],
-) -> List[Path]:
-    if not isinstance(paths, list):
-        raise ValueError("paths must be a list.")
+) -> list[Path]:
+    if not isinstance(paths, list) or any(not isinstance(path, str) for path in paths):
+        raise ValueError("paths must be a list of strings.")
     if len(paths) > _MAX_INPUT_FILES:
         raise ValueError(f"At most {_MAX_INPUT_FILES} input paths may be supplied.")
-    if any(not isinstance(path, str) for path in paths):
-        raise ValueError("Every input path must be a string.")
     if not isinstance(recursive, bool):
         raise ValueError("recursive must be a boolean.")
     excluded = _lexical_absolute(output_path) if output_path is not None else None
@@ -134,10 +147,10 @@ def _collect_files(
             candidates: Iterable[Path] = (path,)
         else:
             try:
-                info = os.stat(path, follow_symlinks=False)
+                info = path.lstat()
             except OSError:
                 continue
-            if not stat.S_ISDIR(info.st_mode) or _has_symlink_component(path):
+            if not stat.S_ISDIR(info.st_mode) or _has_redirecting_component(path):
                 continue
             candidates = _directory_files(path, recursive)
         for candidate in candidates:
@@ -148,7 +161,7 @@ def _collect_files(
             collected[str(candidate)] = candidate
             if len(collected) > _MAX_INPUT_FILES:
                 raise ValueError(
-                    f"At most {_MAX_INPUT_FILES} supported input files may be ingested."
+                    f"At most {_MAX_INPUT_FILES} supported files may be ingested."
                 )
     return [collected[key] for key in sorted(collected)]
 
@@ -159,10 +172,14 @@ def _provider_value(name: str) -> Optional[str]:
     raw = os.getenv(name)
     if raw in (None, ""):
         return None
-    value = raw.strip()
-    if len(value) > 4096 or _contains_ascii_control(value):
+    if (
+        not isinstance(raw, str)
+        or raw != raw.strip()
+        or len(raw) > 4_096
+        or _contains_ascii_control(raw)
+    ):
         raise ValueError(f"{name} is invalid.")
-    return value or None
+    return raw
 
 
 def _llm_client() -> Optional[Any]:
@@ -180,97 +197,10 @@ def _llm_client() -> Optional[Any]:
     )
 
 
-@dataclass(frozen=True)
-class _VectorGeneration:
-    ids: List[str]
-    documents: List[str]
-    metadatas: List[dict[str, Any]]
-
-
-def _vector_filter(owner_id: str, doc_id: str) -> dict[str, Any]:
-    return {
-        "$and": [
-            {"owner_id": {"$eq": owner_id}},
-            {"doc_id": {"$eq": doc_id}},
-        ]
-    }
-
-
-def _capture_generation(rag: Any, owner_id: str, doc_id: str) -> _VectorGeneration:
-    result = rag.collection.get(
-        where=_vector_filter(owner_id, doc_id),
-        include=["documents", "metadatas"],
-        limit=_MAX_VECTOR_ROWS + 1,
-    )
-    if not isinstance(result, dict):
-        raise RuntimeError("The vector backend returned an invalid snapshot.")
-    ids = result.get("ids") or []
-    documents = result.get("documents") or []
-    metadatas = result.get("metadatas") or []
-    if not all(isinstance(value, list) for value in (ids, documents, metadatas)):
-        raise RuntimeError("The vector backend returned an invalid snapshot.")
-    if len(ids) > _MAX_VECTOR_ROWS:
-        raise RuntimeError("The prior vector generation exceeds the restoration limit.")
-    if len(documents) != len(ids) or len(metadatas) != len(ids):
-        raise RuntimeError("The prior vector generation is incomplete.")
-
-    clean_ids: List[str] = []
-    clean_documents: List[str] = []
-    clean_metadatas: List[dict[str, Any]] = []
-    for vector_id, text, metadata in zip(ids, documents, metadatas):
-        if (
-            not isinstance(vector_id, str)
-            or not vector_id
-            or len(vector_id) > 1000
-            or _contains_ascii_control(vector_id)
-        ):
-            raise RuntimeError("The prior vector generation contains an invalid ID.")
-        if (
-            not isinstance(text, str)
-            or len(text) > _MAX_VECTOR_TEXT_CHARS
-            or not isinstance(metadata, dict)
-            or len(metadata) > _MAX_VECTOR_METADATA_ITEMS
-        ):
-            raise RuntimeError("The prior vector generation contains invalid rows.")
-        if metadata.get("owner_id") != owner_id or metadata.get("doc_id") != doc_id:
-            raise RuntimeError("The prior vector generation violates owner scope.")
-        clean_ids.append(vector_id)
-        clean_documents.append(text)
-        clean_metadatas.append(dict(metadata))
-    return _VectorGeneration(clean_ids, clean_documents, clean_metadatas)
-
-
-def _restore_generation(
-    rag: Any,
-    owner_id: str,
-    doc_id: str,
-    previous: _VectorGeneration,
-) -> None:
-    errors: List[str] = []
-    try:
-        rag.delete_document(owner_id=owner_id, doc_id=doc_id)
-    except Exception as exc:
-        errors.append(f"delete:{type(exc).__name__}")
-    if previous.ids:
-        for start in range(0, len(previous.ids), _VECTOR_BATCH_SIZE):
-            stop = start + _VECTOR_BATCH_SIZE
-            try:
-                rag.collection.upsert(
-                    ids=previous.ids[start:stop],
-                    documents=previous.documents[start:stop],
-                    metadatas=previous.metadatas[start:stop],
-                )
-            except Exception as exc:
-                errors.append(f"restore:{type(exc).__name__}")
-                break
-    if errors:
-        raise RuntimeError("Vector rollback was incomplete: " + ", ".join(errors))
-
-
 def _atomic_manifest(path: Path, manifest: list[dict[str, Any]]) -> None:
     destination = _lexical_absolute(path)
-    if _has_symlink_component(destination.parent):
-        raise ValueError("The manifest parent path may not contain symbolic links.")
+    if _has_redirecting_component(destination.parent):
+        raise ValueError("The manifest parent path may not contain redirects.")
     if not destination.parent.exists() or not destination.parent.is_dir():
         raise ValueError("The manifest parent directory does not exist.")
     payload = json.dumps(
@@ -280,8 +210,7 @@ def _atomic_manifest(path: Path, manifest: list[dict[str, Any]]) -> None:
         allow_nan=False,
     ).encode("utf-8")
     if len(payload) > _MAX_MANIFEST_BYTES:
-        raise ValueError("The ingestion manifest exceeds the configured byte limit.")
-
+        raise ValueError("The ingestion manifest exceeds the byte limit.")
     descriptor = -1
     temporary: Optional[Path] = None
     try:
@@ -332,19 +261,8 @@ def parse_args() -> argparse.Namespace:
         "--owner-id",
         default=os.getenv("SINGLE_USER_OWNER_ID", "default_user"),
     )
-    parser.add_argument(
-        "--retain-sources",
-        action="store_true",
-        help=(
-            "Copy source files into the private owner-scoped store so figure tools can "
-            "use them. The manifest never contains the retained path."
-        ),
-    )
-    parser.add_argument(
-        "--include-redacted-text",
-        action="store_true",
-        help="Include redacted full text and sections in the output manifest.",
-    )
+    parser.add_argument("--retain-sources", action="store_true")
+    parser.add_argument("--include-redacted-text", action="store_true")
     parser.add_argument("--fail-fast", action="store_true")
     return parser.parse_args()
 
@@ -360,6 +278,33 @@ def _strict_flags(args: argparse.Namespace) -> None:
             raise ValueError(f"{name} must be a boolean.")
 
 
+def _manifest_payload(
+    indexed: IndexedDocument,
+    *,
+    include_redacted_text: bool,
+    source_retained: bool,
+) -> dict[str, Any]:
+    excluded = set() if include_redacted_text else {"text", "sections"}
+    payload = indexed.document.model_dump(
+        mode="json",
+        exclude_none=True,
+        exclude=excluded,
+    )
+    payload.pop("file_path", None)
+    payload["chunk_count"] = indexed.chunk_count
+    payload["source_retained"] = source_retained
+    return payload
+
+
+def _remove_new_source(document_store: Any, retained_copy: Optional[Path]) -> None:
+    if retained_copy is None:
+        return
+    try:
+        document_store.remove_source(retained_copy)
+    except Exception:
+        pass
+
+
 def main() -> int:
     args = parse_args()
     try:
@@ -371,9 +316,8 @@ def main() -> int:
         print("Invalid batch-ingestion arguments or paths.", file=sys.stderr)
         return 2
     if not files:
-        print("No supported non-symlink input files were found.", file=sys.stderr)
+        print("No supported non-redirected input files were found.", file=sys.stderr)
         return 1
-
     try:
         rag = get_rag_layer()
         client = _llm_client()
@@ -391,16 +335,19 @@ def main() -> int:
             flush=True,
         )
         retained_copy: Optional[Path] = None
-        previous: Optional[_VectorGeneration] = None
-        indexed: Optional[IndexedDocument] = None
-        document = None
+        prior: AuthoritativeDocumentSnapshot | None = None
+        indexed: IndexedDocument | None = None
         registry_committed = False
         try:
             result = ingest_file(str(path), owner_id=owner_id)
             if not result.success or result.document is None:
                 raise ValueError("Document ingestion failed.")
             document = result.document
-            previous = _capture_generation(rag, owner_id, document.id)
+            prior = capture_authoritative_document(
+                owner_id=owner_id,
+                doc_id=document.id,
+                rag=rag,
+            )
             if args.retain_sources:
                 retained_copy = document_store.copy_source(
                     owner_id=owner_id,
@@ -412,14 +359,11 @@ def main() -> int:
                 rag=rag,
                 client=client,
             )
-            payload = document.model_dump(
-                mode="json",
-                exclude_none=True,
-                exclude=(set() if args.include_redacted_text else {"text", "sections"}),
+            payload = _manifest_payload(
+                indexed,
+                include_redacted_text=args.include_redacted_text,
+                source_retained=retained_copy is not None,
             )
-            payload["chunk_count"] = indexed.chunk_count
-            payload["source_retained"] = retained_copy is not None
-
             previous_path = document_store.register(
                 owner_id=owner_id,
                 doc_id=document.id,
@@ -443,14 +387,10 @@ def main() -> int:
             )
         except Exception:
             if not registry_committed:
-                if retained_copy is not None:
+                _remove_new_source(document_store, retained_copy)
+                if indexed is not None and prior is not None:
                     try:
-                        document_store.remove_source(retained_copy)
-                    except Exception:
-                        pass
-                if indexed is not None and document is not None and previous is not None:
-                    try:
-                        _restore_generation(rag, owner_id, document.id, previous)
+                        restore_authoritative_document(prior, rag=rag)
                     except Exception:
                         pass
             failures += 1
@@ -461,12 +401,15 @@ def main() -> int:
     if output_path is not None:
         try:
             _atomic_manifest(output_path, manifest)
-            print(f"Manifest written to {mask_metadata_text(output_path.name)[:500]}")
+            print(
+                f"Manifest written to "
+                f"{mask_metadata_text(output_path.name)[:500]}"
+            )
         except Exception:
             print("The ingestion manifest could not be published.", file=sys.stderr)
             failures += 1
     print(f"Completed: {len(manifest)} succeeded, {failures} failed.")
-    return 0 if failures == 0 else 1
+    return 1 if failures else 0
 
 
 if __name__ == "__main__":
