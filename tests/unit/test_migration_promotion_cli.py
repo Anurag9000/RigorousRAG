@@ -88,6 +88,16 @@ def benchmark_fixture():
         "current_abstained": True,
         "shadow_abstained": True,
     }
+    runs = []
+    for seed in (1, 2, 3):
+        runs.append(
+            {
+                "seed": seed,
+                "cases": [dict(relevant), dict(abstention)],
+                "current_resources": resources(),
+                "shadow_resources": resources(),
+            }
+        )
     return {
         "task_id": E,
         "validation_digest": D,
@@ -96,14 +106,7 @@ def benchmark_fixture():
         "vector_count": 3,
         "sparse_count": 3,
         "rank_cutoff": 1,
-        "runs": [
-            {
-                "seed": 1,
-                "cases": [relevant, abstention],
-                "current_resources": resources(),
-                "shadow_resources": resources(),
-            }
-        ],
+        "runs": runs,
     }
 
 
@@ -162,6 +165,20 @@ def parse(capsys):
     )
 
 
+def aggregate_policy_file(tmp_path):
+    path = tmp_path / "promotion-policy.json"
+    path.write_text(
+        json.dumps(
+            {
+                "min_query_count": 2,
+                "min_repeated_runs": 3,
+                "min_seed_count": 3,
+            }
+        )
+    )
+    return path
+
+
 def test_evaluate_persists_eligible_report_without_paths(
     tmp_path, monkeypatch, capsys
 ):
@@ -177,22 +194,13 @@ def test_evaluate_persists_eligible_report_without_paths(
     assert store.read(E).report_digest == output["report_digest"]
 
 
-def test_evaluate_fixture_generates_evidence_and_persists_report(
+def test_evaluate_fixture_applies_aggregate_and_statistical_gates(
     tmp_path, monkeypatch, capsys
 ):
     _task, _manifest, _generation, store = install(monkeypatch, tmp_path)
     fixture_path = tmp_path / "fixture.json"
     fixture_path.write_text(json.dumps(benchmark_fixture()))
-    policy_path = tmp_path / "policy.json"
-    policy_path.write_text(
-        json.dumps(
-            {
-                "min_query_count": 2,
-                "min_repeated_runs": 1,
-                "min_seed_count": 1,
-            }
-        )
-    )
+    policy_path = aggregate_policy_file(tmp_path)
     assert (
         cli.main(
             [
@@ -210,9 +218,49 @@ def test_evaluate_fixture_generates_evidence_and_persists_report(
     assert error is None
     assert output["decision"] == "eligible"
     assert output["benchmark_generated"] is True
+    assert output["statistical_gate"]["decision"] == "passed"
+    assert output["statistical_gate"]["reason_codes"] == []
     assert output["paired_delta_intervals"]["recall_at_k"]["mean"] == 0.0
-    assert store.read(E).report_digest == output["report_digest"]
+    stored = store.read(E)
+    assert stored.report_digest == output["report_digest"]
+    assert stored.policy_id == "paired-promotion-v1"
     assert "source_path" not in json.dumps(output)
+    assert "raw_query" not in json.dumps(output)
+
+
+def test_statistical_practical_gain_can_block_direct_fixture(
+    tmp_path, monkeypatch, capsys
+):
+    install(monkeypatch, tmp_path)
+    fixture_path = tmp_path / "fixture.json"
+    fixture_path.write_text(json.dumps(benchmark_fixture()))
+    policy_path = aggregate_policy_file(tmp_path)
+    statistical_path = tmp_path / "statistical-policy.json"
+    statistical_path.write_text(json.dumps({"minimum_recall_gain": 0.1}))
+    assert (
+        cli.main(
+            [
+                "evaluate-fixture",
+                E,
+                "--fixture-file",
+                str(fixture_path),
+                "--policy-file",
+                str(policy_path),
+                "--statistical-policy-file",
+                str(statistical_path),
+            ]
+        )
+        == 1
+    )
+    output, error = parse(capsys)
+    assert error is None
+    assert output["decision"] == "blocked"
+    assert output["statistical_gate"]["decision"] == "blocked"
+    assert (
+        "paired_recall_at_k_practical_gain_failed"
+        in output["statistical_gate"]["reason_codes"]
+    )
+    assert "paired_recall_at_k_practical_gain_failed" in output["reason_codes"]
 
 
 def test_blocked_evaluation_returns_one_and_history_status_work(
