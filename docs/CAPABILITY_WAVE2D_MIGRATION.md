@@ -15,9 +15,10 @@ Wave 2D now implements:
 - a repository-owned paired benchmark producer;
 - aggregate quality/resource promotion gates;
 - paired confidence-interval non-inferiority and optional practical-effect gates;
-- append-only promotion-report history.
+- append-only promotion-report history;
+- append-only, hashes/counts-only cutover preflight identities.
 
-It still does **not** cut over a live document. No command replaces authoritative vector or sparse state, changes the durable current-generation pointer or performs rollback. Live cutover remains blocked until atomic publication, rollback, measured-resource and exact-head fault-injection contracts exist.
+It still does **not** cut over a live document. No command replaces authoritative vector or sparse state, changes the durable current-generation pointer, approves publication, marks a task committed or performs rollback. Live cutover remains blocked until protected rollback artifacts, atomic publication, measured-resource and exact-head fault-injection contracts exist.
 
 ## Planning and journal
 
@@ -166,12 +167,50 @@ python -m tools.migration_promotion_cli remove-task <task-id> \
 
 The equivalent wrapper is `scripts/migration_promotions.py`. Report cleanup is limited to failed or cancelled migration tasks.
 
+## Non-mutating cutover preflight
+
+`tools/migration_cutover_preflight.py` requires the current eligible promotion report to use `paired-promotion-v1`. It then binds that report and the exact shadow manifest to a newly captured authoritative source snapshot.
+
+The preflight verifies:
+
+- exact task/shadow/report owner, document, source sequence, source profile, target profile and validation identities;
+- unchanged active/restored source generation sequence, profile and content hash;
+- shadow content hash equal to the authoritative source content;
+- complete owner/document-scoped vector rollback rows;
+- vector rollback row count equal to the durable generation record;
+- complete sparse rollback fields;
+- sparse rollback generation/profile equal to the durable source generation.
+
+It hashes the complete current vector and sparse snapshots in memory, then stores only:
+
+- vector and sparse snapshot digests;
+- composite rollback identity digest;
+- composite target artifact digest;
+- source/target counts, sequence, profiles, content and report/shadow identities.
+
+`tools/migration_cutover_preflight_store.py` persists immutable preflights and an atomic per-task current pointer under `MIGRATION_CUTOVER_PREFLIGHT_ROOT`. It does not persist rollback text.
+
+Operator commands:
+
+```bash
+python -m tools.migration_cutover_preflight_cli plan <task-id>
+python -m tools.migration_cutover_preflight_cli status <task-id>
+python -m tools.migration_cutover_preflight_cli history <task-id> --limit 100
+python -m tools.migration_cutover_preflight_cli remove-task <task-id> \
+  --confirm-task-id <same-task-id>
+```
+
+The equivalent wrapper is `scripts/migration_cutover_preflights.py`. Every successful payload reports `mutation_performed: false`. Cleanup is limited to failed/cancelled tasks. There is no approval, execute, pointer-swap or rollback action.
+
+The preflight creates a rollback **identity**, not a restorable rollback artifact. Full rollback snapshots still require protected durable storage and explicit at-rest security/key-management policy before live cutover can exist.
+
 ## Configuration
 
 ```dotenv
 INDEX_MIGRATION_DB_PATH=data/index_migrations.sqlite3
 MIGRATION_SHADOW_ROOT=data/migration_shadows
 MIGRATION_PROMOTION_ROOT=data/migration_promotions
+MIGRATION_CUTOVER_PREFLIGHT_ROOT=data/migration_cutover_preflights
 ```
 
 Embedding profiles are governed by `EMBEDDING_PROFILE` and `EMBEDDING_PROFILES_JSON`. Adapter-required profiles also require explicit runtime adapter registration.
@@ -187,7 +226,7 @@ Migration task states remain:
 5. `failed`;
 6. `cancelled`.
 
-Promotion reports separately use `eligible` or `blocked`. An eligible report is evidence for a future cutover precondition; it is not authorization and performs no mutation.
+Promotion reports separately use `eligible` or `blocked`. A cutover preflight separately proves that one eligible paired report, one shadow and one current rollback identity aligned at one moment. Neither an eligible report nor a preflight is authorization, reservation or mutation.
 
 ## Focused verification
 
@@ -208,22 +247,27 @@ Committed contracts cover:
 - paired lower-bound non-inferiority and practical-gain gates;
 - deterministic composite digests;
 - append-only report history and atomic current pointer;
-- direct in-process fixture evaluation and privacy-safe outputs.
+- direct in-process fixture evaluation and privacy-safe outputs;
+- exact rollback/target preflight identities;
+- complete vector/sparse snapshot hashing and source scope/count agreement;
+- append-only preflight history, tamper/path defenses and explicit non-mutation output.
 
-The constrained local promotion/benchmark/statistical harness passed **42 tests**. Earlier focused shadow, adapter and lifecycle suites also passed in their isolated harnesses. This is not the complete exact-head repository matrix.
+The constrained local promotion/benchmark/statistical harness passed **42 tests**. The cutover-preflight harness passed **15 tests**. Earlier focused shadow, adapter and lifecycle suites also passed in their isolated harnesses. These are not the complete exact-head repository matrix.
 
 ## Remaining Wave 2D work
 
 - Execute governed fixtures against the real current and shadow retrieval stacks rather than consuming already collected ranked identifiers.
 - Measure wall-clock latency, process/device memory, artifact storage and provider billing where applicable.
 - Add reviewed bootstrap/permutation procedures and multiple-comparison controls where scientifically appropriate.
+- Add a protected durable rollback-artifact store containing complete privacy-finalized vector and sparse snapshots.
+- Define explicit encryption/key-management, retention and secure-deletion policy for rollback text.
 - Implement an atomic vector+sparse+generation publication with no mixed-generation window.
-- Persist exact rollback references and verify rollback before releasing old state.
+- Keep exact rollback references, validate rollback and retain old state until verification passes.
 - Add cutover/rollback leases, idempotency and crash recovery.
-- Add bounded shadow/report retention and compaction.
+- Add bounded shadow/report/preflight/rollback retention and compaction.
 - Add pause/resume/cancel semantics for active workers.
 - Add specialized governed adapters for adapter-required profiles.
-- Inject faults before and after every build, report, vector, sparse, pointer and rollback transition.
+- Inject faults before and after every build, report, preflight, vector, sparse, pointer and rollback transition.
 - Run clean exact-head Linux, Windows and container verification.
 
 ## Verification boundary
