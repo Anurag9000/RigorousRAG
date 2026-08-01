@@ -123,8 +123,51 @@ This is the authoritative capability-expansion ledger for `main`. A checked impl
 - [ ] Explicit per-document/source caps.
 - [ ] Date, MIME, field, section and provenance filters.
 - [ ] Multi-stage reranker cascades with latency/cost budgets.
-- [ ] Profile migration, shadow reindex and atomic cutover.
 - [ ] Dense/sparse/hybrid comparative benchmark reports.
+
+## Wave 2D — profile migration control plane
+
+### Implemented
+
+- [x] Profile-drift inventory from durable current generations.
+- [x] Retained-source eligibility classification without path disclosure.
+- [x] Deterministic migration task IDs.
+- [x] Validated migration candidate and task schemas.
+- [x] Durable SQLite migration journal with path/database identity checks.
+- [x] Idempotent task seeding.
+- [x] Expiring worker leases and renewal.
+- [x] Retry ceilings and generic failure types.
+- [x] Validation digests required before committed state.
+- [x] Expired running and validated task recovery contracts.
+- [x] Planned/failed cancellation only.
+- [x] Owner verification before operator cancellation.
+- [x] Inventory, seed, status and cancel CLI commands.
+- [x] No execution or cutover command before shadow validation exists.
+
+### Tests/contracts committed
+
+- real embedding-profile alias use;
+- profile-drift reason classification;
+- private-path absence;
+- stable task IDs;
+- journal seed/claim/renew/validate/commit/fail/cancel behavior;
+- lease-expiry recovery;
+- retry ceilings;
+- database identity replacement;
+- cross-owner cancellation refusal before mutation;
+- generic operator error output.
+
+### Still open in Wave 2D
+
+- [ ] Shadow vector and sparse stores isolated by task.
+- [ ] Retained-source execution through the privacy-finalized pipeline.
+- [ ] Target-profile encoder adapter construction.
+- [ ] Shadow quality, provenance, count and resource validation.
+- [ ] Durable shadow artifact identity.
+- [ ] Atomic current-generation cutover and rollback references.
+- [ ] Bounded shadow retention and cleanup.
+- [ ] Crash/fault injection at every migration phase.
+- [ ] Active-worker pause/resume/cancel semantics.
 
 ## Verification status
 
@@ -135,7 +178,7 @@ The main-only exact-head workflow is configured for:
 - Compose validation and container build;
 - nine platform/Python release-lock jobs.
 
-The workflow now isolates vector, sparse, generation, job, document, upload, classic and telemetry state. A green result is not currently observable for the latest head, so release readiness is not claimed.
+The workflow isolates vector, sparse, generation, job, document, upload, classic and telemetry state. A green result is not currently observable for the latest head, so release readiness is not claimed.
 
 ## Permanent non-claims
 
