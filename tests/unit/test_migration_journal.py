@@ -125,6 +125,7 @@ def test_failed_and_expired_running_tasks_are_reclaimed_with_attempt_budget(tmp_
         owner_id="alice",
         worker_id="worker-1",
         lease_seconds=2,
+        max_attempts=2,
         now=8.0,
     )
     reclaimed = journal.claim(
