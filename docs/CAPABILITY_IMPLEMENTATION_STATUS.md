@@ -233,21 +233,30 @@ This is the authoritative capability-expansion ledger for `main`. A checked impl
 - [x] Provider-response SHA-256 digest without retaining model-authored evidence.
 - [x] Generic fallback reasons without provider-detail disclosure.
 - [x] Deterministic token/entity/time/redundancy/parallelism/depth quality diagnostics.
+- [x] Hard global estimated-cost ceiling across all uploaded-document hops.
+- [x] Minimum viable attempt reservation and impossible-budget refusal before retrieval.
+- [x] DAG-aware weighted remainder allocation, per-hop caps and unused-budget accounting.
+- [x] Public result payload with plan, quality, budget, traces, joins and citation lineage.
+- [x] Unicode answer normalization, answer exact match and token F1.
+- [x] Document and support precision, recall and F1.
+- [x] Complete support-path, hop-coverage and citation-lineage validity metrics.
+- [x] Abstention-aware macro aggregation and explicitly heuristic answer-support score.
 
 ### Focused verification evidence
 
-- 18 focused decomposition, executor, public-tool and model-boundary tests passed locally.
-- Python compilation passed for the four new modules and focused tests.
+- 30 focused decomposition, model-boundary, budget, executor, public-tool and evaluation tests passed locally.
+- Python compilation passed for the six new modules and focused tests.
 - Ruff was unavailable in the constrained local environment.
 
 ### Still open in Wave 4
 
-- [ ] Learned plan ranking and plan-quality scoring.
+- [ ] Learned plan ranking and benchmark-calibrated plan selection.
 - [ ] Entity resolution and normalized temporal ranges.
 - [ ] Heterogeneous uploaded/web/scholarly multi-hop execution.
-- [ ] Global backend/latency/cost allocation across hops.
+- [ ] Global backend, latency and monetary-cost allocation across heterogeneous hops.
 - [ ] HotpotQA, 2WikiMultiHopQA, MuSiQue and scientific multi-document adapters.
-- [ ] Decomposition, hop-recall, path-support, answer-support and citation metrics.
+- [ ] Semantic claim-support and entailment metrics per hop and final answer.
+- [ ] Multi-hop ablation reports and historical regression thresholds.
 - [ ] Full agent/API/browser registration and integration tests.
 
 ## Verification status
@@ -268,6 +277,7 @@ The repository currently has only `main`, and the historical pull requests are c
 - Storage-generation alignment is provenance, not truth.
 - A decomposition graph or quality score is not proof that the question was decomposed optimally.
 - Cross-hop evidence grouping is not proof of a shared claim.
+- The answer-support score is token/support recall multiplication, not semantic entailment.
 - Learned rerankers may encode bias and require benchmark validation.
 - Regex masking is not certified de-identification.
 - SQLite/process-local transactions are not distributed exactly-once infrastructure.
