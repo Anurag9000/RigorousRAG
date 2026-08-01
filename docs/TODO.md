@@ -118,8 +118,10 @@ This backlog is ordered by dependency and risk. Checked items have committed imp
 - [x] Per-hop source/document/page lineage and contained failures.
 - [x] Public adaptive uploaded-document multi-hop tool and lineage payload.
 - [x] Abstention when terminal hops provide no evidence.
-- [ ] Add strict-schema model-assisted decomposition with deterministic fallback.
-- [ ] Add learned decomposition selection and plan-quality scoring.
+- [x] Strict-schema model-assisted decomposition with deterministic fallback.
+- [x] Provider-response digesting without retaining model-authored evidence.
+- [x] Deterministic token/entity/time/redundancy/parallelism/depth plan-quality diagnostics.
+- [ ] Add learned decomposition selection and plan-quality ranking.
 - [ ] Add entity resolution and normalized temporal ranges.
 - [ ] Add uploaded/web/scholarly heterogeneous multi-hop routing.
 - [ ] Add global cost allocation across hops and retrieval backends.
