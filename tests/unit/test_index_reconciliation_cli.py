@@ -69,10 +69,13 @@ def test_plan_is_deterministic_and_reports_truncation(monkeypatch, capsys):
     )
 
 
-def test_repair_requires_exact_confirmation_before_mutation(monkeypatch, capsys):
+def test_repair_forwards_exact_confirmation_to_narrow_helper(monkeypatch, capsys):
     coordinator = install(
         monkeypatch,
-        [report(deleted_but_present=("doc-1",))],
+        [
+            report(deleted_but_present=("doc-1",)),
+            report(deleted_but_present=()),
+        ],
     )
     calls = []
     monkeypatch.setattr(
@@ -86,11 +89,14 @@ def test_repair_requires_exact_confirmation_before_mutation(monkeypatch, capsys)
             "--owner-id",
             "alice",
             "--confirmation",
-            "wrong",
+            "DELETE_DELETED_GENERATION_RESIDUE",
         ]
     ) == 0
     assert calls[0][0][0] is coordinator
-    assert calls[0][1]["confirmation"] == "wrong"
+    assert calls[0][1]["confirmation"] == (
+        "DELETE_DELETED_GENERATION_RESIDUE"
+    )
+    assert json.loads(capsys.readouterr().out)["repaired"] == ["doc-1"]
 
 
 def test_real_confirmation_failure_is_generic_and_does_not_leak(monkeypatch, capsys):
@@ -110,7 +116,7 @@ def test_real_confirmation_failure_is_generic_and_does_not_leak(monkeypatch, cap
     assert captured.out == ""
 
 
-def test_successful_repair_emits_after_state(monkeypatch, capsys):
+def test_successful_repair_emits_clean_after_state(monkeypatch, capsys):
     coordinator = install(
         monkeypatch,
         [
@@ -137,7 +143,7 @@ def test_successful_repair_emits_after_state(monkeypatch, capsys):
     ) == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["repaired"] == ["doc-1"]
-    assert payload["remaining"]["clean"] is False
+    assert payload["remaining"]["clean"] is True
     assert calls[0][0] is coordinator
 
 
