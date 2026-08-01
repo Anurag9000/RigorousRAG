@@ -228,16 +228,20 @@ This is the authoritative capability-expansion ledger for `main`. A checked impl
 - [x] Public adaptive uploaded-document multi-hop tool.
 - [x] Citation and lineage separation in serialized output.
 - [x] Terminal-evidence abstention.
+- [x] Strict closed-schema parsing of model-proposed decomposition DAGs.
+- [x] One bounded model-planning call with deterministic fallback.
+- [x] Provider-response SHA-256 digest without retaining model-authored evidence.
+- [x] Generic fallback reasons without provider-detail disclosure.
+- [x] Deterministic token/entity/time/redundancy/parallelism/depth quality diagnostics.
 
 ### Focused verification evidence
 
-- 12 focused decomposition, executor and public-tool tests passed locally.
-- Python compilation passed for the three new modules and focused tests.
+- 18 focused decomposition, executor, public-tool and model-boundary tests passed locally.
+- Python compilation passed for the four new modules and focused tests.
 - Ruff was unavailable in the constrained local environment.
 
 ### Still open in Wave 4
 
-- [ ] Strict-schema model-assisted decomposition with deterministic fallback.
 - [ ] Learned plan ranking and plan-quality scoring.
 - [ ] Entity resolution and normalized temporal ranges.
 - [ ] Heterogeneous uploaded/web/scholarly multi-hop execution.
@@ -262,7 +266,7 @@ The repository currently has only `main`, and the historical pull requests are c
 - Retrieval rank is not proof of factual correctness.
 - Citation presence is not proof of entailment.
 - Storage-generation alignment is provenance, not truth.
-- A decomposition graph is not proof that the question was decomposed optimally.
+- A decomposition graph or quality score is not proof that the question was decomposed optimally.
 - Cross-hop evidence grouping is not proof of a shared claim.
 - Learned rerankers may encode bias and require benchmark validation.
 - Regex masking is not certified de-identification.
