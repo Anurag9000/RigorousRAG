@@ -7,7 +7,7 @@ from typing import Any
 
 from tools.embedding_registry import resolve_embedding_profile
 from tools.generation_store import GenerationStore
-from tools.migration_types import MigrationCandidate, exact_integer
+from tools.migration_types import MigrationCandidate, exact_integer, identifier
 from tools.security import normalize_owner_id
 
 _MAX_INVENTORY = 10_000
@@ -39,6 +39,7 @@ def inventory_profile_migrations(
     owner = normalize_owner_id(owner_id)
     count = exact_integer(limit, "limit", 1, _MAX_INVENTORY)
     target = resolve_embedding_profile(target_profile)
+    target_name = identifier(getattr(target, "alias", None), "target profile alias")
     records = generations.list_current(owner_id=owner, limit=count)
     candidates: list[MigrationCandidate] = []
     for record in records:
@@ -74,7 +75,7 @@ def inventory_profile_migrations(
                 doc_id=record.doc_id,
                 source_sequence=record.sequence,
                 source_profile_fingerprint=record.profile_fingerprint,
-                target_profile_name=target.name,
+                target_profile_name=target_name,
                 target_profile_fingerprint=target.fingerprint,
                 retained_source=retained,
                 eligible=eligible,
