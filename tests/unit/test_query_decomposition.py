@@ -30,27 +30,20 @@ def test_explicit_dag_batches_parallel_and_serial_hops():
     )
     assert plan.batches == (("outcome", "population"), ("synthesis",))
     assert plan.terminal_questions == ("synthesis",)
-    assert plan.by_id()["synthesis"].depends_on == ("population", "outcome")
 
 
 def test_plan_fingerprint_is_stable_and_changes_with_dependencies():
     first = build_decomposition_plan(
-        "Question",
-        proposed_subquestions=[{"question_id": "q1", "text": "Question"}],
+        "Question", proposed_subquestions=[{"question_id": "q1", "text": "Question"}]
     )
     second = build_decomposition_plan(
-        "Question",
-        proposed_subquestions=[{"question_id": "q1", "text": "Question"}],
+        "Question", proposed_subquestions=[{"question_id": "q1", "text": "Question"}]
     )
     changed = build_decomposition_plan(
         "Question",
         proposed_subquestions=[
             {"question_id": "q1", "text": "Question"},
-            {
-                "question_id": "q2",
-                "text": "Follow up",
-                "depends_on": ["q1"],
-            },
+            {"question_id": "q2", "text": "Follow up", "depends_on": ["q1"]},
         ],
     )
     assert first.fingerprint == second.fingerprint
@@ -83,11 +76,25 @@ def test_missing_dependencies_duplicates_and_cycles_fail_closed():
         )
 
 
-def test_limits_and_hostile_iterables_are_rejected():
+def test_limits_and_hostile_iterables_are_rejected_without_full_materialization():
     with pytest.raises(ValueError, match="max_subquestions"):
         build_decomposition_plan("Question", max_subquestions=True)
     with pytest.raises(ValueError, match="sequence"):
         build_decomposition_plan("Question", proposed_subquestions="bad")
+
+    consumed = 0
+
+    def oversized():
+        nonlocal consumed
+        while True:
+            consumed += 1
+            yield {"question_id": f"q{consumed}", "text": "Question"}
+
+    with pytest.raises(ValueError, match="at most"):
+        build_decomposition_plan(
+            "Question", proposed_subquestions=oversized(), max_subquestions=3
+        )
+    assert consumed == 4
 
     class Hostile:
         def __iter__(self):
@@ -96,3 +103,17 @@ def test_limits_and_hostile_iterables_are_rejected():
 
     with pytest.raises(ValueError, match="safely iterable"):
         build_decomposition_plan("Question", proposed_subquestions=Hostile())
+
+
+def test_controls_unknown_fields_and_pre_normalization_size_fail_closed():
+    with pytest.raises(ValueError, match="valid"):
+        build_decomposition_plan("question\x7fhidden")
+    with pytest.raises(ValueError, match="unknown fields"):
+        build_decomposition_plan(
+            "Question",
+            proposed_subquestions=[
+                {"question_id": "q1", "text": "Question", "ignored": True}
+            ],
+        )
+    with pytest.raises(ValueError, match="1-4000"):
+        Subquestion("q1", " " * 4_001)

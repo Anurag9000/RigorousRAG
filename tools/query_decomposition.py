@@ -1,13 +1,9 @@
-"""Bounded deterministic query decomposition and dependency planning.
-
-The module deliberately separates planning from retrieval. A decomposition plan
-contains only validated user questions, explicit dependency edges, and extracted
-constraints. It never carries citations or treats generated text as evidence.
-"""
+"""Bounded deterministic query decomposition and dependency planning."""
 
 from __future__ import annotations
 
 import hashlib
+import itertools
 import json
 import operator
 import re
@@ -21,6 +17,10 @@ _MAX_SUBQUESTIONS = 12
 _MAX_TEXT_CHARS = 4_000
 _MAX_ENTITIES = 20
 _MAX_CONSTRAINTS = 20
+_NODE_KEYS = {
+    "question_id", "text", "depends_on", "entities",
+    "temporal_constraints", "relation",
+}
 _TOKEN_RE = re.compile(r"[A-Za-z0-9]+(?:[._:/+-][A-Za-z0-9]+)*")
 _YEAR_RE = re.compile(r"\b(?:18|19|20|21)\d{2}\b")
 _QUOTED_RE = re.compile(r"[\"']([^\"']{2,120})[\"']")
@@ -32,36 +32,36 @@ _SPLIT_RE = re.compile(
     flags=re.IGNORECASE,
 )
 _COMPARISON_RE = re.compile(
-    r"\b(?:compare|contrast)\s+(.{1,300}?)\s+(?:and|with|versus|vs\.?|against)\s+(.{1,300}?)(?:[?.!]|$)",
+    r"\b(?:compare|contrast)\s+(.{1,300}?)\s+"
+    r"(?:and|with|versus|vs\.?|against)\s+(.{1,300}?)(?:[?.!]|$)",
     flags=re.IGNORECASE,
 )
 _VERSUS_RE = re.compile(
-    r"\b(.{1,200}?)\s+(?:versus|vs\.?|against)\s+(.{1,200}?)(?:[?.!]|$)",
+    r"\b(.{1,200}?)\s+(?:versus|vs\.?|against)\s+"
+    r"(.{1,200}?)(?:[?.!]|$)",
     flags=re.IGNORECASE,
 )
 _TEMPORAL_WORDS = {
-    "before",
-    "after",
-    "during",
-    "between",
-    "since",
-    "until",
-    "latest",
-    "recent",
-    "historical",
-    "timeline",
+    "before", "after", "during", "between", "since", "until",
+    "latest", "recent", "historical", "timeline",
 }
 
 
 def _contains_control(value: str) -> bool:
-    return any(ord(character) < 32 and character not in "\t\r\n" for character in value)
+    return any(
+        (ord(character) < 32 and character not in "\t\r\n")
+        or ord(character) == 127
+        for character in value
+    )
 
 
 def _bounded_text(value: Any, label: str, maximum: int = _MAX_TEXT_CHARS) -> str:
     if not isinstance(value, str):
         raise ValueError(f"{label} must be a string.")
+    if not value or len(value) > maximum or _contains_control(value):
+        raise ValueError(f"{label} must contain 1-{maximum} valid characters.")
     rendered = " ".join(value.split())
-    if not rendered or len(rendered) > maximum or _contains_control(rendered):
+    if not rendered:
         raise ValueError(f"{label} must contain 1-{maximum} valid characters.")
     return rendered
 
@@ -78,6 +78,18 @@ def _integer(value: Any, label: str, minimum: int, maximum: int) -> int:
     return parsed
 
 
+def _bounded_items(values: Any, label: str, maximum: int) -> list[Any]:
+    if isinstance(values, (str, bytes, bytearray)):
+        raise ValueError(f"{label} must be a sequence.")
+    try:
+        rows = list(itertools.islice(iter(values), maximum + 1))
+    except Exception as exc:
+        raise ValueError(f"{label} must be safely iterable.") from exc
+    if len(rows) > maximum:
+        raise ValueError(f"{label} may contain at most {maximum} values.")
+    return rows
+
+
 def _bounded_strings(
     values: Any,
     *,
@@ -87,17 +99,10 @@ def _bounded_strings(
 ) -> tuple[str, ...]:
     if values is None:
         return ()
-    if isinstance(values, (str, bytes, bytearray)):
-        raise ValueError(f"{label} must be a sequence of strings.")
-    try:
-        raw = list(values)
-    except Exception as exc:
-        raise ValueError(f"{label} must be safely iterable.") from exc
-    if len(raw) > maximum_items:
-        raise ValueError(f"{label} may contain at most {maximum_items} values.")
+    rows = _bounded_items(values, label, maximum_items)
     result: list[str] = []
     seen: set[str] = set()
-    for item in raw:
+    for item in rows:
         text = _bounded_text(item, label, maximum_chars)
         key = text.casefold()
         if key not in seen:
@@ -108,8 +113,6 @@ def _bounded_strings(
 
 @dataclass(frozen=True)
 class Subquestion:
-    """One validated node in a decomposition dependency graph."""
-
     question_id: str
     text: str
     depends_on: tuple[str, ...] = ()
@@ -160,8 +163,6 @@ class Subquestion:
 
 @dataclass(frozen=True)
 class DecompositionPlan:
-    """A stable acyclic decomposition plan with bounded parallel stages."""
-
     query: str
     subquestions: tuple[Subquestion, ...]
     batches: tuple[tuple[str, ...], ...]
@@ -174,15 +175,14 @@ class DecompositionPlan:
 
 def _extract_entities(text: str) -> tuple[str, ...]:
     values: list[str] = []
-    for match in _QUOTED_RE.findall(text):
+    seen: set[str] = set()
+    for match in (*_QUOTED_RE.findall(text), *_CAPITALIZED_RE.findall(text)):
         candidate = " ".join(match.split())
-        if candidate and candidate.casefold() not in {item.casefold() for item in values}:
-            values.append(candidate)
-    for match in _CAPITALIZED_RE.findall(text):
-        candidate = " ".join(match.split())
-        if candidate.lower() in {"what", "which", "when", "where", "why", "how", "compare"}:
+        key = candidate.casefold()
+        if key in {"what", "which", "when", "where", "why", "how", "compare"}:
             continue
-        if candidate and candidate.casefold() not in {item.casefold() for item in values}:
+        if candidate and key not in seen:
+            seen.add(key)
             values.append(candidate)
         if len(values) >= _MAX_ENTITIES:
             break
@@ -202,7 +202,7 @@ def _relation(text: str) -> str:
         return "compare"
     if any(value in lowered for value in ("before", "after", "timeline", "trend", "latest")):
         return "temporal"
-    if lowered.startswith("why") or lowered.startswith("how") or "explain" in lowered:
+    if lowered.startswith(("why", "how")) or "explain" in lowered:
         return "explain"
     if any(value in lowered for value in ("combine", "synthesize", "overall", "based on")):
         return "synthesize"
@@ -211,49 +211,40 @@ def _relation(text: str) -> str:
 
 def _heuristic_nodes(query: str, maximum: int) -> tuple[Subquestion, ...]:
     comparison = _COMPARISON_RE.search(query) or _VERSUS_RE.search(query)
-    if comparison:
+    if comparison and maximum >= 3:
         left = _bounded_text(comparison.group(1), "comparison entity", 300).strip(" ,")
         right = _bounded_text(comparison.group(2), "comparison entity", 300).strip(" ,")
         first = Subquestion(
-            "q1",
-            f"Find evidence about {left} relevant to: {query}",
+            "q1", f"Find evidence about {left} relevant to: {query}",
             entities=_extract_entities(left),
             temporal_constraints=_extract_temporal_constraints(query),
         )
         second = Subquestion(
-            "q2",
-            f"Find evidence about {right} relevant to: {query}",
+            "q2", f"Find evidence about {right} relevant to: {query}",
             entities=_extract_entities(right),
             temporal_constraints=_extract_temporal_constraints(query),
         )
         final = Subquestion(
-            "q3",
-            query,
-            depends_on=("q1", "q2"),
+            "q3", query, depends_on=("q1", "q2"),
             entities=tuple(dict.fromkeys((*first.entities, *second.entities))),
             temporal_constraints=_extract_temporal_constraints(query),
             relation="compare",
         )
-        return (first, second, final)[:maximum]
+        return first, second, final
 
     clauses = [value for value in _SPLIT_RE.split(query) if value]
     if len(clauses) <= 1:
         return (
             Subquestion(
-                "q1",
-                query,
-                entities=_extract_entities(query),
+                "q1", query, entities=_extract_entities(query),
                 temporal_constraints=_extract_temporal_constraints(query),
                 relation=_relation(query),
             ),
         )
-
     clauses = clauses[: max(1, maximum - 1)]
     nodes = [
         Subquestion(
-            f"q{index}",
-            clause,
-            entities=_extract_entities(clause),
+            f"q{index}", clause, entities=_extract_entities(clause),
             temporal_constraints=_extract_temporal_constraints(clause),
             relation=_relation(clause),
         )
@@ -262,8 +253,7 @@ def _heuristic_nodes(query: str, maximum: int) -> tuple[Subquestion, ...]:
     if len(nodes) < maximum:
         nodes.append(
             Subquestion(
-                f"q{len(nodes) + 1}",
-                query,
+                f"q{len(nodes) + 1}", query,
                 depends_on=tuple(item.question_id for item in nodes),
                 entities=_extract_entities(query),
                 temporal_constraints=_extract_temporal_constraints(query),
@@ -275,22 +265,21 @@ def _heuristic_nodes(query: str, maximum: int) -> tuple[Subquestion, ...]:
 
 def _node_from_mapping(value: Mapping[str, Any], index: int) -> Subquestion:
     try:
-        text = value.get("text")
-        identifier = value.get("question_id", f"q{index}")
-        dependencies = value.get("depends_on", ())
-        entities = value.get("entities", ())
-        temporal = value.get("temporal_constraints", ())
-        relation = value.get("relation", "lookup")
+        unknown = set(value) - _NODE_KEYS
+        if unknown:
+            raise ValueError(f"subquestion contains unknown fields: {sorted(unknown)!r}.")
+        return Subquestion(
+            value.get("question_id", f"q{index}"),
+            value.get("text"),
+            depends_on=value.get("depends_on", ()),
+            entities=value.get("entities", ()),
+            temporal_constraints=value.get("temporal_constraints", ()),
+            relation=value.get("relation", "lookup"),
+        )
+    except ValueError:
+        raise
     except Exception as exc:
         raise ValueError("subquestion mappings must be safely readable.") from exc
-    return Subquestion(
-        identifier,
-        text,
-        depends_on=dependencies,
-        entities=entities,
-        temporal_constraints=temporal,
-        relation=relation,
-    )
 
 
 def _validate_and_batch(
@@ -301,18 +290,14 @@ def _validate_and_batch(
         if node.question_id in by_id:
             raise ValueError("question_id values must be unique.")
         by_id[node.question_id] = node
-    for node in nodes:
-        missing = [dependency for dependency in node.depends_on if dependency not in by_id]
-        if missing:
-            raise ValueError("every dependency must reference a declared subquestion.")
-
-    indegree = {identifier: 0 for identifier in by_id}
     children: dict[str, list[str]] = defaultdict(list)
+    indegree = {identifier: 0 for identifier in by_id}
     for node in nodes:
         for dependency in node.depends_on:
+            if dependency not in by_id:
+                raise ValueError("every dependency must reference a declared subquestion.")
             indegree[node.question_id] += 1
             children[dependency].append(node.question_id)
-
     ready = deque(sorted(identifier for identifier, degree in indegree.items() if degree == 0))
     batches: list[tuple[str, ...]] = []
     visited = 0
@@ -340,21 +325,18 @@ def build_decomposition_plan(
     proposed_subquestions: Iterable[Subquestion | Mapping[str, Any]] | None = None,
     max_subquestions: int = 8,
 ) -> DecompositionPlan:
-    """Build a deterministic bounded DAG from explicit or heuristic subquestions."""
-
     cleaned = _bounded_text(query, "query", _MAX_QUERY_CHARS)
     maximum = _integer(max_subquestions, "max_subquestions", 1, _MAX_SUBQUESTIONS)
     if proposed_subquestions is None:
         nodes = _heuristic_nodes(cleaned, maximum)
     else:
-        if isinstance(proposed_subquestions, (str, bytes, bytearray)):
-            raise ValueError("proposed_subquestions must be a sequence.")
-        try:
-            raw = list(proposed_subquestions)
-        except Exception as exc:
-            raise ValueError("proposed_subquestions must be safely iterable.") from exc
-        if not raw or len(raw) > maximum:
-            raise ValueError(f"proposed_subquestions must contain 1-{maximum} values.")
+        raw = _bounded_items(
+            proposed_subquestions, "proposed_subquestions", maximum
+        )
+        if not raw:
+            raise ValueError(
+                f"proposed_subquestions must contain 1-{maximum} values."
+            )
         converted: list[Subquestion] = []
         for index, value in enumerate(raw, start=1):
             if isinstance(value, Subquestion):
@@ -362,9 +344,10 @@ def build_decomposition_plan(
             elif isinstance(value, Mapping):
                 converted.append(_node_from_mapping(value, index))
             else:
-                raise ValueError("subquestions must be Subquestion values or mappings.")
+                raise ValueError(
+                    "subquestions must be Subquestion values or mappings."
+                )
         nodes = tuple(converted)
-
     batches, terminals = _validate_and_batch(nodes)
     payload = {
         "query": cleaned,
@@ -386,8 +369,4 @@ def build_decomposition_plan(
     return DecompositionPlan(cleaned, nodes, batches, terminals, fingerprint)
 
 
-__all__ = [
-    "DecompositionPlan",
-    "Subquestion",
-    "build_decomposition_plan",
-]
+__all__ = ["DecompositionPlan", "Subquestion", "build_decomposition_plan"]
