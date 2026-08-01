@@ -62,15 +62,13 @@ def _root(value: str | os.PathLike[str]) -> Path:
     return absolute
 
 
-def _canonical(value: Any, *, depth: int = 0, counter: list[int] | None = None) -> Any:
+def _canonical(value: Any, *, depth: int, counter: list[int]) -> Any:
     if depth > _MAX_DEPTH:
         raise ValueError("shadow JSON exceeds the nesting limit.")
-    if counter is None:
-        counter = [0]
     counter[0] += 1
     if counter[0] > _MAX_ITEMS:
         raise ValueError("shadow JSON exceeds the item limit.")
-    if value is None or isinstance(value, bool) or isinstance(value, int):
+    if value is None or isinstance(value, (bool, int)):
         return value
     if isinstance(value, float):
         if not math.isfinite(value):
@@ -90,10 +88,14 @@ def _canonical(value: Any, *, depth: int = 0, counter: list[int] | None = None) 
             key = identifier(raw_key, "shadow JSON key", 500)
             if key in result:
                 raise ValueError("shadow JSON contains a duplicate key.")
-            result[key] = _canonical(item, depth=depth + 1, counter=counter)
+            result[key] = _canonical(
+                item,
+                depth=depth + 1,
+                counter=counter,
+            )
         return result
-    if isinstance(value, (str, bytes, bytearray)):
-        raise ValueError("shadow JSON sequence is invalid.")
+    if isinstance(value, (bytes, bytearray)):
+        raise ValueError("shadow JSON bytes are unsupported.")
     try:
         iterator = iter(value)
     except Exception as exc:
@@ -101,7 +103,13 @@ def _canonical(value: Any, *, depth: int = 0, counter: list[int] | None = None) 
     result_list: list[Any] = []
     try:
         for item in iterator:
-            result_list.append(_canonical(item, depth=depth + 1, counter=counter))
+            result_list.append(
+                _canonical(
+                    item,
+                    depth=depth + 1,
+                    counter=counter,
+                )
+            )
     except ValueError:
         raise
     except Exception as exc:
@@ -109,17 +117,21 @@ def _canonical(value: Any, *, depth: int = 0, counter: list[int] | None = None) 
     return result_list
 
 
-def _rows(values: Iterable[Mapping[str, Any]], label: str) -> tuple[dict[str, Any], ...]:
+def _rows(
+    values: Iterable[Mapping[str, Any]],
+    label: str,
+) -> tuple[dict[str, Any], ...]:
     if isinstance(values, (str, bytes, bytearray)):
         raise ValueError(f"{label} must be an iterable of mappings.")
     rows: list[dict[str, Any]] = []
+    counter = [0]
     try:
         for value in values:
             if len(rows) >= _MAX_ROWS:
                 raise ValueError(f"{label} exceeds the row limit.")
             if not isinstance(value, Mapping):
                 raise ValueError(f"every {label} row must be a mapping.")
-            normalized = _canonical(value)
+            normalized = _canonical(value, depth=0, counter=counter)
             if not isinstance(normalized, dict):
                 raise ValueError(f"every {label} row must normalize to an object.")
             rows.append(normalized)
@@ -149,10 +161,39 @@ def _sha256(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
 
 
-def _fsync_directory(path: Path) -> None:
-    descriptor = os.open(path, os.O_RDONLY)
+def _pairs(values: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in values:
+        if key in result:
+            raise ValueError("duplicate JSON key")
+        result[key] = value
+    return result
+
+
+def _strict_loads(payload: bytes, label: str) -> Any:
     try:
-        os.fsync(descriptor)
+        return json.loads(
+            payload,
+            object_pairs_hook=_pairs,
+            parse_constant=lambda token: (_ for _ in ()).throw(ValueError(token)),
+        )
+    except (TypeError, ValueError, json.JSONDecodeError, RecursionError) as exc:
+        raise RuntimeError(f"{label} is invalid JSON.") from exc
+
+
+def _fsync_directory(path: Path) -> None:
+    try:
+        descriptor = os.open(path, os.O_RDONLY)
+    except OSError:
+        if os.name == "nt":
+            return
+        raise
+    try:
+        try:
+            os.fsync(descriptor)
+        except OSError:
+            if os.name != "nt":
+                raise
     finally:
         os.close(descriptor)
 
@@ -165,14 +206,26 @@ class ShadowBuild:
     sparse_rows: tuple[dict[str, Any], ...]
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "content_sha256", digest(self.content_sha256, "content_sha256"))
+        object.__setattr__(
+            self,
+            "content_sha256",
+            digest(self.content_sha256, "content_sha256"),
+        )
         object.__setattr__(
             self,
             "parser_fingerprint",
             digest(self.parser_fingerprint, "parser_fingerprint"),
         )
-        object.__setattr__(self, "vector_rows", _rows(self.vector_rows, "vector_rows"))
-        object.__setattr__(self, "sparse_rows", _rows(self.sparse_rows, "sparse_rows"))
+        object.__setattr__(
+            self,
+            "vector_rows",
+            _rows(self.vector_rows, "vector_rows"),
+        )
+        object.__setattr__(
+            self,
+            "sparse_rows",
+            _rows(self.sparse_rows, "sparse_rows"),
+        )
 
 
 @dataclass(frozen=True)
@@ -202,12 +255,20 @@ class ShadowArtifactManifest:
         object.__setattr__(
             self,
             "source_sequence",
-            exact_integer(self.source_sequence, "source_sequence", 1, 2**63 - 1),
+            exact_integer(
+                self.source_sequence,
+                "source_sequence",
+                1,
+                2**63 - 1,
+            ),
         )
         object.__setattr__(
             self,
             "source_profile_fingerprint",
-            digest(self.source_profile_fingerprint, "source_profile_fingerprint"),
+            digest(
+                self.source_profile_fingerprint,
+                "source_profile_fingerprint",
+            ),
         )
         object.__setattr__(
             self,
@@ -217,21 +278,66 @@ class ShadowArtifactManifest:
         object.__setattr__(
             self,
             "target_profile_fingerprint",
-            digest(self.target_profile_fingerprint, "target_profile_fingerprint"),
+            digest(
+                self.target_profile_fingerprint,
+                "target_profile_fingerprint",
+            ),
         )
-        object.__setattr__(self, "content_sha256", digest(self.content_sha256, "content_sha256"))
+        object.__setattr__(
+            self,
+            "content_sha256",
+            digest(self.content_sha256, "content_sha256"),
+        )
         object.__setattr__(
             self,
             "parser_fingerprint",
             digest(self.parser_fingerprint, "parser_fingerprint"),
         )
-        object.__setattr__(self, "vector_count", exact_integer(self.vector_count, "vector_count", 1, _MAX_ROWS))
-        object.__setattr__(self, "sparse_count", exact_integer(self.sparse_count, "sparse_count", 1, _MAX_ROWS))
-        object.__setattr__(self, "vector_sha256", digest(self.vector_sha256, "vector_sha256"))
-        object.__setattr__(self, "sparse_sha256", digest(self.sparse_sha256, "sparse_sha256"))
-        object.__setattr__(self, "vector_bytes", exact_integer(self.vector_bytes, "vector_bytes", 1, _MAX_FILE_BYTES))
-        object.__setattr__(self, "sparse_bytes", exact_integer(self.sparse_bytes, "sparse_bytes", 1, _MAX_FILE_BYTES))
-        object.__setattr__(self, "created_at", timestamp(self.created_at, "created_at"))
+        object.__setattr__(
+            self,
+            "vector_count",
+            exact_integer(self.vector_count, "vector_count", 1, _MAX_ROWS),
+        )
+        object.__setattr__(
+            self,
+            "sparse_count",
+            exact_integer(self.sparse_count, "sparse_count", 1, _MAX_ROWS),
+        )
+        object.__setattr__(
+            self,
+            "vector_sha256",
+            digest(self.vector_sha256, "vector_sha256"),
+        )
+        object.__setattr__(
+            self,
+            "sparse_sha256",
+            digest(self.sparse_sha256, "sparse_sha256"),
+        )
+        object.__setattr__(
+            self,
+            "vector_bytes",
+            exact_integer(
+                self.vector_bytes,
+                "vector_bytes",
+                1,
+                _MAX_FILE_BYTES,
+            ),
+        )
+        object.__setattr__(
+            self,
+            "sparse_bytes",
+            exact_integer(
+                self.sparse_bytes,
+                "sparse_bytes",
+                1,
+                _MAX_FILE_BYTES,
+            ),
+        )
+        object.__setattr__(
+            self,
+            "created_at",
+            timestamp(self.created_at, "created_at"),
+        )
         if self.schema_version != _SCHEMA_VERSION:
             raise ValueError("shadow artifact schema is unsupported.")
 
@@ -244,6 +350,27 @@ class ShadowArtifactManifest:
             allow_nan=False,
         ).encode("utf-8")
         return _sha256(payload)
+
+
+def _artifact_identity(manifest: ShadowArtifactManifest) -> tuple[Any, ...]:
+    return (
+        manifest.task_id,
+        manifest.owner_id,
+        manifest.doc_id,
+        manifest.source_sequence,
+        manifest.source_profile_fingerprint,
+        manifest.target_profile_name,
+        manifest.target_profile_fingerprint,
+        manifest.content_sha256,
+        manifest.parser_fingerprint,
+        manifest.vector_count,
+        manifest.sparse_count,
+        manifest.vector_sha256,
+        manifest.sparse_sha256,
+        manifest.vector_bytes,
+        manifest.sparse_bytes,
+        manifest.schema_version,
+    )
 
 
 class MigrationShadowStore:
@@ -325,8 +452,10 @@ class MigrationShadowStore:
             self._verify_root()
             if destination.exists():
                 existing = self.validate(manifest.task_id)
-                if existing.validation_digest != manifest.validation_digest:
-                    raise RuntimeError("shadow task already has different artifacts.")
+                if _artifact_identity(existing) != _artifact_identity(manifest):
+                    raise RuntimeError(
+                        "shadow task already has different artifacts."
+                    )
                 return existing
             staging = Path(
                 tempfile.mkdtemp(
@@ -362,11 +491,10 @@ class MigrationShadowStore:
             info = directory.lstat()
             if _redirecting(info) or not stat.S_ISDIR(info.st_mode):
                 raise RuntimeError("shadow task directory is invalid.")
-            manifest_payload = self._read_bounded(directory / "manifest.json")
-            try:
-                raw = json.loads(manifest_payload)
-            except (TypeError, ValueError, json.JSONDecodeError) as exc:
-                raise RuntimeError("shadow manifest is invalid JSON.") from exc
+            raw = _strict_loads(
+                self._read_bounded(directory / "manifest.json"),
+                "shadow manifest",
+            )
             if not isinstance(raw, dict):
                 raise RuntimeError("shadow manifest must be an object.")
             try:
@@ -374,18 +502,23 @@ class MigrationShadowStore:
             except (TypeError, ValueError) as exc:
                 raise RuntimeError("shadow manifest is invalid.") from exc
             if manifest.task_id != identifier(task_id, "task_id", 64):
-                raise RuntimeError("shadow manifest task identity does not match its directory.")
+                raise RuntimeError(
+                    "shadow manifest task identity does not match its directory."
+                )
             vector_payload = self._read_bounded(directory / "vectors.json")
             sparse_payload = self._read_bounded(directory / "sparse.json")
-            if len(vector_payload) != manifest.vector_bytes or _sha256(vector_payload) != manifest.vector_sha256:
+            if (
+                len(vector_payload) != manifest.vector_bytes
+                or _sha256(vector_payload) != manifest.vector_sha256
+            ):
                 raise RuntimeError("shadow vector artifact digest does not match.")
-            if len(sparse_payload) != manifest.sparse_bytes or _sha256(sparse_payload) != manifest.sparse_sha256:
+            if (
+                len(sparse_payload) != manifest.sparse_bytes
+                or _sha256(sparse_payload) != manifest.sparse_sha256
+            ):
                 raise RuntimeError("shadow sparse artifact digest does not match.")
-            try:
-                vectors = json.loads(vector_payload)
-                sparse = json.loads(sparse_payload)
-            except (TypeError, ValueError, json.JSONDecodeError) as exc:
-                raise RuntimeError("shadow artifact JSON is invalid.") from exc
+            vectors = _strict_loads(vector_payload, "shadow vector artifact")
+            sparse = _strict_loads(sparse_payload, "shadow sparse artifact")
             if not isinstance(vectors, list) or len(vectors) != manifest.vector_count:
                 raise RuntimeError("shadow vector count does not match.")
             if not isinstance(sparse, list) or len(sparse) != manifest.sparse_count:
