@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 import importlib.abc
 import importlib.machinery
 import sys
@@ -9,9 +10,23 @@ from types import ModuleType
 from typing import Any, Callable
 
 _MARKER = "_rigorousrag_lifecycle_import_hook"
-_TARGETS: dict[str, str] = {
-    "tools.authoritative_document_index": "install_authoritative_lifecycle_boundary",
-    "tools.rag": "install_rag_lifecycle_boundary",
+_TARGETS: dict[str, tuple[str, str]] = {
+    "tools.authoritative_document_index": (
+        "tools.lifecycle_boundary",
+        "install_authoritative_lifecycle_boundary",
+    ),
+    "tools.rag": (
+        "tools.lifecycle_boundary",
+        "install_rag_lifecycle_boundary",
+    ),
+    "tools.document_store": (
+        "tools.lifecycle_source_context",
+        "install_document_store_source_boundary",
+    ),
+    "tools.document_service": (
+        "tools.lifecycle_source_context",
+        "install_document_service_source_boundary",
+    ),
 }
 
 
@@ -20,9 +35,11 @@ class _LifecycleLoader(importlib.abc.Loader):
         self,
         wrapped: importlib.abc.Loader,
         installer_name: str,
+        installer_module: str = "tools.lifecycle_boundary",
     ) -> None:
         self._wrapped = wrapped
         self._installer_name = installer_name
+        self._installer_module = installer_module
 
     def create_module(self, spec: Any) -> ModuleType | None:
         create = getattr(self._wrapped, "create_module", None)
@@ -33,10 +50,9 @@ class _LifecycleLoader(importlib.abc.Loader):
         if not callable(execute):
             raise ImportError("lifecycle target loader cannot execute modules.")
         execute(module)
-        from tools import lifecycle_boundary
-
+        boundary = importlib.import_module(self._installer_module)
         installer: Callable[[ModuleType], None] | None = getattr(
-            lifecycle_boundary,
+            boundary,
             self._installer_name,
             None,
         )
@@ -55,15 +71,20 @@ class _LifecycleFinder(importlib.abc.MetaPathFinder):
         path: Any = None,
         target: ModuleType | None = None,
     ) -> Any:
-        installer_name = _TARGETS.get(fullname)
-        if installer_name is None:
+        target_definition = _TARGETS.get(fullname)
+        if target_definition is None:
             return None
+        installer_module, installer_name = target_definition
         spec = importlib.machinery.PathFinder.find_spec(fullname, path)
         if spec is None or spec.loader is None:
             return spec
         if isinstance(spec.loader, _LifecycleLoader):
             return spec
-        spec.loader = _LifecycleLoader(spec.loader, installer_name)
+        spec.loader = _LifecycleLoader(
+            spec.loader,
+            installer_name,
+            installer_module,
+        )
         return spec
 
 
