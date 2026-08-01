@@ -1,148 +1,81 @@
-# Capability Wave 2D — profile migration and isolated shadow validation
+# Capability Wave 2D — isolated profile migration and governed promotion
 
-Last updated: 2026-08-01
+Last updated: 2026-08-02
 
 ## Scope
 
-Wave 2D now implements inventory, immutable planning, a durable resumable task journal, target-profile retained-source execution, task-isolated vector/sparse shadow artifacts, and validation digests.
+Wave 2D now implements:
 
-It still does **not** cut over a live document. There is no command that mutates the authoritative current-generation pointer from a shadow artifact. Live cutover remains blocked until rollback, measured-quality, exact-head fault-injection and release gates are complete.
+- profile-drift inventory and immutable migration planning;
+- a durable leased migration-task journal;
+- target-profile retained-source reparse and privacy finalization;
+- explicit embedding-adapter governance;
+- task-isolated manifest-last vector/sparse shadow artifacts;
+- exact shadow structural and source-generation validation;
+- a repository-owned paired benchmark producer;
+- aggregate quality/resource promotion gates;
+- paired confidence-interval non-inferiority and optional practical-effect gates;
+- append-only promotion-report history.
 
-## Control-plane components
+It still does **not** cut over a live document. No command replaces authoritative vector or sparse state, changes the durable current-generation pointer or performs rollback. Live cutover remains blocked until atomic publication, rollback, measured-resource and exact-head fault-injection contracts exist.
 
-- `tools/migration_types.py`
-  - validated candidates and durable tasks;
-  - bounded identifiers, exact integers, SHA-256 fingerprints and finite timestamps;
-  - planned, running, validated, committed, failed and cancelled states.
-- `tools/migration_planner.py`
-  - compares current durable generations with a target embedding profile;
-  - consults retained-document capability without returning source paths;
-  - classifies ready, already-current, source-unavailable, deleted and registry-inspection-failed documents;
-  - derives deterministic task IDs from owner, document, source sequence and source/target fingerprints.
-- `tools/migration_journal.py`
-  - immutable SQLite task identity;
-  - idempotent seeding;
-  - bounded attempts;
-  - leases and renewal;
-  - validation digest before any future commit;
-  - generic failure types;
-  - planned/failed cancellation only;
-  - symlink/reparse and database-identity checks.
-- `tools/migration_runtime.py`
-  - path-keyed process-local journal factory.
-- `tools/index_migration_cli.py`
-  - inventory, seed, status and owner-verified cancel;
-  - bounded JSON without retained paths.
+## Planning and journal
+
+The migration control plane consists of:
+
+- `tools/migration_types.py` — validated candidates/tasks and bounded value types;
+- `tools/migration_planner.py` — profile-drift inventory and deterministic task IDs;
+- `tools/migration_journal.py` — idempotent SQLite tasks, leases, retries, validation digests and generic failures;
+- `tools/migration_runtime.py` — path-scoped journal factory;
+- `tools/index_migration_cli.py` and `scripts/index_migrations.py` — inventory, seed, status and owner-verified cancellation.
+
+Task identities bind owner, document, source-generation sequence and source/target profile fingerprints. Retained-source paths are not stored in the journal or returned by the operator surface.
 
 ## Explicit target-profile encoder boundary
 
 `tools/embedding_adapters.py` defines the migration encoder contract.
 
-### Standard SentenceTransformer-compatible profiles
+Profiles with `requires_adapter=false` may use the bounded lazy SentenceTransformer-compatible adapter. It applies passage prefixes, honors declared normalization, checks output row count and profile dimensions, and rejects booleans, NaN and infinity.
 
-Profiles whose registry definition has `requires_adapter=false` use a bounded lazy `SentenceTransformerEncoder`:
+Instructor, SPECTER2, BGE-M3 and any other `requires_adapter=true` profile fail closed until an explicit factory is registered for the canonical profile alias. Returned adapters must expose the exact requested profile and a compatible `encode_passages` method.
 
-- passage prefixes are applied from the profile;
-- output row count must match input passages;
-- dimensions must match the profile when declared;
-- every vector value must be finite;
-- normalization follows the profile contract;
-- batch size and passage count are bounded.
+## Retained-source shadow construction
 
-### Adapter-required profiles
+`tools/migration_shadow_builder.py`:
 
-Profiles such as Instructor, SPECTER2 and BGE-M3 are not silently treated as ordinary sentence encoders. They fail closed until an explicit adapter factory is registered for the canonical profile alias.
+1. resolves the target profile and verifies its fingerprint against the task;
+2. privately resolves the retained-source capability under the configured owner upload root;
+3. reparses through the current ingestion pipeline;
+4. revalidates owner/source-byte document identity;
+5. reapplies the complete final-index privacy boundary;
+6. requires the reparsed document ID to equal the task document ID;
+7. builds the same deterministic sparse fields used by authoritative ingestion;
+8. encodes those exact field texts under the target profile;
+9. independently validates row count, dimensions and finite values;
+10. creates one vector row per sparse field with matching field/page/section provenance.
 
-The adapter registry is process-local and rejects duplicate registration unless replacement is explicit. Returned adapters must expose the exact requested profile and `encode_passages`.
+Retained paths and raw source bytes are not serialized into shadow rows, manifests, journal tasks or CLI results.
 
-## Retained-source shadow builder
+## Isolated shadow artifacts
 
-`tools/migration_shadow_builder.py` creates shadow rows from the retained source without touching live indexes.
-
-1. Resolve the canonical target profile and require the journal fingerprint to match the current registry fingerprint.
-2. Retrieve the retained-source capability privately from `DocumentStore`.
-3. Validate the retained path under the configured upload root.
-4. Reparse the file through `tools.ingestion.ingest_file`.
-5. Reverify owner/source-byte document identity.
-6. Reapply the complete final-index redaction boundary.
-7. Require the reparsed document ID to equal the migration task document ID.
-8. Build the same deterministic authoritative sparse fields used by live ingestion.
-9. Encode those exact field texts under the target profile.
-10. Independently validate row count, dimensions and finite numeric values even for custom adapters.
-11. Produce one vector row for every sparse field with matching field ID and provenance.
-
-The retained source path is never included in vector rows, sparse rows, manifests, journal rows or CLI output.
-
-The current first executable slice deliberately aligns vector and sparse shadows one-to-one at the authoritative field level. A future cutover implementation may choose a richer chunk layout only after comparative retrieval evidence proves it better and records a new parser/build fingerprint.
-
-## Isolated shadow artifact store
-
-`tools/migration_shadow_store.py` writes one directory per migration task under `MIGRATION_SHADOW_ROOT`.
-
-Each completed directory contains:
+`tools/migration_shadow_store.py` writes one task directory under `MIGRATION_SHADOW_ROOT` containing:
 
 - `vectors.json`;
 - `sparse.json`;
 - `manifest.json`.
 
-The store provides:
+The store provides manifest-last publication, staging on the same filesystem, fsync where supported, exact hashes/bytes/counts, source and target fingerprints, source sequence, content/parser fingerprints, strict JSON, bounded structures, regular-file and root-identity checks, idempotent replay of identical artifacts and refusal of changed/tampered artifacts.
 
-- manifest-last publication through a same-root staging directory;
-- file and directory fsync where supported;
-- Windows-safe directory-fsync fallback;
-- exact vector and sparse SHA-256 digests;
-- exact byte and row counts;
-- source and target profile fingerprints;
-- source generation sequence;
-- content and parser fingerprints;
-- strict JSON with duplicate-key and nonstandard-number refusal;
-- bounded file size, row count, nesting, items and strings;
-- regular-file, symlink/reparse and root-identity checks;
-- task-isolated cleanup;
-- idempotent reuse of byte-identical artifacts across retry timestamps;
-- refusal when an existing task directory contains different artifacts.
+`tools/migration_shadow_executor.py` checks the source generation before and after construction. The live generation must remain active/restored with the exact source sequence, source profile and content hash. Only then is the shadow validation digest recorded.
 
-A manifest validation digest binds the artifact identity. Creation time is retained for audit but excluded from the idempotent artifact comparison, allowing a retry to reuse the exact first artifact.
+`tools/migration_shadow_runtime.py` separates build claims from future cutover claims. Build workers select only planned, retryable failed or expired-running tasks; validated tasks cannot starve unbuilt work.
 
-## Lease-aware shadow executor
-
-`tools/migration_shadow_executor.py` validates both sides of the build window.
-
-Before building, the current generation must still match:
-
-- owner and document;
-- active/restored state;
-- source sequence;
-- source profile fingerprint.
-
-After artifact publication, the generation is read again and must still match the same source identity and content hash. A generation change during parsing/encoding fails the task rather than validating stale output.
-
-The executor then records the artifact validation digest through the task journal. Failures persist only a generic failure class.
-
-A validated task may replay only if its journal digest and existing artifact digest still match. The builder does not run again.
-
-## Build-worker claim separation
-
-The journal's generic claim path includes validated tasks because future cutover workers need them. Shadow-build workers require a different queue.
-
-`tools/migration_shadow_runtime.py` provides an atomic shadow-build claim that selects only:
-
-- planned tasks;
-- failed tasks below the attempt ceiling;
-- expired running tasks below the attempt ceiling.
-
-Validated tasks are excluded, preventing them from starving unbuilt tasks.
-
-`execute_next_shadow_build` claims one task, constructs the retained-source builder, uses the current generation store, writes/validates isolated artifacts and leaves successful tasks in `validated` state.
-
-## No-cutover operator CLI
+## Shadow operator surface
 
 ```bash
 python -m tools.migration_shadow_cli execute-one \
   --owner-id alice \
-  --worker-id migration-builder-1 \
-  --lease-seconds 300 \
-  --max-attempts 3
+  --worker-id migration-builder-1
 
 python -m tools.migration_shadow_cli validate <task-id>
 
@@ -150,70 +83,149 @@ python -m tools.migration_shadow_cli remove <task-id> \
   --confirm-task-id <same-task-id>
 ```
 
-The CLI intentionally has no cutover command.
+Removal is limited to failed or cancelled tasks. There is no cutover action.
 
-- `execute-one` claims only buildable work.
-- `validate` compares one existing artifact with the journal task and digest.
-- `remove` is allowed only for failed or cancelled tasks under exact confirmation.
-- Output contains task IDs, states, digests, counts and fingerprints, never retained paths or source text.
+## Repository-owned paired benchmark
+
+`tools/migration_benchmark.py` accepts strict paired current/shadow fixtures containing query identifiers, relevance identifiers, ranked identifiers, aggregate support/citation observations, abstention outcomes and resource observations.
+
+It computes:
+
+- recall@k;
+- nDCG@k;
+- MRR;
+- support recall;
+- citation precision;
+- abstention accuracy;
+- conservative p95/max resource aggregates and mean estimated cost;
+- repeated-run and distinct-seed counts;
+- signed paired 95% delta intervals.
+
+All runs must use the same ordered query contract. The benchmark fingerprint identifies that contract, not the current/shadow outputs or resources. Raw query text, answer text, passages, retained paths and provider responses are unsupported.
+
+Operator commands:
+
+```bash
+python -m tools.migration_benchmark_cli inspect \
+  --fixture-file paired_fixture.json
+
+python -m tools.migration_benchmark_cli run \
+  --fixture-file paired_fixture.json \
+  --evidence-output promotion_evidence.json \
+  --report-output benchmark_intervals.json
+```
+
+The equivalent wrapper is `scripts/migration_benchmarks.py`.
+
+## Aggregate promotion gate
+
+`tools/migration_promotion.py` implements the versioned `conservative-v1` gate. It requires exact task/journal/manifest/evidence/source-generation alignment, benchmark minimums, equal vector/sparse counts by default, quality floors, maximum point regressions and bounded latency/memory/storage/estimated-cost ratios.
+
+`tools/migration_promotion_store.py` persists immutable reports by digest and atomically advances a per-task current pointer. Reports contain no paths, raw queries or passages.
+
+## Paired statistical gate
+
+`tools/migration_statistical_gate.py` implements `paired-noninferiority-v1`:
+
+- minimum repeated-run, seed-count and confidence-level requirements;
+- lower-bound non-inferiority for recall, nDCG, MRR, support recall, citation precision and abstention accuracy;
+- optional lower-bound practical-gain thresholds;
+- deterministic assessment and policy digests;
+- composite promotion evidence/policy digests without changing the stored report schema.
+
+The default non-inferiority margins are 0.01 for every metric except citation precision, which allows no regression.
+
+## Recommended promotion workflow
+
+```bash
+python -m tools.migration_promotion_cli evaluate-fixture <task-id> \
+  --fixture-file paired_fixture.json \
+  --policy-file reviewed_promotion_policy.json \
+  --statistical-policy-file reviewed_statistical_policy.json
+```
+
+This command generates paired evidence, applies aggregate and statistical gates, persists the final append-only report and returns the paired interval assessment in one process.
+
+Compatibility with externally produced strict aggregate evidence remains available:
+
+```bash
+python -m tools.migration_promotion_cli evaluate <task-id> \
+  --evidence-file promotion_evidence.json
+```
+
+That compatibility path cannot apply paired interval gates because it does not contain per-run deltas.
+
+Report inspection and bounded cleanup:
+
+```bash
+python -m tools.migration_promotion_cli status <task-id>
+python -m tools.migration_promotion_cli history <task-id> --limit 100
+python -m tools.migration_promotion_cli remove-task <task-id> \
+  --confirm-task-id <same-task-id>
+```
+
+The equivalent wrapper is `scripts/migration_promotions.py`. Report cleanup is limited to failed or cancelled migration tasks.
 
 ## Configuration
 
 ```dotenv
-MIGRATION_JOURNAL_DB_PATH=data/index_migrations.sqlite3
+INDEX_MIGRATION_DB_PATH=data/index_migrations.sqlite3
 MIGRATION_SHADOW_ROOT=data/migration_shadows
+MIGRATION_PROMOTION_ROOT=data/migration_promotions
 ```
 
-Embedding profiles are governed by `EMBEDDING_PROFILE` and `EMBEDDING_PROFILES_JSON`. Adapter-required target profiles additionally require explicit process-local adapter registration.
+Embedding profiles are governed by `EMBEDDING_PROFILE` and `EMBEDDING_PROFILES_JSON`. Adapter-required profiles also require explicit runtime adapter registration.
 
-## State machine
+## State and decision semantics
 
-1. `planned` — immutable task seeded from a current source generation.
-2. `running` — one shadow or future cutover worker owns an unexpired lease.
-3. `validated` — isolated shadow output exists and its digest is recorded; no live state has changed.
-4. `committed` — reserved for a future atomic cutover implementation.
-5. `failed` — generic failure type recorded and retryable within the attempt policy.
-6. `cancelled` — operator-cancelled before active execution.
+Migration task states remain:
 
-Expired running tasks may be reclaimed. Validated tasks preserve their digest for a future cutover worker.
+1. `planned`;
+2. `running`;
+3. `validated` — isolated shadow exists; live state is unchanged;
+4. `committed` — reserved for future atomic cutover;
+5. `failed`;
+6. `cancelled`.
 
-## Focused contracts
+Promotion reports separately use `eligible` or `blocked`. An eligible report is evidence for a future cutover precondition; it is not authorization and performs no mutation.
+
+## Focused verification
 
 Committed contracts cover:
 
-- profile drift, aliases and stable task IDs;
-- journal idempotency, leases, retries and cancellation;
-- explicit adapter-required profile refusal and registration;
-- profile passage-prefix and normalization settings;
-- row-count, dimension and finite-value checks;
-- retained-source capability/path/document-identity validation;
-- one-to-one vector/sparse field provenance;
-- absence of retained paths from artifacts;
-- manifest-last publication and exact digest/count checks;
-- retry reuse across different creation times;
-- changed-artifact and tamper refusal;
-- non-finite, empty, redirected and replaced-root refusal;
-- source generation checks before and after build;
-- worker lease ownership;
-- validated artifact replay without rebuilding;
-- generic failure recording;
-- shadow-build claiming that excludes validated tasks;
-- attempt ceilings and expired-running recovery;
-- no-cutover CLI validation and removal restrictions.
+- profile drift, aliases, task identities, leases, retries and cancellation;
+- adapter-required refusal/registration and standard profile encoding;
+- retained-source capability, path and document identity checks;
+- one-to-one vector/sparse provenance;
+- manifest-last publication, exact counts/digests and idempotent replay;
+- tamper, non-finite, symlink/reparse and root-replacement refusal;
+- source-generation races and generic failures;
+- build-only claim separation and no-cutover CLI behavior;
+- strict paired benchmark contracts and metric computation;
+- contract-only benchmark fingerprints;
+- repeated runs, seeds and signed paired intervals;
+- aggregate quality/resource gates;
+- paired lower-bound non-inferiority and practical-gain gates;
+- deterministic composite digests;
+- append-only report history and atomic current pointer;
+- direct in-process fixture evaluation and privacy-safe outputs.
+
+The constrained local promotion/benchmark/statistical harness passed **42 tests**. Earlier focused shadow, adapter and lifecycle suites also passed in their isolated harnesses. This is not the complete exact-head repository matrix.
 
 ## Remaining Wave 2D work
 
-- Run the new store, builder, adapter, runtime and CLI contracts on a clean exact head.
-- Add retrieval-quality and provenance benchmark gates comparing current and shadow profiles.
-- Measure build latency, memory, artifact size and monetary/token cost where applicable.
-- Persist experiment/promotion metadata associated with each validated artifact.
-- Implement an atomic current-generation cutover that can publish shadow vector and sparse rows without a mixed generation window.
-- Retain exact rollback references to the prior vector, sparse and generation state.
-- Add bounded shadow retention and cleanup policy.
-- Inject crashes before/after every artifact, journal, vector, sparse and pointer transition.
-- Add pause/resume/cancel semantics for actively leased build workers.
-- Add specialized governed adapters for adapter-required profiles only after their model/runtime contracts are tested.
+- Execute governed fixtures against the real current and shadow retrieval stacks rather than consuming already collected ranked identifiers.
+- Measure wall-clock latency, process/device memory, artifact storage and provider billing where applicable.
+- Add reviewed bootstrap/permutation procedures and multiple-comparison controls where scientifically appropriate.
+- Implement an atomic vector+sparse+generation publication with no mixed-generation window.
+- Persist exact rollback references and verify rollback before releasing old state.
+- Add cutover/rollback leases, idempotency and crash recovery.
+- Add bounded shadow/report retention and compaction.
+- Add pause/resume/cancel semantics for active workers.
+- Add specialized governed adapters for adapter-required profiles.
+- Inject faults before and after every build, report, vector, sparse, pointer and rollback transition.
+- Run clean exact-head Linux, Windows and container verification.
 
 ## Verification boundary
 
-Source and focused contracts are committed. The execution container cannot resolve GitHub, so no clean clone or complete exact-head Linux/Windows/container matrix can be run here. Live cutover and release readiness are not claimed.
+The execution container cannot resolve GitHub, so no clean clone or complete exact-head matrix can be run here. Live cutover and release readiness are not claimed.
