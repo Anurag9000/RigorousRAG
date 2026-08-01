@@ -162,7 +162,7 @@ def capture_vector_generation(
         result = getter(
             where=_scope_filter(owner, document_id),
             include=["documents", "metadatas"],
-            limit=_MAX_VECTOR_ROWS,
+            limit=_MAX_VECTOR_ROWS + 1,
         )
     except Exception as exc:
         raise RuntimeError("Vector generation capture failed.") from exc
@@ -180,16 +180,21 @@ def capture_vector_generation(
     )
 
 
-def _delete_generation(rag: Any, owner_id: str, doc_id: str) -> None:
-    deleter = getattr(rag, "delete_document", None)
-    if callable(deleter):
-        deleter(owner_id=owner_id, doc_id=doc_id)
-        return
+def delete_vector_generation(rag: Any, *, owner_id: str, doc_id: str) -> None:
+    """Delete only vector rows; never route through public lifecycle deletion."""
+
+    owner = normalize_owner_id(owner_id)
+    document_id = _identifier(doc_id, "doc_id", 200)
     collection = getattr(rag, "collection", None)
     collection_delete = getattr(collection, "delete", None)
-    if not callable(collection_delete):
-        raise ValueError("A vector deletion API is required for restoration.")
-    collection_delete(where=_scope_filter(owner_id, doc_id))
+    if callable(collection_delete):
+        collection_delete(where=_scope_filter(owner, document_id))
+        return
+    raw_deleter = getattr(rag, "_authoritative_raw_delete_document", None)
+    if callable(raw_deleter):
+        raw_deleter(owner_id=owner, doc_id=document_id)
+        return
+    raise ValueError("A raw vector deletion API is required.")
 
 
 def restore_vector_generation(
@@ -211,7 +216,7 @@ def restore_vector_generation(
     upsert = getattr(collection, "upsert", None)
     if snapshot.row_count and not callable(upsert):
         raise ValueError("rag.collection.upsert is required for vector restoration.")
-    _delete_generation(rag, owner, document_id)
+    delete_vector_generation(rag, owner_id=owner, doc_id=document_id)
     if snapshot.row_count == 0:
         return
     try:
@@ -224,7 +229,7 @@ def restore_vector_generation(
             )
     except Exception as exc:
         try:
-            _delete_generation(rag, owner, document_id)
+            delete_vector_generation(rag, owner_id=owner, doc_id=document_id)
         except Exception:
             pass
         raise RuntimeError("Vector generation restoration failed.") from exc
@@ -233,5 +238,6 @@ def restore_vector_generation(
 __all__ = [
     "VectorGenerationSnapshot",
     "capture_vector_generation",
+    "delete_vector_generation",
     "restore_vector_generation",
 ]
