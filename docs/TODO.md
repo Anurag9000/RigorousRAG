@@ -68,14 +68,23 @@ This backlog is ordered by dependency and risk. Checked items have committed imp
 
 ## Wave 2D — profile migration and reindex
 
-- [ ] Inventory current manifests by embedding profile and schema version.
-- [ ] Build resumable retained-source reindex jobs.
+- [x] Inventory current manifests by target profile and durable source sequence.
+- [x] Classify retained-source eligibility without exposing source paths.
+- [x] Generate immutable deterministic migration task IDs.
+- [x] Persist idempotent resumable migration tasks.
+- [x] Add worker leases, renewal, retry ceilings and generic failure types.
+- [x] Require validation digests before committed state.
+- [x] Reclaim expired running and validated tasks.
+- [x] Add inventory, seed, status and owner-verified cancel commands.
+- [x] Refuse execution/cutover until shadow validation is available.
 - [ ] Write shadow vector and sparse generations without replacing current state.
-- [ ] Validate counts, content hashes, provenance and benchmark quality.
-- [ ] Record migration experiment metadata and failures.
+- [ ] Reparse retained sources through the privacy-finalized ingestion pipeline.
+- [ ] Construct target-profile encoder adapters explicitly.
+- [ ] Validate counts, hashes, provenance, quality and resource budgets.
+- [ ] Persist shadow artifact identities and experiment metadata.
 - [ ] Atomically cut over the durable current pointer.
-- [ ] Keep rollback references and bounded retention.
-- [ ] Add dry-run, pause, resume, cancel and status commands.
+- [ ] Keep rollback references and bounded shadow retention.
+- [ ] Add active-worker pause/resume/cancel semantics.
 - [ ] Test crash recovery at every migration phase.
 
 ## Wave 3 — adaptive and corrective RAG
