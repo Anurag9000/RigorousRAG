@@ -1,6 +1,5 @@
 """Search Engine Agent Tools Package."""
 
-# Import the compatibility boundary before callers import public security helpers.
-# The boundary patches the implementation module in place, matching the existing
-# integrity/rag compatibility-layer architecture.
+# Import compatibility boundaries before callers import their public modules.
 from tools import security_boundary as _security_boundary  # noqa: F401,E402
+from tools import rag_strategy_import_hook as _rag_strategy_import_hook  # noqa: F401,E402
