@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import sqlite3
 
 import pytest
 
@@ -93,12 +92,13 @@ def test_journal_runs_monotonic_retirement_lifecycle(tmp_path):
     assert completed.phase == "verified"
     assert completed.completed_at == 6.0
     assert completed.lease_owner is None
-    assert journal.claim(
-        seeded.retirement_id,
-        worker_id="other",
-        lease_seconds=30,
-        now=40.0,
-    ) if False else True
+    with pytest.raises(RuntimeError, match="not claimable"):
+        journal.claim(
+            seeded.retirement_id,
+            worker_id="other",
+            lease_seconds=30,
+            now=40.0,
+        )
 
 
 def test_expired_claim_is_recovered_without_losing_phase(tmp_path):
