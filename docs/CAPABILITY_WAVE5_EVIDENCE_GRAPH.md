@@ -1,21 +1,17 @@
-# Capability Wave 5 — provenance evidence graph foundation
+# Capability Wave 5 — provenance evidence graph and derived reconciliation
 
 Last updated: 2026-08-02
 
 ## Scope
 
-Wave 5 now has a generation-scoped, provenance-preserving graph foundation for:
+Wave 5 now provides two deliberately separated layers:
 
-- documents;
-- sections;
-- claims;
-- entities;
-- methods;
-- datasets;
-- citations;
-- explicit containment, mention, support, contradiction, citation, method, dataset, derivation and equivalence relations.
+1. a typed, generation-scoped provenance graph for documents, sections, claims, entities, methods, datasets and citations;
+2. an operator-driven derived-index reconciliation path that rebuilds document/section structure from one exact authoritative sparse generation or publishes a deleted-generation tombstone.
 
-The implementation is deliberately explicit-only. It does not infer support, contradiction, entity equivalence, citation intent, methods or datasets from text. Those relations enter the graph only through validated `GraphAnnotation` and `ExplicitGraphRelation` inputs supplied by a reviewed extractor or operator.
+The semantic graph remains explicit-only. The derived reconciler never infers support, contradiction, entity equivalence, citation intent, methods or datasets from text. Semantic relations enter the graph only through validated `GraphAnnotation` and `ExplicitGraphRelation` inputs supplied by a reviewed extractor or operator.
+
+The graph is still a rebuildable derived index. It is not an automatically coordinated fifth participant in authoritative ingestion.
 
 ## Typed deterministic graph contracts
 
@@ -23,23 +19,21 @@ The implementation is deliberately explicit-only. It does not infer support, con
 
 - validated `EvidenceNode` and `EvidenceEdge` values;
 - owner/document/generation isolation;
-- deterministic SHA-256 node IDs from scope, type and natural key;
-- deterministic SHA-256 edge IDs from scope, endpoints, type and relation key;
+- deterministic SHA-256 node and edge identities;
 - bounded labels, privacy-finalized text, page/section provenance and metadata;
-- finite edge weights;
-- self-loop refusal;
+- finite edge weights and self-loop refusal;
 - exact endpoint validation;
 - exactly one document node per graph batch;
-- immutable `EvidenceGraphBatch` graph digests excluding creation time;
-- ordered `EvidencePath` values with exact adjacency validation.
+- immutable `EvidenceGraphBatch` digests excluding creation time;
+- ordered path values with exact adjacency validation.
 
-Supported node types are:
+Supported node types:
 
 ```text
 document, section, claim, entity, method, dataset, citation
 ```
 
-Supported edge types are:
+Supported edge types:
 
 ```text
 contains, mentions, supports, contradicts, cites,
@@ -48,146 +42,195 @@ uses_method, uses_dataset, derived_from, same_as
 
 ## Explicit graph construction
 
-`tools/evidence_graph_builder.py` builds one graph for one finalized authoritative document generation.
+`tools/evidence_graph_builder.py` builds a graph from one finalized document plus explicit annotations and relations.
 
-The builder:
-
-1. verifies owner and document identity;
-2. verifies finalized document text and any declared content hash;
-3. creates one deterministic document node;
-4. creates deterministic section nodes with page, title and section metadata;
-5. creates only explicitly supplied claim/entity/method/dataset/citation nodes;
-6. attaches each annotation to its declared section or document container;
-7. adds only explicitly supplied semantic relations;
-8. rejects duplicate keys, unknown endpoints and out-of-range section references;
-9. refuses caller-supplied `contains` relations because containment is generated structurally;
-10. returns a fully revalidated generation-scoped batch.
+It verifies document identity and finalized content, creates deterministic document/section nodes, attaches explicitly supplied annotation nodes to their declared container, and adds only explicitly supplied semantic relations. Duplicate keys, unknown endpoints, invalid section references and caller-supplied containment edges are rejected.
 
 Textual similarity or disagreement alone never creates a support or contradiction edge.
 
-## Transactional generation store
+## Transactional graph generations
 
-`tools/evidence_graph_store.py` provides a path-safe SQLite store with:
+`tools/evidence_graph_store.py` provides:
 
-- immutable owner/document/generation rows;
-- complete strictly encoded graph batches;
+- immutable owner/document/generation graph rows;
+- strictly encoded complete batches;
 - idempotent same-generation/same-digest replay;
-- collision refusal when the same generation has different graph content;
-- one optimistic current-generation pointer per owner/document;
+- generation collision refusal;
+- one optimistic current pointer per owner/document;
 - exact expected-current checks for commit and activation;
-- bounded generation history;
+- bounded history;
 - exact-digest deletion of non-current generations only;
-- strict duplicate-key and NaN/Infinity refusal on read;
-- graph, row and pointer digest revalidation;
-- owner isolation;
+- strict JSON, digest, pointer and owner-scope revalidation;
 - symlink/reparse and database/parent identity defenses.
 
-The store is append-only except for the current pointer and exact-confirmed deletion of a non-current generation.
+The graph database is append-only except for its current pointer and exact deletion of a non-current generation.
 
-## Retrieval and path explanations
+## Retrieval and explicit conflict analysis
 
-`tools/evidence_graph_retrieval.py` provides:
+`tools/evidence_graph_retrieval.py` provides deterministic lexical node search, node-type filters, directed cycle-safe breadth-first paths, edge/intermediate-type filters and deterministic neighbor inspection.
 
-- bounded deterministic lexical node search;
-- node-type filters;
-- matched-term and provenance-digest reporting;
-- directed breadth-first simple paths;
-- edge-type and intermediate-node-type filters;
-- cycle prevention;
-- depth, path-count and visited-state ceilings;
-- deterministic outgoing-neighbor inspection.
+`tools/evidence_graph_analysis.py` reports structural counts and incoming explicit support/contradiction clusters for claim nodes. A conflict is reported only when stored edges explicitly provide both relation types. Unlinked contradictory-looking text produces no semantic cluster.
 
-These functions traverse only stored graph edges. They do not synthesize missing relations or claim that a lexical match entails semantic support.
+## Durable exact-generation graph jobs
 
-## Explicit support and contradiction analysis
+`tools/evidence_graph_jobs.py` adds an operator-driven SQLite journal for immutable authoritative-generation jobs.
 
-`tools/evidence_graph_analysis.py` provides:
+A job identity binds:
 
-- node and edge counts;
-- incoming explicit support clusters for claim nodes;
-- incoming explicit contradiction clusters for claim nodes;
-- conflict flags only when a claim has both stored support and contradiction edges;
-- deterministic cluster and analysis digests.
+- owner and document;
+- authoritative generation sequence and state;
+- finalized content SHA-256;
+- embedding profile fingerprint;
+- authoritative sparse generation.
 
-A support or contradiction edge targeting a non-claim node is counted structurally but is not misrepresented as a claim-evidence cluster. Unlinked contradictory-looking text creates no cluster.
+Job IDs are deterministic SHA-256 values. The state machine is:
 
-## Runtime and operator surface
+```text
+planned -> running -> completed
+                    -> failed
+planned/failed -> cancelled
+failed -> planned (explicit reviewed retry)
+```
 
-`tools/evidence_graph_runtime.py` provides a path-scoped process-local store factory using:
+The journal provides:
+
+- idempotent exact-identity seeding;
+- exclusive worker leases;
+- lease expiry and reclaim;
+- bounded attempt ceilings;
+- lease renewal;
+- generic failure types rather than private exception text;
+- owner-scoped retry and cancellation;
+- exact SHA-256 graph digests on completion;
+- finite timestamp validation;
+- strict path, symlink/reparse, parent and database identity defenses.
+
+A completed job cannot be claimed again. A changed authoritative generation produces a new job ID rather than mutating the old job.
+
+## Structural derived-graph reconciliation
+
+`tools/evidence_graph_reconcile.py` reconciles one leased job while holding the same process-local striped owner/document lock used by index coordination.
+
+For active or restored authoritative generations it:
+
+1. verifies the current generation exactly matches the immutable job;
+2. captures the authoritative sparse document snapshot;
+3. verifies owner, document, sparse generation, profile and any declared content hash;
+4. creates one document node and one section node per authoritative sparse field;
+5. creates only deterministic `contains` edges;
+6. records field ID, field type, position, token count, page and section provenance;
+7. rechecks the authoritative generation after graph construction;
+8. refuses to move the graph pointer backwards;
+9. commits or idempotently reuses the exact graph generation;
+10. rechecks the authoritative generation after publication;
+11. marks the job completed only with the published graph digest.
+
+For deleted authoritative generations it requires the sparse snapshot to be absent and publishes a one-document-node tombstone graph with no edges.
+
+The reconciler never mutates:
+
+- vector rows;
+- sparse rows;
+- retained source files;
+- document registry state;
+- authoritative generation history or current pointers.
+
+Only the evidence-graph database and graph-job journal are mutated.
+
+## Runtime and operator commands
+
+Configuration:
 
 ```dotenv
 EVIDENCE_GRAPH_DB_PATH=data/evidence_graph.sqlite3
+EVIDENCE_GRAPH_JOB_DB_PATH=data/evidence_graph_jobs.sqlite3
 ```
 
-`tools/evidence_graph_cli.py` and `scripts/evidence_graphs.py` provide read-only commands:
+Read-only graph inspection remains available through `tools/evidence_graph_cli.py` and `scripts/evidence_graphs.py`.
+
+Derived reconciliation is exposed through `tools/evidence_graph_jobs_cli.py` and `scripts/evidence_graph_jobs.py`:
 
 ```bash
-python -m tools.evidence_graph_cli status \
-  --owner-id alice --doc-id <document-id>
+python -m tools.evidence_graph_jobs_cli seed \
+  --owner-id alice --doc-id <document-id> --max-attempts 3
 
-python -m tools.evidence_graph_cli history \
-  --owner-id alice --doc-id <document-id> --limit 100
+python -m tools.evidence_graph_jobs_cli status <job-id>
 
-python -m tools.evidence_graph_cli search "randomized protocol" \
-  --owner-id alice --doc-id <document-id> --node-type method
+python -m tools.evidence_graph_jobs_cli list \
+  --owner-id alice --state failed --limit 100
 
-python -m tools.evidence_graph_cli paths <source-node-id> <target-node-id> \
-  --owner-id alice --doc-id <document-id> --max-depth 6
+python -m tools.evidence_graph_jobs_cli reconcile-one \
+  --owner-id alice --worker-id graph-worker-1 --lease-seconds 60
 
-python -m tools.evidence_graph_cli analyze \
-  --owner-id alice --doc-id <document-id>
+python -m tools.evidence_graph_jobs_cli retry <job-id> \
+  --owner-id alice --confirm-job-id <same-job-id>
+
+python -m tools.evidence_graph_jobs_cli cancel <job-id> \
+  --owner-id alice --confirm-job-id <same-job-id>
 ```
 
-The CLI returns IDs, bounded labels, page/section locators, scores, relation types, counts and digests. It does not return node text. Every successful payload reports `mutation_performed: false`; analysis additionally reports `semantic_inference_performed: false`.
+Operator output contains IDs, states, counts, sequence/profile/content identities, lease metadata, graph digests and generic failure types. It contains no graph text, sparse text, retained path or provider response. Every job summary reports:
 
-## Focused verification
+```json
+{
+  "authoritative_mutation_performed": false,
+  "semantic_inference_performed": false
+}
+```
 
-The clean repository archive passed **28 focused evidence-graph tests** covering:
+## Verification evidence
 
-- deterministic node/edge identities and provenance digests;
-- graph scope, exact document-node count and endpoint invariants;
-- self-loop, non-finite weight and identity refusal;
-- deterministic explicit graph construction across timestamps and iterators;
-- content-hash, duplicate-key, unknown-endpoint and section-bound failures;
-- absence of inferred support/contradiction relations;
-- lexical ranking and type filters;
-- directed path ordering, type filters and cycle prevention;
-- deterministic neighbor inspection;
-- explicit incoming support/contradiction conflict clusters;
-- transactional commit, history and current pointers;
-- optimistic concurrency and generation collision refusal;
-- exact activation and non-current deletion;
-- strict stored-JSON and pointer tamper detection;
-- owner isolation and database/path identity defenses;
-- path-scoped runtime caching;
-- read-only privacy-conscious CLI behavior.
+The original clean-archive Wave 5 foundation passed **28 focused tests** covering deterministic graph identities, explicit construction, transactional generations, lexical retrieval, path traversal, explicit support/contradiction analysis, corruption defenses and the read-only CLI.
 
-All evidence-graph modules and the operator script compiled in the clean archive. These are focused archive tests, not the complete exact-head Linux, Windows and container matrix.
+The derived reconciliation slice passed **14 focused local tests** covering:
 
-## Deliberate integration boundary
+- immutable exact-generation job IDs;
+- NaN, Infinity, boolean and negative timestamp refusal;
+- deleted-generation sparse-count constraints;
+- idempotent seeding;
+- exclusive claims, expiry/reclaim and attempt ceilings;
+- completion digests and generic failures;
+- owner-scoped retry/cancellation;
+- active document/section structural graphs;
+- deleted-generation tombstones;
+- absence of semantic edges;
+- exact-generation idempotent publication;
+- stale generation and sparse identity refusal before publication;
+- path-free CLI output;
+- bounded not-found and idle behavior;
+- exact confirmation and invalid policy refusal.
 
-The evidence graph is not yet written automatically during authoritative ingestion. Automatic graph generation would create a fifth persisted participant in the document lifecycle. Adding it as an uncoordinated post-commit callback could leave vector/sparse/generation/registry state current while the graph is absent or stale.
+Python compilation passed for the job journal, reconciler, runtime, CLI and script in the constrained local harness. Full exact-head repository, Windows, container and multi-process fault testing remains required.
 
-Before automatic integration, the project must choose and implement one of these reviewed designs:
+## Deliberate safety boundaries
 
-1. a durable derived-index outbox consumer keyed by the authoritative generation;
-2. a fifth participant in lifecycle coordination with explicit compensation;
-3. a fully rebuildable graph cache with authoritative-generation reconciliation and no correctness dependency on graph availability.
+### No automatic ingestion hook
 
-Until then, graph batches are committed only through the validated programmatic `EvidenceGraphStore` boundary. The read-only CLI cannot import or mutate graph state.
+Authoritative ingestion does not automatically enqueue or execute graph jobs. Operators must seed and reconcile them explicitly. This avoids silently introducing an uncoordinated fifth write participant into the current four-store lifecycle.
+
+### Single-process locking only
+
+The shared striped owner/document lock coordinates graph reconciliation with index work only inside one Python process. It is not distributed leadership or a database-wide consensus lock. Independent processes can still race unless operators serialize them externally.
+
+The reconciler performs generation checks before construction, before publication and after publication, but automatic multi-process execution remains disabled until durable leadership and crash/fault injection exist.
+
+### Derived availability is not authoritative correctness
+
+Graph availability is not required to validate vector/sparse/generation correctness. Consumers that eventually use the graph for retrieval must compare graph generation, content hash and profile fingerprint with the authoritative current generation before publishing graph-derived evidence.
 
 ## Remaining Wave 5 work
 
-- Add durable derived-graph jobs/outbox and startup/periodic reconciliation.
-- Verify graph content hash, profile and generation against the authoritative generation before current-pointer publication.
-- Add exact rebuild/delete behavior when an authoritative generation changes or is removed.
+- Add startup or periodic scheduling only after single-leader/multi-process coordination is implemented.
+- Add an authoritative-generation-aware graph reader that refuses stale current graph pointers.
+- Add graph-job audit export, retention, compaction and dead-letter policy.
+- Add exact crash injection around claim, graph insert, current-pointer publication and job completion.
 - Add cross-document graph-set types without collapsing owner/document/generation provenance.
-- Add explicit cross-document citation and entity-resolution review workflows.
-- Add GraphRAG retrieval over bounded cross-document paths.
-- Add path-aware evidence selection and citation conversion through the authoritative agent registry.
+- Add reviewed cross-document citation and entity-resolution workflows.
+- Add bounded GraphRAG retrieval over cross-document paths.
+- Add path-aware evidence selection and server-owned citation conversion.
 - Add graph retrieval benchmarks, path-completeness metrics and historical regression thresholds.
-- Add reviewed scientific extraction adapters; model output must remain closed-schema, provenance-linked and human-auditable.
-- Add retention/compaction and graph database backup/restore policy.
+- Add reviewed scientific extraction adapters with closed schemas and human-auditable provenance.
+- Add graph database backup/restore and disaster-recovery policy.
 - Run exact-head concurrency, corruption, Windows and container verification.
 
 ## Permanent non-claims
@@ -197,5 +240,7 @@ Until then, graph batches are committed only through the validated programmatic 
 - Lexical graph rank is not semantic truth.
 - A graph path is a provenance explanation of stored edges, not causal proof.
 - `same_as` is an explicit asserted relation, not automatic entity-resolution certainty.
+- A completed derived job does not make the graph an authoritative lifecycle participant.
+- The process-local document lock is not distributed coordination.
 - The graph is not yet complete for every authoritative document.
 - Release readiness is not claimed.
