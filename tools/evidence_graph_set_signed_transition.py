@@ -21,13 +21,15 @@ _TERMINAL_STATES = frozenset({"completed", "compensated", "cancelled"})
 _ACTIONS = frozenset(
     {
         "wait_for_authorization_only_lease",
-        "inspect_expired_authorization_only_lease_then_cancel_or_retry",
+        "reconcile_expired_authorization_only_attempt_before_transition",
         "cancel_authorization_only_then_reseed_signed",
         "do_not_claim_signed_provenance_reseed_with_current_pointer_if_needed",
         "no_signed_transition_required",
         "resolve_duplicate_nonterminal_attempts",
         "inspect_existing_signed_attempt_before_transition",
         "cancel_authorization_only_duplicate_after_signed_completion",
+        "wait_for_authorization_only_lease_then_retire_duplicate",
+        "preflight_expired_authorization_only_duplicate_retirement",
         "signed_attempt_already_completed",
     }
 )
@@ -242,10 +244,28 @@ class SignedPublicationTransitionReport:
         object.__setattr__(self, "report_digest", report_digest)
 
 
+def _active_lease(value: Any, *, now: float) -> bool:
+    return bool(
+        value.state == "running"
+        and value.lease_expires_at is not None
+        and float(value.lease_expires_at) > now
+    )
+
+
 def _action(common: Any, signed: Any | None, *, now: float) -> tuple[bool, str]:
     if signed is not None:
         if signed.state == "completed":
-            if common.state not in _TERMINAL_STATES:
+            if common.state == "running":
+                if _active_lease(common, now=now):
+                    return (
+                        True,
+                        "wait_for_authorization_only_lease_then_retire_duplicate",
+                    )
+                return (
+                    True,
+                    "preflight_expired_authorization_only_duplicate_retirement",
+                )
+            if common.state in {"planned", "failed"}:
                 return (
                     True,
                     "cancel_authorization_only_duplicate_after_signed_completion",
@@ -258,10 +278,9 @@ def _action(common: Any, signed: Any | None, *, now: float) -> tuple[bool, str]:
             return True, "resolve_duplicate_nonterminal_attempts"
         return True, "inspect_existing_signed_attempt_before_transition"
     if common.state == "running":
-        lease = common.lease_expires_at
-        if lease is not None and float(lease) > now:
+        if _active_lease(common, now=now):
             return True, "wait_for_authorization_only_lease"
-        return True, "inspect_expired_authorization_only_lease_then_cancel_or_retry"
+        return True, "reconcile_expired_authorization_only_attempt_before_transition"
     if common.state in {"planned", "failed"}:
         return True, "cancel_authorization_only_then_reseed_signed"
     if common.state == "completed":
