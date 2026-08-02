@@ -3,6 +3,10 @@ from __future__ import annotations
 import json
 
 from tools import evidence_graph_relation_cli as cli
+from tools.evidence_graph_relation_actor import (
+    ReviewActorBinding,
+    require_relation_review_actor,
+)
 from tools.evidence_graph_relation_authorization_store import (
     RelationReviewAuthorizationStore,
 )
@@ -41,6 +45,11 @@ def install(tmp_path, monkeypatch):
     authorizations = RelationReviewAuthorizationStore(
         tmp_path / "review-authorizations.sqlite3"
     )
+    actor = ReviewActorBinding.create(
+        actor_id="reviewer-1",
+        binding_method="process_environment",
+        loaded_at=1.0,
+    )
     monkeypatch.setattr(cli, "get_relation_review_ledger", lambda: ledger)
     monkeypatch.setattr(
         cli,
@@ -48,6 +57,11 @@ def install(tmp_path, monkeypatch):
         lambda: authorizations,
     )
     monkeypatch.setattr(cli, "get_relation_review_policy", review_policy)
+    monkeypatch.setattr(
+        cli,
+        "require_relation_review_actor",
+        lambda requested: require_relation_review_actor(requested, binding=actor),
+    )
     return ledger, authorizations
 
 
@@ -115,6 +129,9 @@ def test_propose_decide_status_and_list_are_text_free(tmp_path, monkeypatch, cap
     assert decided["governed_review"] is True
     assert decided["review_authorization"]["state"] == "committed"
     assert decided["review_authorization"]["separation_of_duties_enforced"] is True
+    assert decided["review_actor_binding"]["actor_id"] == "reviewer-1"
+    assert decided["review_actor_binding"]["binding_method"] == "process_environment"
+    assert decided["review_actor_binding"]["durable_receipt_field"] is False
     assert cli.main(["status", proposal_id]) == 0
     governed_status, _error = read(capsys)
     assert governed_status["governed_review"] is True
@@ -129,6 +146,22 @@ def test_propose_decide_status_and_list_are_text_free(tmp_path, monkeypatch, cap
     assert listing["count"] == 1
     assert listing["proposals"][0]["governed_review"] is True
     assert "source_text" in rendered and "private text" not in rendered
+
+
+def test_reviewer_argument_must_match_process_actor(tmp_path, monkeypatch, capsys):
+    install(tmp_path, monkeypatch)
+    assert cli.main(proposal_args()) == 0
+    proposed, _error = read(capsys)
+    assert cli.main([
+        "decide", proposed["proposal_id"],
+        "--owner-id", "alice",
+        "--decision", "approved",
+        "--reviewer-id", "other-reviewer",
+        "--reason-code", "verified",
+    ]) == 2
+    output, error = read(capsys)
+    assert output is None
+    assert error == {"error": "invalid_or_unavailable"}
 
 
 def test_model_proposal_requires_extractor_identity(tmp_path, monkeypatch, capsys):
