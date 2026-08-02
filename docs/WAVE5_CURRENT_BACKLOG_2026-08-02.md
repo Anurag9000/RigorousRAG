@@ -34,7 +34,10 @@ This file supersedes the Wave 5 checkbox section in `docs/TODO.md`. The older fi
 - [x] Atomic all-or-none target insertion and exact replay recovery.
 - [x] Final target write lock across verification and restore-intent completion.
 - [x] Restore-intent operational audit and lease/exhaustion classification.
-- [x] Conservative restore-intent retention planning with legal-hold inputs.
+- [x] Conservative restore-intent retention planning.
+- [x] Integrity-backed durable restore legal-hold registry.
+- [x] Process-owned hold placement/release and monotonic hold lifecycle.
+- [x] Read-only durable-hold integration with retention planning.
 
 ## Completed GraphRAG path
 
@@ -76,6 +79,7 @@ This file supersedes the Wave 5 checkbox section in `docs/TODO.md`. The older fi
 - [ ] Test graph-set pointer races with independent processes.
 - [ ] Test long-running lease renewal under real wall-clock delays.
 - [ ] Test restore-target writers blocked by final exact-target completion locks.
+- [ ] Test independent-process legal-hold placement/release contention.
 
 ### Backup, restore and retention governance
 
@@ -89,9 +93,10 @@ This file supersedes the Wave 5 checkbox section in `docs/TODO.md`. The older fi
 - [x] Recovery after target phase persistence before completion.
 - [x] Restore-intent operational audit.
 - [x] Non-destructive restore-intent retention planning.
+- [x] Durable legal-hold registry and process-owned authorization.
+- [x] Integrity-verified active-hold retention integration.
 - [ ] Add asymmetric or hardware-backed audit snapshot signatures.
 - [ ] Add trusted timestamps and signer key rotation.
-- [ ] Add durable legal-hold registry and authorization.
 - [ ] Add signed chain-of-custody manifests.
 - [ ] Add mandatory backup-before-restore evidence and post-restore comparison receipts.
 - [ ] Add destructive-retention authorization and deletion journal.
@@ -136,6 +141,7 @@ This file supersedes the Wave 5 checkbox section in `docs/TODO.md`. The older fi
 - Snapshot integrity digests are not digital signatures.
 - Restore execution accepts only terminal snapshots and an initialized globally empty target.
 - Restore never overwrites, merges or deletes target history.
+- Legal holds protect retention planning but do not authorize deletion or restore mutation.
 - Retention candidates are not deletion authorization.
 - Focused reconstructed tests are not the complete release matrix.
 - Release readiness is not claimed.
