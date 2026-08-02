@@ -2,7 +2,7 @@
 
 Last updated: 2026-08-02
 
-RigorousRAG now exposes two publication assurance levels.
+RigorousRAG exposes two publication assurance levels. The durable command families use separate phase journals so a candidate created under one assurance level cannot be resumed under the other.
 
 ## 1. Authorization-only compatibility path
 
@@ -16,7 +16,7 @@ python scripts/evidence_graph_set_publication.py reconcile-one ...
 
 These paths require committed governed reviewer-authorization receipts and preserve the established compensating pointer/publication semantics.
 
-They do not yet embed signed actor-use aggregate digests into reviewed relation metadata.
+They do not embed signed actor-use aggregate digests into reviewed relation metadata.
 
 ## 2. Signed actor-use provenance path
 
@@ -100,7 +100,20 @@ python scripts/evidence_graph_set_signed_publish.py publish-approved \
 
 The command retains the existing compare-and-swap, post-activation authority verification and compensation behavior.
 
-## 6. Durable publication
+## 6. Durable signed publication
+
+Configure a signed-only journal path distinct from the authorization-only path:
+
+```bash
+EVIDENCE_GRAPH_SET_PUBLICATION_DB_PATH=data/evidence_graph_set_publications.sqlite3
+EVIDENCE_GRAPH_SET_SIGNED_PUBLICATION_DB_PATH=data/evidence_graph_set_signed_publications.sqlite3
+```
+
+The signed runtime rejects:
+
+- the same canonical path in both settings;
+- relative/absolute spellings that resolve to one path;
+- two existing paths that hard-link to the same inode.
 
 Seed only after all required receipts are committed:
 
@@ -129,7 +142,7 @@ python scripts/evidence_graph_set_signed_publication.py reconcile-one \
   --lease-seconds 60
 ```
 
-Read-only inspection and controlled retry/cancel use the same command names as the compatibility journal CLI:
+Read-only inspection and controlled retry/cancel:
 
 ```bash
 python scripts/evidence_graph_set_signed_publication.py status OPERATION_ID
@@ -142,41 +155,67 @@ python scripts/evidence_graph_set_signed_publication.py cancel OPERATION_ID \
   --confirm-operation-id OPERATION_ID
 ```
 
-Every execute or reconcile replay reconstructs the governed authorization view and the signed actor-use view before claiming or mutating graph-set state.
+Every seed, execute and reconcile operation uses only the signed publication journal. Every execute or reconcile replay reconstructs the governed authorization view and signed actor-use view before claiming or mutating graph-set state.
 
-## 7. Time boundary
+## 7. Why journal isolation is required
 
-`reconcile-one` captures one finite non-negative timestamp and uses it for both claim discovery and execution. `None`, NaN, infinity and negative values are never forwarded to the durable journal.
+The logical publication operation ID is deterministic over owner, graph-set key, proposal IDs and expected pointer. It intentionally does not encode the command family.
 
-## 8. Compatibility and migration
+If both assurance levels shared one durable journal, the following unsafe sequence would be possible:
 
-The signed commands use the same:
+1. the authorization-only path stores a candidate without signed actor-use metadata;
+2. the process stops after the `candidate_stored` phase;
+3. the signed command resumes the same operation ID;
+4. recovery loads the already-created candidate rather than rebuilding its relation metadata.
+
+Separate journal databases eliminate that recovery downgrade while retaining the mature pointer compare-and-swap and compensation engine.
+
+## 8. Compatibility and transition
+
+The command families still share:
 
 - relation proposal ledger;
 - authorization receipt store;
 - signed actor-use store;
-- graph-set store;
-- publication phase journal;
-- deterministic operation IDs;
+- immutable graph-set store;
+- deterministic logical operation IDs;
 - pointer compare-and-swap and compensation engine.
 
-No data migration is required. Existing publication attempts can be executed through the signed path only when their referenced proposals pass signed-use provenance validation.
+They do **not** share publication phase journals.
 
-The compatibility commands remain available because direct actor deployments may not require signed assertion provenance and because silently changing an operator command’s assurance contract would be unsafe.
+Attempts created by signed commands before journal isolation may exist in the authorization-only journal. They are not automatically migrated and must not be resumed through the signed command family. Operators should:
+
+1. inspect the old attempt and current graph-set pointer through the authorization-only status command;
+2. allow an actively leased worker to finish or wait for the lease to expire;
+3. cancel the old non-terminal attempt with exact operation-ID confirmation when safe;
+4. re-seed through the signed command with an explicit current/no-current pointer expectation.
+
+Immutable non-current candidates may remain as historical records. No destructive cleanup is implied or automatically performed.
+
+The compatibility commands remain available because direct actor deployments may not require signed assertion provenance and silently changing an operator command’s assurance contract would be unsafe.
 
 ## 9. Verification boundary
 
-Committed contracts cover:
+Executed in reconstructed focused workspaces using the live signed modules and minimal stubs only for unrelated repository services:
+
+- **12/12** signed assertion, actor-binding and actor-use runtime checks passed;
+- **17/17** signed publication adapter, timestamp boundary, immediate CLI, durable CLI and journal-isolation tests passed;
+- Python compilation passed for both focused slices.
+
+The 17-test publication slice includes:
 
 - deterministic zero-use metadata;
 - committed multi-use aggregation;
 - reserved and mismatched use refusal;
-- immediate publication delegation;
-- durable publication delegation;
+- immediate and durable publication delegation;
 - finite reconcile timestamp capture;
-- seed-time signed provenance validation;
-- execute-time authorization/actor-use dependency injection;
+- corrected production-dataclass serialization fixture;
+- seed/execute dependency injection;
 - idle reconciliation;
-- secret-free success/failure output.
+- secret-free output;
+- distinct default journal paths;
+- explicit signed path override;
+- canonical path alias refusal;
+- hard-link alias refusal.
 
-The newest signed-publication modules have not yet been run in an exact-current repository checkout. Release readiness is not claimed.
+This is stronger than static inspection but is not an exact-current full repository checkout. The complete repository pytest, coverage, Ruff, Windows, container, process-kill and disk-failure matrices remain unexecuted after these commits. GitHub exposes no status checks or workflow runs for the current head. Release readiness is not claimed.
