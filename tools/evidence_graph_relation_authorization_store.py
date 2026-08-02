@@ -121,10 +121,17 @@ class ReviewAuthorizationRecord:
                 _timestamp(self.committed_at, "committed_at"),
             )
         object.__setattr__(self, "updated_at", _timestamp(self.updated_at, "updated_at"))
+        if self.updated_at < self.prepared_at:
+            raise ValueError("updated_at may not precede prepared_at.")
         if self.state == "authorized" and self.committed_at is not None:
             raise ValueError("authorized receipt may not contain committed_at.")
         if self.state == "committed" and self.committed_at is None:
             raise ValueError("committed receipt requires committed_at.")
+        if self.committed_at is not None and (
+            self.committed_at < self.prepared_at
+            or self.updated_at < self.committed_at
+        ):
+            raise ValueError("committed receipt timestamps are not monotonic.")
         if self.schema_version != 1:
             raise ValueError("authorization record schema is unsupported.")
 
@@ -296,6 +303,7 @@ class RelationReviewAuthorizationStore:
                 if row is None:
                     raise KeyError(selected)
                 current = self._record(row)
+                timestamp = max(timestamp, current.updated_at, current.prepared_at)
                 if current.state == "authorized":
                     connection.execute(
                         """
