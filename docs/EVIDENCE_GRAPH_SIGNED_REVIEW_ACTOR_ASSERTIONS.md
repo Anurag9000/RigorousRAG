@@ -88,6 +88,7 @@ Verification output contains only actor/issuer/time/nonce metadata and SHA-256 d
 EVIDENCE_GRAPH_REVIEW_ACTOR_ASSERTION_PATH=/run/rigorousrag/reviewer-42.assertion.json
 EVIDENCE_GRAPH_REVIEW_ACTOR_HMAC_KEY_PATH=/run/secrets/review-actor-hmac-key
 EVIDENCE_GRAPH_REVIEW_ACTOR_EXPECTED_ISSUER=review-control-plane
+EVIDENCE_GRAPH_REVIEW_ACTOR_USE_DB_PATH=data/evidence_graph_review_actor_uses.sqlite3
 ```
 
 Leave these direct modes empty:
@@ -122,12 +123,57 @@ The one-time decision output contains:
 - actor ID;
 - `binding_method=hmac_assertion`;
 - deterministic binding digest;
-- verification time;
-- no key material.
+- assertion digest, issuer and expiry;
+- committed actor-use receipt summaries;
+- no signature or key material.
 
 The actor binding digest commits the assertion digest, issuer and expiry in addition to actor ID and binding method.
 
-## 7. Security properties
+## 7. One-decision assertion reservation
+
+Before authorization or terminal-decision mutation, the CLI reserves the signed assertion in a separate append-only SQLite journal.
+
+The reservation identity commits:
+
+- assertion digest;
+- deterministic decision ID;
+- proposal ID;
+- owner ID;
+- graph-set key;
+- decision type;
+- actor ID;
+- issuer;
+- actor-binding digest;
+- assertion expiry.
+
+Rules:
+
+- one assertion digest may be reserved for only one deterministic decision;
+- exact same assertion/decision replay is idempotent;
+- the same assertion cannot authorize a second proposal or changed decision;
+- direct actor modes do not create signed-assertion reservations;
+- an existing decision cannot be retroactively assigned signed-assertion provenance unless a prior reservation for that decision already exists;
+- after the authorization receipt and terminal decision are durable, all reservations for that decision transition `reserved -> committed`;
+- reservation and commit timestamps are finite and monotonic;
+- there is no delete, release, replace or reuse command.
+
+A new assertion may recover an existing decision only when at least one earlier reservation already proves signed review began before that decision. This supports expiry/crash recovery without permitting after-the-fact signed backfill.
+
+The stable decision replay boundary compares the deterministic decision identity and all governed fields while retaining the original stored `decided_at` audit timestamp.
+
+## 8. Audit actor uses
+
+```bash
+python scripts/evidence_graph_review_actor_uses.py status ASSERTION_DIGEST
+python scripts/evidence_graph_review_actor_uses.py list \
+  --owner-id alice \
+  --decision-id DECISION_ID \
+  --state committed
+```
+
+The audit CLI is read-only. It cannot reserve, commit, retry, alter or delete records. It returns digests, scopes, actor/issuer identities, expiry and timestamps, never signature, key material or source text.
+
+## 9. Security properties
 
 Implemented protections:
 
@@ -141,9 +187,13 @@ Implemented protections:
 - constant-time signature comparison;
 - assertion and signature digests for audit correlation;
 - no output overwrite by the signing tool;
-- no key disclosure in normal CLI output.
+- no key disclosure in normal CLI output;
+- durable one-decision assertion reservation;
+- refusal of assertion reuse for another decision;
+- refusal of retroactive signed provenance without prior reservation;
+- crash recovery through stable decision identity and committed reservation state.
 
-## 8. Remaining limitations
+## 10. Remaining limitations
 
 A shared HMAC key provides symmetric authentication:
 
@@ -152,15 +202,14 @@ A shared HMAC key provides symmetric authentication:
 - it does not identify the human who accessed the key;
 - it is not OIDC, SAML, directory or hardware-attested identity.
 
-At this stage, the nonce is signed but replay prevention is not yet durable. A still-valid assertion could be reused for another policy-permitted decision by the same actor. The next governance layer must reserve each assertion/nonce to one deterministic terminal decision while permitting exact crash recovery for that same decision.
-
-Still open after nonce reservation:
+Still open:
 
 - asymmetric signatures and key IDs;
 - external IAM/OIDC assertions;
 - hardware-backed signing;
 - issuer key rotation and overlap windows;
 - remote submission transport authentication;
+- durable binding of the actor-use digest directly into the authorization-receipt schema;
 - multi-party/quorum approval.
 
 Permanent non-claim: a cryptographically valid actor assertion proves possession of a configured shared key, not scientific truth or external peer review.
