@@ -33,6 +33,8 @@ This file supersedes the Wave 5 checkbox section in `docs/TODO.md`. The older fi
 - [x] Fourth isolated restore-intent journal with exact snapshot/target scope.
 - [x] Atomic all-or-none target insertion and exact replay recovery.
 - [x] Final target write lock across verification and restore-intent completion.
+- [x] Restore-intent operational audit and lease/exhaustion classification.
+- [x] Conservative restore-intent retention planning with legal-hold inputs.
 
 ## Completed GraphRAG path
 
@@ -85,6 +87,8 @@ This file supersedes the Wave 5 checkbox section in `docs/TODO.md`. The older fi
 - [x] No-overwrite and no-merge restore semantics.
 - [x] Recovery after target commit before intent-phase persistence.
 - [x] Recovery after target phase persistence before completion.
+- [x] Restore-intent operational audit.
+- [x] Non-destructive restore-intent retention planning.
 - [ ] Add asymmetric or hardware-backed audit snapshot signatures.
 - [ ] Add trusted timestamps and signer key rotation.
 - [ ] Add durable legal-hold registry and authorization.
@@ -132,5 +136,6 @@ This file supersedes the Wave 5 checkbox section in `docs/TODO.md`. The older fi
 - Snapshot integrity digests are not digital signatures.
 - Restore execution accepts only terminal snapshots and an initialized globally empty target.
 - Restore never overwrites, merges or deletes target history.
+- Retention candidates are not deletion authorization.
 - Focused reconstructed tests are not the complete release matrix.
 - Release readiness is not claimed.
