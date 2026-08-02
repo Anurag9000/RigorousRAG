@@ -1,4 +1,4 @@
-"""Deterministic identity boundary for semantic relation authorizations."""
+"""Deterministic identity and replay boundary for relation authorizations."""
 
 from __future__ import annotations
 
@@ -7,6 +7,15 @@ from typing import Any
 from tools import evidence_graph_relation_policy as _policy
 
 _MARKER = "_deterministic_review_authorization_integrity_installed"
+_DECISION_IDENTITY_FIELDS = (
+    "decision_id",
+    "proposal_id",
+    "owner_id",
+    "decision",
+    "reviewer_id",
+    "reason_code",
+    "replacement_proposal_id",
+)
 
 
 def deterministic_review_authorization_digest(
@@ -39,12 +48,20 @@ def deterministic_review_authorization_digest(
     )
 
 
+def _same_terminal_identity(left: Any, right: Any) -> bool:
+    return all(
+        getattr(left, name, object()) == getattr(right, name, object())
+        for name in _DECISION_IDENTITY_FIELDS
+    )
+
+
 def install_relation_review_authorization_integrity() -> None:
     authorization_class = _policy.ReviewAuthorization
     service_class = _policy.GovernedRelationReviewService
     if getattr(authorization_class, _MARKER, False):
         return
     original_post_init = authorization_class.__post_init__
+    original_decide = service_class.decide
 
     def checked_post_init(self: Any) -> None:
         original_post_init(self)
@@ -128,8 +145,41 @@ def install_relation_review_authorization_integrity() -> None:
             replacement_scope_validated=replacement_scope_validated,
         )
 
+    def decide_with_stable_replay(self: Any, decision: Any):
+        if not isinstance(decision, _policy.RelationReviewDecision):
+            return original_decide(self, decision)
+        existing = self.ledger.get_decision(decision.proposal_id)
+        if existing is None:
+            return original_decide(self, decision)
+        if not _same_terminal_identity(existing, decision):
+            raise RuntimeError(
+                "relation proposal already has a different terminal decision."
+            )
+        proposal = self.ledger.get_proposal(existing.proposal_id)
+        receipt = self.authorization_store.get(existing.decision_id)
+        if receipt is None:
+            raise RuntimeError(
+                "existing relation decision lacks a governed authorization receipt."
+            )
+        authorization = receipt.authorization
+        if (
+            authorization.proposal_id != proposal.proposal_id
+            or authorization.decision_id != existing.decision_id
+            or authorization.owner_id != proposal.owner_id
+            or authorization.graph_set_key != proposal.graph_set_key
+            or authorization.decision != existing.decision
+            or authorization.reviewer_id != existing.reviewer_id
+        ):
+            raise RuntimeError(
+                "governed authorization receipt differs from the terminal decision."
+            )
+        return existing, self.authorization_store.mark_committed(
+            existing.decision_id, now=self.clock()
+        )
+
     authorization_class.__post_init__ = checked_post_init
     service_class._authorization = create_authorization
+    service_class.decide = decide_with_stable_replay
     setattr(authorization_class, _MARKER, True)
 
 
