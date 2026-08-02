@@ -8,6 +8,8 @@ import sys
 from typing import Any, Sequence
 
 from tools.evidence_graph_relation_actor import require_relation_review_actor
+from tools.evidence_graph_relation_actor_use_runtime import get_signed_actor_use_store
+from tools.evidence_graph_relation_actor_use_store import SignedActorUseRecord
 from tools.evidence_graph_relation_authorization_runtime import (
     get_relation_review_authorization_store,
 )
@@ -48,6 +50,24 @@ def _authorization_summary(record: Any | None) -> dict[str, Any] | None:
         "replacement_scope_validated": (
             authorization.replacement_scope_validated
         ),
+    }
+
+
+def _actor_use_summary(record: Any) -> dict[str, Any]:
+    return {
+        "assertion_digest": record.assertion_digest,
+        "decision_id": record.decision_id,
+        "actor_id": record.actor_id,
+        "issuer": record.issuer,
+        "binding_digest": record.binding_digest,
+        "assertion_expires_at": record.assertion_expires_at,
+        "use_digest": record.use_digest,
+        "state": record.state,
+        "reserved_at": record.reserved_at,
+        "committed_at": record.committed_at,
+        "updated_at": record.updated_at,
+        "contains_signature": False,
+        "contains_key_material": False,
     }
 
 
@@ -158,8 +178,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--reviewer-id",
         required=True,
         help=(
-            "Must exactly match the process-owned actor configured through "
-            "EVIDENCE_GRAPH_REVIEW_ACTOR_ID or EVIDENCE_GRAPH_REVIEW_ACTOR_ID_PATH."
+            "Must exactly match the process-owned actor configured through one "
+            "direct actor source or a verified signed assertion."
         ),
     )
     decide.add_argument("--reason-code", required=True)
@@ -200,30 +220,73 @@ def _propose(args: argparse.Namespace) -> int:
 
 def _decide(args: argparse.Namespace) -> int:
     actor = require_relation_review_actor(args.reviewer_id)
+    ledger = get_relation_review_ledger()
+    proposal = ledger.get_proposal(args.proposal_id)
     value = RelationReviewDecision.create(
-        proposal_id=args.proposal_id,
+        proposal_id=proposal.proposal_id,
         owner_id=args.owner_id,
         decision=args.decision,
         reviewer_id=actor.actor_id,
         reason_code=args.reason_code,
         replacement_proposal_id=args.replacement_proposal_id,
     )
-    ledger = get_relation_review_ledger()
     service = GovernedRelationReviewService(
         ledger=ledger,
         policy=get_relation_review_policy(),
         authorization_store=get_relation_review_authorization_store(),
     )
+    use_store = None
+    current_use = None
+    if actor.binding_method == "hmac_assertion":
+        use_store = get_signed_actor_use_store()
+        existing_decision = ledger.get_decision(proposal.proposal_id)
+        prior_uses = use_store.list(
+            owner_id=proposal.owner_id,
+            decision_id=value.decision_id,
+            limit=10_000,
+        )
+        if existing_decision is not None and not prior_uses:
+            raise RuntimeError(
+                "signed actor assertion may not be retroactively attached to an "
+                "existing terminal decision."
+            )
+        current_use = use_store.reserve(
+            SignedActorUseRecord.create(
+                binding=actor,
+                proposal=proposal,
+                decision=value,
+                reserved_at=actor.loaded_at,
+            )
+        )
     stored, receipt = service.decide(value)
-    proposal = ledger.get_proposal(stored.proposal_id)
+    committed_uses = []
+    if use_store is not None and current_use is not None:
+        uses = use_store.list(
+            owner_id=proposal.owner_id,
+            decision_id=stored.decision_id,
+            limit=10_000,
+        )
+        for use in uses:
+            committed_uses.append(
+                use_store.mark_committed(
+                    use.assertion_digest,
+                    decision_id=stored.decision_id,
+                )
+            )
     payload = _proposal_summary(proposal, stored, receipt)
     payload["review_actor_binding"] = {
         "actor_id": actor.actor_id,
         "binding_method": actor.binding_method,
         "binding_digest": actor.binding_digest,
         "loaded_at": actor.loaded_at,
+        "assertion_digest": actor.assertion_digest,
+        "issuer": actor.issuer,
+        "expires_at": actor.expires_at,
         "durable_receipt_field": False,
     }
+    payload["signed_actor_uses"] = [
+        _actor_use_summary(value) for value in committed_uses
+    ]
     _print(payload)
     return 0
 
