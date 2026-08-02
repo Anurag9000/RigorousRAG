@@ -1,4 +1,4 @@
-"""Operator CLI for compensating publication of approved graph relations."""
+"""Operator CLI for governed compensating publication of approved graph relations."""
 
 from __future__ import annotations
 
@@ -8,12 +8,15 @@ import sys
 from dataclasses import asdict
 from typing import Any, Sequence
 
+from tools.evidence_graph_relation_authorization_runtime import (
+    get_relation_review_authorization_store,
+)
 from tools.evidence_graph_relation_runtime import get_relation_review_ledger
 from tools.evidence_graph_runtime import get_evidence_graph_store
-from tools.evidence_graph_set_publish import (
-    EvidenceGraphSetPublishError,
-    publish_approved_graph_set,
+from tools.evidence_graph_set_governed_publish import (
+    publish_governed_approved_graph_set as publish_approved_graph_set,
 )
+from tools.evidence_graph_set_publish import EvidenceGraphSetPublishError
 from tools.evidence_graph_set_runtime import get_evidence_graph_set_store
 from tools.sparse_runtime import get_generation_store
 
@@ -29,8 +32,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m tools.evidence_graph_set_publish_cli",
         description=(
-            "Publish one graph-set version from an explicit list of reviewed approved "
-            "proposals. The current pointer is compare-and-swap protected and compensated."
+            "Publish one graph-set version from explicitly approved proposals with "
+            "committed reviewer-authorization receipts. The current pointer is "
+            "compare-and-swap protected and compensated."
         ),
     )
     publish = parser.add_subparsers(dest="command", required=True).add_parser(
@@ -58,6 +62,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             proposal_ids=args.proposal_id,
             expected_current_set_id=expected,
             ledger=get_relation_review_ledger(),
+            authorization_store=get_relation_review_authorization_store(),
             set_store=get_evidence_graph_set_store(),
             generations=get_generation_store(),
             graphs=get_evidence_graph_store(),
@@ -68,6 +73,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "semantic_inference_performed": False,
                 "automatic_approval_performed": False,
                 "reviewed_proposals_required": True,
+                "committed_review_authorizations_required": True,
                 "source_text_returned": False,
             }
         )
