@@ -6,13 +6,13 @@ import os
 import threading
 from pathlib import Path
 
-from tools.evidence_graph_set_signed_retirement_restore_hold_integrity import (
-    IntegritySignedRetirementRestoreHoldStore,
+from tools.evidence_graph_set_signed_retirement_restore_hold_boundary import (
+    GovernedSignedRetirementRestoreHoldStore,
 )
 
 _DEFAULT_PATH = "data/evidence_graph_set_signed_retirement_holds.sqlite3"
 _LOCK = threading.RLock()
-_STORES: dict[str, IntegritySignedRetirementRestoreHoldStore] = {}
+_STORES: dict[str, GovernedSignedRetirementRestoreHoldStore] = {}
 
 
 def _canonical(value: str | os.PathLike[str]) -> Path:
@@ -33,7 +33,7 @@ def _same_file(left: Path, right: Path) -> bool:
 
 def get_signed_retirement_restore_hold_store(
     path: str | os.PathLike[str] | None = None,
-) -> IntegritySignedRetirementRestoreHoldStore:
+) -> GovernedSignedRetirementRestoreHoldStore:
     selected = path if path is not None else os.getenv(
         "EVIDENCE_GRAPH_SET_SIGNED_RETIREMENT_HOLD_DB_PATH",
         _DEFAULT_PATH,
@@ -57,7 +57,7 @@ def get_signed_retirement_restore_hold_store(
     with _LOCK:
         store = _STORES.get(key)
         if store is None:
-            store = IntegritySignedRetirementRestoreHoldStore(hold_path)
+            store = GovernedSignedRetirementRestoreHoldStore(hold_path)
             _STORES[key] = store
         return store
 
