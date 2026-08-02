@@ -1,4 +1,4 @@
-"""Operator CLI for text-free cross-document relation proposals and review."""
+"""Operator CLI for governed text-free relation proposals and review."""
 
 from __future__ import annotations
 
@@ -7,6 +7,11 @@ import json
 import sys
 from typing import Any, Sequence
 
+from tools.evidence_graph_relation_authorization_runtime import (
+    get_relation_review_authorization_store,
+)
+from tools.evidence_graph_relation_policy import GovernedRelationReviewService
+from tools.evidence_graph_relation_policy_runtime import get_relation_review_policy
 from tools.evidence_graph_relation_review import (
     CrossDocumentRelationProposal,
     RelationEndpoint,
@@ -22,7 +27,35 @@ def _print(value: Any, *, stream: Any = None) -> None:
     )
 
 
-def _proposal_summary(value: Any, decision: Any | None) -> dict[str, Any]:
+def _authorization_summary(record: Any | None) -> dict[str, Any] | None:
+    if record is None:
+        return None
+    authorization = record.authorization
+    return {
+        "state": record.state,
+        "decision_id": authorization.decision_id,
+        "reviewer_id": authorization.reviewer_id,
+        "policy_digest": authorization.policy_digest,
+        "grant_digest": authorization.grant_digest,
+        "authorization_digest": authorization.authorization_digest,
+        "authorized_at": authorization.authorized_at,
+        "prepared_at": record.prepared_at,
+        "committed_at": record.committed_at,
+        "separation_of_duties_enforced": (
+            authorization.separation_of_duties_enforced
+        ),
+        "replacement_scope_validated": (
+            authorization.replacement_scope_validated
+        ),
+    }
+
+
+def _proposal_summary(
+    value: Any,
+    decision: Any | None,
+    authorization_record: Any | None = None,
+) -> dict[str, Any]:
+    authorization = _authorization_summary(authorization_record)
     return {
         "proposal_id": value.proposal_id,
         "proposal_digest": value.proposal_digest,
@@ -63,6 +96,8 @@ def _proposal_summary(value: Any, decision: Any | None) -> dict[str, Any]:
                 "decided_at": decision.decided_at,
             }
         ),
+        "review_authorization": authorization,
+        "governed_review": decision is not None and authorization is not None,
         "contains_source_text": False,
         "automatic_approval_performed": False,
     }
@@ -83,7 +118,8 @@ def build_parser() -> argparse.ArgumentParser:
         prog="python -m tools.evidence_graph_relation_cli",
         description=(
             "Submit text-free cross-document relation proposals and record explicit "
-            "terminal reviewer decisions. No proposal is approved automatically."
+            "terminal reviewer decisions under configured authorization policy. "
+            "No proposal is approved automatically."
         ),
     )
     commands = parser.add_subparsers(dest="command", required=True)
@@ -98,7 +134,11 @@ def build_parser() -> argparse.ArgumentParser:
         propose.add_argument(f"--{prefix}-node-id", required=True)
         propose.add_argument(f"--{prefix}-provenance-digest", required=True)
     propose.add_argument("--edge-type", required=True)
-    propose.add_argument("--proposer-kind", choices=("human", "model", "rule"), required=True)
+    propose.add_argument(
+        "--proposer-kind",
+        choices=("human", "model", "rule"),
+        required=True,
+    )
     propose.add_argument("--proposer-id", required=True)
     propose.add_argument("--evidence-digest", required=True)
     propose.add_argument("--extractor-name")
@@ -108,7 +148,11 @@ def build_parser() -> argparse.ArgumentParser:
     decide = commands.add_parser("decide")
     decide.add_argument("proposal_id")
     decide.add_argument("--owner-id", required=True)
-    decide.add_argument("--decision", choices=("approved", "rejected", "superseded"), required=True)
+    decide.add_argument(
+        "--decision",
+        choices=("approved", "rejected", "superseded"),
+        required=True,
+    )
     decide.add_argument("--reviewer-id", required=True)
     decide.add_argument("--reason-code", required=True)
     decide.add_argument("--replacement-proposal-id")
@@ -118,7 +162,10 @@ def build_parser() -> argparse.ArgumentParser:
     listing = commands.add_parser("list")
     listing.add_argument("--owner-id", required=True)
     listing.add_argument("--graph-set-key", required=True)
-    listing.add_argument("--decision", choices=("pending", "approved", "rejected", "superseded"))
+    listing.add_argument(
+        "--decision",
+        choices=("pending", "approved", "rejected", "superseded"),
+    )
     listing.add_argument("--limit", type=int, default=100)
     return parser
 
@@ -152,16 +199,28 @@ def _decide(args: argparse.Namespace) -> int:
         reason_code=args.reason_code,
         replacement_proposal_id=args.replacement_proposal_id,
     )
-    stored = get_relation_review_ledger().decide(value)
-    proposal = get_relation_review_ledger().get_proposal(stored.proposal_id)
-    _print(_proposal_summary(proposal, stored))
+    ledger = get_relation_review_ledger()
+    service = GovernedRelationReviewService(
+        ledger=ledger,
+        policy=get_relation_review_policy(),
+        authorization_store=get_relation_review_authorization_store(),
+    )
+    stored, receipt = service.decide(value)
+    proposal = ledger.get_proposal(stored.proposal_id)
+    _print(_proposal_summary(proposal, stored, receipt))
     return 0
 
 
 def _status(args: argparse.Namespace) -> int:
     ledger = get_relation_review_ledger()
     proposal = ledger.get_proposal(args.proposal_id)
-    _print(_proposal_summary(proposal, ledger.get_decision(proposal.proposal_id)))
+    decision = ledger.get_decision(proposal.proposal_id)
+    receipt = (
+        None
+        if decision is None
+        else get_relation_review_authorization_store().get(decision.decision_id)
+    )
+    _print(_proposal_summary(proposal, decision, receipt))
     return 0
 
 
@@ -172,12 +231,21 @@ def _list(args: argparse.Namespace) -> int:
         decision=args.decision,
         limit=args.limit,
     )
+    authorization_store = get_relation_review_authorization_store()
+    rendered = []
+    for proposal, review in values:
+        receipt = (
+            None
+            if review is None
+            else authorization_store.get(review.decision_id)
+        )
+        rendered.append(_proposal_summary(proposal, review, receipt))
     _print(
         {
             "owner_id": args.owner_id,
             "graph_set_key": args.graph_set_key,
-            "count": len(values),
-            "proposals": [_proposal_summary(proposal, review) for proposal, review in values],
+            "count": len(rendered),
+            "proposals": rendered,
             "contains_source_text": False,
         }
     )
@@ -200,7 +268,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     except KeyError:
         _print({"error": "not_found"}, stream=sys.stderr)
         return 1
-    except (OSError, RuntimeError, TypeError, ValueError):
+    except (OSError, PermissionError, RuntimeError, TypeError, ValueError):
         _print({"error": "invalid_or_unavailable"}, stream=sys.stderr)
         return 2
 
