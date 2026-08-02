@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -126,8 +127,40 @@ def test_transition_audit_detects_signed_attempts_and_expired_leases():
     assert items["2"].signed_attempt_present is True
     assert items["2"].action == "resolve_duplicate_nonterminal_attempts"
     assert items["3"].signed_state == "completed"
-    assert items["3"].action == "signed_attempt_already_completed"
-    assert report.actionable_count == 2
+    assert (
+        items["3"].action
+        == "cancel_authorization_only_duplicate_after_signed_completion"
+    )
+    assert report.actionable_count == 3
+
+
+def test_completed_twins_need_no_transition_action():
+    common = Journal((attempt("1", state="completed", phase="verified", candidate=True),))
+    signed = Journal((attempt("1", state="completed", phase="verified", candidate=True),))
+
+    report = assess_signed_publication_transition(
+        owner_id="alice",
+        authorization_journal=common,
+        signed_journal=signed,
+        now=10.0,
+    )
+
+    assert report.actionable_count == 0
+    assert report.items[0].action == "signed_attempt_already_completed"
+
+
+def test_transition_report_revalidates_counts_and_digest():
+    report = assess_signed_publication_transition(
+        owner_id="alice",
+        authorization_journal=Journal((attempt("1", state="planned"),)),
+        signed_journal=Journal(),
+        now=10.0,
+    )
+
+    with pytest.raises(ValueError, match="actionable_count"):
+        replace(report, actionable_count=0)
+    with pytest.raises(ValueError, match="report_digest"):
+        replace(report, report_digest="f" * 64)
 
 
 def test_transition_audit_is_deterministic_for_same_time_and_inputs():
