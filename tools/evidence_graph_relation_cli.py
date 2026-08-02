@@ -7,6 +7,7 @@ import json
 import sys
 from typing import Any, Sequence
 
+from tools.evidence_graph_relation_actor import require_relation_review_actor
 from tools.evidence_graph_relation_authorization_runtime import (
     get_relation_review_authorization_store,
 )
@@ -153,7 +154,14 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("approved", "rejected", "superseded"),
         required=True,
     )
-    decide.add_argument("--reviewer-id", required=True)
+    decide.add_argument(
+        "--reviewer-id",
+        required=True,
+        help=(
+            "Must exactly match the process-owned actor configured through "
+            "EVIDENCE_GRAPH_REVIEW_ACTOR_ID or EVIDENCE_GRAPH_REVIEW_ACTOR_ID_PATH."
+        ),
+    )
     decide.add_argument("--reason-code", required=True)
     decide.add_argument("--replacement-proposal-id")
 
@@ -191,11 +199,12 @@ def _propose(args: argparse.Namespace) -> int:
 
 
 def _decide(args: argparse.Namespace) -> int:
+    actor = require_relation_review_actor(args.reviewer_id)
     value = RelationReviewDecision.create(
         proposal_id=args.proposal_id,
         owner_id=args.owner_id,
         decision=args.decision,
-        reviewer_id=args.reviewer_id,
+        reviewer_id=actor.actor_id,
         reason_code=args.reason_code,
         replacement_proposal_id=args.replacement_proposal_id,
     )
@@ -207,7 +216,15 @@ def _decide(args: argparse.Namespace) -> int:
     )
     stored, receipt = service.decide(value)
     proposal = ledger.get_proposal(stored.proposal_id)
-    _print(_proposal_summary(proposal, stored, receipt))
+    payload = _proposal_summary(proposal, stored, receipt)
+    payload["review_actor_binding"] = {
+        "actor_id": actor.actor_id,
+        "binding_method": actor.binding_method,
+        "binding_digest": actor.binding_digest,
+        "loaded_at": actor.loaded_at,
+        "durable_receipt_field": False,
+    }
+    _print(payload)
     return 0
 
 
