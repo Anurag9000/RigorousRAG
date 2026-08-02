@@ -4,6 +4,9 @@ import json
 from types import SimpleNamespace
 
 from tools import evidence_graph_set_signed_publication_cli as cli
+from tools.evidence_graph_set_publish_reconcile import (
+    EvidenceGraphSetPublicationExecution,
+)
 
 
 def read(capsys):
@@ -110,23 +113,21 @@ def test_seed_validates_signed_provenance_before_journaling(
 def test_execute_uses_signed_governance_dependencies(monkeypatch, capsys):
     install(monkeypatch)
     observed = {}
-    result = SimpleNamespace(
+    result = EvidenceGraphSetPublicationExecution(
         operation_id="1" * 64,
         state="completed",
         phase="completed",
-        graph_set_id="3" * 64,
-        graph_set_digest="4" * 64,
-        pointer_current_set_id="3" * 64,
-        previous_graph_set_id=None,
+        graph_set_key="review",
         candidate_graph_set_id="3" * 64,
         candidate_graph_set_digest="4" * 64,
+        previous_graph_set_id=None,
         member_count=2,
         edge_count=1,
-        authority_digest="5" * 64,
         verification_digest="6" * 64,
-        compensation_errors=(),
+        attempt_count=1,
+        pointer_current_set_id="3" * 64,
         graph_set_mutation_performed=True,
-        completed_at=2.0,
+        authoritative_mutation_performed=False,
     )
 
     def execute(operation_id, **kwargs):
@@ -146,6 +147,8 @@ def test_execute_uses_signed_governance_dependencies(monkeypatch, capsys):
     assert observed["authorization_store"] == "authorizations"
     assert observed["actor_use_store"] == "actor-uses"
     assert observed["worker_id"] == "worker"
+    assert output["state"] == "completed"
+    assert output["graph_set_key"] == "review"
     assert output["signed_actor_use_provenance_validated"] is True
     assert output["source_text_returned"] is False
 
