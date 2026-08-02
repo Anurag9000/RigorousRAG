@@ -122,7 +122,7 @@ def test_transition_audit_detects_signed_attempts_and_expired_leases():
     assert items["1"].lease_active is False
     assert (
         items["1"].action
-        == "inspect_expired_authorization_only_lease_then_cancel_or_retry"
+        == "reconcile_expired_authorization_only_attempt_before_transition"
     )
     assert items["2"].signed_attempt_present is True
     assert items["2"].action == "resolve_duplicate_nonterminal_attempts"
@@ -134,9 +134,59 @@ def test_transition_audit_detects_signed_attempts_and_expired_leases():
     assert report.actionable_count == 3
 
 
+def test_signed_completion_distinguishes_active_and_expired_running_duplicates():
+    common = Journal(
+        (
+            attempt(
+                "1",
+                state="running",
+                phase="candidate_stored",
+                lease_expires_at=20.0,
+                candidate=True,
+            ),
+            attempt(
+                "2",
+                state="running",
+                phase="candidate_stored",
+                lease_expires_at=9.0,
+                candidate=True,
+            ),
+        )
+    )
+    signed = Journal(
+        (
+            attempt("1", state="completed", phase="verified", candidate=True),
+            attempt("2", state="completed", phase="verified", candidate=True),
+        )
+    )
+
+    report = assess_signed_publication_transition(
+        owner_id="alice",
+        authorization_journal=common,
+        signed_journal=signed,
+        now=10.0,
+    )
+    items = {value.operation_id[0]: value for value in report.items}
+
+    assert items["1"].lease_active is True
+    assert (
+        items["1"].action
+        == "wait_for_authorization_only_lease_then_retire_duplicate"
+    )
+    assert items["2"].lease_active is False
+    assert (
+        items["2"].action
+        == "preflight_expired_authorization_only_duplicate_retirement"
+    )
+
+
 def test_completed_twins_need_no_transition_action():
-    common = Journal((attempt("1", state="completed", phase="verified", candidate=True),))
-    signed = Journal((attempt("1", state="completed", phase="verified", candidate=True),))
+    common = Journal(
+        (attempt("1", state="completed", phase="verified", candidate=True),)
+    )
+    signed = Journal(
+        (attempt("1", state="completed", phase="verified", candidate=True),)
+    )
 
     report = assess_signed_publication_transition(
         owner_id="alice",
