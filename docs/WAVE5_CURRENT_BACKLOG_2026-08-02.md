@@ -29,6 +29,10 @@ This file supersedes the Wave 5 checkbox section in `docs/TODO.md`. The older fi
 - [x] Retirement operational audit and conservative retention planning.
 - [x] Deterministic text-free retirement snapshot export and verification.
 - [x] Read-only snapshot restore preflight against an initialized target.
+- [x] Crash-recoverable terminal snapshot restore into an initialized empty target.
+- [x] Fourth isolated restore-intent journal with exact snapshot/target scope.
+- [x] Atomic all-or-none target insertion and exact replay recovery.
+- [x] Final target write lock across verification and restore-intent completion.
 
 ## Completed GraphRAG path
 
@@ -64,23 +68,28 @@ This file supersedes the Wave 5 checkbox section in `docs/TODO.md`. The older fi
 ### Distributed execution and fault injection
 
 - [ ] Add database-backed or distributed leadership for periodic graph jobs.
-- [ ] Test independent-process publication and retirement contention.
-- [ ] Inject process kills at every publication and retirement phase.
+- [ ] Test independent-process publication, retirement and restore contention.
+- [ ] Inject process kills at every publication, retirement and restore phase.
 - [ ] Inject SQLite busy/locked, WAL, I/O error and disk-full failures.
 - [ ] Test graph-set pointer races with independent processes.
 - [ ] Test long-running lease renewal under real wall-clock delays.
+- [ ] Test restore-target writers blocked by final exact-target completion locks.
 
 ### Backup, restore and retention governance
 
 - [x] Read-only retirement snapshot export.
 - [x] Descriptor-safe offline snapshot verification.
 - [x] Read-only restore preflight.
+- [x] Crash-recoverable empty-target restore executor.
+- [x] Terminal-only source snapshot enforcement.
+- [x] No-overwrite and no-merge restore semantics.
+- [x] Recovery after target commit before intent-phase persistence.
+- [x] Recovery after target phase persistence before completion.
 - [ ] Add asymmetric or hardware-backed audit snapshot signatures.
 - [ ] Add trusted timestamps and signer key rotation.
 - [ ] Add durable legal-hold registry and authorization.
 - [ ] Add signed chain-of-custody manifests.
-- [ ] Design a crash-recoverable empty-target restore executor.
-- [ ] Add backup-before-restore and post-restore snapshot comparison.
+- [ ] Add mandatory backup-before-restore evidence and post-restore comparison receipts.
 - [ ] Add destructive-retention authorization and deletion journal.
 - [ ] Add secure deletion and database compaction policy.
 
@@ -121,6 +130,7 @@ This file supersedes the Wave 5 checkbox section in `docs/TODO.md`. The older fi
 - GraphRAG retrieval does not itself generate an answer.
 - An authorization-only graph set cannot be retroactively relabeled as signed provenance.
 - Snapshot integrity digests are not digital signatures.
-- Preflight eligibility is not execution authorization.
+- Restore execution accepts only terminal snapshots and an initialized globally empty target.
+- Restore never overwrites, merges or deletes target history.
 - Focused reconstructed tests are not the complete release matrix.
 - Release readiness is not claimed.
