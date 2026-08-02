@@ -33,6 +33,8 @@ def _same_file(left: Path, right: Path) -> bool:
 
 def get_signed_retirement_restore_custody_store(
     path: str | os.PathLike[str] | None = None,
+    *,
+    target_db_path: str | os.PathLike[str] | None = None,
 ) -> GovernedSignedRetirementRestoreCustodyStore:
     selected = path if path is not None else os.getenv(
         "EVIDENCE_GRAPH_SET_SIGNED_RETIREMENT_CUSTODY_DB_PATH",
@@ -40,6 +42,8 @@ def get_signed_retirement_restore_custody_store(
     )
     custody_path = _canonical(selected)
     protected: list[Path] = []
+    if target_db_path is not None:
+        protected.append(_canonical(target_db_path))
     for variable in (
         "EVIDENCE_GRAPH_SET_SIGNED_RETIREMENT_HOLD_DB_PATH",
         "EVIDENCE_GRAPH_SET_SIGNED_RETIREMENT_RESTORE_DB_PATH",
@@ -53,7 +57,7 @@ def get_signed_retirement_restore_custody_store(
     if any(_same_file(custody_path, value) for value in protected):
         raise RuntimeError(
             "restore custody store must not alias hold, restore, retirement, "
-            "or publication databases."
+            "target, or publication databases."
         )
     key = str(custody_path)
     with _LOCK:
