@@ -68,7 +68,7 @@ class Journal:
 def install(monkeypatch):
     journal = Journal()
     monkeypatch.setattr(
-        cli, "get_evidence_graph_set_publication_journal", lambda: journal
+        cli, "get_evidence_graph_set_signed_publication_journal", lambda: journal
     )
     monkeypatch.setattr(cli, "get_relation_review_ledger", lambda: "ledger")
     monkeypatch.setattr(
@@ -108,6 +108,7 @@ def test_seed_validates_signed_provenance_before_journaling(
     assert journal.seeded.owner_id == "alice"
     assert output["committed_review_authorizations_required"] is True
     assert output["signed_actor_use_provenance_required_when_present"] is True
+    assert output["signed_publication_journal_isolated"] is True
 
 
 def test_execute_uses_signed_governance_dependencies(monkeypatch, capsys):
@@ -147,9 +148,11 @@ def test_execute_uses_signed_governance_dependencies(monkeypatch, capsys):
     assert observed["authorization_store"] == "authorizations"
     assert observed["actor_use_store"] == "actor-uses"
     assert observed["worker_id"] == "worker"
+    assert isinstance(observed["journal"], Journal)
     assert output["state"] == "completed"
     assert output["graph_set_key"] == "review"
     assert output["signed_actor_use_provenance_validated"] is True
+    assert output["signed_publication_journal_isolated"] is True
     assert output["source_text_returned"] is False
 
 
@@ -167,6 +170,7 @@ def test_reconcile_idle_and_read_only_status(monkeypatch, capsys):
     assert error is None
     assert idle == {
         "mutation_performed": False,
+        "signed_publication_journal_isolated": True,
         "source_text_returned": False,
         "status": "idle",
     }
@@ -175,4 +179,5 @@ def test_reconcile_idle_and_read_only_status(monkeypatch, capsys):
     status, error = read(capsys)
     assert error is None
     assert status["authoritative_mutation_performed"] is False
+    assert status["signed_publication_journal_isolated"] is True
     assert status["source_text_returned"] is False
