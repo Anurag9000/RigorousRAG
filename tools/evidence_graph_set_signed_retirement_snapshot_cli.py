@@ -12,6 +12,8 @@ from tools.evidence_graph_set_signed_retirement_runtime import (
 )
 from tools.evidence_graph_set_signed_retirement_snapshot import (
     export_signed_retirement_snapshot,
+)
+from tools.evidence_graph_set_signed_retirement_snapshot_boundary import (
     verify_signed_retirement_snapshot,
 )
 
