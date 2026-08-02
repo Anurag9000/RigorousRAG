@@ -1,4 +1,4 @@
-"""Operator CLI for durable reviewed graph-set publication attempts."""
+"""Operator CLI for durable governed reviewed graph-set publication attempts."""
 
 from __future__ import annotations
 
@@ -8,15 +8,21 @@ import sys
 from dataclasses import asdict
 from typing import Any, Sequence
 
+from tools.evidence_graph_relation_authorization_runtime import (
+    get_relation_review_authorization_store,
+)
 from tools.evidence_graph_relation_runtime import get_relation_review_ledger
 from tools.evidence_graph_runtime import get_evidence_graph_store
+from tools.evidence_graph_set_governed_publish import (
+    execute_governed_publication_attempt as execute_publication_attempt,
+    execute_next_governed_publication_attempt as execute_next_publication_attempt,
+    governed_publication_ledger,
+)
 from tools.evidence_graph_set_publish_attempts import (
     EvidenceGraphSetPublicationAttempt,
 )
 from tools.evidence_graph_set_publish_reconcile import (
     EvidenceGraphSetPublicationRecoveryError,
-    execute_next_publication_attempt,
-    execute_publication_attempt,
 )
 from tools.evidence_graph_set_publish_runtime import (
     get_evidence_graph_set_publication_journal,
@@ -59,6 +65,7 @@ def _attempt_summary(value: Any) -> dict[str, Any]:
         "authoritative_mutation_performed": False,
         "semantic_inference_performed": False,
         "automatic_approval_performed": False,
+        "committed_review_authorizations_required": True,
         "source_text_returned": False,
     }
 
@@ -70,6 +77,7 @@ def _execution_summary(value: Any) -> dict[str, Any]:
             "semantic_inference_performed": False,
             "automatic_approval_performed": False,
             "reviewed_proposals_required": True,
+            "committed_review_authorizations_required": True,
             "source_text_returned": False,
         }
     )
@@ -80,6 +88,7 @@ def _dependencies() -> dict[str, Any]:
     return {
         "journal": get_evidence_graph_set_publication_journal(),
         "ledger": get_relation_review_ledger(),
+        "authorization_store": get_relation_review_authorization_store(),
         "set_store": get_evidence_graph_set_store(),
         "generations": get_generation_store(),
         "graphs": get_evidence_graph_store(),
@@ -91,7 +100,8 @@ def build_parser() -> argparse.ArgumentParser:
         prog="python -m tools.evidence_graph_set_publish_journal_cli",
         description=(
             "Plan, execute and recover reviewed graph-set publication through a "
-            "durable phase journal. No command approves proposals automatically."
+            "durable phase journal. Every proposal requires a committed reviewer "
+            "authorization receipt; no command approves proposals automatically."
         ),
     )
     commands = parser.add_subparsers(dest="command", required=True)
@@ -138,6 +148,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         args = parser.parse_args(argv)
         journal = get_evidence_graph_set_publication_journal()
         if args.command == "seed":
+            ledger = get_relation_review_ledger()
+            authorization_store = get_relation_review_authorization_store()
+            governed_publication_ledger(
+                owner_id=args.owner_id,
+                graph_set_key=args.graph_set_key,
+                proposal_ids=args.proposal_id,
+                ledger=ledger,
+                authorization_store=authorization_store,
+            )
             expected = None if args.expect_no_current else args.expected_current_set_id
             attempt = EvidenceGraphSetPublicationAttempt.create(
                 owner_id=args.owner_id,
