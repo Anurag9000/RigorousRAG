@@ -55,6 +55,31 @@ def _integer(value: Any, label: str, minimum: int, maximum: int) -> int:
     return result
 
 
+def _identifier(value: Any, label: str, maximum: int = 500) -> str:
+    if not isinstance(value, str):
+        raise ValueError(f"{label} must be a string.")
+    cleaned = value.strip()
+    if (
+        not cleaned
+        or len(cleaned) > maximum
+        or any(
+            ord(character) < 32 or ord(character) == 127
+            for character in cleaned
+        )
+    ):
+        raise ValueError(f"{label} is invalid.")
+    return cleaned
+
+
+def _digest(value: Any, label: str) -> str:
+    cleaned = _identifier(value, label, 64).lower()
+    if len(cleaned) != 64 or any(
+        character not in "0123456789abcdef" for character in cleaned
+    ):
+        raise ValueError(f"{label} must be a SHA-256 digest.")
+    return cleaned
+
+
 def _finite_timestamp(value: Any) -> float:
     if isinstance(value, bool):
         raise ValueError("graph-set creation time must be finite.")
@@ -103,6 +128,7 @@ def _current_values(
         rows = connection.execute(
             """
             SELECT sets.*,
+                   current.graph_set_key AS pointer_graph_set_key,
                    current.graph_set_id AS pointer_graph_set_id,
                    current.graph_set_digest AS pointer_graph_set_digest,
                    current.schema_version AS pointer_schema_version
@@ -119,6 +145,7 @@ def _current_values(
     result: list[Any] = []
     for row in rows:
         try:
+            pointer_key = row["pointer_graph_set_key"]
             pointer_id = row["pointer_graph_set_id"]
             pointer_digest = row["pointer_graph_set_digest"]
             pointer_schema = int(row["pointer_schema_version"])
@@ -130,6 +157,7 @@ def _current_values(
         if (
             pointer_schema != 1
             or getattr(value, "owner_id", None) != owner_id
+            or getattr(value, "graph_set_key", None) != pointer_key
             or getattr(value, "graph_set_id", None) != pointer_id
             or getattr(value, "graph_set_digest", None) != pointer_digest
         ):
@@ -191,10 +219,18 @@ def list_evidence_graph_sets(
             raise RuntimeError("graph-set authority report is invalid.")
         summaries.append(
             {
-                "graph_set_key": str(getattr(value, "graph_set_key")),
-                "graph_set_id": str(getattr(value, "graph_set_id")),
-                "graph_set_digest": str(
-                    getattr(value, "graph_set_digest")
+                "graph_set_key": _identifier(
+                    getattr(value, "graph_set_key"),
+                    "graph_set_key",
+                    500,
+                ),
+                "graph_set_id": _digest(
+                    getattr(value, "graph_set_id"),
+                    "graph_set_id",
+                ),
+                "graph_set_digest": _digest(
+                    getattr(value, "graph_set_digest"),
+                    "graph_set_digest",
                 ),
                 "member_count": len(members),
                 "edge_count": len(edges),
@@ -202,8 +238,9 @@ def list_evidence_graph_sets(
                     getattr(value, "created_at")
                 ),
                 "authoritative_current": authoritative,
-                "authority_digest": str(
-                    getattr(report, "authority_digest")
+                "authority_digest": _digest(
+                    getattr(report, "authority_digest"),
+                    "authority_digest",
                 ),
                 "stale_member_count": len(stale),
                 "missing_member_count": len(missing),
