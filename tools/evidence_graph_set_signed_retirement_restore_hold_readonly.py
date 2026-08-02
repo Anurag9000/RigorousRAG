@@ -6,14 +6,13 @@ import os
 import sqlite3
 import stat
 from pathlib import Path
-from typing import Any
 from urllib.parse import quote
 
 from tools.evidence_graph_set_signed_retirement_restore_contracts import (
     _integer,
 )
-from tools.evidence_graph_set_signed_retirement_restore_hold_integrity import (
-    IntegritySignedRetirementRestoreHoldStore,
+from tools.evidence_graph_set_signed_retirement_restore_hold_boundary import (
+    GovernedSignedRetirementRestoreHoldStore,
 )
 from tools.evidence_graph_set_signed_retirement_restore_holds import _path
 from tools.security import normalize_owner_id
@@ -93,10 +92,8 @@ class ReadOnlySignedRetirementRestoreHoldStore:
         count = _integer(limit, "limit", 1, _MAX_LIMIT)
         with self._connect() as connection:
             rows = connection.execute(
-                "SELECT h.*, i.hold_digest AS integrity_hold_digest "
+                "SELECT h.* "
                 "FROM evidence_graph_set_signed_restore_holds h "
-                "LEFT JOIN evidence_graph_set_signed_restore_hold_integrity i "
-                "ON i.hold_id=h.hold_id "
                 "WHERE h.owner_id=? AND h.status='active' "
                 "ORDER BY h.created_at DESC, h.hold_id DESC LIMIT ?",
                 (owner, count),
@@ -107,7 +104,7 @@ class ReadOnlySignedRetirementRestoreHoldStore:
                 )
             values: list[str] = []
             for row in rows:
-                value = IntegritySignedRetirementRestoreHoldStore._verified_value(
+                value = GovernedSignedRetirementRestoreHoldStore._verified_value(
                     connection,
                     row,
                 )
