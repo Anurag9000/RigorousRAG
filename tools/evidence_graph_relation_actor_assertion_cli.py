@@ -131,11 +131,12 @@ def _atomic_create_json(path: str | os.PathLike[str], value: dict[str, Any]) -> 
         os.close(descriptor)
         descriptor = -1
         try:
-            destination.lstat()
-        except FileNotFoundError:
-            os.replace(temporary_path, destination)
-        else:
-            raise FileExistsError("output assertion appeared concurrently.")
+            os.link(temporary_path, destination)
+        except FileExistsError as exc:
+            raise FileExistsError(
+                "output assertion already exists or appeared concurrently."
+            ) from exc
+        temporary_path.unlink()
         directory = os.open(
             destination.parent,
             os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
