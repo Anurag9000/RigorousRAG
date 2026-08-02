@@ -27,6 +27,61 @@ def _citation() -> Citation:
     )
 
 
+def test_live_agent_discovers_owner_scoped_graph_sets(monkeypatch):
+    schemas = {
+        item["function"]["name"]: item
+        for item in search_agent.TOOLS_SCHEMA
+        if item["function"]["name"]
+        in {"list_evidence_graph_sets", "search_evidence_graph"}
+    }
+    assert set(schemas) == {
+        "list_evidence_graph_sets",
+        "search_evidence_graph",
+    }
+    parameters = schemas["list_evidence_graph_sets"]["function"]["parameters"]
+    assert parameters["additionalProperties"] is False
+    assert "owner_id" not in parameters["properties"]
+    captured = {}
+
+    def fake_list(**kwargs):
+        captured.update(kwargs)
+        return [
+            {
+                "graph_set_key": "review",
+                "graph_set_id": "a" * 64,
+                "member_count": 2,
+                "edge_count": 1,
+                "authoritative_current": True,
+            }
+        ]
+
+    monkeypatch.setattr(
+        evidence_graph_agent_integration,
+        "list_evidence_graph_sets",
+        fake_list,
+    )
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    agent = search_agent.SearchAgent(owner_id="alice")
+    call = SimpleNamespace(
+        id="graph-list-1",
+        function=SimpleNamespace(
+            name="list_evidence_graph_sets",
+            arguments=json.dumps({"limit": 5}),
+        ),
+    )
+
+    execution = agent._execute_tool(call)
+
+    assert execution.success is True
+    assert execution.citations == []
+    payload = json.loads(execution.content)
+    assert payload["count"] == 1
+    assert payload["graph_sets"][0]["graph_set_key"] == "review"
+    assert payload["source_text_returned"] is False
+    assert captured == {"owner_id": "alice", "limit": 5}
+
+
 def test_live_agent_schema_and_dispatch_use_canonical_graph_path(
     monkeypatch,
 ):
