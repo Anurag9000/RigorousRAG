@@ -40,8 +40,10 @@ python scripts/evidence_graph_set_signed_publication.py cancel ...
 Properties:
 
 - [x] Seed validates authorization and signed actor-use provenance before journaling.
-- [x] Uses the existing deterministic publication operation identity.
-- [x] Uses the existing durable publication phase journal.
+- [x] Uses the established deterministic logical publication operation identity.
+- [x] Uses an isolated signed-only publication phase journal.
+- [x] Rejects canonical path equality with the authorization-only journal.
+- [x] Rejects pre-existing hard-link aliases to the authorization-only journal.
 - [x] Execute reconstructs signed provenance before publication mutation.
 - [x] Reconcile captures one finite timestamp for claim discovery and execution.
 - [x] Retry and cancel retain exact operation-ID confirmation.
@@ -62,7 +64,7 @@ For each relation proposal, the signed publication ledger:
 - emits a deterministic zero-use digest for direct actor decisions;
 - never mutates the original proposal or proposal ID.
 
-## 4. Assurance-level compatibility
+## 4. Assurance-level recovery isolation
 
 Authorization-only commands remain:
 
@@ -75,7 +77,16 @@ They continue to require committed governed authorization receipts. They do not 
 
 Signed assertion deployments should use only the dedicated signed commands when publication-level signed actor provenance is required.
 
-No existing publication journal or graph-set migration is needed because both command families use the same stores and deterministic operation identities.
+The command families share proposal, authorization, actor-use, graph-set and pointer stores, but they do **not** share phase journals:
+
+```bash
+EVIDENCE_GRAPH_SET_PUBLICATION_DB_PATH=data/evidence_graph_set_publications.sqlite3
+EVIDENCE_GRAPH_SET_SIGNED_PUBLICATION_DB_PATH=data/evidence_graph_set_signed_publications.sqlite3
+```
+
+This separation prevents a signed command from recovering a `candidate_stored` phase created by the authorization-only path, which would otherwise bypass signed metadata construction.
+
+Pre-isolation non-terminal attempts in the authorization-only journal are not automatically migrated. They must be inspected and safely cancelled through the authorization-only command family, then re-seeded through the signed command with an explicit pointer expectation. No destructive cleanup is automatic.
 
 ## 5. Committed focused contracts
 
@@ -92,22 +103,34 @@ Contracts now cover:
 - signed seed dependency validation;
 - signed execute dependency injection;
 - idle reconcile response;
-- secret-free compensation output.
+- secret-free compensation output;
+- production dataclass serialization in the durable CLI test;
+- distinct default publication-journal paths;
+- signed journal override;
+- canonical path alias refusal;
+- hard-link alias refusal.
 
 ## 6. Verification boundary
 
-Executed in the reconstructed focused workspace:
+Executed in reconstructed focused workspaces using the live signed modules and minimal stubs only for unrelated repository services:
 
-- exact signed assertion, actor-binding and actor-use modules compiled;
-- 12/12 core signed actor runtime checks passed.
+- **12/12** signed assertion, actor-binding and actor-use runtime checks passed;
+- **17/17** signed publication adapter, timestamp boundary, immediate CLI, durable CLI and isolation tests passed;
+- Python compilation passed for both focused slices.
 
-Not yet executed in an exact-current repository checkout:
+The first signed-publication execution exposed two test-only defects, both corrected on `main`:
 
-- signed publication adapter tests;
-- immediate signed publication CLI tests;
-- durable signed publication CLI tests;
+1. a `SimpleNamespace` fixture was incompatible with production `dataclasses.asdict` serialization;
+2. a `setdefault(...) or operation_id` lambda returned the stored dictionary instead of the intended operation ID.
+
+No production failure was hidden by those fixes.
+
+Not yet executed in an exact-current full repository checkout:
+
 - complete repository pytest;
-- coverage, Ruff, Windows and container matrices;
-- process-kill and disk-failure publication injection.
+- coverage and Ruff;
+- Windows and container matrices;
+- process-kill, disk-full and SQLite write-failure publication injection;
+- real multi-process signed/authorization-only contention.
 
-The dedicated signed publication paths are implemented and documented, but release readiness is not claimed.
+GitHub exposes no status checks or workflow runs for the current head. The dedicated signed publication paths are implemented, isolated and focused-tested, but release readiness is not claimed.
