@@ -14,7 +14,26 @@ from tools.security import normalize_owner_id
 _STATES = frozenset(
     {"planned", "running", "completed", "compensated", "failed", "cancelled"}
 )
+_PHASES = frozenset(
+    {"planned", "candidate_stored", "pointer_activated", "verified", "compensated"}
+)
 _TERMINAL_STATES = frozenset({"completed", "compensated", "cancelled"})
+_ACTIONS = frozenset(
+    {
+        "wait_for_authorization_only_lease",
+        "inspect_expired_authorization_only_lease_then_cancel_or_retry",
+        "cancel_authorization_only_then_reseed_signed",
+        "do_not_claim_signed_provenance_reseed_with_current_pointer_if_needed",
+        "no_signed_transition_required",
+        "resolve_duplicate_nonterminal_attempts",
+        "inspect_existing_signed_attempt_before_transition",
+        "cancel_authorization_only_duplicate_after_signed_completion",
+        "signed_attempt_already_completed",
+    }
+)
+_NON_ACTIONABLE_ACTIONS = frozenset(
+    {"no_signed_transition_required", "signed_attempt_already_completed"}
+)
 _MAX_LIMIT = 10_000
 
 
@@ -30,12 +49,19 @@ def _timestamp(value: Any, label: str) -> float:
     return selected
 
 
-def _limit(value: Any) -> int:
+def _integer(value: Any, label: str, maximum: int = _MAX_LIMIT) -> int:
     if isinstance(value, bool) or not isinstance(value, int):
-        raise ValueError("limit must be an integer.")
-    if not 1 <= value <= _MAX_LIMIT:
-        raise ValueError(f"limit must be between 1 and {_MAX_LIMIT}.")
+        raise ValueError(f"{label} must be an integer.")
+    if not 0 <= value <= maximum:
+        raise ValueError(f"{label} must be between 0 and {maximum}.")
     return value
+
+
+def _limit(value: Any) -> int:
+    selected = _integer(value, "limit")
+    if selected < 1:
+        raise ValueError(f"limit must be between 1 and {_MAX_LIMIT}.")
+    return selected
 
 
 def _identifier(value: Any, label: str, maximum: int = 500) -> str:
@@ -53,7 +79,9 @@ def _identifier(value: Any, label: str, maximum: int = 500) -> str:
 
 def _digest(value: Any, label: str) -> str:
     selected = _identifier(value, label, 64).lower()
-    if len(selected) != 64 or any(character not in "0123456789abcdef" for character in selected):
+    if len(selected) != 64 or any(
+        character not in "0123456789abcdef" for character in selected
+    ):
         raise ValueError(f"{label} must be a SHA-256 digest.")
     return selected
 
@@ -90,21 +118,20 @@ class SignedPublicationTransitionItem:
     action: str
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "operation_id", _digest(self.operation_id, "operation_id"))
+        object.__setattr__(
+            self, "operation_id", _digest(self.operation_id, "operation_id")
+        )
         object.__setattr__(
             self,
             "graph_set_key",
             _identifier(self.graph_set_key, "graph_set_key", 500),
         )
         state = _identifier(self.authorization_state, "authorization_state", 30)
-        if state not in _STATES:
-            raise ValueError("authorization_state is unsupported.")
+        phase = _identifier(self.authorization_phase, "authorization_phase", 30)
+        if state not in _STATES or phase not in _PHASES:
+            raise ValueError("authorization state or phase is unsupported.")
         object.__setattr__(self, "authorization_state", state)
-        object.__setattr__(
-            self,
-            "authorization_phase",
-            _identifier(self.authorization_phase, "authorization_phase", 30),
-        )
+        object.__setattr__(self, "authorization_phase", phase)
         object.__setattr__(
             self,
             "expected_current_set_id",
@@ -117,29 +144,31 @@ class SignedPublicationTransitionItem:
         )
         if not isinstance(self.lease_active, bool):
             raise ValueError("lease_active must be boolean.")
-        if self.lease_expires_at is not None:
-            object.__setattr__(
-                self,
-                "lease_expires_at",
-                _timestamp(self.lease_expires_at, "lease_expires_at"),
-            )
+        lease_expires = (
+            None
+            if self.lease_expires_at is None
+            else _timestamp(self.lease_expires_at, "lease_expires_at")
+        )
+        if self.lease_active and (state != "running" or lease_expires is None):
+            raise ValueError("active leases require a running authorization attempt.")
+        object.__setattr__(self, "lease_expires_at", lease_expires)
         if not isinstance(self.signed_attempt_present, bool):
             raise ValueError("signed_attempt_present must be boolean.")
         if self.signed_attempt_present:
             if self.signed_state is None or self.signed_phase is None:
                 raise ValueError("signed attempt state must be complete.")
             signed_state = _identifier(self.signed_state, "signed_state", 30)
-            if signed_state not in _STATES:
-                raise ValueError("signed_state is unsupported.")
+            signed_phase = _identifier(self.signed_phase, "signed_phase", 30)
+            if signed_state not in _STATES or signed_phase not in _PHASES:
+                raise ValueError("signed attempt state or phase is unsupported.")
             object.__setattr__(self, "signed_state", signed_state)
-            object.__setattr__(
-                self,
-                "signed_phase",
-                _identifier(self.signed_phase, "signed_phase", 30),
-            )
+            object.__setattr__(self, "signed_phase", signed_phase)
         elif self.signed_state is not None or self.signed_phase is not None:
             raise ValueError("absent signed attempts may not contain state.")
-        object.__setattr__(self, "action", _identifier(self.action, "action", 200))
+        action = _identifier(self.action, "action", 200)
+        if action not in _ACTIONS:
+            raise ValueError("transition action is unsupported.")
+        object.__setattr__(self, "action", action)
 
 
 @dataclass(frozen=True)
@@ -155,12 +184,77 @@ class SignedPublicationTransitionReport:
     mutation_performed: bool = False
     source_text_returned: bool = False
 
+    def __post_init__(self) -> None:
+        owner = normalize_owner_id(self.owner_id)
+        key = (
+            None
+            if self.graph_set_key is None
+            else _identifier(self.graph_set_key, "graph_set_key", 500)
+        )
+        generated = _timestamp(self.generated_at, "generated_at")
+        authorization_count = _integer(
+            self.authorization_attempt_count, "authorization_attempt_count"
+        )
+        signed_count = _integer(self.signed_attempt_count, "signed_attempt_count")
+        actionable = _integer(self.actionable_count, "actionable_count")
+        if not isinstance(self.items, tuple) or any(
+            not isinstance(value, SignedPublicationTransitionItem)
+            for value in self.items
+        ):
+            raise ValueError("items must be a tuple of transition items.")
+        items = tuple(sorted(self.items, key=lambda value: value.operation_id))
+        if len({value.operation_id for value in items}) != len(items):
+            raise ValueError("transition items must have unique operation IDs.")
+        if authorization_count != len(items):
+            raise ValueError("authorization_attempt_count differs from transition items.")
+        signed_matches = sum(value.signed_attempt_present for value in items)
+        if signed_count < signed_matches:
+            raise ValueError("signed_attempt_count is smaller than matched signed attempts.")
+        expected_actionable = sum(
+            value.action not in _NON_ACTIONABLE_ACTIONS for value in items
+        )
+        if actionable != expected_actionable:
+            raise ValueError("actionable_count differs from transition actions.")
+        if self.mutation_performed is not False or self.source_text_returned is not False:
+            raise ValueError("transition reports must remain read-only and text-free.")
+        stable = {
+            "scope": "rigorousrag-signed-publication-transition-audit-v1",
+            "owner_id": owner,
+            "graph_set_key": key,
+            "generated_at": generated,
+            "authorization_attempt_count": authorization_count,
+            "signed_attempt_count": signed_count,
+            "actionable_count": actionable,
+            "items": [asdict(value) for value in items],
+        }
+        report_digest = _digest(self.report_digest, "report_digest")
+        if report_digest != _canonical_digest(stable):
+            raise ValueError("report_digest differs from transition report content.")
+        object.__setattr__(self, "owner_id", owner)
+        object.__setattr__(self, "graph_set_key", key)
+        object.__setattr__(self, "generated_at", generated)
+        object.__setattr__(
+            self, "authorization_attempt_count", authorization_count
+        )
+        object.__setattr__(self, "signed_attempt_count", signed_count)
+        object.__setattr__(self, "actionable_count", actionable)
+        object.__setattr__(self, "items", items)
+        object.__setattr__(self, "report_digest", report_digest)
+
 
 def _action(common: Any, signed: Any | None, *, now: float) -> tuple[bool, str]:
     if signed is not None:
         if signed.state == "completed":
+            if common.state not in _TERMINAL_STATES:
+                return (
+                    True,
+                    "cancel_authorization_only_duplicate_after_signed_completion",
+                )
             return False, "signed_attempt_already_completed"
-        if common.state not in _TERMINAL_STATES and signed.state not in _TERMINAL_STATES:
+        if (
+            common.state not in _TERMINAL_STATES
+            and signed.state not in _TERMINAL_STATES
+        ):
             return True, "resolve_duplicate_nonterminal_attempts"
         return True, "inspect_existing_signed_attempt_before_transition"
     if common.state == "running":
@@ -171,7 +265,10 @@ def _action(common: Any, signed: Any | None, *, now: float) -> tuple[bool, str]:
     if common.state in {"planned", "failed"}:
         return True, "cancel_authorization_only_then_reseed_signed"
     if common.state == "completed":
-        return True, "do_not_claim_signed_provenance_reseed_with_current_pointer_if_needed"
+        return (
+            True,
+            "do_not_claim_signed_provenance_reseed_with_current_pointer_if_needed",
+        )
     return False, "no_signed_transition_required"
 
 
@@ -187,8 +284,10 @@ def assess_signed_publication_transition(
     """Classify legacy attempts without changing either journal or graph state."""
 
     owner = normalize_owner_id(owner_id)
-    key = None if graph_set_key is None else _identifier(
-        graph_set_key, "graph_set_key", 500
+    key = (
+        None
+        if graph_set_key is None
+        else _identifier(graph_set_key, "graph_set_key", 500)
     )
     timestamp = _timestamp(time.time() if now is None else now, "now")
     count = _limit(limit)
