@@ -1,8 +1,9 @@
-"""Install authoritative GraphRAG retrieval into the existing agent surface."""
+"""Install authoritative GraphRAG discovery/retrieval into the existing agent surface."""
 
 from __future__ import annotations
 
 import copy
+import json
 from types import ModuleType
 from typing import Any
 
@@ -10,11 +11,20 @@ from tools.evidence_graph_rag_tool import (
     GRAPH_RAG_SEARCH_TOOL_DEF,
     search_evidence_graph,
 )
+from tools.evidence_graph_set_discovery import (
+    LIST_EVIDENCE_GRAPH_SETS_TOOL_DEF,
+    list_evidence_graph_sets,
+)
 
-_TOOL_NAME = "search_evidence_graph"
-_PROMPT_LINE = (
-    "- Reviewed Evidence Graph (`search_evidence_graph`) — use for bounded "
-    "cross-document retrieval over explicit, generation-validated relations."
+_LIST_TOOL_NAME = "list_evidence_graph_sets"
+_SEARCH_TOOL_NAME = "search_evidence_graph"
+_TOOL_NAMES = frozenset({_LIST_TOOL_NAME, _SEARCH_TOOL_NAME})
+_PROMPT_LINES = (
+    "- Reviewed Evidence Graph Sets (`list_evidence_graph_sets`) — discover "
+    "the authenticated user's current reviewed graph-set keys before searching.",
+    "- Reviewed Evidence Graph (`search_evidence_graph`) — use a discovered "
+    "graph-set key for bounded cross-document retrieval over explicit, "
+    "generation-validated relations.",
 )
 
 
@@ -46,19 +56,44 @@ def install_evidence_graph_agent_tool(module: ModuleType) -> ModuleType:
     if not isinstance(agent_class, type) or not callable(original_dispatch):
         raise RuntimeError("search agent dispatch boundary is unavailable.")
 
-    schema = copy.deepcopy(GRAPH_RAG_SEARCH_TOOL_DEF)
-    schemas[:] = [
-        value for value in schemas if _schema_name(value) != _TOOL_NAME
-    ]
-    schemas.append(schema)
-    parameter_schemas[_TOOL_NAME] = copy.deepcopy(
-        schema["function"]["parameters"]
+    definitions = (
+        copy.deepcopy(LIST_EVIDENCE_GRAPH_SETS_TOOL_DEF),
+        copy.deepcopy(GRAPH_RAG_SEARCH_TOOL_DEF),
     )
+    schemas[:] = [
+        value for value in schemas if _schema_name(value) not in _TOOL_NAMES
+    ]
+    schemas.extend(definitions)
+    for schema in definitions:
+        name = schema["function"]["name"]
+        parameter_schemas[name] = copy.deepcopy(
+            schema["function"]["parameters"]
+        )
 
     def dispatch(self: Any, tool_name: str, arguments: dict[str, Any]):
-        if tool_name == _TOOL_NAME:
+        owner_id = getattr(self, "owner_id")
+        if tool_name == _LIST_TOOL_NAME:
+            values = list_evidence_graph_sets(
+                owner_id=owner_id,
+                **arguments,
+            )
+            return (
+                json.dumps(
+                    {
+                        "graph_sets": values,
+                        "count": len(values),
+                        "source_text_returned": False,
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    allow_nan=False,
+                ),
+                [],
+            )
+        if tool_name == _SEARCH_TOOL_NAME:
             citations = search_evidence_graph(
-                owner_id=getattr(self, "owner_id"),
+                owner_id=owner_id,
                 **arguments,
             )
             return "Reviewed evidence-graph citations retrieved.", citations
@@ -66,8 +101,12 @@ def install_evidence_graph_agent_tool(module: ModuleType) -> ModuleType:
 
     agent_class._dispatch = dispatch
     prompt = getattr(module, "SYSTEM_PROMPT", None)
-    if isinstance(prompt, str) and _PROMPT_LINE not in prompt:
-        module.SYSTEM_PROMPT = prompt.rstrip() + "\n" + _PROMPT_LINE + "\n"
+    if isinstance(prompt, str):
+        updated = prompt.rstrip()
+        for line in _PROMPT_LINES:
+            if line not in updated:
+                updated += "\n" + line
+        module.SYSTEM_PROMPT = updated + "\n"
     module._evidence_graph_original_dispatch = original_dispatch
     module._evidence_graph_agent_tool_installed = True
     return module
