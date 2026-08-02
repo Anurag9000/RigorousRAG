@@ -6,7 +6,6 @@ import hashlib
 import json
 import math
 import time
-from dataclasses import replace
 from typing import Any, Iterable
 
 from tools.evidence_graph_relation_authorization_runtime import (
@@ -45,6 +44,17 @@ def _timestamp(value: Any) -> float:
     if not math.isfinite(selected) or selected < 0:
         raise ValueError("now must be finite and non-negative.")
     return selected
+
+
+class _AuthorizedProposalView:
+    """Delegate immutable proposal identity while enriching converter metadata."""
+
+    def __init__(self, proposal: Any, metadata: dict[str, Any]) -> None:
+        self._proposal = proposal
+        self.metadata = metadata
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._proposal, name)
 
 
 class GovernedPublicationLedger:
@@ -129,9 +139,9 @@ class GovernedPublicationLedger:
             return self._ledger.get_proposal(proposal_id)
         receipt = self._receipts[selected]
         authorization = receipt.authorization
-        return replace(
+        return _AuthorizedProposalView(
             proposal,
-            metadata={
+            {
                 **dict(proposal.metadata),
                 "review_authorization_digest": authorization.authorization_digest,
                 "review_policy_digest": authorization.policy_digest,
