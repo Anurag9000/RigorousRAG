@@ -133,14 +133,24 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _validate_confirmation(args: argparse.Namespace) -> None:
+    if args.command == "seed" and (
+        args.publication_operation_id != args.confirm_operation_id
+    ):
+        raise ValueError("publication operation confirmation differs.")
+    if args.command in {"retry", "cancel"} and (
+        args.retirement_id != args.confirm_retirement_id
+    ):
+        raise ValueError("retirement confirmation differs.")
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     try:
         args = parser.parse_args(argv)
+        _validate_confirmation(args)
         retirement_journal = get_signed_publication_retirement_journal()
         if args.command == "seed":
-            if args.publication_operation_id != args.confirm_operation_id:
-                raise ValueError("publication operation confirmation differs.")
             dependencies = _execution_dependencies(retirement_journal)
             attempt, preflight = seed_signed_publication_retirement(
                 owner_id=args.owner_id,
