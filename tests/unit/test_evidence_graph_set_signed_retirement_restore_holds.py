@@ -9,9 +9,11 @@ import pytest
 from tools import evidence_graph_set_signed_retirement_restore_hold_cli as cli
 from tools import evidence_graph_set_signed_retirement_restore_hold_runtime as runtime
 from tools.evidence_graph_relation_actor import ReviewActorBinding
+from tools.evidence_graph_set_signed_retirement_restore_hold_integrity import (
+    IntegritySignedRetirementRestoreHoldStore,
+)
 from tools.evidence_graph_set_signed_retirement_restore_holds import (
     SignedRetirementRestoreHold,
-    SignedRetirementRestoreHoldStore,
     deterministic_restore_hold_id,
 )
 
@@ -35,7 +37,7 @@ class RestoreJournal:
 
 
 def test_hold_identity_place_and_collision_are_deterministic(tmp_path):
-    store = SignedRetirementRestoreHoldStore(tmp_path / "holds.sqlite3")
+    store = IntegritySignedRetirementRestoreHoldStore(tmp_path / "holds.sqlite3")
     restore_id = "1" * 64
     binding = actor()
     value = store.place(
@@ -79,7 +81,7 @@ def test_hold_identity_place_and_collision_are_deterministic(tmp_path):
 
 
 def test_hold_requires_restore_owner_scope_and_valid_actor(tmp_path):
-    store = SignedRetirementRestoreHoldStore(tmp_path / "holds.sqlite3")
+    store = IntegritySignedRetirementRestoreHoldStore(tmp_path / "holds.sqlite3")
     with pytest.raises(RuntimeError, match="owner scope"):
         store.place(
             owner_id="alice",
@@ -103,7 +105,7 @@ def test_hold_requires_restore_owner_scope_and_valid_actor(tmp_path):
 
 
 def test_release_is_exact_monotonic_and_never_reactivates(tmp_path):
-    store = SignedRetirementRestoreHoldStore(tmp_path / "holds.sqlite3")
+    store = IntegritySignedRetirementRestoreHoldStore(tmp_path / "holds.sqlite3")
     value = store.place(
         owner_id="alice",
         restore_id="1" * 64,
@@ -150,9 +152,9 @@ def test_release_is_exact_monotonic_and_never_reactivates(tmp_path):
     assert replayed_place.status == "released"
 
 
-def test_active_ids_listing_and_tamper_detection(tmp_path):
+def test_active_ids_listing_and_complete_row_tamper_detection(tmp_path):
     path = tmp_path / "holds.sqlite3"
-    store = SignedRetirementRestoreHoldStore(path)
+    store = IntegritySignedRetirementRestoreHoldStore(path)
     first = store.place(
         owner_id="alice",
         restore_id="1" * 64,
@@ -188,6 +190,15 @@ def test_active_ids_listing_and_tamper_detection(tmp_path):
     with store._lock, store._connect() as connection:
         connection.execute(
             "UPDATE evidence_graph_set_signed_restore_holds "
+            "SET reason_code=? WHERE hold_id=?",
+            ("tampered", second.hold_id),
+        )
+    with pytest.raises(RuntimeError, match="integrity differs"):
+        store.get(second.hold_id)
+
+    with store._lock, store._connect() as connection:
+        connection.execute(
+            "UPDATE evidence_graph_set_signed_restore_holds "
             "SET restore_id=? WHERE hold_id=?",
             ("f" * 64, first.hold_id),
         )
@@ -195,15 +206,35 @@ def test_active_ids_listing_and_tamper_detection(tmp_path):
         store.get(first.hold_id)
 
 
-def test_hold_database_identity_and_runtime_aliases_fail_closed(tmp_path, monkeypatch):
+def test_missing_integrity_and_database_identity_fail_closed(tmp_path):
     path = tmp_path / "holds.sqlite3"
-    store = SignedRetirementRestoreHoldStore(path)
+    store = IntegritySignedRetirementRestoreHoldStore(path)
+    value = store.place(
+        owner_id="alice",
+        restore_id="1" * 64,
+        hold_key="case",
+        reason_code="litigation",
+        actor=actor(),
+        restore_journal=RestoreJournal(),
+        now=2.0,
+    )
+    with store._lock, store._connect() as connection:
+        connection.execute(
+            "DELETE FROM evidence_graph_set_signed_restore_hold_integrity "
+            "WHERE hold_id=?",
+            (value.hold_id,),
+        )
+    with pytest.raises(RuntimeError, match="integrity record is missing"):
+        store.get(value.hold_id)
+
     replacement = tmp_path / "replacement.sqlite3"
     replacement.write_bytes(path.read_bytes())
     os.replace(replacement, path)
     with pytest.raises(RuntimeError, match="identity changed"):
         store.list(owner_id="alice")
 
+
+def test_hold_runtime_aliases_fail_closed(tmp_path, monkeypatch):
     runtime.clear_signed_retirement_restore_hold_store_cache()
     protected = tmp_path / "restore.sqlite3"
     protected.write_bytes(b"database")
