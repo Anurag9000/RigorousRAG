@@ -2,18 +2,26 @@
 
 Last updated: 2026-08-02
 
-Signed actor-use publication uses a dedicated phase journal:
+Signed actor-use publication and authorization-only publication use separate durable journals:
 
 ```bash
 EVIDENCE_GRAPH_SET_PUBLICATION_DB_PATH=data/evidence_graph_set_publications.sqlite3
 EVIDENCE_GRAPH_SET_SIGNED_PUBLICATION_DB_PATH=data/evidence_graph_set_signed_publications.sqlite3
 ```
 
-The separation prevents a signed command from resuming a candidate created by the authorization-only command family before signed actor-use metadata was added.
+Expired authorization-only duplicates are retired through a third isolated saga journal:
 
-This document describes inspection and planning. The audit and preflight commands are read-only. They do not migrate attempts, cancel leases, change pointers, delete candidates or publish graph sets.
+```bash
+EVIDENCE_GRAPH_SET_SIGNED_RETIREMENT_DB_PATH=data/evidence_graph_set_signed_retirements.sqlite3
+```
+
+All three paths must resolve to distinct files and must not be hard-link aliases.
+
+The separation prevents a signed command from resuming a candidate created before signed actor-use metadata was added. It also prevents retirement recovery state from being mistaken for either publication assurance level.
 
 ## 1. Audit authorization-only attempts
+
+Run the read-only transition audit:
 
 ```bash
 python scripts/evidence_graph_set_signed_transition.py audit \
@@ -22,29 +30,26 @@ python scripts/evidence_graph_set_signed_transition.py audit \
   --limit 1000
 ```
 
-The command reads both journals and emits a deterministic, text-free report containing:
+The audit reads both publication journals and emits a deterministic text-free report containing:
 
 - logical operation ID;
 - graph-set key;
 - authorization-only state and phase;
 - expected-current and candidate set IDs;
-- lease status and expiry;
-- whether a matching signed attempt exists;
-- signed state and phase when present;
+- lease state and expiry;
+- matching signed-attempt state and phase;
 - one bounded action classification;
-- a report digest.
+- report digest.
 
-It never returns relation evidence, source paths, queries, assertion bodies, signatures, keys or document text.
+It performs no pointer, graph-set or journal mutation.
 
-The command fails closed when either journal returns exactly the configured result limit because completeness cannot be established. Narrow the graph-set key or increase the bounded limit.
+The audit refuses a result set that reaches its configured bound because report completeness cannot be established. Narrow the graph-set key or use a larger bounded limit.
 
-## 2. Audit action meanings
+## 2. Transition actions
 
 ### `cancel_authorization_only_then_reseed_signed`
 
-The authorization-only attempt is `planned` or `failed`. These are the states accepted by the existing exact-confirmation `cancel` command.
-
-After checking the current graph-set pointer:
+The weaker attempt is `planned` or `failed`. These are directly cancellable through the existing exact-confirmation authorization-only command:
 
 ```bash
 python scripts/evidence_graph_set_publication.py cancel OPERATION_ID \
@@ -52,56 +57,51 @@ python scripts/evidence_graph_set_publication.py cancel OPERATION_ID \
   --confirm-operation-id OPERATION_ID
 ```
 
-Then seed a new signed-journal attempt with an explicit pointer expectation.
+Then seed a signed publication using the actual current pointer expectation.
 
 ### `wait_for_authorization_only_lease`
 
-The weaker attempt is running under an unexpired lease. Do not cancel, retry, re-seed or modify its database. Wait for the worker to finish or the lease to expire, then audit again.
+The weaker attempt is running under an active lease. Do not steal the lease, edit the database or execute a competing signed transition. Wait for completion or lease expiry and audit again.
 
 ### `reconcile_expired_authorization_only_attempt_before_transition`
 
-The weaker attempt remains `running`, but its lease expired. The journal does not permit direct cancellation of a running attempt. Inspect its status and use the authorization-only recovery path to resolve its pointer/candidate state before re-auditing:
-
-```bash
-python scripts/evidence_graph_set_publication.py status OPERATION_ID
-python scripts/evidence_graph_set_publication.py execute OPERATION_ID \
-  --worker-id recovery-worker \
-  --lease-seconds 60
-```
-
-Do not run recovery blindly when a stronger signed attempt is already completed; use the duplicate-retirement preflight described below.
+The weaker attempt is running with an expired lease and no completed signed duplicate has been established. Recover the authorization-only attempt through its normal durable executor before deciding whether a signed replacement is required.
 
 ### `do_not_claim_signed_provenance_reseed_with_current_pointer_if_needed`
 
-The authorization-only publication already completed. It must not be relabeled as signed provenance. The immutable graph-set version remains what it was.
-
-When a signed-provenance replacement is required, create a new signed attempt using the actual current set ID as the explicit expectation. This creates a new reviewed graph-set version whose relation metadata contains the signed actor-use aggregate.
+The authorization-only publication completed. It cannot be relabeled as signed provenance. A new signed publication version is required when signed relation metadata is needed.
 
 ### `resolve_duplicate_nonterminal_attempts`
 
-Both journals contain nonterminal attempts for the same logical operation. Do not execute both. Inspect both exact statuses, active leases and the graph-set pointer. Resolve the weaker attempt first, then retain or re-seed only the signed operation.
+Both journals contain nonterminal attempts for the same operation. Do not execute both. Inspect their exact leases, phases and pointer expectations, then resolve one assurance path deliberately.
 
 ### `cancel_authorization_only_duplicate_after_signed_completion`
 
-The signed attempt completed and the weaker duplicate is `planned` or `failed`. Cancel the weaker duplicate with exact operation-ID confirmation. No pointer change is required.
+The signed attempt completed and the weaker duplicate is `planned` or `failed`. Cancel the weaker duplicate with exact operation-ID confirmation. No retirement saga is required.
 
 ### `wait_for_authorization_only_lease_then_retire_duplicate`
 
-The signed attempt completed, but the weaker duplicate still has an active running lease. Wait for expiry or worker completion. Never modify the journal database directly.
+The signed attempt completed, but the weaker duplicate has an active lease. Wait for lease expiry or worker completion, then audit again.
 
 ### `preflight_expired_authorization_only_duplicate_retirement`
 
-The signed attempt completed and the weaker running lease expired. Run the read-only retirement preflight before deciding how to retire the weaker journal record.
+The signed attempt completed and the weaker running lease expired. Run the exact read-only retirement preflight.
+
+### `retire_completed_signed_duplicate_authorization_attempt`
+
+A matching signed attempt completed, while the weaker authorization-only duplicate remains capable of retry. Inspect both states and use direct cancellation when the weaker state permits it; use the retirement preflight and saga only for expired `running` duplicates.
 
 ### `signed_attempt_already_completed`
 
-Both matching attempts are terminal and the signed attempt completed. No signed transition is required. Retain immutable history.
+Both matching attempts are terminal and the signed attempt completed. Retain immutable history; no transition is required.
 
 ### `no_signed_transition_required`
 
-The authorization-only attempt is already cancelled or compensated and no matching signed action is needed.
+The weaker attempt is already safely terminal and no signed transition action remains.
 
-## 3. Retirement preflight for expired weaker duplicates
+## 3. Read-only retirement preflight
+
+Inspect one expired running duplicate:
 
 ```bash
 python scripts/evidence_graph_set_signed_retirement.py preflight OPERATION_ID \
@@ -110,71 +110,105 @@ python scripts/evidence_graph_set_signed_retirement.py preflight OPERATION_ID \
 
 The preflight revalidates:
 
-- identical operation ID, owner, graph-set key, proposal set and expected pointer across the two journals;
-- expired authorization-only running lease;
+- exact owner, operation, graph-set key, proposals and expected pointer across both journals;
+- expired weaker running lease;
 - completed and verified signed attempt;
-- exact signed candidate ID and digest in the immutable graph-set store;
-- current authority of the signed candidate;
-- current graph-set pointer.
+- signed candidate ID and digest;
+- current signed-candidate authority;
+- current pointer.
 
-The report is read-only and digest-bound.
+Possible eligible results:
 
 ### `retire_expired_journal_only`
 
-The signed candidate is authoritative and already current. The weaker candidate is not current. The journal record is eligible for a future retirement operation without pointer mutation.
+The authoritative signed candidate is already current. The weaker row can be retired without pointer mutation.
 
 ### `restore_signed_pointer_then_retire`
 
-The weaker candidate is currently pointed to, while the completed signed candidate remains authoritative. A future retirement executor must restore the signed candidate with compare-and-swap before retiring the weaker journal record.
+The weaker candidate is current while the signed candidate remains authoritative. The retirement saga must compare-and-swap the pointer back to the signed candidate before retiring the weaker row.
 
-The current preflight does **not** perform either action.
+Noneligible results include:
 
-### `wait_for_authorization_only_lease`
+- active weaker lease;
+- incomplete signed publication;
+- stale signed candidate;
+- unrelated current pointer;
+- authorization-only row no longer in the expected running state.
 
-The lease is not expired. No retirement is eligible.
+The preflight remains read-only and digest-bound.
 
-### `signed_attempt_not_completed`
+## 4. Crash-recoverable retirement saga
 
-The matching signed attempt is not completed and verified. No signed retirement is eligible.
+For an eligible preflight, seed a durable retirement:
 
-### `signed_candidate_not_authoritative`
+```bash
+python scripts/evidence_graph_set_signed_retirements.py seed OPERATION_ID \
+  --owner-id alice \
+  --confirm-operation-id OPERATION_ID
+```
 
-The signed candidate no longer matches current member generations/graphs. Refuse retirement and investigate graph regeneration or a new signed publication.
+Execute one retirement:
 
-### `external_pointer_change_refusal`
+```bash
+python scripts/evidence_graph_set_signed_retirements.py execute RETIREMENT_ID \
+  --worker-id retirement-worker-1 \
+  --lease-seconds 60
+```
 
-The current pointer is neither the signed candidate nor the weaker candidate expected by this duplicate pair. Do not overwrite it. Investigate the external publication first.
+Or reconcile the next claimable retirement:
 
-### `authorization_attempt_not_running`
+```bash
+python scripts/evidence_graph_set_signed_retirements.py reconcile-one \
+  --owner-id alice \
+  --worker-id retirement-worker-1 \
+  --lease-seconds 60
+```
 
-The operation no longer matches the expired-running preflight contract. Re-run the transition audit and follow the state-specific action.
+The saga is documented in detail in:
 
-## 4. Why there is no automatic migration
+```text
+docs/EVIDENCE_GRAPH_SIGNED_PUBLICATION_RETIREMENT_SAGA.md
+```
 
-Automatic copying of journal rows would not rebuild relation metadata. Automatic replay could also cross an assurance boundary or overwrite a newer pointer.
+Its durable phases are:
 
-A safe transition therefore requires:
+```text
+planned
+  → pointer_restore_intent
+  → pointer_safe
+  → authorization_retired
+  → verified
+```
 
-1. exact state and lease inspection;
-2. explicit current/no-current pointer expectation;
-3. signed authorization and actor-use validation;
-4. candidate reconstruction under the signed path;
-5. compare-and-swap pointer activation;
-6. post-activation authority verification;
-7. immutable retention of earlier candidates and terminal records.
+Core guarantees:
 
-The audit and preflight deliberately stop before mutation.
+- durable intent precedes pointer mutation;
+- the weaker expired lease is taken over under the exact retirement identity;
+- retry count on the weaker publication is not incremented;
+- the signed pointer is restored only by compare-and-swap;
+- a newer post-intent external pointer is preserved;
+- the weaker candidate is never restored as compensation;
+- only the exact saga lease may cancel the weaker row;
+- crashes after pointer commit or weaker cancellation are replayable;
+- signed authority is revalidated through terminal verification.
 
-## 5. Verification evidence
+## 5. No automatic journal migration
 
-In reconstructed focused workspaces using the live signed modules and minimal stubs only for unrelated repository services:
+The retirement saga does not copy authorization-only rows into the signed journal. Copying a row would not rebuild signed actor-use relation metadata and could cross an assurance boundary.
 
-- **12/12** signed assertion, actor-binding and actor-use checks passed;
-- **26/26** signed publication, journal isolation and transition-audit checks passed;
-- **7/7** duplicate-retirement preflight checks passed;
-- **33/33** signed publication/transition/preflight checks passed together;
-- Python compilation passed for the focused modules.
+A signed graph-set version must be created by the signed publication path. The retirement saga only neutralizes an expired weaker duplicate after a completed signed version already exists.
 
-The checks cover report-digest reconstruction, active and expired leases, completed-signed weaker duplicates, result-limit refusal, pointer classifications, signed candidate authority, external pointer refusal and text-free CLI output.
+Immutable graph-set versions and earlier journal history remain retained.
 
-This is not a complete exact-current repository test run. Full pytest, coverage, Ruff, Windows, containers, real multi-process contention, process-kill, disk-full and SQLite write-failure injection remain open. Release readiness is not claimed.
+## 6. Verification evidence
+
+Focused reconstructed workspaces currently provide:
+
+- **12/12** signed assertion, actor-binding and actor-use checks;
+- **33/33** signed publication, journal-isolation, transition and preflight checks;
+- **12/12** retirement-saga core checks;
+- focused Python compilation for the new retirement contracts, journal, mutation, executor, boundary and runtime.
+
+Retirement coverage includes deterministic identity, lease reclaim, retry phase preservation, exact weaker-lease takeover, pointer compare-and-swap, two critical crash windows, external-pointer rules, late authority drift and post-claim failure normalization.
+
+These are focused reconstructed checks with API-faithful stubs for unrelated services, not a fresh exact-current complete repository run. Full pytest, coverage, Ruff, Windows, containers, true multi-process process-kill tests and SQLite I/O/disk-full fault injection remain open. Release readiness is not claimed.
