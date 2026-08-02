@@ -35,6 +35,7 @@ def _publish_sqlite_backup(
     parent_info = output.parent.lstat()
     if _redirecting(parent_info) or not stat.S_ISDIR(parent_info.st_mode):
         raise ValueError("backup parent must be a non-redirecting directory.")
+    parent_identity = (int(parent_info.st_dev), int(parent_info.st_ino))
     temporary = output.parent / f".{output.name}.{secrets.token_hex(16)}.tmp"
     create_flags = os.O_RDWR | os.O_CREAT | os.O_EXCL
     create_flags |= getattr(os, "O_NOFOLLOW", 0)
@@ -84,6 +85,14 @@ def _publish_sqlite_backup(
             os.fsync(descriptor)
         finally:
             os.close(descriptor)
+        current_parent = output.parent.lstat()
+        if (
+            _redirecting(current_parent)
+            or not stat.S_ISDIR(current_parent.st_mode)
+            or (int(current_parent.st_dev), int(current_parent.st_ino))
+            != parent_identity
+        ):
+            raise RuntimeError("backup parent identity changed before publication.")
         os.link(temporary, output)
         directory = os.open(output.parent, os.O_RDONLY)
         try:
