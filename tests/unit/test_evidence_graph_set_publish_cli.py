@@ -19,6 +19,9 @@ def read(capsys):
 
 def install_dependencies(monkeypatch):
     monkeypatch.setattr(cli, "get_relation_review_ledger", lambda: object())
+    monkeypatch.setattr(
+        cli, "get_relation_review_authorization_store", lambda: object()
+    )
     monkeypatch.setattr(cli, "get_evidence_graph_set_store", lambda: object())
     monkeypatch.setattr(cli, "get_generation_store", lambda: object())
     monkeypatch.setattr(cli, "get_evidence_graph_store", lambda: object())
@@ -65,7 +68,9 @@ def test_publish_cli_requires_explicit_first_publication_expectation(
     output, error = read(capsys)
     assert error is None
     assert observed["expected_current_set_id"] is None
+    assert "authorization_store" in observed
     assert output["reviewed_proposals_required"] is True
+    assert output["committed_review_authorizations_required"] is True
     assert output["automatic_approval_performed"] is False
     assert output["source_text_returned"] is False
     assert "private text" not in json.dumps(output).lower()
