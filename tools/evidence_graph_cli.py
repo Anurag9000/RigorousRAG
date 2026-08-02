@@ -8,9 +8,15 @@ import sys
 from typing import Any, Sequence
 
 from tools.evidence_graph_analysis import analyze_evidence_graph
+from tools.evidence_graph_authority import (
+    EvidenceGraphAuthorityError,
+    assess_graph_authority,
+    resolve_evidence_graph,
+)
 from tools.evidence_graph_retrieval import find_paths, search_nodes
 from tools.evidence_graph_runtime import get_evidence_graph_store
 from tools.security import normalize_owner_id
+from tools.sparse_runtime import get_generation_store
 
 
 def _print(payload: Any, *, stream: Any = None) -> None:
@@ -39,23 +45,18 @@ def _integer(value: Any, label: str, minimum: int, maximum: int) -> int:
     return value
 
 
-def _batch(owner_id: str, doc_id: str, generation: int | None) -> Any:
-    store = get_evidence_graph_store()
-    owner = normalize_owner_id(owner_id)
-    document = _identifier(doc_id, "doc_id", 200)
-    if generation is None:
-        value = store.current(owner_id=owner, doc_id=document)
-        if value is None:
-            raise KeyError((owner, document))
-        return value
-    return store.get(
-        owner_id=owner,
-        doc_id=document,
-        generation=_integer(generation, "generation", 1, 2**63 - 1),
+def _view(owner_id: str, doc_id: str, generation: int | None) -> Any:
+    return resolve_evidence_graph(
+        owner_id=owner_id,
+        doc_id=doc_id,
+        graphs=get_evidence_graph_store(),
+        generations=get_generation_store(),
+        generation=generation,
     )
 
 
-def _summary(batch: Any) -> dict[str, Any]:
+def _summary(view: Any) -> dict[str, Any]:
+    batch = view.batch
     return {
         "owner_id": batch.owner_id,
         "doc_id": batch.doc_id,
@@ -66,6 +67,10 @@ def _summary(batch: Any) -> dict[str, Any]:
         "node_count": len(batch.nodes),
         "edge_count": len(batch.edges),
         "created_at": batch.created_at,
+        "authoritative_sequence": view.authoritative_sequence,
+        "authoritative_state": view.authoritative_state,
+        "authoritative_current": view.authoritative_current,
+        "authority_digest": view.authority_digest,
         "mutation_performed": False,
     }
 
@@ -74,8 +79,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m tools.evidence_graph_cli",
         description=(
-            "Inspect persisted explicit evidence graphs. This CLI is read-only and "
-            "does not infer new semantic relations."
+            "Inspect persisted explicit evidence graphs. Current graph reads fail "
+            "closed unless they match the authoritative generation."
         ),
     )
     commands = parser.add_subparsers(dest="command", required=True)
@@ -108,14 +113,16 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _status(args: argparse.Namespace) -> int:
-    _print(_summary(_batch(args.owner_id, args.doc_id, args.generation)))
+    _print(_summary(_view(args.owner_id, args.doc_id, args.generation)))
     return 0
 
 
 def _history(args: argparse.Namespace) -> int:
     owner = normalize_owner_id(args.owner_id)
     doc_id = _identifier(args.doc_id, "doc_id", 200)
-    values = get_evidence_graph_store().history(
+    graphs = get_evidence_graph_store()
+    authoritative = get_generation_store().current(owner_id=owner, doc_id=doc_id)
+    values = graphs.history(
         owner_id=owner,
         doc_id=doc_id,
         limit=_integer(args.limit, "limit", 1, 10_000),
@@ -125,7 +132,10 @@ def _history(args: argparse.Namespace) -> int:
             "owner_id": owner,
             "doc_id": doc_id,
             "count": len(values),
-            "generations": [_summary(value) for value in values],
+            "generations": [
+                _summary(assess_graph_authority(value, authoritative))
+                for value in values
+            ],
             "mutation_performed": False,
         }
     )
@@ -133,7 +143,8 @@ def _history(args: argparse.Namespace) -> int:
 
 
 def _search(args: argparse.Namespace) -> int:
-    batch = _batch(args.owner_id, args.doc_id, args.generation)
+    view = _view(args.owner_id, args.doc_id, args.generation)
+    batch = view.batch
     values = search_nodes(
         batch,
         args.query,
@@ -142,7 +153,7 @@ def _search(args: argparse.Namespace) -> int:
     )
     _print(
         {
-            **_summary(batch),
+            **_summary(view),
             "query_term_matches_only": True,
             "result_count": len(values),
             "results": [
@@ -164,7 +175,8 @@ def _search(args: argparse.Namespace) -> int:
 
 
 def _paths(args: argparse.Namespace) -> int:
-    batch = _batch(args.owner_id, args.doc_id, args.generation)
+    view = _view(args.owner_id, args.doc_id, args.generation)
+    batch = view.batch
     values = find_paths(
         batch,
         source_node_id=_identifier(args.source_node_id, "source_node_id", 64),
@@ -175,7 +187,7 @@ def _paths(args: argparse.Namespace) -> int:
     )
     _print(
         {
-            **_summary(batch),
+            **_summary(view),
             "path_count": len(values),
             "paths": [
                 {
@@ -208,11 +220,12 @@ def _paths(args: argparse.Namespace) -> int:
 
 
 def _analyze(args: argparse.Namespace) -> int:
-    batch = _batch(args.owner_id, args.doc_id, args.generation)
+    view = _view(args.owner_id, args.doc_id, args.generation)
+    batch = view.batch
     report = analyze_evidence_graph(batch)
     _print(
         {
-            **_summary(batch),
+            **_summary(view),
             "analysis_digest": report.analysis_digest,
             "node_counts": report.node_counts,
             "edge_counts": report.edge_counts,
@@ -221,10 +234,18 @@ def _analyze(args: argparse.Namespace) -> int:
                 {
                     "claim_node_id": cluster.claim.node_id,
                     "claim_label": cluster.claim.label,
-                    "supporting_node_ids": [node.node_id for node in cluster.supporting_nodes],
-                    "contradicting_node_ids": [node.node_id for node in cluster.contradicting_nodes],
-                    "support_edge_ids": [edge.edge_id for edge in cluster.support_edges],
-                    "contradiction_edge_ids": [edge.edge_id for edge in cluster.contradiction_edges],
+                    "supporting_node_ids": [
+                        node.node_id for node in cluster.supporting_nodes
+                    ],
+                    "contradicting_node_ids": [
+                        node.node_id for node in cluster.contradicting_nodes
+                    ],
+                    "support_edge_ids": [
+                        edge.edge_id for edge in cluster.support_edges
+                    ],
+                    "contradiction_edge_ids": [
+                        edge.edge_id for edge in cluster.contradiction_edges
+                    ],
                     "has_conflict": cluster.has_conflict,
                     "cluster_digest": cluster.cluster_digest,
                 }
@@ -250,6 +271,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "analyze":
             return _analyze(args)
         raise ValueError("unsupported evidence graph command.")
+    except EvidenceGraphAuthorityError:
+        _print({"error": "stale_graph"}, stream=sys.stderr)
+        return 1
     except KeyError:
         _print({"error": "not_found"}, stream=sys.stderr)
         return 1
