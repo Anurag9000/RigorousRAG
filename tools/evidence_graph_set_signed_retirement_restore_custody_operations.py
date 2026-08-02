@@ -40,16 +40,20 @@ def _boolean(value: Any, label: str) -> bool:
     return value
 
 
-def _holds(values: Iterable[str] | None) -> frozenset[str]:
+def _holds(
+    values: Iterable[str] | None,
+    *,
+    label: str,
+) -> frozenset[str]:
     if values is None:
         return frozenset()
     if isinstance(values, (str, bytes, bytearray)):
-        raise ValueError("held_custody_ids must be an iterable.")
+        raise ValueError(f"{label}s must be an iterable.")
     rendered: set[str] = set()
     for value in values:
-        rendered.add(_digest(value, "held_custody_id"))
+        rendered.add(_digest(value, label))
         if len(rendered) > _MAX_HOLDS:
-            raise ValueError("held custody IDs exceed the limit.")
+            raise ValueError("held identifiers exceed the limit.")
     return frozenset(rendered)
 
 
@@ -417,6 +421,7 @@ def plan_restore_custody_retention(
     retain_latest_per_target: int = 1,
     include_post_bound: bool = False,
     held_custody_ids: Iterable[str] | None = None,
+    held_restore_ids: Iterable[str] | None = None,
     limit: int = 10_000,
 ) -> RestoreCustodyRetentionPlan:
     owner = normalize_owner_id(owner_id)
@@ -424,7 +429,8 @@ def plan_restore_custody_retention(
     minimum_age = _timestamp(minimum_age_seconds, "minimum_age_seconds")
     latest_count = _integer(retain_latest_per_target, "retain_latest_per_target", 1, 100)
     include = _boolean(include_post_bound, "include_post_bound")
-    held = _holds(held_custody_ids)
+    held_custody = _holds(held_custody_ids, label="held_custody_id")
+    held_restore = _holds(held_restore_ids, label="held_restore_id")
     count = _integer(limit, "limit", 1, _MAX_LIMIT)
     if not callable(getattr(store, "list", None)):
         raise ValueError("custody store lacks the required read boundary.")
@@ -449,7 +455,7 @@ def plan_restore_custody_retention(
         protected.update(value.custody_id for value in ordered[:latest_count])
     rendered: list[RestoreCustodyRetentionItem] = []
     for value in values:
-        is_held = value.custody_id in held
+        is_held = value.custody_id in held_custody or value.restore_id in held_restore
         is_latest = value.custody_id in protected
         completed = value.post_bound_at if value.state == "post_bound" else None
         age_from = value.post_bound_at if completed is not None else value.pre_bound_at
