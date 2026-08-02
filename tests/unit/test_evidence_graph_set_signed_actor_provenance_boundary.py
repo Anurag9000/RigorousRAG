@@ -9,9 +9,12 @@ from tools import evidence_graph_set_signed_actor_provenance_boundary as boundar
 
 def test_reconcile_one_captures_one_finite_timestamp(monkeypatch):
     observed = {}
-    journal = SimpleNamespace(
-        next_claimable_id=lambda **kwargs: observed.setdefault("claim", kwargs) or "9" * 64
-    )
+
+    def next_claimable_id(**kwargs):
+        observed["claim"] = kwargs
+        return "9" * 64
+
+    journal = SimpleNamespace(next_claimable_id=next_claimable_id)
     marker = object()
 
     def execute(operation_id, **kwargs):
