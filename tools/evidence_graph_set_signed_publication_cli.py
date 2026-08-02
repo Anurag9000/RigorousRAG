@@ -14,20 +14,18 @@ from tools.evidence_graph_relation_authorization_runtime import (
 )
 from tools.evidence_graph_relation_runtime import get_relation_review_ledger
 from tools.evidence_graph_runtime import get_evidence_graph_store
-from tools.evidence_graph_set_publish_attempts import (
-    EvidenceGraphSetPublicationAttempt,
-)
+from tools.evidence_graph_set_publish_attempts import EvidenceGraphSetPublicationAttempt
 from tools.evidence_graph_set_publish_reconcile import (
     EvidenceGraphSetPublicationRecoveryError,
-)
-from tools.evidence_graph_set_publish_runtime import (
-    get_evidence_graph_set_publication_journal,
 )
 from tools.evidence_graph_set_runtime import get_evidence_graph_set_store
 from tools.evidence_graph_set_signed_actor_provenance_boundary import (
     execute_next_signed_actor_publication_attempt,
     execute_signed_actor_publication_attempt,
     signed_actor_publication_ledger,
+)
+from tools.evidence_graph_set_signed_publication_runtime import (
+    get_evidence_graph_set_signed_publication_journal,
 )
 from tools.sparse_runtime import get_generation_store
 
@@ -68,6 +66,7 @@ def _attempt_summary(value: Any) -> dict[str, Any]:
         "automatic_approval_performed": False,
         "committed_review_authorizations_required": True,
         "signed_actor_use_provenance_required_when_present": True,
+        "signed_publication_journal_isolated": True,
         "source_text_returned": False,
     }
 
@@ -81,6 +80,7 @@ def _execution_summary(value: Any) -> dict[str, Any]:
             "reviewed_proposals_required": True,
             "committed_review_authorizations_required": True,
             "signed_actor_use_provenance_validated": True,
+            "signed_publication_journal_isolated": True,
             "source_text_returned": False,
         }
     )
@@ -89,7 +89,7 @@ def _execution_summary(value: Any) -> dict[str, Any]:
 
 def _dependencies() -> dict[str, Any]:
     return {
-        "journal": get_evidence_graph_set_publication_journal(),
+        "journal": get_evidence_graph_set_signed_publication_journal(),
         "ledger": get_relation_review_ledger(),
         "authorization_store": get_relation_review_authorization_store(),
         "actor_use_store": get_signed_actor_use_store(),
@@ -103,9 +103,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m tools.evidence_graph_set_signed_publication_cli",
         description=(
-            "Plan, execute and recover reviewed graph-set publication through the "
-            "durable phase journal while validating committed authorization receipts "
-            "and signed actor-use provenance."
+            "Plan, execute and recover reviewed graph-set publication through an "
+            "isolated signed-provenance phase journal while validating committed "
+            "authorization receipts and signed actor-use provenance."
         ),
     )
     commands = parser.add_subparsers(dest="command", required=True)
@@ -150,7 +150,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     try:
         args = parser.parse_args(argv)
-        journal = get_evidence_graph_set_publication_journal()
+        journal = get_evidence_graph_set_signed_publication_journal()
         if args.command == "seed":
             ledger = get_relation_review_ledger()
             authorization_store = get_relation_review_authorization_store()
@@ -188,6 +188,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "count": len(values),
                     "attempts": [_attempt_summary(value) for value in values],
                     "mutation_performed": False,
+                    "signed_publication_journal_isolated": True,
                     "source_text_returned": False,
                 }
             )
@@ -213,6 +214,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     {
                         "status": "idle",
                         "mutation_performed": False,
+                        "signed_publication_journal_isolated": True,
                         "source_text_returned": False,
                     }
                 )
@@ -246,6 +248,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "compensation_complete": not bool(exc.compensation_errors),
                 "compensation_errors": list(exc.compensation_errors),
                 "signed_actor_use_provenance_validated": False,
+                "signed_publication_journal_isolated": True,
                 "source_text_returned": False,
             },
             stream=sys.stderr,
