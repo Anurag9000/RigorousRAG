@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+from types import SimpleNamespace
 
 import pytest
 
@@ -193,6 +194,19 @@ def test_recovery_error_output_is_generic_and_secret_free(monkeypatch, capsys):
         lambda **kwargs: object(),
     )
 
+    class CustodyStore:
+        def require_pre_bound(self, **kwargs):
+            return SimpleNamespace(
+                custody_id="c" * 64,
+                state="pre_bound",
+            )
+
+    monkeypatch.setattr(
+        cli,
+        "get_signed_retirement_restore_custody_store",
+        lambda: CustodyStore(),
+    )
+
     def fail(*args, **kwargs):
         raise SignedRetirementRestoreRecoveryError(
             "private target path and failure details",
@@ -210,6 +224,10 @@ def test_recovery_error_output_is_generic_and_secret_free(monkeypatch, capsys):
             "snapshot.json",
             "--target-db-path",
             "target.sqlite3",
+            "--pre-receipt",
+            "pre.json",
+            "--backup",
+            "backup.sqlite3",
             "--worker-id",
             "worker",
         ]
