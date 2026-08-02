@@ -53,12 +53,12 @@ class _EvidenceGraphAgentFinder(importlib.abc.MetaPathFinder):
 
 
 def install_evidence_graph_agent_import_hook() -> None:
-    from tools.evidence_graph_agent_integration import (
-        install_evidence_graph_agent_tool,
-    )
-
     existing = sys.modules.get(_TARGET)
     if isinstance(existing, ModuleType):
+        from tools.evidence_graph_agent_integration import (
+            install_evidence_graph_agent_tool,
+        )
+
         install_evidence_graph_agent_tool(existing)
     if any(getattr(finder, _MARKER, False) for finder in sys.meta_path):
         return
