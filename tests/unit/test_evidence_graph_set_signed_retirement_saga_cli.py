@@ -73,7 +73,18 @@ def install(monkeypatch):
         "generations": "generations",
         "graphs": "graphs",
     }
-    monkeypatch.setattr(cli, "_dependencies", lambda: dependencies)
+    monkeypatch.setattr(
+        cli,
+        "get_signed_publication_retirement_journal",
+        lambda: journal,
+    )
+    monkeypatch.setattr(
+        cli,
+        "_execution_dependencies",
+        lambda selected: dependencies
+        if selected is journal
+        else (_ for _ in ()).throw(AssertionError("wrong retirement journal")),
+    )
     return journal, dependencies
 
 
@@ -103,6 +114,7 @@ def test_seed_requires_exact_confirmation_and_reports_preflight(
     assert observed["authorization_journal"] == "authorization"
     assert output["preflight_eligible"] is True
     assert output["retirement_journal_mutation_performed"] is True
+    assert output["retirement_mutation_performed"] is True
     assert output["publication_mutation_performed"] is False
     assert output["source_text_returned"] is False
 
@@ -187,10 +199,23 @@ def test_recovery_error_exposes_only_generic_state(monkeypatch, capsys):
     assert "source" in rendered
 
 
-def test_status_list_retry_and_cancel_use_read_only_or_exact_boundaries(
+def test_read_only_commands_do_not_load_graph_or_publication_stores(
     monkeypatch, capsys
 ):
-    journal, _dependencies = install(monkeypatch)
+    journal = Journal()
+    monkeypatch.setattr(
+        cli,
+        "get_signed_publication_retirement_journal",
+        lambda: journal,
+    )
+    monkeypatch.setattr(
+        cli,
+        "_execution_dependencies",
+        lambda selected: (_ for _ in ()).throw(
+            AssertionError("execution dependencies must remain lazy")
+        ),
+    )
+
     assert cli.main(["status", "a" * 64]) == 0
     output, error = read(capsys)
     assert error is None
@@ -200,14 +225,31 @@ def test_status_list_retry_and_cancel_use_read_only_or_exact_boundaries(
     output, error = read(capsys)
     assert error is None
     assert output["mutation_performed"] is False
-    assert journal.list_kwargs["owner_id"] == "alice"
+
+
+def test_retry_and_cancel_use_exact_journal_boundary(monkeypatch, capsys):
+    journal = Journal()
+    monkeypatch.setattr(
+        cli,
+        "get_signed_publication_retirement_journal",
+        lambda: journal,
+    )
+    monkeypatch.setattr(
+        cli,
+        "_execution_dependencies",
+        lambda selected: (_ for _ in ()).throw(
+            AssertionError("execution dependencies must remain lazy")
+        ),
+    )
 
     assert cli.main([
         "retry", "a" * 64,
         "--owner-id", "alice",
         "--confirm-retirement-id", "a" * 64,
     ]) == 0
-    read(capsys)
+    output, error = read(capsys)
+    assert error is None
+    assert output["retirement_mutation_performed"] is True
     assert journal.retry_kwargs["confirm_retirement_id"] == "a" * 64
 
     assert cli.main([
@@ -215,5 +257,7 @@ def test_status_list_retry_and_cancel_use_read_only_or_exact_boundaries(
         "--owner-id", "alice",
         "--confirm-retirement-id", "a" * 64,
     ]) == 0
-    read(capsys)
+    output, error = read(capsys)
+    assert error is None
+    assert output["retirement_mutation_performed"] is True
     assert journal.cancel_kwargs["confirm_retirement_id"] == "a" * 64
