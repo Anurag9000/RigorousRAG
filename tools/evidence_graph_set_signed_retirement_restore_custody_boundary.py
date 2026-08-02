@@ -114,10 +114,35 @@ def _publish_sqlite_backup(
 
 _base._publish_sqlite_backup = _publish_sqlite_backup
 
-create_post_restore_comparison_receipt = (
-    _base.create_post_restore_comparison_receipt
-)
-create_pre_restore_backup_receipt = _base.create_pre_restore_backup_receipt
+
+def create_pre_restore_backup_receipt(**kwargs):
+    backup = _path(
+        kwargs["backup_output_path"],
+        label="backup_output_path",
+    )
+    receipt = _path(
+        kwargs["receipt_output_path"],
+        label="receipt_output_path",
+    )
+    if backup == receipt:
+        raise ValueError("backup and receipt outputs must be distinct.")
+    if backup.exists():
+        raise FileExistsError(backup)
+    if receipt.exists():
+        raise FileExistsError(receipt)
+    return _base.create_pre_restore_backup_receipt(**kwargs)
+
+
+def create_post_restore_comparison_receipt(**kwargs):
+    output = _path(
+        kwargs["receipt_output_path"],
+        label="receipt_output_path",
+    )
+    if output.exists():
+        raise FileExistsError(output)
+    return _base.create_post_restore_comparison_receipt(**kwargs)
+
+
 verify_post_restore_comparison_receipt = (
     _base.verify_post_restore_comparison_receipt
 )
