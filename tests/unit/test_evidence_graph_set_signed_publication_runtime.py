@@ -6,6 +6,13 @@ from pathlib import Path
 import pytest
 
 from tools import evidence_graph_set_signed_publication_runtime as runtime
+from tools.evidence_graph_set_publish_attempts import (
+    EvidenceGraphSetPublicationAttempt,
+)
+from tools.evidence_graph_set_publish_runtime import (
+    clear_evidence_graph_set_publication_journal_cache,
+    get_evidence_graph_set_publication_journal,
+)
 
 
 def install_factory(monkeypatch):
@@ -94,3 +101,43 @@ def test_signed_runtime_rejects_existing_hard_link_alias(tmp_path, monkeypatch):
     with pytest.raises(RuntimeError, match="alias one file"):
         runtime.get_evidence_graph_set_signed_publication_journal()
     assert observed == []
+
+
+def test_same_logical_operation_has_independent_durable_state(
+    tmp_path, monkeypatch
+):
+    common_path = tmp_path / "authorization-only.sqlite3"
+    signed_path = tmp_path / "signed.sqlite3"
+    monkeypatch.setenv("EVIDENCE_GRAPH_SET_PUBLICATION_DB_PATH", str(common_path))
+    monkeypatch.setenv(
+        "EVIDENCE_GRAPH_SET_SIGNED_PUBLICATION_DB_PATH", str(signed_path)
+    )
+    clear_evidence_graph_set_publication_journal_cache()
+    try:
+        common = get_evidence_graph_set_publication_journal()
+        signed = runtime.get_evidence_graph_set_signed_publication_journal()
+        attempt = EvidenceGraphSetPublicationAttempt.create(
+            owner_id="alice",
+            graph_set_key="review",
+            proposal_ids=("1" * 64,),
+            expected_current_set_id=None,
+            now=1.0,
+        )
+
+        common.seed(attempt)
+        with pytest.raises(KeyError):
+            signed.get(attempt.operation_id)
+
+        signed.seed(attempt)
+        common.cancel(
+            attempt.operation_id,
+            owner_id="alice",
+            confirm_operation_id=attempt.operation_id,
+            now=2.0,
+        )
+
+        assert common.get(attempt.operation_id).state == "cancelled"
+        assert signed.get(attempt.operation_id).state == "planned"
+        assert common.path != signed.path
+    finally:
+        clear_evidence_graph_set_publication_journal_cache()
