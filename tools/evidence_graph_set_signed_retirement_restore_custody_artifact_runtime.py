@@ -6,13 +6,13 @@ import os
 import threading
 from pathlib import Path
 
-from tools.evidence_graph_set_signed_retirement_restore_custody_artifact_journal import (
-    RestoreCustodyArtifactJournal,
+from tools.evidence_graph_set_signed_retirement_restore_custody_artifact_journal_boundary import (
+    GovernedRestoreCustodyArtifactJournal,
 )
 
 _DEFAULT_PATH = "data/evidence_graph_set_signed_retirement_custody_artifacts.sqlite3"
 _LOCK = threading.RLock()
-_JOURNALS: dict[str, RestoreCustodyArtifactJournal] = {}
+_JOURNALS: dict[str, GovernedRestoreCustodyArtifactJournal] = {}
 
 
 def _canonical(value: str | os.PathLike[str]) -> Path:
@@ -35,7 +35,7 @@ def get_restore_custody_artifact_journal(
     path: str | os.PathLike[str] | None = None,
     *,
     protected_paths: tuple[str | os.PathLike[str], ...] = (),
-) -> RestoreCustodyArtifactJournal:
+) -> GovernedRestoreCustodyArtifactJournal:
     selected = path if path is not None else os.getenv(
         "EVIDENCE_GRAPH_SET_SIGNED_RETIREMENT_CUSTODY_ARTIFACT_DB_PATH",
         _DEFAULT_PATH,
@@ -62,7 +62,7 @@ def get_restore_custody_artifact_journal(
     with _LOCK:
         journal = _JOURNALS.get(key)
         if journal is None:
-            journal = RestoreCustodyArtifactJournal(journal_path)
+            journal = GovernedRestoreCustodyArtifactJournal(journal_path)
             _JOURNALS[key] = journal
         return journal
 
