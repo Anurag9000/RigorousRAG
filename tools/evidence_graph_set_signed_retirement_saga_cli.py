@@ -35,7 +35,11 @@ def _print(value: Any, *, stream: Any = None) -> None:
     )
 
 
-def _attempt_summary(value: Any) -> dict[str, Any]:
+def _attempt_summary(
+    value: Any,
+    *,
+    retirement_mutation_performed: bool = False,
+) -> dict[str, Any]:
     return {
         "retirement_id": value.retirement_id,
         "owner_id": value.owner_id,
@@ -58,7 +62,7 @@ def _attempt_summary(value: Any) -> dict[str, Any]:
         "updated_at": value.updated_at,
         "completed_at": value.completed_at,
         "publication_mutation_performed": False,
-        "retirement_mutation_performed": False,
+        "retirement_mutation_performed": retirement_mutation_performed,
         "source_text_returned": False,
     }
 
@@ -75,9 +79,9 @@ def _execution_summary(value: Any) -> dict[str, Any]:
     return payload
 
 
-def _dependencies() -> dict[str, Any]:
+def _execution_dependencies(retirement_journal: Any) -> dict[str, Any]:
     return {
-        "retirement_journal": get_signed_publication_retirement_journal(),
+        "retirement_journal": retirement_journal,
         "authorization_journal": get_evidence_graph_set_publication_journal(),
         "signed_journal": get_evidence_graph_set_signed_publication_journal(),
         "set_store": get_evidence_graph_set_store(),
@@ -133,18 +137,21 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     try:
         args = parser.parse_args(argv)
-        dependencies = _dependencies()
-        retirement_journal = dependencies["retirement_journal"]
+        retirement_journal = get_signed_publication_retirement_journal()
         if args.command == "seed":
             if args.publication_operation_id != args.confirm_operation_id:
                 raise ValueError("publication operation confirmation differs.")
+            dependencies = _execution_dependencies(retirement_journal)
             attempt, preflight = seed_signed_publication_retirement(
                 owner_id=args.owner_id,
                 publication_operation_id=args.publication_operation_id,
                 max_attempts=args.max_attempts,
                 **dependencies,
             )
-            payload = _attempt_summary(attempt)
+            payload = _attempt_summary(
+                attempt,
+                retirement_mutation_performed=True,
+            )
             payload.update(
                 {
                     "preflight_report_digest": preflight.report_digest,
@@ -180,7 +187,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.retirement_id,
                 worker_id=args.worker_id,
                 lease_seconds=args.lease_seconds,
-                **dependencies,
+                **_execution_dependencies(retirement_journal),
             )
             _print(_execution_summary(result))
             return 0 if result.state == "completed" else 1
@@ -189,7 +196,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 owner_id=args.owner_id,
                 worker_id=args.worker_id,
                 lease_seconds=args.lease_seconds,
-                **dependencies,
+                **_execution_dependencies(retirement_journal),
             )
             if result is None:
                 _print(
@@ -208,7 +215,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 owner_id=args.owner_id,
                 confirm_retirement_id=args.confirm_retirement_id,
             )
-            _print(_attempt_summary(value))
+            _print(
+                _attempt_summary(
+                    value,
+                    retirement_mutation_performed=True,
+                )
+            )
             return 0
         if args.command == "cancel":
             value = retirement_journal.cancel(
@@ -216,7 +228,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 owner_id=args.owner_id,
                 confirm_retirement_id=args.confirm_retirement_id,
             )
-            _print(_attempt_summary(value))
+            _print(
+                _attempt_summary(
+                    value,
+                    retirement_mutation_performed=True,
+                )
+            )
             return 0
         raise ValueError("unsupported signed retirement command.")
     except SignedPublicationRetirementRecoveryError as exc:
