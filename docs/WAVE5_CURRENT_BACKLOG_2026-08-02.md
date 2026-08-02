@@ -1,6 +1,6 @@
 # Wave 5 current implementation backlog
 
-Last updated: 2026-08-02
+Last updated: 2026-08-03
 
 This file supersedes the Wave 5 checkbox section in `docs/TODO.md`. The older file remains useful as historical planning context but no longer reflects the current evidence-graph implementation.
 
@@ -43,6 +43,10 @@ This file supersedes the Wave 5 checkbox section in `docs/TODO.md`. The older fi
 - [x] Two-connection nonblocking SQLite backup under a write-reservation guard.
 - [x] Atomic no-overwrite backup and receipt artifact publication.
 - [x] Backup/schema/count/hash verification and receipt reconstruction.
+- [x] Durable pre/post restore custody manifest with replay-stable actor provenance.
+- [x] Custody evidence enforcement in canonical restore seed/execute/reconcile paths.
+- [x] Custody-manifest query-only operational audit.
+- [x] Conservative custody-manifest retention planning with durable legal holds.
 
 ## Completed GraphRAG path
 
@@ -86,6 +90,7 @@ This file supersedes the Wave 5 checkbox section in `docs/TODO.md`. The older fi
 - [ ] Test restore-target writers blocked by final exact-target completion locks.
 - [ ] Test independent-process legal-hold placement/release contention.
 - [ ] Test concurrent custody artifact and receipt publication races.
+- [ ] Test independent-process custody binding and post-finalization contention.
 
 ### Backup, restore and retention governance
 
@@ -104,12 +109,14 @@ This file supersedes the Wave 5 checkbox section in `docs/TODO.md`. The older fi
 - [x] Pre-restore empty-target SQLite backup receipt.
 - [x] Post-restore exact-comparison receipt.
 - [x] Offline custody receipt and backup verification.
-- [ ] Durably bind one pre-receipt/backup pair to each restore intent.
-- [ ] Require bound custody evidence in canonical execute/reconcile paths.
+- [x] Durably bind one pre-receipt/backup pair to each restore intent.
+- [x] Require bound custody evidence in canonical execute/reconcile paths.
+- [x] Durable custody manifest and post-receipt finalization state.
+- [x] Custody-manifest operational audit and conservative retention planning.
 - [ ] Track orphaned backup artifacts from concurrent receipt-publication races.
 - [ ] Add asymmetric or hardware-backed audit snapshot signatures.
 - [ ] Add trusted timestamps and signer key rotation.
-- [ ] Add a durable custody manifest and post-receipt finalization state.
+- [ ] Add signed external chain-of-custody export.
 - [ ] Add destructive-retention authorization and deletion journal.
 - [ ] Add secure deletion and database compaction policy.
 
@@ -153,7 +160,7 @@ This file supersedes the Wave 5 checkbox section in `docs/TODO.md`. The older fi
 - Restore execution accepts only terminal snapshots and an initialized globally empty target.
 - Restore never overwrites, merges or deletes target history.
 - Legal holds protect retention planning but do not authorize deletion or restore mutation.
-- Custody receipts are evidence until a durable manifest binds them to execution.
+- Custody manifests bind evidence to execution but do not authorize deletion.
 - Retention candidates are not deletion authorization.
 - Focused reconstructed tests are not the complete release matrix.
 - Release readiness is not claimed.
