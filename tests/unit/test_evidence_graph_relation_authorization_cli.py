@@ -7,22 +7,28 @@ from tools.evidence_graph_relation_authorization_store import (
     RelationReviewAuthorizationStore,
 )
 from tools.evidence_graph_relation_policy import ReviewAuthorization
+from tools.evidence_graph_relation_policy_integrity import (
+    deterministic_review_authorization_digest,
+)
 
 
 def authorization() -> ReviewAuthorization:
+    values = {
+        "proposal_id": "1" * 64,
+        "decision_id": "2" * 64,
+        "owner_id": "alice",
+        "graph_set_key": "review",
+        "decision": "approved",
+        "reviewer_id": "reviewer",
+        "policy_digest": "3" * 64,
+        "grant_digest": "4" * 64,
+        "separation_of_duties_enforced": True,
+        "replacement_scope_validated": False,
+    }
     return ReviewAuthorization(
-        proposal_id="1" * 64,
-        decision_id="2" * 64,
-        owner_id="alice",
-        graph_set_key="review",
-        decision="approved",
-        reviewer_id="reviewer",
-        policy_digest="3" * 64,
-        grant_digest="4" * 64,
-        authorization_digest="5" * 64,
+        **values,
+        authorization_digest=deterministic_review_authorization_digest(**values),
         authorized_at=1.0,
-        separation_of_duties_enforced=True,
-        replacement_scope_validated=False,
     )
 
 
