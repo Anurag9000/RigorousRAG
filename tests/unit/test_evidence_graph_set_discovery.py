@@ -82,7 +82,9 @@ def test_public_store_path_filters_stale_and_returns_no_text(monkeypatch):
     monkeypatch.setattr(
         discovery,
         "assess_graph_set_authority",
-        lambda current, **kwargs: report(current.graph_set_key == "review"),
+        lambda current, **kwargs: report(
+            current.graph_set_key == "review"
+        ),
     )
     result = discovery.list_evidence_graph_sets(
         owner_id="alice",
@@ -120,6 +122,7 @@ def test_private_store_path_revalidates_pointer_identity(monkeypatch):
     current = value()
     row = {
         "value": current,
+        "pointer_graph_set_key": current.graph_set_key,
         "pointer_graph_set_id": current.graph_set_id,
         "pointer_graph_set_digest": current.graph_set_digest,
         "pointer_schema_version": 1,
@@ -139,14 +142,17 @@ def test_private_store_path_revalidates_pointer_identity(monkeypatch):
     assert result[0]["graph_set_key"] == "review"
     assert store.connection.args[1] == ("alice", 20)
 
-    bad = dict(row, pointer_graph_set_digest="f" * 64)
-    with pytest.raises(RuntimeError, match="pointer identity"):
-        discovery.list_evidence_graph_sets(
-            owner_id="alice",
-            set_store=PrivateStore([bad]),
-            generations=object(),
-            graphs=object(),
-        )
+    for bad in (
+        dict(row, pointer_graph_set_key="other"),
+        dict(row, pointer_graph_set_digest="f" * 64),
+    ):
+        with pytest.raises(RuntimeError, match="pointer identity"):
+            discovery.list_evidence_graph_sets(
+                owner_id="alice",
+                set_store=PrivateStore([bad]),
+                generations=object(),
+                graphs=object(),
+            )
 
 
 def test_owner_scope_and_invalid_bounds_fail_closed(monkeypatch):
