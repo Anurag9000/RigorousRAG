@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "reviewers": [
+    {
+      "reviewer_id": "replace-with-stable-reviewer-id",
+      "owners": [
+        "replace-with-owner-id"
+      ],
+      "graph_set_keys": [
+        "replace-with-reviewed-graph-set-key"
+      ],
+      "decisions": [
+        "approved",
+        "rejected",
+        "superseded"
+      ]
+    }
+  ]
+}
