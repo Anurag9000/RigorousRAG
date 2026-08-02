@@ -1,16 +1,29 @@
-"""Operator CLI for crash-recoverable empty-target retirement snapshot restores."""
+"""Operator CLI for custody-governed empty-target retirement restores."""
 
 from __future__ import annotations
 
 import argparse
 import json
 import sys
+import time
 from dataclasses import asdict
 from typing import Any, Sequence
 
+from tools.evidence_graph_relation_actor import (
+    load_relation_review_actor,
+    require_relation_review_actor,
+)
+from tools.evidence_graph_set_signed_retirement_restore_contracts import (
+    _timestamp,
+)
+from tools.evidence_graph_set_signed_retirement_restore_custody_boundary import (
+    verify_pre_restore_backup_receipt,
+)
+from tools.evidence_graph_set_signed_retirement_restore_custody_runtime import (
+    get_signed_retirement_restore_custody_store,
+)
 from tools.evidence_graph_set_signed_retirement_restore_reconcile import (
     SignedRetirementRestoreRecoveryError,
-    execute_next_signed_retirement_restore,
     execute_signed_retirement_restore,
     seed_signed_retirement_restore,
 )
@@ -60,15 +73,23 @@ def _attempt(value: Any) -> dict[str, Any]:
     }
 
 
-def _execution(value: Any) -> dict[str, Any]:
+def _execution(value: Any, custody: Any) -> dict[str, Any]:
     payload = asdict(value)
     payload.update(
         {
+            "custody_id": custody.custody_id,
+            "custody_state": custody.state,
+            "pre_custody_validated": True,
             "contains_source_text": False,
             "contains_assertion_secrets": False,
         }
     )
     return payload
+
+
+def _require_custody_args(args: Any) -> None:
+    if not getattr(args, "pre_receipt", None) or not getattr(args, "backup", None):
+        raise ValueError("pre-restore custody receipt and backup are required.")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -78,8 +99,8 @@ def build_parser() -> argparse.ArgumentParser:
             "tools.evidence_graph_set_signed_retirement_restore_execute_cli"
         ),
         description=(
-            "Seed, execute and recover terminal signed-retirement snapshot "
-            "restores into an already initialized empty target. "
+            "Seed, execute and recover custody-governed terminal retirement "
+            "snapshot restores into an initialized empty target. "
             "No overwrite or merge exists."
         ),
     )
@@ -89,6 +110,9 @@ def build_parser() -> argparse.ArgumentParser:
     seed.add_argument("--snapshot", required=True)
     seed.add_argument("--target-db-path", required=True)
     seed.add_argument("--confirm-snapshot-digest", required=True)
+    seed.add_argument("--pre-receipt")
+    seed.add_argument("--backup")
+    seed.add_argument("--actor-id")
     seed.add_argument("--max-attempts", type=int, default=3)
 
     status = commands.add_parser("status")
@@ -103,6 +127,8 @@ def build_parser() -> argparse.ArgumentParser:
     execute.add_argument("restore_id")
     execute.add_argument("--snapshot", required=True)
     execute.add_argument("--target-db-path", required=True)
+    execute.add_argument("--pre-receipt")
+    execute.add_argument("--backup")
     execute.add_argument("--worker-id", required=True)
     execute.add_argument("--lease-seconds", type=int, default=60)
 
@@ -110,6 +136,8 @@ def build_parser() -> argparse.ArgumentParser:
     reconcile.add_argument("--owner-id", required=True)
     reconcile.add_argument("--snapshot", required=True)
     reconcile.add_argument("--target-db-path", required=True)
+    reconcile.add_argument("--pre-receipt")
+    reconcile.add_argument("--backup")
     reconcile.add_argument("--worker-id", required=True)
     reconcile.add_argument("--lease-seconds", type=int, default=60)
 
@@ -134,6 +162,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             confirmed = verify_signed_retirement_snapshot(args.snapshot)
             if args.confirm_snapshot_digest != confirmed.snapshot_digest:
                 raise ValueError("snapshot confirmation differs.")
+            _require_custody_args(args)
+            pre = verify_pre_restore_backup_receipt(
+                receipt_path=args.pre_receipt,
+                backup_path=args.backup,
+            )
+            if pre.snapshot_digest != confirmed.snapshot_digest:
+                raise RuntimeError("pre custody receipt differs from snapshot.")
+            binding = require_relation_review_actor(
+                args.actor_id,
+                binding=load_relation_review_actor(),
+            )
             journal = get_signed_retirement_restore_journal(
                 target_db_path=args.target_db_path
             )
@@ -144,9 +183,24 @@ def main(argv: Sequence[str] | None = None) -> int:
                 confirm_snapshot_digest=args.confirm_snapshot_digest,
                 max_attempts=args.max_attempts,
             )
+            custody = get_signed_retirement_restore_custody_store().bind_pre(
+                restore_id=value.restore_id,
+                pre_receipt_path=args.pre_receipt,
+                backup_path=args.backup,
+                restore_journal=journal,
+                actor=binding,
+            )
             payload = _attempt(value)
-            payload["restore_intent_mutation_performed"] = True
-            payload["target_mutation_performed"] = False
+            payload.update(
+                {
+                    "custody_id": custody.custody_id,
+                    "custody_state": custody.state,
+                    "pre_custody_validated": True,
+                    "restore_intent_mutation_performed": True,
+                    "custody_mutation_performed": True,
+                    "target_mutation_performed": False,
+                }
+            )
             _print(payload)
             return 0
 
@@ -190,10 +244,18 @@ def main(argv: Sequence[str] | None = None) -> int:
             _print(payload)
             return 0
 
+        _require_custody_args(args)
         journal = get_signed_retirement_restore_journal(
             target_db_path=args.target_db_path
         )
+        custody_store = get_signed_retirement_restore_custody_store()
         if args.command == "execute":
+            custody = custody_store.require_pre_bound(
+                restore_id=args.restore_id,
+                pre_receipt_path=args.pre_receipt,
+                backup_path=args.backup,
+                restore_journal=journal,
+            )
             result = execute_signed_retirement_restore(
                 args.restore_id,
                 snapshot_path=args.snapshot,
@@ -202,18 +264,15 @@ def main(argv: Sequence[str] | None = None) -> int:
                 lease_seconds=args.lease_seconds,
                 journal=journal,
             )
-            _print(_execution(result))
+            _print(_execution(result, custody))
             return 0 if result.state == "completed" else 1
         if args.command == "reconcile-one":
-            result = execute_next_signed_retirement_restore(
+            timestamp = _timestamp(time.time(), "now")
+            restore_id = journal.next_claimable_id(
                 owner_id=args.owner_id,
-                snapshot_path=args.snapshot,
-                target_db_path=args.target_db_path,
-                worker_id=args.worker_id,
-                lease_seconds=args.lease_seconds,
-                journal=journal,
+                now=timestamp,
             )
-            if result is None:
+            if restore_id is None:
                 _print(
                     {
                         "status": "idle",
@@ -222,7 +281,22 @@ def main(argv: Sequence[str] | None = None) -> int:
                     }
                 )
                 return 0
-            _print(_execution(result))
+            custody = custody_store.require_pre_bound(
+                restore_id=restore_id,
+                pre_receipt_path=args.pre_receipt,
+                backup_path=args.backup,
+                restore_journal=journal,
+            )
+            result = execute_signed_retirement_restore(
+                restore_id,
+                snapshot_path=args.snapshot,
+                target_db_path=args.target_db_path,
+                worker_id=args.worker_id,
+                lease_seconds=args.lease_seconds,
+                journal=journal,
+                now=timestamp,
+            )
+            _print(_execution(result, custody))
             return 0 if result.state == "completed" else 1
         raise ValueError("unsupported restore command.")
     except SignedRetirementRestoreRecoveryError as exc:
@@ -238,6 +312,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             },
             stream=sys.stderr,
         )
+        return 1
+    except PermissionError:
+        _print({"error": "not_authorized"}, stream=sys.stderr)
         return 1
     except KeyError:
         _print({"error": "not_found"}, stream=sys.stderr)
