@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 from types import ModuleType
 
@@ -34,7 +35,7 @@ def _module():
     return module
 
 
-def test_install_adds_closed_schema_dispatch_and_prompt(monkeypatch):
+def test_install_adds_closed_schemas_dispatch_and_prompt(monkeypatch):
     module = _module()
     citation = Citation(
         label="[1]",
@@ -45,31 +46,51 @@ def test_install_adds_closed_schema_dispatch_and_prompt(monkeypatch):
     captured = {}
 
     def search(**kwargs):
-        captured.update(kwargs)
+        captured["search"] = kwargs
         return [citation]
 
+    def listing(**kwargs):
+        captured["list"] = kwargs
+        return [{"graph_set_key": "review"}]
+
     monkeypatch.setattr(integration, "search_evidence_graph", search)
+    monkeypatch.setattr(integration, "list_evidence_graph_sets", listing)
     result = integration.install_evidence_graph_agent_tool(module)
 
     assert result is module
     names = [value["function"]["name"] for value in module.TOOLS_SCHEMA]
-    assert names == ["existing", "search_evidence_graph"]
-    schema = module._TOOL_PARAMETER_SCHEMAS["search_evidence_graph"]
-    assert schema["additionalProperties"] is False
-    assert schema["required"] == ["query", "graph_set_key"]
+    assert names == [
+        "existing",
+        "list_evidence_graph_sets",
+        "search_evidence_graph",
+    ]
+    for name in ("list_evidence_graph_sets", "search_evidence_graph"):
+        assert module._TOOL_PARAMETER_SCHEMAS[name]["additionalProperties"] is False
     agent = module.SearchAgent()
+    content, citations = agent._dispatch(
+        "list_evidence_graph_sets", {"limit": 3}
+    )
+    assert json.loads(content) == {
+        "count": 1,
+        "graph_sets": [{"graph_set_key": "review"}],
+        "source_text_returned": False,
+    }
+    assert citations == []
+    assert captured["list"] == {"owner_id": "alice", "limit": 3}
+
     content, citations = agent._dispatch(
         "search_evidence_graph",
         {"query": "result", "graph_set_key": "review"},
     )
     assert content == "Reviewed evidence-graph citations retrieved."
     assert citations == [citation]
-    assert captured == {
+    assert captured["search"] == {
         "owner_id": "alice",
         "query": "result",
         "graph_set_key": "review",
     }
-    assert "Reviewed Evidence Graph" in module.SYSTEM_PROMPT
+    assert "Reviewed Evidence Graph Sets" in module.SYSTEM_PROMPT
+    assert "Reviewed Evidence Graph (`search_evidence_graph`)" in module.SYSTEM_PROMPT
 
 
 def test_install_is_idempotent_and_preserves_fallback(monkeypatch):
@@ -79,15 +100,19 @@ def test_install_is_idempotent_and_preserves_fallback(monkeypatch):
         "search_evidence_graph",
         lambda **kwargs: [],
     )
+    monkeypatch.setattr(
+        integration,
+        "list_evidence_graph_sets",
+        lambda **kwargs: [],
+    )
     integration.install_evidence_graph_agent_tool(module)
     first_dispatch = module.SearchAgent._dispatch
     integration.install_evidence_graph_agent_tool(module)
 
     assert module.SearchAgent._dispatch is first_dispatch
-    assert sum(
-        value["function"]["name"] == "search_evidence_graph"
-        for value in module.TOOLS_SCHEMA
-    ) == 1
+    names = [value["function"]["name"] for value in module.TOOLS_SCHEMA]
+    assert names.count("list_evidence_graph_sets") == 1
+    assert names.count("search_evidence_graph") == 1
     assert module.SearchAgent()._dispatch("existing", {}) == (
         "fallback:existing",
         [],
