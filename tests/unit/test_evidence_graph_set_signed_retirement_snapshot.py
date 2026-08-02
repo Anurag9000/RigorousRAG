@@ -99,7 +99,7 @@ def test_snapshot_tampering_and_duplicate_keys_fail_closed(tmp_path):
         limit=100,
     )
     raw = json.loads(output.read_text(encoding="utf-8"))
-    raw["records"][0]["graph_set_key"] = "other"
+    raw["generated_at"] = 101.0
     output.write_text(json.dumps(raw), encoding="utf-8")
     with pytest.raises(ValueError, match="snapshot_digest"):
         verify_signed_retirement_snapshot(output)
