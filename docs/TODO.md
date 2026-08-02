@@ -126,20 +126,30 @@ This backlog is ordered by dependency and risk. Checked items have committed imp
 - [x] Require exact current generation sequence/profile/content and snapshot count/generation alignment.
 - [x] Persist append-only preflight history and an atomic current pointer.
 - [x] Add plan/status/history and failed/cancelled cleanup CLI with explicit `mutation_performed: false`.
+- [x] Add AES-256-GCM encrypted rollback payloads containing complete privacy-finalized vector, sparse and generation snapshots.
+- [x] Require explicit operator key ID and canonical base64 32-byte key material with no plaintext/default fallback.
+- [x] Add manifest-last encrypted artifact publication, authenticated metadata and tamper/wrong-key refusal.
+- [x] Add status/verify/capture and double-confirmed failed/cancelled cleanup commands without restore.
+- [x] Reconstruct encrypted payloads into public immutable vector, sparse and generation snapshot types in memory.
+- [x] Verify a write/read/re-snapshot cycle in a bounded non-authoritative staging store.
+- [x] Add a deterministic preparation operation ID and leased ready-only preparation journal.
+- [x] Bind validated task, eligible report, preflight, rollback artifact, staging verification and unchanged source generation before `ready`.
+- [x] Add an adapter-only hidden-write/validate/visibility/validate compensation saga with fault-injection contracts.
 - [ ] Execute governed benchmark fixtures against the actual current and shadow retrieval stacks.
 - [ ] Measure wall-clock latency, process/device memory, storage and provider billing rather than accepting supplied resource observations.
 - [ ] Add reviewed bootstrap/permutation tests and multiple-comparison controls where appropriate.
 - [ ] Add governed production adapters for Instructor, SPECTER2, BGE-M3 and future adapter-required profiles.
-- [ ] Add a protected durable rollback-artifact store containing complete vector and sparse snapshots.
-- [ ] Define rollback encryption/key-management, retention and secure-deletion policy.
-- [ ] Add a durable cutover journal with exclusive leases and idempotency keys.
-- [ ] Atomically publish vector, sparse and durable current-generation state without exposing an unvalidated mixed generation.
+- [ ] Integrate KMS/HSM or a production secret manager and governed key rotation/re-encryption.
+- [ ] Define encrypted rollback retention, legal hold and secure-deletion policy.
+- [ ] Implement a production vector+sparse+generation cutover adapter.
+- [ ] Connect ready preparation operations to a durable executing/committed/rolled-back saga journal.
+- [ ] Atomically or compensatingly publish vector, sparse and durable current-generation state without exposing an unvalidated mixed generation.
 - [ ] Validate the new authoritative generation before marking the migration committed.
 - [ ] Add automatic rollback and exact rollback-identity verification after every failed publication phase.
 - [ ] Keep old state until rollback and new-generation verification pass.
 - [ ] Add bounded shadow/report/preflight/rollback retention and compaction.
 - [ ] Add active-worker pause/resume/cancel semantics.
-- [ ] Test crash recovery at every build, report, preflight, cutover and rollback phase.
+- [ ] Test crash recovery at every build, report, preflight, encrypted artifact, cutover and rollback phase.
 
 ## Wave 3 — adaptive and corrective RAG
 
@@ -210,14 +220,36 @@ This backlog is ordered by dependency and risk. Checked items have committed imp
 - [ ] Add multi-hop ablation reports and historical regression thresholds.
 - [ ] Run exact-head end-to-end API/browser/provider integration tests.
 
-## Wave 5 — evidence graph
+## Wave 5 — provenance evidence graph
 
-- [ ] Typed document, section, claim, entity, method, dataset and citation nodes.
-- [ ] Provenance-preserving graph edges.
-- [ ] Graph construction from authoritative generations.
-- [ ] Graph retrieval and path explanations.
-- [ ] Contradiction/support clustering.
-- [ ] Bounded GraphRAG summaries with source lineage.
+- [x] Typed document, section, claim, entity, method, dataset and citation nodes.
+- [x] Deterministic provenance-preserving graph edges and generation-scoped graph digests.
+- [x] Explicit-only graph construction from finalized documents and reviewed annotations/relations.
+- [x] Transactional immutable graph generations and optimistic current pointers.
+- [x] Deterministic lexical node retrieval and type filters.
+- [x] Directed cycle-safe path explanations with edge/node filters.
+- [x] Explicit-edge-only support and contradiction clustering.
+- [x] Read-only privacy-conscious graph status/history/search/path/analysis CLI.
+- [x] Durable exact-authoritative-generation derived graph job identities and SQLite journal.
+- [x] Exclusive leases, expiry/reclaim, attempt ceilings, generic failures, retry and cancellation.
+- [x] Structural document/section graph rebuild from authoritative sparse snapshots.
+- [x] Deleted-generation tombstone graphs.
+- [x] Exact generation/content/profile/sparse identity checks before and after graph publication.
+- [x] Idempotent exact graph publication and backward-pointer refusal.
+- [x] Fail-closed current graph reader requiring exact authoritative sequence/content/profile identity.
+- [x] Deleted current graph tombstone validation.
+- [x] Historical graph inspection explicitly marked non-current.
+- [ ] Add startup/periodic job scheduling after multi-process leadership is implemented.
+- [ ] Add distributed or database-backed leadership instead of process-local striped locks.
+- [ ] Add privacy-safe job audit export, dead-letter reporting, retention and compaction.
+- [ ] Add crash/disk/concurrency injection around claim, graph insert, pointer publication and job completion.
+- [ ] Add cross-document graph-set types without collapsing owner/document/generation provenance.
+- [ ] Add reviewed cross-document citation and entity-resolution workflows.
+- [ ] Add bounded GraphRAG retrieval and summaries with source lineage.
+- [ ] Add path-aware evidence selection and server-owned citation conversion.
+- [ ] Add graph retrieval/path-completeness benchmarks and historical regression thresholds.
+- [ ] Add reviewed closed-schema scientific extraction adapters and human correction lineage.
+- [ ] Add graph database backup/restore and disaster-recovery policy.
 
 ## Wave 6 — multimodal scientific ingestion
 
@@ -285,4 +317,5 @@ This backlog is ordered by dependency and risk. Checked items have committed imp
 - [ ] Adaptive and heterogeneous multi-hop integration tests against authoritative generations.
 - [ ] Migration shadow, promotion, statistical and preflight tests against real authoritative current/shadow retrieval runs.
 - [ ] Protected rollback-artifact, cutover and rollback fault injection.
+- [ ] Evidence-graph reconciliation, stale-read refusal, corruption and multi-process concurrency tests.
 - [ ] Final line-by-line regression audit of one unchanged exact `main` SHA.
