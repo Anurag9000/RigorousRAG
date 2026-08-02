@@ -16,7 +16,7 @@ from tools.evidence_graph_set_runtime import get_evidence_graph_set_store
 from tools.evidence_graph_set_signed_publication_runtime import (
     get_evidence_graph_set_signed_publication_journal,
 )
-from tools.evidence_graph_set_signed_retirement_reconcile import (
+from tools.evidence_graph_set_signed_retirement_boundary import (
     SignedPublicationRetirementRecoveryError,
     execute_next_signed_publication_retirement,
     execute_signed_publication_retirement,
