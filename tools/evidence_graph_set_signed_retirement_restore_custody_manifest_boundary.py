@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import time
 from typing import Any
 
@@ -22,7 +23,14 @@ from tools.evidence_graph_set_signed_retirement_restore_custody_manifest import 
 class GovernedSignedRetirementRestoreCustodyStore(
     SignedRetirementRestoreCustodyStore
 ):
-    """Custody store whose exact replays preserve original audit timestamps."""
+    """Custody store with replay stability and target-path separation."""
+
+    def _reject_target_alias(self, target_path_digest: str) -> None:
+        own_digest = hashlib.sha256(str(self.path).encode("utf-8")).hexdigest()
+        if own_digest == target_path_digest:
+            raise RuntimeError(
+                "restore custody database may not be the restore target."
+            )
 
     def bind_pre(
         self,
@@ -35,6 +43,11 @@ class GovernedSignedRetirementRestoreCustodyStore(
         now: float | None = None,
     ):
         selected = _digest(restore_id, "restore_id")
+        receipt = verify_pre_restore_backup_receipt(
+            receipt_path=pre_receipt_path,
+            backup_path=backup_path,
+        )
+        self._reject_target_alias(receipt.target_path_digest)
         try:
             stored = self.get_for_restore(selected)
         except KeyError:
@@ -46,10 +59,6 @@ class GovernedSignedRetirementRestoreCustodyStore(
                 actor=actor,
                 now=now,
             )
-        receipt = verify_pre_restore_backup_receipt(
-            receipt_path=pre_receipt_path,
-            backup_path=backup_path,
-        )
         restore = restore_journal.get(selected)
         timestamp = _timestamp(time.time() if now is None else now, "now")
         actor_id, method, binding = _actor_fields(actor, now=timestamp)
@@ -67,6 +76,26 @@ class GovernedSignedRetirementRestoreCustodyStore(
             raise RuntimeError("restore custody manifest collision detected.")
         return stored
 
+    def require_pre_bound(
+        self,
+        *,
+        restore_id: str,
+        pre_receipt_path: Any,
+        backup_path: Any,
+        restore_journal: Any,
+    ):
+        receipt = verify_pre_restore_backup_receipt(
+            receipt_path=pre_receipt_path,
+            backup_path=backup_path,
+        )
+        self._reject_target_alias(receipt.target_path_digest)
+        return super().require_pre_bound(
+            restore_id=restore_id,
+            pre_receipt_path=pre_receipt_path,
+            backup_path=backup_path,
+            restore_journal=restore_journal,
+        )
+
     def bind_post(
         self,
         *,
@@ -77,6 +106,8 @@ class GovernedSignedRetirementRestoreCustodyStore(
         now: float | None = None,
     ):
         selected = _digest(restore_id, "restore_id")
+        receipt = verify_post_restore_comparison_receipt(post_receipt_path)
+        self._reject_target_alias(receipt.target_path_digest)
         stored = self.get_for_restore(selected)
         if stored.state != "post_bound":
             return super().bind_post(
@@ -86,7 +117,6 @@ class GovernedSignedRetirementRestoreCustodyStore(
                 actor=actor,
                 now=now,
             )
-        receipt = verify_post_restore_comparison_receipt(post_receipt_path)
         restore = restore_journal.get(selected)
         timestamp = _timestamp(time.time() if now is None else now, "now")
         actor_id, method, binding = _actor_fields(actor, now=timestamp)
