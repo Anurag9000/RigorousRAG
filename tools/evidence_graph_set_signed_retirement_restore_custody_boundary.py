@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import secrets
 import sqlite3
-from typing import Any
+import stat
 
 from tools import evidence_graph_set_signed_retirement_restore_custody as _base
 from tools.evidence_graph_set_signed_retirement_journal import (
@@ -14,7 +14,10 @@ from tools.evidence_graph_set_signed_retirement_journal import (
 from tools.evidence_graph_set_signed_retirement_restore_mutation import (
     canonical_target_path,
 )
-from tools.evidence_graph_set_signed_retirement_snapshot import _path
+from tools.evidence_graph_set_signed_retirement_snapshot import (
+    _redirecting,
+    _path,
+)
 
 
 def _publish_sqlite_backup(
@@ -29,7 +32,14 @@ def _publish_sqlite_backup(
     if output.exists():
         raise FileExistsError(output)
     output.parent.mkdir(parents=True, exist_ok=True)
+    parent_info = output.parent.lstat()
+    if _redirecting(parent_info) or not stat.S_ISDIR(parent_info.st_mode):
+        raise ValueError("backup parent must be a non-redirecting directory.")
     temporary = output.parent / f".{output.name}.{secrets.token_hex(16)}.tmp"
+    create_flags = os.O_RDWR | os.O_CREAT | os.O_EXCL
+    create_flags |= getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(temporary, create_flags, 0o600)
+    os.close(descriptor)
     target_count: int
     target_schema: str
     source_journal = SignedPublicationRetirementJournal(target)
@@ -66,7 +76,10 @@ def _publish_sqlite_backup(
             except Exception:
                 guard.execute("ROLLBACK")
                 raise
-        descriptor = os.open(temporary, os.O_RDONLY)
+        descriptor = os.open(
+            temporary,
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+        )
         try:
             os.fsync(descriptor)
         finally:
