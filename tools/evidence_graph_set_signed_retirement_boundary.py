@@ -33,7 +33,7 @@ def execute_signed_publication_retirement(
     now: float | None = None,
     _phase_hook: Any = None,
 ) -> SignedPublicationRetirementExecution:
-    timestamp = _timestamp(time.time() if now is None else now, "now")
+    selected_now = None if now is None else _timestamp(now, "now")
     try:
         return _execute(
             retirement_id,
@@ -45,13 +45,17 @@ def execute_signed_publication_retirement(
             set_store=set_store,
             generations=generations,
             graphs=graphs,
-            now=timestamp,
+            now=selected_now,
             _phase_hook=_phase_hook,
         )
     except SignedPublicationRetirementRecoveryError:
         raise
     except Exception as exc:
         failure = _failure_name(exc)
+        failure_now = _timestamp(
+            time.time() if selected_now is None else selected_now,
+            "now",
+        )
         current = retirement_journal.get(retirement_id)
         if current.state == "running":
             try:
@@ -59,7 +63,7 @@ def execute_signed_publication_retirement(
                     current.retirement_id,
                     worker_id=worker_id,
                     failure_type=failure,
-                    now=timestamp,
+                    now=failure_now,
                 )
             except (KeyError, RuntimeError):
                 current = retirement_journal.get(retirement_id)
