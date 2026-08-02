@@ -38,6 +38,11 @@ This file supersedes the Wave 5 checkbox section in `docs/TODO.md`. The older fi
 - [x] Integrity-backed durable restore legal-hold registry.
 - [x] Process-owned hold placement/release and monotonic hold lifecycle.
 - [x] Read-only durable-hold integration with retention planning.
+- [x] Process-owned pre-restore SQLite backup receipts.
+- [x] Process-owned post-restore exact-comparison receipts.
+- [x] Two-connection nonblocking SQLite backup under a write-reservation guard.
+- [x] Atomic no-overwrite backup and receipt artifact publication.
+- [x] Backup/schema/count/hash verification and receipt reconstruction.
 
 ## Completed GraphRAG path
 
@@ -80,6 +85,7 @@ This file supersedes the Wave 5 checkbox section in `docs/TODO.md`. The older fi
 - [ ] Test long-running lease renewal under real wall-clock delays.
 - [ ] Test restore-target writers blocked by final exact-target completion locks.
 - [ ] Test independent-process legal-hold placement/release contention.
+- [ ] Test concurrent custody artifact and receipt publication races.
 
 ### Backup, restore and retention governance
 
@@ -95,10 +101,15 @@ This file supersedes the Wave 5 checkbox section in `docs/TODO.md`. The older fi
 - [x] Non-destructive restore-intent retention planning.
 - [x] Durable legal-hold registry and process-owned authorization.
 - [x] Integrity-verified active-hold retention integration.
+- [x] Pre-restore empty-target SQLite backup receipt.
+- [x] Post-restore exact-comparison receipt.
+- [x] Offline custody receipt and backup verification.
+- [ ] Durably bind one pre-receipt/backup pair to each restore intent.
+- [ ] Require bound custody evidence in canonical execute/reconcile paths.
+- [ ] Track orphaned backup artifacts from concurrent receipt-publication races.
 - [ ] Add asymmetric or hardware-backed audit snapshot signatures.
 - [ ] Add trusted timestamps and signer key rotation.
-- [ ] Add signed chain-of-custody manifests.
-- [ ] Add mandatory backup-before-restore evidence and post-restore comparison receipts.
+- [ ] Add a durable custody manifest and post-receipt finalization state.
 - [ ] Add destructive-retention authorization and deletion journal.
 - [ ] Add secure deletion and database compaction policy.
 
@@ -138,10 +149,11 @@ This file supersedes the Wave 5 checkbox section in `docs/TODO.md`. The older fi
 - Cryptographic actor assertions prove configured key possession, not scientific correctness.
 - GraphRAG retrieval does not itself generate an answer.
 - An authorization-only graph set cannot be retroactively relabeled as signed provenance.
-- Snapshot integrity digests are not digital signatures.
+- Snapshot and custody integrity digests are not digital signatures.
 - Restore execution accepts only terminal snapshots and an initialized globally empty target.
 - Restore never overwrites, merges or deletes target history.
 - Legal holds protect retention planning but do not authorize deletion or restore mutation.
+- Custody receipts are evidence until a durable manifest binds them to execution.
 - Retention candidates are not deletion authorization.
 - Focused reconstructed tests are not the complete release matrix.
 - Release readiness is not claimed.
