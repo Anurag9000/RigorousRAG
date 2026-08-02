@@ -244,8 +244,7 @@ def test_crash_after_pointer_commit_recovers(tmp_path, monkeypatch):
     _, _, store, journal, attempt = values
     assert journal.get(attempt.operation_id).phase == "candidate_stored"
     assert store.current(owner_id="alice", graph_set_key="review") is not None
-    recovered = _execute(values, now=20.0)
-    assert recovered.state == "completed"
+    assert _execute(values, now=20.0).state == "completed"
 
 
 def test_exception_after_unjournaled_activation_compensates(tmp_path, monkeypatch):
@@ -287,9 +286,7 @@ def test_crash_after_compensation_is_reconciled(tmp_path, monkeypatch):
 
 
 def test_replacement_failure_restores_previous_pointer(tmp_path, monkeypatch):
-    proposal, ledger, store, journal, first_attempt = _setup(
-        tmp_path, monkeypatch
-    )
+    proposal, ledger, store, journal, first_attempt = _setup(tmp_path, monkeypatch)
     first = _execute((proposal, ledger, store, journal, first_attempt))
     second = Proposal(
         proposal_id="2" * 64,
@@ -394,6 +391,15 @@ def test_cli_seed_status_list_cancel_and_idle(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(
         cli, "get_evidence_graph_set_publication_journal", lambda: journal
     )
+    monkeypatch.setattr(cli, "get_relation_review_ledger", lambda: object())
+    monkeypatch.setattr(
+        cli, "get_relation_review_authorization_store", lambda: object()
+    )
+    monkeypatch.setattr(
+        cli,
+        "governed_publication_ledger",
+        lambda **kwargs: SimpleNamespace(authorization_digest="a" * 64),
+    )
     assert cli.main(
         [
             "seed",
@@ -409,6 +415,7 @@ def test_cli_seed_status_list_cancel_and_idle(tmp_path, monkeypatch, capsys):
     seeded = json.loads(capsys.readouterr().out)
     operation_id = seeded["operation_id"]
     assert seeded["source_text_returned"] is False
+    assert seeded["committed_review_authorizations_required"] is True
     assert cli.main(["status", operation_id]) == 0
     assert json.loads(capsys.readouterr().out)["state"] == "planned"
     assert cli.main(["list", "--owner-id", "alice"]) == 0
@@ -431,6 +438,7 @@ def test_cli_seed_status_list_cancel_and_idle(tmp_path, monkeypatch, capsys):
         lambda: {
             "journal": journal,
             "ledger": object(),
+            "authorization_store": object(),
             "set_store": object(),
             "generations": object(),
             "graphs": object(),
