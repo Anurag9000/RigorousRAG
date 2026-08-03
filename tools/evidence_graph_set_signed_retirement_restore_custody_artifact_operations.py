@@ -17,6 +17,9 @@ from tools.evidence_graph_set_signed_retirement_restore_contracts import (
 )
 from tools.security import normalize_owner_id
 
+_STATES = frozenset(
+    {"planned", "running", "completed", "orphaned", "failed", "cancelled"}
+)
 _CLASSIFICATIONS = frozenset(
     {
         "planned_ready",
@@ -53,6 +56,14 @@ def _boolean(value: Any, label: str) -> bool:
     if not isinstance(value, bool):
         raise ValueError(f"{label} must be boolean.")
     return value
+
+
+def _optional_digest(value: Any, label: str) -> str | None:
+    return None if value is None else _digest(value, label)
+
+
+def _optional_identifier(value: Any, label: str, maximum: int = 200) -> str | None:
+    return None if value is None else _identifier(value, label, maximum)
 
 
 def _holds(values: Iterable[str] | None) -> frozenset[str]:
@@ -142,6 +153,83 @@ class RestoreCustodyArtifactOperationalItem:
     updated_at: float
     completed_at: float | None
 
+    def __post_init__(self) -> None:
+        for field in (
+            "artifact_id",
+            "restore_id",
+            "snapshot_digest",
+            "target_path_digest",
+            "backup_path_digest",
+            "receipt_path_digest",
+        ):
+            object.__setattr__(self, field, _digest(getattr(self, field), field))
+        state = _identifier(self.state, "state", 30)
+        phase = _identifier(self.phase, "phase", 40)
+        classification = _identifier(self.classification, "classification", 80)
+        if state not in _STATES or classification not in _CLASSIFICATIONS:
+            raise ValueError("artifact operational state or classification is unsupported.")
+        object.__setattr__(self, "state", state)
+        object.__setattr__(self, "phase", phase)
+        object.__setattr__(self, "classification", classification)
+        object.__setattr__(
+            self,
+            "attempt_count",
+            _integer(self.attempt_count, "attempt_count", 0, 1_000_000),
+        )
+        object.__setattr__(
+            self,
+            "max_attempts",
+            _integer(self.max_attempts, "max_attempts", 1, 1_000_000),
+        )
+        for field in ("lease_owner_present", "lease_active", "lease_expired"):
+            object.__setattr__(self, field, _boolean(getattr(self, field), field))
+        if self.lease_active and self.lease_expired:
+            raise ValueError("artifact lease cannot be active and expired.")
+        lease = (
+            None
+            if self.lease_expires_at is None
+            else _timestamp(self.lease_expires_at, "lease_expires_at")
+        )
+        object.__setattr__(self, "lease_expires_at", lease)
+        object.__setattr__(
+            self,
+            "disposition",
+            _optional_identifier(self.disposition, "disposition", 80),
+        )
+        object.__setattr__(
+            self,
+            "backup_sha256",
+            _optional_digest(self.backup_sha256, "backup_sha256"),
+        )
+        size = (
+            None
+            if self.backup_size_bytes is None
+            else _integer(
+                self.backup_size_bytes,
+                "backup_size_bytes",
+                1,
+                1024 * 1024 * 1024 * 1024,
+            )
+        )
+        object.__setattr__(self, "backup_size_bytes", size)
+        object.__setattr__(
+            self,
+            "receipt_digest",
+            _optional_digest(self.receipt_digest, "receipt_digest"),
+        )
+        object.__setattr__(
+            self,
+            "failure_type",
+            _optional_identifier(self.failure_type, "failure_type", 200),
+        )
+        object.__setattr__(self, "updated_at", _timestamp(self.updated_at, "updated_at"))
+        completed = (
+            None
+            if self.completed_at is None
+            else _timestamp(self.completed_at, "completed_at")
+        )
+        object.__setattr__(self, "completed_at", completed)
+
 
 @dataclass(frozen=True)
 class RestoreCustodyArtifactOperationalReport:
@@ -159,6 +247,57 @@ class RestoreCustodyArtifactOperationalReport:
     source_text_returned: bool = False
     raw_path_returned: bool = False
 
+    def __post_init__(self) -> None:
+        owner = normalize_owner_id(self.owner_id)
+        restore = _optional_digest(self.restore_id, "restore_id")
+        state = None if self.state is None else _identifier(self.state, "state", 30)
+        if state is not None and state not in _STATES:
+            raise ValueError("artifact state is unsupported.")
+        generated = _timestamp(self.generated_at, "generated_at")
+        count = _integer(self.item_count, "item_count", 0, _MAX_LIMIT)
+        if count != len(self.items):
+            raise ValueError("artifact report count differs from items.")
+        expected_counts = {name: 0 for name in sorted(_CLASSIFICATIONS)}
+        seen: set[str] = set()
+        for item in self.items:
+            if not isinstance(item, RestoreCustodyArtifactOperationalItem):
+                raise ValueError("artifact operational item is invalid.")
+            if item.artifact_id in seen:
+                raise ValueError("artifact report contains duplicate IDs.")
+            seen.add(item.artifact_id)
+            expected_counts[item.classification] += 1
+        if dict(self.classification_counts) != expected_counts:
+            raise ValueError("artifact classification counts differ from items.")
+        for field in (
+            "mutation_performed",
+            "artifact_deletion_performed",
+            "artifact_overwrite_performed",
+            "source_text_returned",
+            "raw_path_returned",
+        ):
+            if getattr(self, field) is not False:
+                raise ValueError(f"{field} must be false.")
+        stable = {
+            "scope": "rigorousrag-restore-custody-artifact-audit-v1",
+            "owner_id": owner,
+            "restore_id": restore,
+            "state": state,
+            "generated_at": generated,
+            "item_count": count,
+            "classification_counts": expected_counts,
+            "items": [asdict(item) for item in self.items],
+        }
+        digest = _digest(self.report_digest, "report_digest")
+        if digest != _canonical_digest(stable):
+            raise ValueError("report_digest differs from artifact report.")
+        object.__setattr__(self, "owner_id", owner)
+        object.__setattr__(self, "restore_id", restore)
+        object.__setattr__(self, "state", state)
+        object.__setattr__(self, "generated_at", generated)
+        object.__setattr__(self, "item_count", count)
+        object.__setattr__(self, "classification_counts", expected_counts)
+        object.__setattr__(self, "report_digest", digest)
+
 
 @dataclass(frozen=True)
 class RestoreCustodyArtifactRetentionItem:
@@ -173,6 +312,37 @@ class RestoreCustodyArtifactRetentionItem:
     protected_as_latest: bool
     retention_candidate: bool
     reason: str
+
+    def __post_init__(self) -> None:
+        for field in ("artifact_id", "restore_id", "target_path_digest"):
+            object.__setattr__(self, field, _digest(getattr(self, field), field))
+        state = _identifier(self.state, "state", 30)
+        if state not in _TERMINAL:
+            raise ValueError("retention item must be terminal.")
+        object.__setattr__(self, "state", state)
+        object.__setattr__(
+            self,
+            "disposition",
+            _optional_identifier(self.disposition, "disposition", 80),
+        )
+        object.__setattr__(
+            self,
+            "completed_at",
+            _timestamp(self.completed_at, "completed_at"),
+        )
+        object.__setattr__(
+            self,
+            "age_seconds",
+            _timestamp(self.age_seconds, "age_seconds"),
+        )
+        for field in ("held", "protected_as_latest", "retention_candidate"):
+            object.__setattr__(self, field, _boolean(getattr(self, field), field))
+        reason = _identifier(self.reason, "reason", 100)
+        object.__setattr__(self, "reason", reason)
+        if self.retention_candidate and (
+            state == "orphaned" or self.held or self.protected_as_latest
+        ):
+            raise ValueError("invalid artifact retention candidate.")
 
 
 @dataclass(frozen=True)
@@ -190,6 +360,51 @@ class RestoreCustodyArtifactRetentionPlan:
     source_text_returned: bool = False
     raw_path_returned: bool = False
 
+    def __post_init__(self) -> None:
+        owner = normalize_owner_id(self.owner_id)
+        generated = _timestamp(self.generated_at, "generated_at")
+        minimum_age = _timestamp(self.minimum_age_seconds, "minimum_age_seconds")
+        latest = _integer(self.retain_latest_per_target, "retain_latest_per_target", 1, 100)
+        include = _boolean(self.include_completed, "include_completed")
+        candidates = _integer(self.candidate_count, "candidate_count", 0, _MAX_LIMIT)
+        if candidates != sum(item.retention_candidate for item in self.items):
+            raise ValueError("artifact candidate count differs from items.")
+        seen: set[str] = set()
+        for item in self.items:
+            if not isinstance(item, RestoreCustodyArtifactRetentionItem):
+                raise ValueError("artifact retention item is invalid.")
+            if item.artifact_id in seen:
+                raise ValueError("artifact retention plan contains duplicate IDs.")
+            seen.add(item.artifact_id)
+        for field in (
+            "deletion_performed",
+            "artifact_mutation_performed",
+            "source_text_returned",
+            "raw_path_returned",
+        ):
+            if getattr(self, field) is not False:
+                raise ValueError(f"{field} must be false.")
+        stable = {
+            "scope": "rigorousrag-restore-custody-artifact-retention-v1",
+            "owner_id": owner,
+            "generated_at": generated,
+            "minimum_age_seconds": minimum_age,
+            "retain_latest_per_target": latest,
+            "include_completed": include,
+            "candidate_count": candidates,
+            "items": [asdict(item) for item in self.items],
+        }
+        digest = _digest(self.plan_digest, "plan_digest")
+        if digest != _canonical_digest(stable):
+            raise ValueError("plan_digest differs from artifact retention plan.")
+        object.__setattr__(self, "owner_id", owner)
+        object.__setattr__(self, "generated_at", generated)
+        object.__setattr__(self, "minimum_age_seconds", minimum_age)
+        object.__setattr__(self, "retain_latest_per_target", latest)
+        object.__setattr__(self, "include_completed", include)
+        object.__setattr__(self, "candidate_count", candidates)
+        object.__setattr__(self, "plan_digest", digest)
+
 
 def audit_restore_custody_artifacts(
     *,
@@ -201,17 +416,15 @@ def audit_restore_custody_artifacts(
     limit: int = 1_000,
 ) -> RestoreCustodyArtifactOperationalReport:
     owner = normalize_owner_id(owner_id)
-    selected_restore = (
-        None if restore_id is None else _digest(restore_id, "restore_id")
-    )
+    selected_restore = _optional_digest(restore_id, "restore_id")
     selected_state = None if state is None else _identifier(state, "state", 30)
+    if selected_state is not None and selected_state not in _STATES:
+        raise ValueError("artifact state is unsupported.")
     timestamp = _timestamp(time.time() if now is None else now, "now")
     count = _integer(limit, "limit", 1, _MAX_LIMIT)
     if not callable(getattr(journal, "list", None)):
         raise ValueError("artifact journal lacks the required read boundary.")
-    values = tuple(
-        journal.list(owner_id=owner, state=selected_state, limit=count)
-    )
+    values = tuple(journal.list(owner_id=owner, state=selected_state, limit=count))
     if len(values) >= count:
         raise RuntimeError("artifact audit reached the bounded result limit.")
     rendered: list[RestoreCustodyArtifactOperationalItem] = []
@@ -290,12 +503,7 @@ def plan_restore_custody_artifact_retention(
     owner = normalize_owner_id(owner_id)
     timestamp = _timestamp(time.time() if now is None else now, "now")
     minimum_age = _timestamp(minimum_age_seconds, "minimum_age_seconds")
-    latest_count = _integer(
-        retain_latest_per_target,
-        "retain_latest_per_target",
-        1,
-        100,
-    )
+    latest_count = _integer(retain_latest_per_target, "retain_latest_per_target", 1, 100)
     include = _boolean(include_completed, "include_completed")
     held = _holds(held_restore_ids)
     count = _integer(limit, "limit", 1, _MAX_LIMIT)
@@ -305,19 +513,17 @@ def plan_restore_custody_artifact_retention(
     seen: set[str] = set()
     terminal_by_target: dict[str, list[Any]] = {}
     for value in values:
-        if value.artifact_id in seen:
+        artifact_id = _digest(value.artifact_id, "artifact_id")
+        if artifact_id in seen:
             raise RuntimeError("artifact journal returned duplicate IDs.")
-        seen.add(value.artifact_id)
+        seen.add(artifact_id)
         if value.state in _TERMINAL:
             terminal_by_target.setdefault(value.target_path_digest, []).append(value)
     protected: set[str] = set()
     for target_values in terminal_by_target.values():
         ordered = sorted(
             target_values,
-            key=lambda value: (
-                -float(value.completed_at or 0.0),
-                value.artifact_id,
-            ),
+            key=lambda value: (-float(value.completed_at or 0.0), value.artifact_id),
         )
         protected.update(value.artifact_id for value in ordered[:latest_count])
     rendered: list[RestoreCustodyArtifactRetentionItem] = []
@@ -329,14 +535,11 @@ def plan_restore_custody_artifact_retention(
         age = max(0.0, timestamp - completed)
         is_held = restore in held
         is_latest = value.artifact_id in protected
-        eligible_state = value.state == "cancelled" or (
+        eligible = value.state == "cancelled" or (
             value.state == "completed" and include
         )
         candidate = bool(
-            eligible_state
-            and age >= minimum_age
-            and not is_held
-            and not is_latest
+            eligible and age >= minimum_age and not is_held and not is_latest
         )
         if value.state == "orphaned":
             reason = "orphan_evidence_never_candidate"
