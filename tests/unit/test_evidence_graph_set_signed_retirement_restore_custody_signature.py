@@ -196,18 +196,14 @@ def test_timestamp_binding_and_retired_historical_verification(tmp_path, monkeyp
             now=7.0,
         )
     import tools.evidence_graph_set_signed_retirement_restore_custody_signature as module
-    from tools.evidence_graph_set_signed_retirement_restore_custody_rfc3161_trust import (
-        Profile,
-        Rfc3161TrustRegistry,
-    )
     monkeypatch.setattr(
         module,
         "verify_rfc3161_timestamp_response_with_profile",
-        lambda **kwargs: (receipt, Profile()),
+        lambda **kwargs: (receipt, object()),
     )
     historical = verify_governed_timestamped_signed_restore_chain_of_custody(
         registry=registry,
-        tsa_registry=Rfc3161TrustRegistry(),
+        tsa_registry=object(),
         owner_id="alice",
         profile_id="tsa-1",
         timestamped_envelope_path=timestamped_path,
