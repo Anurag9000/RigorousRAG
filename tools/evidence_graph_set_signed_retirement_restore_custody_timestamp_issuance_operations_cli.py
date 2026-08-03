@@ -9,6 +9,9 @@ import sys
 from dataclasses import asdict
 from typing import Any, Sequence
 
+from tools.evidence_graph_set_signed_retirement_restore_custody_timestamp_issuance_holds_readonly import (
+    ReadOnlyCustodyTimestampIssuanceHoldStore,
+)
 from tools.evidence_graph_set_signed_retirement_restore_custody_timestamp_issuance_operations import (
     audit_custody_timestamp_issuances,
     plan_custody_timestamp_issuance_retention,
@@ -20,6 +23,7 @@ from tools.evidence_graph_set_signed_retirement_restore_custody_timestamp_issuan
 _DEFAULT_PATH = (
     "data/evidence_graph_set_signed_retirement_custody_timestamp_issuances.sqlite3"
 )
+_HOLD_ENV = "EVIDENCE_GRAPH_RESTORE_CUSTODY_TIMESTAMP_ISSUANCE_HOLD_DB_PATH"
 
 
 def _print(value: Any, *, stream: Any = None) -> None:
@@ -58,6 +62,7 @@ def build_parser() -> argparse.ArgumentParser:
     retention.add_argument("--retain-latest-per-authority-key", type=int, default=1)
     retention.add_argument("--include-completed", action="store_true")
     retention.add_argument("--hold-issuance-id", action="append")
+    retention.add_argument("--hold-db-path")
     retention.add_argument("--limit", type=int, default=10_000)
     return parser
 
@@ -91,6 +96,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                 }
             )
         else:
+            durable_holds: frozenset[str] = frozenset()
+            hold_path = args.hold_db_path or os.getenv(_HOLD_ENV)
+            if hold_path:
+                durable_holds = ReadOnlyCustodyTimestampIssuanceHoldStore(
+                    hold_path
+                ).active_issuance_ids(owner_id=args.owner_id)
+            explicit_holds = frozenset(args.hold_issuance_id or ())
             plan = plan_custody_timestamp_issuance_retention(
                 owner_id=args.owner_id,
                 journal=journal,
@@ -99,12 +111,15 @@ def main(argv: Sequence[str] | None = None) -> int:
                     args.retain_latest_per_authority_key
                 ),
                 include_completed=args.include_completed,
-                held_issuance_ids=args.hold_issuance_id,
+                held_issuance_ids=durable_holds | explicit_holds,
                 limit=args.limit,
             )
             payload = asdict(plan)
             payload.update(
                 {
+                    "durable_hold_registry_checked": hold_path is not None,
+                    "durable_active_hold_count": len(durable_holds),
+                    "explicit_hold_count": len(explicit_holds),
                     "mutation_performed": False,
                     "deletion_performed": False,
                     "compaction_performed": False,
