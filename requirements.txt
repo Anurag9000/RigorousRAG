@@ -13,3 +13,4 @@ Pillow>=10.4,<13
 pytesseract>=0.3.13,<1
 beautifulsoup4>=4.12,<5
 requests>=2.32,<3
+cryptography==49.0.0
