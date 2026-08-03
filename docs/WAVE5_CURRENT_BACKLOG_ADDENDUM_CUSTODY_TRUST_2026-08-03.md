@@ -39,15 +39,25 @@ This addendum supersedes the custody-signature, timestamp, and key-rotation chec
 - [x] Controlled atomic-publication failure with no partial output.
 - [x] Real zero-wait SQLite lock refusal with no partial issuance or hold row.
 - [x] Missing private-key failure before intent or output creation.
+- [x] Offline RFC 3161 SHA-256 request bundles with nonce and optional policy.
+- [x] Atomic no-overwrite DER request emission without implicit network transport.
+- [x] Strict granted/rejected `TimeStampResp` parsing and TSTInfo validation.
+- [x] Exact message-imprint, nonce, requested-policy, serial and generation-time validation.
+- [x] CMS content-type/message-digest and ESSCertID/ESSCertIDv2 signer binding.
+- [x] Critical timeStamping-only TSA EKU and signer-certificate validity checks.
+- [x] Pinned OpenSSL certificate-chain verification with optional intermediates and CRLs.
+- [x] Digest-only RFC 3161 verification receipts with explicit non-claims.
+- [x] Real local OpenSSL TSA round-trip, wrong-nonce, wrong-anchor and rejection tests.
 
 ## Remaining trusted-time and hardware work
 
-- [ ] Integrate RFC 3161 timestamp request/response verification where required.
 - [ ] Integrate an externally trusted timestamp service or governed institutional time source.
-- [ ] Record and verify trusted timestamp-service certificate chains and revocation status.
+- [ ] Govern external TSA onboarding, trust-anchor distribution and certificate-chain rotation.
+- [ ] Add live or archived OCSP evidence and broader revocation-policy handling.
 - [ ] Add hardware-backed authority signing through HSM/KMS/PKCS#11.
 - [ ] Add hardware-backed or independently attested clock evidence.
 - [ ] Add key-rotation overlap across external timestamp authority certificate chains.
+- [ ] Add governed TSA network transport, endpoint allowlists and credential handling if online submission is required.
 - [ ] Add Windows `spawn`, POSIX `spawn`, and multi-container contention matrices.
 - [ ] Inject production-timeout SQLite busy expiry, WAL corruption, `SQLITE_IOERR`, and `SQLITE_FULL`.
 - [ ] Inject directory-fsync, quota exhaustion, and non-root key-permission failures.
@@ -56,9 +66,11 @@ This addendum supersedes the custody-signature, timestamp, and key-rotation chec
 
 ## Exact terminology
 
-The implemented timestamp receipt is an **Ed25519 authority attestation of an asserted time**.
+Two distinct timestamp evidence types now exist.
 
-It is not represented as:
+### Governed Ed25519 asserted-time attestation
+
+The repository-owned timestamp authority signs an asserted time and exact custody scope. It is not represented as:
 
 - an RFC 3161 timestamp token;
 - a proof that the authority clock was accurate;
@@ -66,13 +78,31 @@ It is not represented as:
 - a scientific-correctness guarantee;
 - independent proof of institutional identity.
 
-Its evidence value comes from exact custody binding, Ed25519 verification, governed public-key registration, registration/retirement chronology, one-serial durable publication recovery, retention audit, integrity-backed legal holds, independent-process exclusion, and crash-recovery evidence.
+### RFC 3161 verification receipt
+
+The RFC 3161 boundary verifies an actual nonce-bearing timestamp token against the exact request and supplied certificate evidence. A successful receipt proves request/token binding and certificate-path validation under the supplied trust anchors. It does not independently prove:
+
+- that those trust anchors belong to the intended institution;
+- that the TSA clock was accurate or externally audited;
+- that a hardware-backed clock or signing device was used;
+- current revocation status when no governed CRL evidence is supplied;
+- authenticity of the transport channel outside the signed token.
+
+The receipt therefore retains:
+
+```text
+independently_trusted_clock_proven=false
+hardware_clock_proven=false
+```
+
+The two evidence types are never silently converted or relabeled into each other.
 
 ## Permanent non-claims
 
 - Public-key signatures prove possession of a matching private key, not correctness of the underlying evidence.
-- Key registries require governed out-of-band public-key distribution to establish external identity.
-- Historical verification does not independently prove signing or asserted wall-clock time beyond the recorded cryptographic scope.
+- Key registries and TSA trust anchors require governed out-of-band distribution to establish external identity.
+- Historical verification does not independently prove signing or wall-clock accuracy beyond the recorded cryptographic scope.
+- RFC 3161 token validation is not institutional TSA accreditation or hardware-clock proof.
 - Rotation reports are planning information, not mutation authorization.
 - Legal holds and retention candidates are not deletion authorization.
 - Durable issuance recovery is not distributed consensus.
