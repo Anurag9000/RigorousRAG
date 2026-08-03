@@ -32,6 +32,13 @@ This addendum supersedes the custody-signature, timestamp, and key-rotation chec
 - [x] Issuance queue-health audit and conservative retention planning.
 - [x] Integrity-backed issuance legal holds with monotonic release.
 - [x] Automatic active-hold integration into retention plans.
+- [x] Independent-process exact serial replay and cross-output serial exclusion.
+- [x] Independent-process same-output publication contention with one winner.
+- [x] Independent-process exact and conflicting legal-hold placement.
+- [x] Abrupt process-death recovery at both timestamp output phases.
+- [x] Controlled atomic-publication failure with no partial output.
+- [x] Real zero-wait SQLite lock refusal with no partial issuance or hold row.
+- [x] Missing private-key failure before intent or output creation.
 
 ## Remaining trusted-time and hardware work
 
@@ -41,8 +48,9 @@ This addendum supersedes the custody-signature, timestamp, and key-rotation chec
 - [ ] Add hardware-backed authority signing through HSM/KMS/PKCS#11.
 - [ ] Add hardware-backed or independently attested clock evidence.
 - [ ] Add key-rotation overlap across external timestamp authority certificate chains.
-- [ ] Add independent-process duplicate-serial, hold-placement, and output-path contention tests.
-- [ ] Add process-kill, filesystem-full, fsync, SQLite busy/locked, and key-access fault injection.
+- [ ] Add Windows `spawn`, POSIX `spawn`, and multi-container contention matrices.
+- [ ] Inject production-timeout SQLite busy expiry, WAL corruption, `SQLITE_IOERR`, and `SQLITE_FULL`.
+- [ ] Inject directory-fsync, quota exhaustion, and non-root key-permission failures.
 - [ ] Add destructive-retention authorization, deletion journal, and secure compaction policy.
 - [ ] Run exact-current complete pytest, coverage, Ruff, Windows, and container matrices.
 
@@ -58,7 +66,7 @@ It is not represented as:
 - a scientific-correctness guarantee;
 - independent proof of institutional identity.
 
-Its evidence value comes from exact custody binding, Ed25519 verification, governed public-key registration, registration/retirement chronology, one-serial durable publication recovery, retention audit, and integrity-backed legal holds.
+Its evidence value comes from exact custody binding, Ed25519 verification, governed public-key registration, registration/retirement chronology, one-serial durable publication recovery, retention audit, integrity-backed legal holds, independent-process exclusion, and crash-recovery evidence.
 
 ## Permanent non-claims
 
@@ -68,5 +76,6 @@ Its evidence value comes from exact custody binding, Ed25519 verification, gover
 - Rotation reports are planning information, not mutation authorization.
 - Legal holds and retention candidates are not deletion authorization.
 - Durable issuance recovery is not distributed consensus.
+- POSIX `fork` tests do not establish Windows or multi-host behavior.
 - Focused reconstructed checks are not a complete release matrix.
 - Release readiness is not claimed.
