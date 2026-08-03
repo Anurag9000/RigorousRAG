@@ -23,6 +23,12 @@ This addendum supersedes the custody-signature, timestamp, and key-rotation chec
 - [x] Active-key issuance and retired-key historical verification windows.
 - [x] Query-only timestamp authority inspection and verification.
 - [x] Timestamp-authority rotation assessment with explicit policy digest.
+- [x] Durable one-serial timestamp issuance journal.
+- [x] Exact signed public attestation persistence before output publication.
+- [x] Unique serial reservation per owner/authority/key.
+- [x] Crash recovery after output creation before phase persistence.
+- [x] Crash recovery after output phase before completion.
+- [x] Query-only issuance status/list and private-key-free recovery execution.
 
 ## Remaining trusted-time and hardware work
 
@@ -32,7 +38,7 @@ This addendum supersedes the custody-signature, timestamp, and key-rotation chec
 - [ ] Add hardware-backed authority signing through HSM/KMS/PKCS#11.
 - [ ] Add hardware-backed or independently attested clock evidence.
 - [ ] Add key-rotation overlap across external timestamp authority certificate chains.
-- [ ] Add durable issuance/serial audit and crash recovery for authority attestations.
+- [ ] Add issuance operational audit, retention planning, and durable legal holds.
 - [ ] Add independent-process duplicate-serial and output-path contention tests.
 - [ ] Add process-kill, filesystem-full, fsync, SQLite busy/locked, and key-access fault injection.
 - [ ] Run exact-current complete pytest, coverage, Ruff, Windows, and container matrices.
@@ -49,7 +55,7 @@ It is not represented as:
 - a scientific-correctness guarantee;
 - independent proof of institutional identity.
 
-Its evidence value comes from exact custody binding, Ed25519 verification, governed public-key registration, and registration/retirement chronology.
+Its evidence value comes from exact custody binding, Ed25519 verification, governed public-key registration, registration/retirement chronology, and one-serial durable publication recovery.
 
 ## Permanent non-claims
 
@@ -57,5 +63,6 @@ Its evidence value comes from exact custody binding, Ed25519 verification, gover
 - Key registries require governed out-of-band public-key distribution to establish external identity.
 - Historical verification does not independently prove signing or asserted wall-clock time beyond the recorded cryptographic scope.
 - Rotation reports are planning information, not mutation authorization.
+- Durable issuance recovery is not distributed consensus.
 - Focused reconstructed checks are not a complete release matrix.
 - Release readiness is not claimed.
