@@ -54,6 +54,11 @@ This file supersedes the Wave 5 checkbox section in `docs/TODO.md`. The older fi
 - [x] Query-only artifact status and listing.
 - [x] Artifact operational audit and conservative retention planning.
 - [x] Durable restore-hold protection for artifact records.
+- [x] Deterministic complete external restore chain-of-custody manifest.
+- [x] Live target, pre/post receipt, custody, artifact-path, and chronology validation.
+- [x] Actor-ID reduction and raw-path-free external custody payloads.
+- [x] Descriptor-safe offline chain verification.
+- [x] Optional protected-key HMAC-SHA256 custody envelope with key-ID pinning.
 
 ## Completed GraphRAG path
 
@@ -99,6 +104,7 @@ This file supersedes the Wave 5 checkbox section in `docs/TODO.md`. The older fi
 - [ ] Test concurrent custody artifact and receipt publication races.
 - [ ] Test independent-process custody binding and post-finalization contention.
 - [ ] Test independent-process artifact-journal lease and output-path races.
+- [ ] Test concurrent external custody export and live artifact replacement races.
 
 ### Backup, restore and retention governance
 
@@ -124,9 +130,11 @@ This file supersedes the Wave 5 checkbox section in `docs/TODO.md`. The older fi
 - [x] Track paired and orphaned backup/receipt publication outcomes durably.
 - [x] Preserve orphan evidence without automatic deletion or overwrite.
 - [x] Artifact audit and retention planning with orphan permanence.
-- [ ] Add asymmetric or hardware-backed audit snapshot signatures.
+- [x] Complete external chain-of-custody export and offline verification.
+- [x] Shared-secret HMAC authentication envelope with explicit key ID.
+- [ ] Add asymmetric or hardware-backed audit/custody signatures.
 - [ ] Add trusted timestamps and signer key rotation.
-- [ ] Add signed external chain-of-custody export.
+- [ ] Add public-key signed external chain-of-custody export.
 - [ ] Add destructive-retention authorization and deletion journal.
 - [ ] Add secure deletion and database compaction policy.
 
@@ -157,7 +165,7 @@ This file supersedes the Wave 5 checkbox section in `docs/TODO.md`. The older fi
 - [ ] Add hardware-backed signing.
 - [ ] Add multi-party or quorum review thresholds.
 - [ ] Add reviewer agreement and disagreement reporting.
-- [ ] Add signed review/export manifests and external transparency records.
+- [ ] Add public-key signed review/export manifests and external transparency records.
 
 ## Permanent boundaries
 
@@ -167,11 +175,13 @@ This file supersedes the Wave 5 checkbox section in `docs/TODO.md`. The older fi
 - GraphRAG retrieval does not itself generate an answer.
 - An authorization-only graph set cannot be retroactively relabeled as signed provenance.
 - Snapshot and custody integrity digests are not digital signatures.
+- HMAC custody envelopes prove shared-secret possession, not public non-repudiation.
 - Restore execution accepts only terminal snapshots and an initialized globally empty target.
 - Restore never overwrites, merges or deletes target history.
 - Legal holds protect retention planning but do not authorize deletion or restore mutation.
 - Custody manifests bind evidence to execution but do not authorize deletion.
 - Artifact orphan classifications preserve evidence and never authorize cleanup.
+- External custody exports are evidence-only and cannot import or mutate state.
 - Retention candidates are not deletion authorization.
 - Focused reconstructed tests are not the complete release matrix.
 - Release readiness is not claimed.
