@@ -179,6 +179,7 @@ def test_artifact_retention_never_selects_orphans_and_honors_holds_latest_defaul
     new_completed = completed(base("2", target_digit="a"), completed_at=3.0)
     held_cancelled = cancelled(base("3", target_digit="b"), completed_at=2.0)
     old_cancelled = cancelled(base("4", target_digit="c"), completed_at=2.0)
+    new_cancelled = cancelled(base("6", target_digit="c"), completed_at=3.0)
     orphaned = orphan(
         base("5", target_digit="d"),
         "backup_without_receipt",
@@ -190,7 +191,14 @@ def test_artifact_retention_never_selects_orphans_and_honors_holds_latest_defaul
         target_path_digest="b" * 64,
     )
     journal = Journal(
-        (old_completed, new_completed, held_cancelled, old_cancelled, orphaned)
+        (
+            old_completed,
+            new_completed,
+            held_cancelled,
+            old_cancelled,
+            new_cancelled,
+            orphaned,
+        )
     )
 
     default = plan_restore_custody_artifact_retention(
@@ -207,6 +215,7 @@ def test_artifact_retention_never_selects_orphans_and_honors_holds_latest_defaul
     assert reasons[new_completed.artifact_id] == "latest_terminal_for_target"
     assert reasons[held_cancelled.artifact_id] == "legal_hold"
     assert reasons[old_cancelled.artifact_id] == "old_terminal_duplicate_candidate"
+    assert reasons[new_cancelled.artifact_id] == "latest_terminal_for_target"
     assert reasons[orphaned.artifact_id] == "orphan_evidence_never_candidate"
 
     enabled = plan_restore_custody_artifact_retention(
@@ -234,7 +243,8 @@ def test_artifact_operations_cli_integrates_durable_holds_without_mutation(
 ):
     held = cancelled(base("1", target_digit="a"), completed_at=2.0)
     free = cancelled(base("2", target_digit="b"), completed_at=2.0)
-    journal = Journal((held, free))
+    newer_free = cancelled(base("3", target_digit="b"), completed_at=3.0)
+    journal = Journal((held, free, newer_free))
     monkeypatch.setattr(
         cli,
         "ReadOnlyRestoreCustodyArtifactJournal",
