@@ -59,6 +59,12 @@ This file supersedes the Wave 5 checkbox section in `docs/TODO.md`. The older fi
 - [x] Actor-ID reduction and raw-path-free external custody payloads.
 - [x] Descriptor-safe offline chain verification.
 - [x] Optional protected-key HMAC-SHA256 custody envelope with key-ID pinning.
+- [x] Governed RFC 3161 TSA profiles, root/intermediate/CRL/signer constraints, and OpenSSL verification.
+- [x] Governed Ed25519 custody signer public-key registry with key IDs and validity windows.
+- [x] Monotonic Ed25519 signer-key retirement with historical public-key retention.
+- [x] Public-key signed complete external custody envelopes and offline verification.
+- [x] RFC 3161 binding for signed custody envelopes.
+- [x] Governed historical retired-key verification after fresh same-process TSA verification.
 
 ## Completed GraphRAG path
 
@@ -105,6 +111,7 @@ This file supersedes the Wave 5 checkbox section in `docs/TODO.md`. The older fi
 - [ ] Test independent-process custody binding and post-finalization contention.
 - [ ] Test independent-process artifact-journal lease and output-path races.
 - [ ] Test concurrent external custody export and live artifact replacement races.
+- [ ] Test independent-process signer-key registration/retirement and signature-output races.
 
 ### Backup, restore and retention governance
 
@@ -132,9 +139,12 @@ This file supersedes the Wave 5 checkbox section in `docs/TODO.md`. The older fi
 - [x] Artifact audit and retention planning with orphan permanence.
 - [x] Complete external chain-of-custody export and offline verification.
 - [x] Shared-secret HMAC authentication envelope with explicit key ID.
-- [ ] Add asymmetric or hardware-backed audit/custody signatures.
-- [ ] Add trusted timestamps and signer key rotation.
-- [ ] Add public-key signed external chain-of-custody export.
+- [x] Ed25519 public-key custody signatures with owner/key governance.
+- [x] Governed signer-key registration, validity windows, rotation, and retirement.
+- [x] Public-key signed external chain-of-custody export.
+- [x] RFC 3161-bound public-key custody signatures and retired-key historical verification.
+- [ ] Add HSM/KMS-backed private-key operations and governed key-generation ceremonies.
+- [ ] Add externally distributed signer certificates, directory records, or transparency logs.
 - [ ] Add destructive-retention authorization and deletion journal.
 - [ ] Add secure deletion and database compaction policy.
 
@@ -174,14 +184,16 @@ This file supersedes the Wave 5 checkbox section in `docs/TODO.md`. The older fi
 - Cryptographic actor assertions prove configured key possession, not scientific correctness.
 - GraphRAG retrieval does not itself generate an answer.
 - An authorization-only graph set cannot be retroactively relabeled as signed provenance.
-- Snapshot and custody integrity digests are not digital signatures.
+- Snapshot and custody integrity digests alone are not digital signatures.
 - HMAC custody envelopes prove shared-secret possession, not public non-repudiation.
+- Ed25519 envelopes prove possession of the corresponding private key; real-world signer identity still depends on trusted public-key distribution and governance.
+- Retired signer keys are accepted historically only when a freshly governed RFC 3161 verification places the signature inside the key validity interval.
 - Restore execution accepts only terminal snapshots and an initialized globally empty target.
 - Restore never overwrites, merges or deletes target history.
 - Legal holds protect retention planning but do not authorize deletion or restore mutation.
 - Custody manifests bind evidence to execution but do not authorize deletion.
 - Artifact orphan classifications preserve evidence and never authorize cleanup.
-- External custody exports are evidence-only and cannot import or mutate state.
+- External custody exports and signature envelopes are evidence-only and cannot import or mutate restore state.
 - Retention candidates are not deletion authorization.
 - Focused reconstructed tests are not the complete release matrix.
 - Release readiness is not claimed.
