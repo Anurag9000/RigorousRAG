@@ -47,6 +47,13 @@ This file supersedes the Wave 5 checkbox section in `docs/TODO.md`. The older fi
 - [x] Custody evidence enforcement in canonical restore seed/execute/reconcile paths.
 - [x] Custody-manifest query-only operational audit.
 - [x] Conservative custody-manifest retention planning with durable legal holds.
+- [x] Durable intent before pre-restore backup/receipt artifact publication.
+- [x] Lease-based recovery after paired artifact publication.
+- [x] Immutable backup-only, receipt-only, and collision orphan classification.
+- [x] Completed artifact-pair live revalidation and tamper refusal.
+- [x] Query-only artifact status and listing.
+- [x] Artifact operational audit and conservative retention planning.
+- [x] Durable restore-hold protection for artifact records.
 
 ## Completed GraphRAG path
 
@@ -91,6 +98,7 @@ This file supersedes the Wave 5 checkbox section in `docs/TODO.md`. The older fi
 - [ ] Test independent-process legal-hold placement/release contention.
 - [ ] Test concurrent custody artifact and receipt publication races.
 - [ ] Test independent-process custody binding and post-finalization contention.
+- [ ] Test independent-process artifact-journal lease and output-path races.
 
 ### Backup, restore and retention governance
 
@@ -113,7 +121,9 @@ This file supersedes the Wave 5 checkbox section in `docs/TODO.md`. The older fi
 - [x] Require bound custody evidence in canonical execute/reconcile paths.
 - [x] Durable custody manifest and post-receipt finalization state.
 - [x] Custody-manifest operational audit and conservative retention planning.
-- [ ] Track orphaned backup artifacts from concurrent receipt-publication races.
+- [x] Track paired and orphaned backup/receipt publication outcomes durably.
+- [x] Preserve orphan evidence without automatic deletion or overwrite.
+- [x] Artifact audit and retention planning with orphan permanence.
 - [ ] Add asymmetric or hardware-backed audit snapshot signatures.
 - [ ] Add trusted timestamps and signer key rotation.
 - [ ] Add signed external chain-of-custody export.
@@ -161,6 +171,7 @@ This file supersedes the Wave 5 checkbox section in `docs/TODO.md`. The older fi
 - Restore never overwrites, merges or deletes target history.
 - Legal holds protect retention planning but do not authorize deletion or restore mutation.
 - Custody manifests bind evidence to execution but do not authorize deletion.
+- Artifact orphan classifications preserve evidence and never authorize cleanup.
 - Retention candidates are not deletion authorization.
 - Focused reconstructed tests are not the complete release matrix.
 - Release readiness is not claimed.
