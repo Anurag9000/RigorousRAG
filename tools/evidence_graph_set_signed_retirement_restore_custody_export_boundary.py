@@ -1,4 +1,4 @@
-"""Protected-key boundary for external restore custody authentication."""
+"""Protected-key and strict-integrity boundary for custody exports."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import os
 import stat
 
 from tools import evidence_graph_set_signed_retirement_restore_custody_export as _base
+from tools import evidence_graph_set_signed_retirement_restore_custody_export_integrity as _integrity  # noqa: F401
 from tools.evidence_graph_set_signed_retirement_snapshot import _path, _redirecting
 
 _ORIGINAL_KEY_READER = getattr(
