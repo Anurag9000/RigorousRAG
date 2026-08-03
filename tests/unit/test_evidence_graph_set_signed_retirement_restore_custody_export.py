@@ -4,7 +4,6 @@ import json
 import os
 import stat
 from dataclasses import replace
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -12,6 +11,9 @@ import pytest
 from tools import evidence_graph_set_signed_retirement_restore_custody_export as export
 from tools import (
     evidence_graph_set_signed_retirement_restore_custody_export_boundary as protected,
+)
+from tools import (
+    evidence_graph_set_signed_retirement_restore_custody_export_integrity as integrity,
 )
 from tools.evidence_graph_set_signed_retirement_restore_contracts import (
     deterministic_signed_retirement_restore_id,
@@ -140,7 +142,7 @@ def install_chain(monkeypatch, *, completed=True, custody_state="post_bound", ar
         receipt_actor_id=pre.actor_id,
         receipt_binding_method=pre.binding_method,
         receipt_binding_digest=pre.binding_digest,
-        completed_at=15.0,
+        completed_at=9.0,
     )
 
     monkeypatch.setattr(export, "verify_signed_retirement_snapshot", lambda _path: snapshot)
@@ -160,6 +162,11 @@ def install_chain(monkeypatch, *, completed=True, custody_state="post_bound", ar
         export,
         "verify_post_restore_comparison_receipt",
         lambda _path: post,
+    )
+    monkeypatch.setattr(
+        integrity,
+        "artifact_path_digest",
+        lambda _path, *, label: "c" * 64 if "backup" in label else "d" * 64,
     )
     return {
         "restore_id": restore_id,
@@ -196,7 +203,7 @@ def test_complete_chain_is_deterministic_strict_and_privacy_reduced(monkeypatch)
         replace(first, chain_digest="0" * 64)
 
 
-def test_incomplete_or_divergent_chain_refuses(monkeypatch):
+def test_incomplete_divergent_or_path_unbound_chain_refuses(monkeypatch):
     with pytest.raises(RuntimeError, match="completed exact"):
         export.build_restore_chain_of_custody(
             **install_chain(monkeypatch, completed=False)
@@ -217,6 +224,15 @@ def test_incomplete_or_divergent_chain_refuses(monkeypatch):
         lambda **values: ("exact", "f" * 64),
     )
     with pytest.raises(RuntimeError, match="live restored target"):
+        export.build_restore_chain_of_custody(**kwargs)
+
+    kwargs = install_chain(monkeypatch)
+    monkeypatch.setattr(
+        integrity,
+        "artifact_path_digest",
+        lambda _path, *, label: "e" * 64,
+    )
+    with pytest.raises(RuntimeError, match="live paths"):
         export.build_restore_chain_of_custody(**kwargs)
 
 
