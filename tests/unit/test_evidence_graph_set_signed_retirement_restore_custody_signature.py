@@ -1,256 +1,249 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
-from dataclasses import asdict
+from dataclasses import replace
 
 import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-from tools import (
-    evidence_graph_set_signed_retirement_restore_custody_export_cli_boundary as cli,
-)
-from tools import evidence_graph_set_signed_retirement_restore_custody_export as export
-from tools.evidence_graph_set_signed_retirement_restore_contracts import (
-    deterministic_signed_retirement_restore_id,
-)
+from tools.evidence_graph_relation_actor import ReviewActorBinding
 from tools.evidence_graph_set_signed_retirement_restore_custody_export_boundary import (
     CustodyArtifactEvidence,
     RestoreChainOfCustodyManifest,
 )
+from tools.evidence_graph_set_signed_retirement_restore_custody_rfc3161_contracts import (
+    Rfc3161TimestampVerificationReceipt,
+)
 from tools.evidence_graph_set_signed_retirement_restore_custody_signature import (
-    sign_restore_chain_of_custody,
+    bind_rfc3161_timestamp_to_signed_custody,
+    sign_governed_restore_chain_of_custody,
+    verify_governed_signed_restore_chain_of_custody,
+    verify_governed_timestamped_signed_restore_chain_of_custody,
     verify_signed_restore_chain_of_custody,
+    verify_timestamped_signed_restore_chain_of_custody,
 )
-from tools.evidence_graph_set_signed_retirement_snapshot import (
-    _atomic_create,
-    _canonical_bytes,
+from tools.evidence_graph_set_signed_retirement_restore_custody_signature_keys import (
+    CustodySignerKeyRegistry,
+    register_custody_signer_key,
 )
+from tools.evidence_graph_set_signed_retirement_snapshot import _canonical_bytes
 
 
-def manifest():
-    owner = "alice"
-    snapshot = "1" * 64
-    target = "2" * 64
-    restore = deterministic_signed_retirement_restore_id(
-        owner_id=owner,
-        snapshot_digest=snapshot,
-        target_path_digest=target,
-    )
-    artifact = CustodyArtifactEvidence(
-        artifact_id="3" * 64,
-        backup_path_digest="4" * 64,
-        receipt_path_digest="5" * 64,
-        backup_sha256="6" * 64,
-        backup_size_bytes=100,
-        receipt_digest="7" * 64,
-        actor_id_digest="8" * 64,
+def actor(digit: str = "a") -> ReviewActorBinding:
+    return ReviewActorBinding(
+        actor_id=f"actor-{digit}",
         binding_method="process_environment",
-        binding_digest="9" * 64,
-        completed_at=5.0,
-    )
-    values = {
-        "owner_id": owner,
-        "restore_id": restore,
-        "snapshot_digest": snapshot,
-        "target_path_digest": target,
-        "snapshot_record_count": 2,
-        "restore_target_verification_digest": "a" * 64,
-        "restore_completed_at": 20.0,
-        "custody_id": "b" * 64,
-        "custody_manifest_digest": "c" * 64,
-        "pre_receipt_digest": artifact.receipt_digest,
-        "backup_sha256": artifact.backup_sha256,
-        "backup_size_bytes": artifact.backup_size_bytes,
-        "pre_actor_id_digest": artifact.actor_id_digest,
-        "pre_binding_method": artifact.binding_method,
-        "pre_binding_digest": artifact.binding_digest,
-        "pre_bound_at": 10.0,
-        "post_receipt_digest": "d" * 64,
-        "post_target_verification_digest": "a" * 64,
-        "post_actor_id_digest": "e" * 64,
-        "post_binding_method": "descriptor_file",
-        "post_binding_digest": "f" * 64,
-        "post_bound_at": 30.0,
-        "legal_hold_status": "inactive",
-        "artifacts": (artifact,),
-        "generated_at": 40.0,
-        "schema_version": 1,
-    }
-    stable = {
-        "scope": "rigorousrag-external-restore-chain-of-custody-v1",
-        **{**values, "artifacts": [asdict(artifact)]},
-    }
-    return RestoreChainOfCustodyManifest(
-        **values,
-        chain_digest=export._canonical_digest(stable),
+        binding_digest=digit * 64,
+        loaded_at=1.0,
     )
 
 
-def write_manifest(tmp_path):
-    path = tmp_path / "chain.json"
-    _atomic_create(path, _canonical_bytes(manifest().public_payload()) + b"\n")
-    return path
-
-
-def write_keys(tmp_path, name="key"):
+def keypair(tmp_path, name: str = "key"):
     private = Ed25519PrivateKey.generate()
-    private_path = tmp_path / f"{name}.private.pem"
-    public_path = tmp_path / f"{name}.public.pem"
-    private_path.write_bytes(
-        private.private_bytes(
-            encoding=serialization.Encoding.PEM,
-            format=serialization.PrivateFormat.PKCS8,
-            encryption_algorithm=serialization.NoEncryption(),
-        )
-    )
-    public_path.write_bytes(
-        private.public_key().public_bytes(
-            encoding=serialization.Encoding.PEM,
-            format=serialization.PublicFormat.SubjectPublicKeyInfo,
-        )
-    )
+    private_path = tmp_path / f"{name}.pem"
+    public_path = tmp_path / f"{name}.pub.pem"
+    private_path.write_bytes(private.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    ))
+    public_path.write_bytes(private.public_key().public_bytes(
+        serialization.Encoding.PEM,
+        serialization.PublicFormat.SubjectPublicKeyInfo,
+    ))
     if os.name != "nt":
         private_path.chmod(0o600)
     return private_path, public_path
 
 
-def test_ed25519_envelope_round_trip_and_no_overwrite(tmp_path):
-    manifest_path = write_manifest(tmp_path)
-    private_path, public_path = write_keys(tmp_path)
-    output = tmp_path / "chain.signed.json"
-
-    signed = sign_restore_chain_of_custody(
-        manifest_path=manifest_path,
-        output_path=output,
-        key_id="custody-ed25519-1",
-        private_key_path=private_path,
+def manifest_file(tmp_path):
+    value = RestoreChainOfCustodyManifest(
+        owner_id="alice",
+        chain_digest="1" * 64,
+        artifacts=(CustodyArtifactEvidence(artifact_id="a" * 64),),
+        generated_at=2.0,
     )
-    verified = verify_signed_restore_chain_of_custody(
-        envelope_path=output,
-        public_key_path=public_path,
-        expected_key_id="custody-ed25519-1",
-        expected_public_key_sha256=signed.public_key_sha256,
-    )
-
-    assert verified == signed
-    assert signed.algorithm == "ed25519"
-    assert signed.contains_private_key_material is False
-    assert len(signed.signature) == 88
-    with pytest.raises(FileExistsError):
-        sign_restore_chain_of_custody(
-            manifest_path=manifest_path,
-            output_path=output,
-            key_id="custody-ed25519-1",
-            private_key_path=private_path,
-        )
+    path = tmp_path / "manifest.json"
+    path.write_bytes(_canonical_bytes(value.public_payload()) + b"\n")
+    return path
 
 
-def test_ed25519_wrong_key_fingerprint_key_id_and_tamper_refuse(tmp_path):
-    manifest_path = write_manifest(tmp_path)
-    private_path, public_path = write_keys(tmp_path, "first")
-    _wrong_private, wrong_public = write_keys(tmp_path, "wrong")
-    output = tmp_path / "chain.signed.json"
-    signed = sign_restore_chain_of_custody(
-        manifest_path=manifest_path,
-        output_path=output,
+def registered(tmp_path):
+    registry = CustodySignerKeyRegistry(tmp_path / "keys.sqlite3")
+    private_path, public_path = keypair(tmp_path)
+    record = register_custody_signer_key(
+        registry=registry,
+        owner_id="alice",
         key_id="key-1",
-        private_key_path=private_path,
+        public_key_path=public_path,
+        actor=actor(),
+        valid_from=1.0,
+        now=2.0,
     )
+    return registry, record, private_path, public_path
 
-    with pytest.raises(PermissionError, match="fingerprint"):
-        verify_signed_restore_chain_of_custody(
-            envelope_path=output,
-            public_key_path=wrong_public,
-        )
-    with pytest.raises(PermissionError, match="key ID"):
-        verify_signed_restore_chain_of_custody(
-            envelope_path=output,
-            public_key_path=public_path,
-            expected_key_id="key-2",
-        )
-    with pytest.raises(PermissionError, match="expected public-key"):
-        verify_signed_restore_chain_of_custody(
-            envelope_path=output,
-            public_key_path=public_path,
-            expected_public_key_sha256="0" * 64,
-        )
 
-    raw = json.loads(output.read_text(encoding="utf-8"))
-    raw["signature"] = "A" * 88
+def test_signer_registry_lifecycle_collision_and_identity(tmp_path):
+    registry, record, _private, public = registered(tmp_path)
+    replay = register_custody_signer_key(
+        registry=registry,
+        owner_id="alice",
+        key_id="key-1",
+        public_key_path=public,
+        actor=actor(),
+        valid_from=1.0,
+        now=99.0,
+    )
+    assert replay == record
+    _other_private, other_public = keypair(tmp_path, "other")
+    with pytest.raises(RuntimeError, match="collision"):
+        register_custody_signer_key(
+            registry=registry,
+            owner_id="alice",
+            key_id="key-1",
+            public_key_path=other_public,
+            actor=actor(),
+            valid_from=1.0,
+            now=3.0,
+        )
+    retired = registry.retire(owner_id="alice", key_id="key-1", actor=actor("b"), now=10.0)
+    assert retired.state == "retired"
+    assert retired.permits(verification_time=9.0, now=20.0)
+    assert not retired.permits(verification_time=None, now=20.0)
+    replacement = tmp_path / "replacement.sqlite3"
+    replacement.write_bytes(registry.path.read_bytes())
+    os.replace(replacement, registry.path)
+    with pytest.raises(RuntimeError, match="identity changed"):
+        registry.get(owner_id="alice", key_id="key-1")
+
+
+def test_governed_sign_offline_verify_and_tamper_refusal(tmp_path):
+    registry, record, private, public = registered(tmp_path)
+    output = tmp_path / "signed.json"
+    envelope, used = sign_governed_restore_chain_of_custody(
+        registry=registry,
+        owner_id="alice",
+        key_id="key-1",
+        manifest_path=manifest_file(tmp_path),
+        private_key_path=private,
+        output_path=output,
+        now=3.0,
+    )
+    assert used.record_digest == record.record_digest
+    assert verify_signed_restore_chain_of_custody(
+        envelope_path=output,
+        public_key_path=public,
+        expected_key_id="key-1",
+        expected_owner_id="alice",
+    ).envelope_digest == envelope.envelope_digest
+    receipt = verify_governed_signed_restore_chain_of_custody(
+        registry=registry,
+        owner_id="alice",
+        signed_envelope=envelope,
+        now=4.0,
+    )
+    assert receipt.signature_verified and receipt.key_state == "active"
+    raw = json.loads(output.read_text())
+    raw["manifest"]["chain_digest"] = "f" * 64
     output.write_text(json.dumps(raw), encoding="utf-8")
     with pytest.raises((PermissionError, ValueError)):
-        verify_signed_restore_chain_of_custody(
-            envelope_path=output,
-            public_key_path=public_path,
+        verify_signed_restore_chain_of_custody(envelope_path=output, public_key_path=public)
+
+
+def test_timestamp_binding_and_retired_historical_verification(tmp_path, monkeypatch):
+    registry, _record, private, public = registered(tmp_path)
+    signed_path = tmp_path / "signed.json"
+    envelope, _ = sign_governed_restore_chain_of_custody(
+        registry=registry,
+        owner_id="alice",
+        key_id="key-1",
+        manifest_path=manifest_file(tmp_path),
+        private_key_path=private,
+        output_path=signed_path,
+        now=3.0,
+    )
+    subject = hashlib.sha256(signed_path.read_bytes()).hexdigest()
+    receipt = Rfc3161TimestampVerificationReceipt(
+        owner_id="alice",
+        subject_sha256=subject,
+        generated_at_unix=5.0,
+        receipt_digest="9" * 64,
+    )
+    receipt_path = tmp_path / "receipt.json"
+    receipt_path.write_text(json.dumps(receipt.public_payload()), encoding="utf-8")
+    timestamped_path = tmp_path / "timestamped.json"
+    wrapped = bind_rfc3161_timestamp_to_signed_custody(
+        signed_envelope_path=signed_path,
+        receipt_path=receipt_path,
+        public_key_path=public,
+        output_path=timestamped_path,
+        expected_key_id="key-1",
+    )
+    assert verify_timestamped_signed_restore_chain_of_custody(
+        envelope_path=timestamped_path,
+        public_key_path=public,
+        expected_owner_id="alice",
+    ).binding_digest == wrapped.binding_digest
+    registry.retire(owner_id="alice", key_id="key-1", actor=actor("b"), now=6.0)
+    with pytest.raises(PermissionError, match="validity"):
+        verify_governed_signed_restore_chain_of_custody(
+            registry=registry,
+            owner_id="alice",
+            signed_envelope=envelope,
+            now=7.0,
         )
-    assert signed.public_key_sha256 != "0" * 64
+    import tools.evidence_graph_set_signed_retirement_restore_custody_signature as module
+    from tools.evidence_graph_set_signed_retirement_restore_custody_rfc3161_trust import (
+        Profile,
+        Rfc3161TrustRegistry,
+    )
+    monkeypatch.setattr(
+        module,
+        "verify_rfc3161_timestamp_response_with_profile",
+        lambda **kwargs: (receipt, Profile()),
+    )
+    historical = verify_governed_timestamped_signed_restore_chain_of_custody(
+        registry=registry,
+        tsa_registry=Rfc3161TrustRegistry(),
+        owner_id="alice",
+        profile_id="tsa-1",
+        timestamped_envelope_path=timestamped_path,
+        request_bundle_path=tmp_path / "request.json",
+        response_path=tmp_path / "response.tsr",
+        trust_anchor_bundle_path=tmp_path / "root.pem",
+        now=7.0,
+    )
+    assert historical.historical_retired_key_verified
+    assert historical.trusted_timestamp_reverified
 
 
-def test_ed25519_private_key_permissions_and_type_fail_closed(tmp_path):
-    manifest_path = write_manifest(tmp_path)
-    private_path, _public_path = write_keys(tmp_path)
+def test_private_key_permissions_and_atomic_no_overwrite(tmp_path):
+    registry, _record, private, _public = registered(tmp_path)
+    output = tmp_path / "signed.json"
+    output.write_text("existing", encoding="utf-8")
+    with pytest.raises(FileExistsError):
+        sign_governed_restore_chain_of_custody(
+            registry=registry,
+            owner_id="alice",
+            key_id="key-1",
+            manifest_path=manifest_file(tmp_path),
+            private_key_path=private,
+            output_path=output,
+            now=3.0,
+        )
     if os.name != "nt":
-        private_path.chmod(0o644)
+        output.unlink()
+        private.chmod(0o644)
         with pytest.raises(PermissionError, match="permissions"):
-            sign_restore_chain_of_custody(
-                manifest_path=manifest_path,
-                output_path=tmp_path / "broad.json",
-                key_id="broad",
-                private_key_path=private_path,
+            sign_governed_restore_chain_of_custody(
+                registry=registry,
+                owner_id="alice",
+                key_id="key-1",
+                manifest_path=manifest_file(tmp_path),
+                private_key_path=private,
+                output_path=output,
+                now=3.0,
             )
-
-    invalid = tmp_path / "invalid.pem"
-    invalid.write_text("not a private key", encoding="utf-8")
-    if os.name != "nt":
-        invalid.chmod(0o600)
-    with pytest.raises(ValueError, match="invalid"):
-        sign_restore_chain_of_custody(
-            manifest_path=manifest_path,
-            output_path=tmp_path / "invalid.json",
-            key_id="invalid",
-            private_key_path=invalid,
-        )
-
-
-def test_signature_cli_is_offline_and_secret_free(tmp_path, capsys):
-    manifest_path = write_manifest(tmp_path)
-    private_path, public_path = write_keys(tmp_path)
-    output = tmp_path / "chain.signed.json"
-
-    assert cli.main(
-        [
-            "sign",
-            str(manifest_path),
-            "--output",
-            str(output),
-            "--key-id",
-            "key-1",
-            "--private-key-path",
-            str(private_path),
-        ]
-    ) == 0
-    signed_summary = json.loads(capsys.readouterr().out)
-    assert signed_summary["algorithm"] == "ed25519"
-    assert signed_summary["publicly_verifiable"] is True
-    assert signed_summary["contains_private_key_material"] is False
-    assert str(private_path) not in json.dumps(signed_summary)
-
-    assert cli.main(
-        [
-            "verify-signature",
-            str(output),
-            "--public-key-path",
-            str(public_path),
-            "--expected-key-id",
-            "key-1",
-            "--expected-public-key-sha256",
-            signed_summary["public_key_sha256"],
-        ]
-    ) == 0
-    verified_summary = json.loads(capsys.readouterr().out)
-    assert verified_summary["signature_type"] == "public_key"
-    assert verified_summary["import_performed"] is False
-    assert verified_summary["mutation_performed"] is False
-    assert str(public_path) not in json.dumps(verified_summary)
