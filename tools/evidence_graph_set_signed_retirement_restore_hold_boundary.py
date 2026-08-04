@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from tools.evidence_graph_set_signed_retirement_restore_deletion_mutation import (
+from tools.evidence_graph_set_signed_retirement_restore_deletion_coordination import (
     assert_restore_not_under_deletion,
 )
 from tools.evidence_graph_set_signed_retirement_restore_hold_integrity import (
