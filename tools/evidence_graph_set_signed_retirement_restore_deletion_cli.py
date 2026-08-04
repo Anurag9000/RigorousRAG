@@ -223,6 +223,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 owner_id=args.owner_id,
                 confirm_authorization_id=args.confirm_authorization_id,
                 actor=binding,
+                restore_journal=get_signed_retirement_restore_journal(),
             )
             payload = _summary(value)
             payload["authorization_mutation_performed"] = True
