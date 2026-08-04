@@ -2,11 +2,11 @@
 
 Last updated: 2026-08-04
 
-This control plane converts one exact restore-intent retention candidate into an expiring, process-owned authorization record. It does **not** delete a restore intent, custody evidence, hold record, artifact, graph set, source file, or database row.
+This control plane converts one exact restore-intent retention candidate into an expiring, process-owned authorization record. Authorization itself does **not** delete a restore intent, custody evidence, hold record, artifact, graph set, source file, or database row.
+
+Logical restore-intent deletion is implemented by a separate lease-based executor documented in `EVIDENCE_GRAPH_RESTORE_DELETION_EXECUTION.md`. The separation keeps retention planning, authorization, execution, and evidentiary retention independently auditable.
 
 ## Safety boundary
-
-Deletion authorization is deliberately separated from retention planning and from any future deletion executor.
 
 An authorization is accepted only when all of the following are true:
 
@@ -14,15 +14,16 @@ An authorization is accepted only when all of the following are true:
 2. the restore belongs to the requested owner;
 3. the supplied retention-plan digest is reproduced at its supplied generation timestamp;
 4. that historical plan marks exactly one matching restore record as a retention candidate;
-5. the restore record, plan item, snapshot digest and target-path digest agree exactly;
+5. the restore record, plan item, snapshot digest, and target-path digest agree exactly;
 6. no active durable legal hold protects the restore;
 7. the plan timestamp is not in the future;
 8. a second current-state retention plan still marks the restore as a candidate;
-9. the configured process-owned actor matches any explicit `--actor-id`;
-10. the actor binding is not expired;
-11. the authorization has an operator-provided idempotency key and bounded expiry.
+9. the restore is not already controlled by an active deletion marker;
+10. the configured process-owned actor matches any explicit `--actor-id`;
+11. the actor binding is not expired;
+12. the authorization has an operator-provided idempotency key and bounded expiry.
 
-The authorization remains only evidence that a qualified actor approved one exact candidate under one exact policy. It is not permission to skip a future deletion preflight, legal-hold check, custody check, backup requirement, or crash-recoverable deletion journal.
+The authorization is evidence that a qualified actor approved one exact candidate under one exact policy. It never permits an executor to skip its own legal-hold, custody, scope, marker, and current-candidate checks.
 
 ## Configuration
 
@@ -30,7 +31,7 @@ The authorization remains only evidence that a qualified actor approved one exac
 EVIDENCE_GRAPH_SET_SIGNED_RETIREMENT_DELETION_AUTH_DB_PATH=data/evidence_graph_set_signed_retirement_deletion_authorizations.sqlite3
 ```
 
-The runtime refuses canonical-path or hard-link aliasing with configured restore, retirement, legal-hold, custody, custody-artifact, authorization-only publication, and signed-publication databases.
+The runtime refuses canonical-path or hard-link aliasing with configured restore, retirement, legal-hold, custody, custody-artifact, authorization-only publication, signed-publication, and deletion-attempt databases.
 
 Authorization and revocation use the existing process-owned actor configuration:
 
@@ -115,7 +116,7 @@ python scripts/evidence_graph_set_signed_retirement_restore_deletion_authorizati
 
 These commands open only the authorization store. They do not load or mutate the restore journal, legal-hold store, custody stores, target database, or source data.
 
-## 4. Revalidate immediately before any future executor
+## 4. Revalidate before seeding execution
 
 ```bash
 python scripts/evidence_graph_set_signed_retirement_restore_deletion_authorizations.py \
@@ -132,11 +133,11 @@ Preflight recomputes current state and returns one disposition:
 - `durable_legal_hold_active`;
 - `no_longer_retention_candidate`.
 
-Only `authorized_candidate_current` is marked `eligible_for_future_deletion_executor: true`. Even that result performs no deletion and creates no deletion attempt.
+Only `authorized_candidate_current` is marked `eligible_for_future_deletion_executor: true`. The preflight itself performs no deletion and creates no deletion attempt.
 
-The report is digest-bound and contains no raw filesystem paths or source text.
+The execution seed operation repeats this preflight and binds its result into one deterministic deletion attempt. The execution worker then revalidates mutable conditions again after activating its restore-database deletion marker.
 
-## 5. Revoke an authorization
+## 5. Revocation and execution coordination
 
 ```bash
 python scripts/evidence_graph_set_signed_retirement_restore_deletion_authorizations.py \
@@ -146,7 +147,14 @@ python scripts/evidence_graph_set_signed_retirement_restore_deletion_authorizati
   --actor-id operator-2
 ```
 
-Revocation is monotonic. A revoked authorization cannot be reactivated. An exact replay returns the original revoked record and does not replace its first release actor or timestamp.
+Revocation is monotonic. A revoked authorization cannot be reactivated. An exact replay returns the original revoked record and does not replace its first revocation actor or timestamp.
+
+Revocation is refused when either of these is true:
+
+- an active or deleted restore-database marker binds the restore to deletion control;
+- the authorization has been reserved or consumed by a deletion ID.
+
+The executor first reserves an active authorization to exactly one deterministic deletion ID. The reservation can be released only before row deletion when a last-moment legal hold blocks execution. After successful row deletion, the authorization becomes terminally `consumed` and cannot be reused.
 
 ## Durable-state behavior
 
@@ -156,7 +164,8 @@ The authorization database contains:
 - a monotonic `authorized` or `revoked` status;
 - process-owned actor provenance for authorization and optional revocation;
 - bounded authorization expiry;
-- a complete-row integrity digest.
+- a complete-row integrity digest;
+- a separate one-authorization/one-deletion reservation-and-consumption table.
 
 The store refuses:
 
@@ -168,32 +177,45 @@ The store refuses:
 - owner/snapshot/target scope drift;
 - active durable holds;
 - mismatched or future retention plans;
-- plans that are no longer current candidates.
+- plans that are no longer current candidates;
+- active restore deletion markers;
+- revocation or reuse after reservation/consumption.
 
-## Explicit non-capabilities
+## What authorization does not do
 
-There is no `delete`, `execute`, `purge`, `vacuum`, `compact`, or secure-erasure command in this control plane.
-
-It does not:
+The authorization command family does not:
 
 - delete restore-intent history;
 - delete custody manifests, receipts, artifacts, holds, signatures, or signer records;
-- consume an authorization;
-- bypass legal holds;
 - mutate target retirement databases;
 - prove secure physical deletion;
+- vacuum or compact SQLite databases;
 - provide distributed consensus.
 
-A future deletion executor must use a separate lease-based journal, atomically consume an active authorization, re-run this preflight, preserve mandatory custody/legal-hold evidence, record exact deleted identities, and recover every crash window. That executor remains intentionally unimplemented.
+Logical row deletion is performed only by the separate command family:
+
+```bash
+python scripts/evidence_graph_set_signed_retirement_restore_deletions.py ...
+```
+
+That executor preserves all evidentiary stores and records an immutable marker/tombstone. It does not perform secure erasure or page reclamation.
 
 ## Verification boundary
 
-A reconstructed focused workspace executed the exact new authorization, current-state boundary, runtime, CLI, SQLite integrity and preflight logic with API-faithful stubs only for older repository services:
+A reconstructed focused workspace executed the exact authorization, current-state boundary, runtime, CLI, SQLite integrity, revocation, preflight, authorization-consumption, deletion-marker coordination, and permit-aware execution logic with API-faithful stubs only for unrelated repository services.
+
+Authorization-focused result:
 
 ```text
 8 passed
 ```
 
-Covered behavior includes deterministic identity, idempotent replay, actor collision refusal, active-hold refusal, historical and current-plan checks, future-plan refusal, exact monotonic revocation, complete-row tamper detection, all preflight dispositions, database replacement refusal, runtime path alias refusal, confirmation-before-store behavior, read-only command isolation, report-digest reconstruction, and the absence of a delete command.
+Combined authorization and deletion-execution result:
+
+```text
+13 passed
+```
+
+Covered authorization behavior includes deterministic identity, idempotent replay, actor collision refusal, active-hold refusal, historical and current-plan checks, future-plan refusal, exact monotonic revocation, complete-row tamper detection, all preflight dispositions, database replacement refusal, runtime path alias refusal, confirmation-before-store behavior, read-only command isolation, and report-digest reconstruction.
 
 This is focused reconstructed evidence, not a complete exact-current repository run. Full pytest, coverage, Ruff, Windows, containers, independent-process contention, SQLite I/O failures, and process-kill testing remain open. Release readiness is not claimed.
