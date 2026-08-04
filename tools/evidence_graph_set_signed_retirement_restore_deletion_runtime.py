@@ -6,15 +6,15 @@ import os
 import threading
 from pathlib import Path
 
-from tools.evidence_graph_set_signed_retirement_restore_deletion_authorizations import (
-    SignedRetirementRestoreDeletionAuthorizationStore,
+from tools.evidence_graph_set_signed_retirement_restore_deletion_boundary import (
+    GovernedSignedRetirementRestoreDeletionAuthorizationStore,
 )
 
 _DEFAULT_PATH = (
     "data/evidence_graph_set_signed_retirement_deletion_authorizations.sqlite3"
 )
 _LOCK = threading.RLock()
-_STORES: dict[str, SignedRetirementRestoreDeletionAuthorizationStore] = {}
+_STORES: dict[str, GovernedSignedRetirementRestoreDeletionAuthorizationStore] = {}
 
 
 def _canonical(value: str | os.PathLike[str]) -> Path:
@@ -35,7 +35,7 @@ def _same_file(left: Path, right: Path) -> bool:
 
 def get_signed_retirement_restore_deletion_authorization_store(
     path: str | os.PathLike[str] | None = None,
-) -> SignedRetirementRestoreDeletionAuthorizationStore:
+) -> GovernedSignedRetirementRestoreDeletionAuthorizationStore:
     selected = path if path is not None else os.getenv(
         "EVIDENCE_GRAPH_SET_SIGNED_RETIREMENT_DELETION_AUTH_DB_PATH",
         _DEFAULT_PATH,
@@ -63,7 +63,7 @@ def get_signed_retirement_restore_deletion_authorization_store(
     with _LOCK:
         store = _STORES.get(key)
         if store is None:
-            store = SignedRetirementRestoreDeletionAuthorizationStore(
+            store = GovernedSignedRetirementRestoreDeletionAuthorizationStore(
                 authorization_path
             )
             _STORES[key] = store
