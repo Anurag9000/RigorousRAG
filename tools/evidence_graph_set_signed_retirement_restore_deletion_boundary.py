@@ -1,4 +1,4 @@
-"""Canonical current-state gate for restore deletion authorization."""
+"""Canonical current-state and execution gate for restore deletion authorization."""
 
 from __future__ import annotations
 
@@ -12,6 +12,12 @@ from tools.evidence_graph_set_signed_retirement_restore_contracts import (
 from tools.evidence_graph_set_signed_retirement_restore_deletion_authorizations import (
     SignedRetirementRestoreDeletionAuthorizationStore,
 )
+from tools.evidence_graph_set_signed_retirement_restore_deletion_consumption import (
+    require_authorization_unconsumed,
+)
+from tools.evidence_graph_set_signed_retirement_restore_deletion_mutation import (
+    assert_restore_not_under_deletion,
+)
 from tools.evidence_graph_set_signed_retirement_restore_operations import (
     plan_signed_retirement_restore_retention,
 )
@@ -21,7 +27,7 @@ from tools.security import normalize_owner_id
 class GovernedSignedRetirementRestoreDeletionAuthorizationStore(
     SignedRetirementRestoreDeletionAuthorizationStore
 ):
-    """Require historical-plan fidelity and current candidacy at authorization time."""
+    """Require current candidacy and coordinate authorization with execution."""
 
     def authorize(
         self,
@@ -47,6 +53,7 @@ class GovernedSignedRetirementRestoreDeletionAuthorizationStore(
         current = _timestamp(time.time() if now is None else now, "now")
         if plan_time > current:
             raise ValueError("retention plan generation time is in the future.")
+        assert_restore_not_under_deletion(restore_journal, restore)
         restore_value = restore_journal.get(restore)
         if restore_value.owner_id != owner:
             raise RuntimeError(
@@ -99,6 +106,33 @@ class GovernedSignedRetirementRestoreDeletionAuthorizationStore(
             expires_in_seconds=expires_in_seconds,
             now=current,
             limit=limit,
+        )
+
+    def revoke(
+        self,
+        authorization_id: str,
+        *,
+        owner_id: str,
+        confirm_authorization_id: str,
+        actor: Any,
+        restore_journal: Any,
+        now: float | None = None,
+    ):
+        authorization = self.get(authorization_id)
+        assert_restore_not_under_deletion(
+            restore_journal,
+            authorization.restore_id,
+        )
+        require_authorization_unconsumed(
+            self,
+            authorization.authorization_id,
+        )
+        return super().revoke(
+            authorization_id,
+            owner_id=owner_id,
+            confirm_authorization_id=confirm_authorization_id,
+            actor=actor,
+            now=now,
         )
 
 
