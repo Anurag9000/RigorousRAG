@@ -34,7 +34,9 @@ The restore-governance stack now includes:
 - active quarantine holds before releasing permits that lack a committed original hold;
 - active-original-hold exact-replay refusal and released-hold cleanup;
 - immutable permit-recovery receipts with exact original-digest replay confirmation;
-- fresh signed-actor replay after quarantine creation without weakening quarantine scope.
+- fresh signed-actor replay after quarantine creation without weakening quarantine scope;
+- read-only permit-recovery receipt and quarantine audit;
+- conservative permit-recovery retention planning with active-quarantine, explicit-hold and newest-per-restore protection.
 
 ## Current implementation priorities
 
@@ -68,11 +70,11 @@ The restore-governance stack now includes:
 - [x] Process-owned exact-confirmation recovery receipt.
 - [x] Fresh actor replay of an already committed quarantine hold.
 - [x] Exact original permit-digest confirmation on completed recovery replay.
+- [x] Governed audit and retention planning for permit-recovery receipts and quarantine holds.
 - [ ] Add HSM/KMS-backed private-key operations and governed key-generation ceremonies.
 - [ ] Add externally distributed signer certificates, directory records or transparency logs.
 - [ ] Add secure physical-erasure and database-compaction policy.
 - [ ] Add platform-specific evidence for SQLite page, WAL, backup, filesystem-snapshot and media erasure.
-- [ ] Add governed retention and archival policy for permit-recovery receipts and quarantine holds.
 
 ### Scientific graph quality
 
@@ -114,6 +116,7 @@ The restore-governance stack now includes:
 - Permit recovery never releases an active original hold.
 - Missing original holds are replaced by an active quarantine before permit release.
 - A quarantine hold requires separate review and explicit release.
+- Permit-recovery retention candidates are planning only and do not authorize deletion.
 - Logical database-row deletion is not secure physical erasure or SQLite page reclamation.
 - Focused reconstructed tests are not the complete release matrix.
 - Release readiness is not claimed.
