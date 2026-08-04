@@ -72,7 +72,10 @@ def _quarantine_hold(
     if row is not None:
         stored = hold_store._verified_value(connection, row)
         if (
-            stored.hold_digest != value.hold_digest
+            stored.owner_id != value.owner_id
+            or stored.restore_id != value.restore_id
+            or stored.hold_key != value.hold_key
+            or stored.reason_code != value.reason_code
             or stored.status != "active"
         ):
             raise RuntimeError("quarantine hold differs from recovery scope.")
