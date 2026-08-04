@@ -78,6 +78,10 @@ This file supersedes the Wave 5 checkbox section in `docs/TODO.md`. The older fi
 - [x] Durable hold-placement permits serializing legal holds with deletion markers.
 - [x] Exact aborted-marker recovery after a transient legal-hold refusal.
 - [x] Text-free, raw-path-free restore-deletion operator commands and recovery errors.
+- [x] Restore-deletion queue audit and lease/retry/exhaustion classification.
+- [x] Conservative restore-deletion attempt retention planning.
+- [x] Read-only hold-placement permit audit and complete permit-digest verification.
+- [x] Strict deletion operations report/plan reconstruction and tamper refusal.
 
 ## Completed GraphRAG path
 
@@ -164,10 +168,11 @@ This file supersedes the Wave 5 checkbox section in `docs/TODO.md`. The older fi
 - [x] Immutable deletion marker/tombstone and single-use authorization consumption.
 - [x] Preservation of holds, custody, receipts, artifacts, signatures, signer keys, and timestamps.
 - [x] Hold/deletion serialization through restore-database placement permits.
+- [x] Deletion-attempt operational audit and conservative retention planning.
+- [x] Hold-placement permit audit and integrity verification.
 - [ ] Add HSM/KMS-backed private-key operations and governed key-generation ceremonies.
 - [ ] Add externally distributed signer certificates, directory records, or transparency logs.
-- [ ] Add stale hold-placement permit audit, exact recovery, and governance tooling.
-- [ ] Add deletion-attempt operational audit and conservative retention planning.
+- [ ] Add governed recovery for active hold-placement permits without a committed active hold.
 - [ ] Add secure deletion and database compaction policy.
 - [ ] Add platform-specific evidence for SQLite page, WAL, backup, filesystem-snapshot, and media erasure.
 
@@ -219,6 +224,7 @@ This file supersedes the Wave 5 checkbox section in `docs/TODO.md`. The older fi
 - External custody exports and signature envelopes are evidence-only and cannot import or mutate restore state.
 - Retention candidates are not deletion authorization.
 - Deletion authorization is not deletion execution.
+- Permit audit classifications are not permit-release authorization.
 - Logical restore-intent row deletion is not secure physical erasure or SQLite page reclamation.
 - Deletion preserves custody, hold, receipt, artifact, signature, signer, timestamp, authorization, marker, tombstone, and attempt history.
 - Focused reconstructed tests are not the complete release matrix.
