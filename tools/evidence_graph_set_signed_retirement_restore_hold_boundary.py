@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
-from tools.evidence_graph_set_signed_retirement_restore_deletion_coordination import (
-    assert_restore_not_under_deletion,
-)
 from tools.evidence_graph_set_signed_retirement_restore_hold_integrity import (
     IntegritySignedRetirementRestoreHoldStore,
+)
+from tools.evidence_graph_set_signed_retirement_restore_hold_permits import (
+    acquire_hold_placement_permit,
+    release_hold_placement_permit,
+)
+from tools.evidence_graph_set_signed_retirement_restore_holds import (
+    deterministic_restore_hold_id,
 )
 
 _METHODS = frozenset(
@@ -51,18 +56,51 @@ class GovernedSignedRetirementRestoreHoldStore(
         restore_journal: Any,
         now: float | None = None,
     ):
-        # A hold that committed immediately before the marker is caught by the
-        # executor's post-marker hold recheck. A hold starting afterward fails here.
-        assert_restore_not_under_deletion(restore_journal, restore_id)
-        return super().place(
+        timestamp = time.time() if now is None else now
+        hold_id = deterministic_restore_hold_id(
             owner_id=owner_id,
             restore_id=restore_id,
             hold_key=hold_key,
-            reason_code=reason_code,
-            actor=actor,
-            restore_journal=restore_journal,
-            now=now,
         )
+        acquire_hold_placement_permit(
+            restore_journal,
+            owner_id=owner_id,
+            restore_id=restore_id,
+            hold_id=hold_id,
+            now=timestamp,
+        )
+        try:
+            value = super().place(
+                owner_id=owner_id,
+                restore_id=restore_id,
+                hold_key=hold_key,
+                reason_code=reason_code,
+                actor=actor,
+                restore_journal=restore_journal,
+                now=timestamp,
+            )
+        except Exception:
+            # Ordinary exceptions imply the hold-store transaction rolled back.
+            # A process death leaves the permit active; exact hold replay recovers it.
+            try:
+                release_hold_placement_permit(
+                    restore_journal,
+                    owner_id=owner_id,
+                    restore_id=restore_id,
+                    hold_id=hold_id,
+                    now=timestamp,
+                )
+            except Exception:
+                pass
+            raise
+        release_hold_placement_permit(
+            restore_journal,
+            owner_id=owner_id,
+            restore_id=restore_id,
+            hold_id=hold_id,
+            now=timestamp,
+        )
+        return value
 
 
 __all__ = ["GovernedSignedRetirementRestoreHoldStore"]
