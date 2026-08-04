@@ -8,7 +8,7 @@ This addendum closes the current Wave 5 item for governed recovery of active res
 
 - [x] Deterministic recovery identity bound to owner, restore, original hold and active-permit digest.
 - [x] Process-owned actor binding for every mutating recovery.
-- [x] Exact hold-ID and permit-digest confirmation.
+- [x] Exact hold-ID and original permit-digest confirmation on first execution and replay.
 - [x] Configurable age gate with a 60-second minimum and 3,600-second default.
 - [x] Complete active-permit digest verification before mutation.
 - [x] Restore owner and existence revalidation.
@@ -22,7 +22,8 @@ This addendum closes the current Wave 5 item for governed recovery of active res
 - [x] Idempotent recovery receipt replay.
 - [x] Strict receipt reconstruction and tamper refusal.
 - [x] Read-only receipt status and owner-scoped listing.
-- [x] Bad confirmation rejection before store loading.
+- [x] Bad hold confirmation rejection before store loading.
+- [x] Wrong-digest completed-recovery replay refusal.
 - [x] Text-free, raw-path-free CLI output.
 
 ## Operator commands
@@ -42,7 +43,7 @@ python scripts/evidence_graph_set_signed_retirement_restore_hold_permit_recovery
   recover HOLD_ID \
   --owner-id OWNER \
   --confirm-hold-id HOLD_ID \
-  --confirm-permit-digest PERMIT_DIGEST \
+  --confirm-permit-digest ORIGINAL_PERMIT_DIGEST \
   --minimum-age-seconds 3600 \
   --actor-id ACTOR_ID
 ```
@@ -66,10 +67,11 @@ Executed in focused reconstructed workspaces using the committed recovery logic,
 ```text
 7 core recovery checks passed
 1 fresh-actor quarantine replay check passed
+1 wrong-digest completed-replay refusal check passed
 3 CLI boundary checks passed
 ```
 
-Aggregate focused result: **11/11**.
+Aggregate focused result: **12/12**.
 
 Focused Python compilation passed.
 
@@ -77,6 +79,7 @@ Repository-native contracts committed for this slice:
 
 - five core recovery tests;
 - one fresh-actor quarantine replay test;
+- one exact replay-confirmation test;
 - three CLI boundary tests.
 
 These repository-native tests have not been executed as part of a fresh exact-current complete repository checkout.
@@ -86,6 +89,7 @@ These repository-native tests have not been executed as part of a fresh exact-cu
 - An active original hold is never released by permit recovery.
 - A missing original hold always creates an active quarantine before permit release.
 - A quarantine hold requires separate review and explicit release.
+- Completed replay still requires the exact original permit digest.
 - Recovery does not delete restore history or authorize deletion.
 - Recovery does not mutate graph, document, citation, source or restore-target state.
 - A focused reconstructed harness is not the complete release matrix.
