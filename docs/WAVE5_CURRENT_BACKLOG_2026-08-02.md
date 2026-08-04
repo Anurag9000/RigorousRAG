@@ -1,6 +1,6 @@
 # Wave 5 current implementation backlog
 
-Last updated: 2026-08-03
+Last updated: 2026-08-04
 
 This file supersedes the Wave 5 checkbox section in `docs/TODO.md`. The older file remains useful as historical planning context but no longer reflects the current evidence-graph implementation.
 
@@ -65,6 +65,19 @@ This file supersedes the Wave 5 checkbox section in `docs/TODO.md`. The older fi
 - [x] Public-key signed complete external custody envelopes and offline verification.
 - [x] RFC 3161 binding for signed custody envelopes.
 - [x] Governed historical retired-key verification after fresh same-process TSA verification.
+- [x] Integrity-backed expiring restore-deletion authorization records.
+- [x] Historical-plan reproduction and current-candidate revalidation before authorization.
+- [x] Durable legal-hold, owner, snapshot, target, actor, policy, expiry, and idempotency-key binding.
+- [x] Monotonic authorization revocation and complete-row integrity verification.
+- [x] Single-use authorization reservation and terminal consumption.
+- [x] Separate lease-based restore-deletion attempt journal.
+- [x] Deterministic terminal restore-record deletion identity and scope.
+- [x] Atomic restore-row deletion and immutable marker/tombstone publication.
+- [x] Crash recovery after marker, reservation, row deletion, and phase persistence.
+- [x] Completed-restore post-bound custody requirement and custody preservation.
+- [x] Durable hold-placement permits serializing legal holds with deletion markers.
+- [x] Exact aborted-marker recovery after a transient legal-hold refusal.
+- [x] Text-free, raw-path-free restore-deletion operator commands and recovery errors.
 
 ## Completed GraphRAG path
 
@@ -100,13 +113,15 @@ This file supersedes the Wave 5 checkbox section in `docs/TODO.md`. The older fi
 ### Distributed execution and fault injection
 
 - [ ] Add database-backed or distributed leadership for periodic graph jobs.
-- [ ] Test independent-process publication, retirement and restore contention.
-- [ ] Inject process kills at every publication, retirement and restore phase.
+- [ ] Test independent-process publication, retirement, restore, hold, and deletion contention.
+- [ ] Inject process kills at every publication, retirement, restore, hold-permit, and deletion phase.
 - [ ] Inject SQLite busy/locked, WAL, I/O error and disk-full failures.
 - [ ] Test graph-set pointer races with independent processes.
 - [ ] Test long-running lease renewal under real wall-clock delays.
 - [ ] Test restore-target writers blocked by final exact-target completion locks.
 - [ ] Test independent-process legal-hold placement/release contention.
+- [ ] Test hold-permit crash recovery and stale-permit operator handling.
+- [ ] Test authorization revocation versus reservation/consumption contention.
 - [ ] Test concurrent custody artifact and receipt publication races.
 - [ ] Test independent-process custody binding and post-finalization contention.
 - [ ] Test independent-process artifact-journal lease and output-path races.
@@ -143,10 +158,18 @@ This file supersedes the Wave 5 checkbox section in `docs/TODO.md`. The older fi
 - [x] Governed signer-key registration, validity windows, rotation, and retirement.
 - [x] Public-key signed external chain-of-custody export.
 - [x] RFC 3161-bound public-key custody signatures and retired-key historical verification.
+- [x] Expiring process-owned authorization for one exact restore retention candidate.
+- [x] Read-only deletion preflight with current hold and candidate revalidation.
+- [x] Crash-recoverable logical deletion of one terminal restore-intent row.
+- [x] Immutable deletion marker/tombstone and single-use authorization consumption.
+- [x] Preservation of holds, custody, receipts, artifacts, signatures, signer keys, and timestamps.
+- [x] Hold/deletion serialization through restore-database placement permits.
 - [ ] Add HSM/KMS-backed private-key operations and governed key-generation ceremonies.
 - [ ] Add externally distributed signer certificates, directory records, or transparency logs.
-- [ ] Add destructive-retention authorization and deletion journal.
+- [ ] Add stale hold-placement permit audit, exact recovery, and governance tooling.
+- [ ] Add deletion-attempt operational audit and conservative retention planning.
 - [ ] Add secure deletion and database compaction policy.
+- [ ] Add platform-specific evidence for SQLite page, WAL, backup, filesystem-snapshot, and media erasure.
 
 ### Scientific graph quality
 
@@ -190,10 +213,13 @@ This file supersedes the Wave 5 checkbox section in `docs/TODO.md`. The older fi
 - Retired signer keys are accepted historically only when a freshly governed RFC 3161 verification places the signature inside the key validity interval.
 - Restore execution accepts only terminal snapshots and an initialized globally empty target.
 - Restore never overwrites, merges or deletes target history.
-- Legal holds protect retention planning but do not authorize deletion or restore mutation.
+- Legal holds protect retention planning and are serialized against deletion; they do not authorize deletion or restore mutation.
 - Custody manifests bind evidence to execution but do not authorize deletion.
 - Artifact orphan classifications preserve evidence and never authorize cleanup.
 - External custody exports and signature envelopes are evidence-only and cannot import or mutate restore state.
 - Retention candidates are not deletion authorization.
+- Deletion authorization is not deletion execution.
+- Logical restore-intent row deletion is not secure physical erasure or SQLite page reclamation.
+- Deletion preserves custody, hold, receipt, artifact, signature, signer, timestamp, authorization, marker, tombstone, and attempt history.
 - Focused reconstructed tests are not the complete release matrix.
 - Release readiness is not claimed.
