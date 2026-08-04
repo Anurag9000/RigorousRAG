@@ -30,14 +30,14 @@ The audit is text-free and path-free. It verifies the complete permit digest bef
 
 Recovery requires all of the following:
 
-1. the permit remains `active`;
+1. the permit remains `active`, or an exact governed receipt proves it was already recovered;
 2. the exact hold ID is confirmed;
-3. the exact current permit digest is confirmed;
-4. the permit is older than the configured minimum age;
+3. the exact original active-permit digest is confirmed on first execution and every replay;
+4. the permit is older than the configured minimum age before first execution;
 5. the restore intent still exists under the same owner;
 6. no active or completed deletion marker controls the restore;
 7. a process-owned reviewer actor binding is configured;
-8. the hold and permit rows pass their integrity checks.
+8. the hold, permit and any existing recovery-receipt rows pass their integrity checks.
 
 The default minimum age is 3,600 seconds. The command refuses values below 60 seconds.
 
@@ -48,14 +48,14 @@ python scripts/evidence_graph_set_signed_retirement_restore_hold_permit_recovery
   recover HOLD_ID \
   --owner-id OWNER \
   --confirm-hold-id HOLD_ID \
-  --confirm-permit-digest PERMIT_DIGEST \
+  --confirm-permit-digest ORIGINAL_PERMIT_DIGEST \
   --minimum-age-seconds 3600 \
   --actor-id ACTOR_ID
 ```
 
 `ACTOR_ID` must match the process-owned actor resolved from the configured environment, descriptor file, or short-lived signed assertion.
 
-Bad hold confirmation is rejected before durable stores are opened.
+Bad hold confirmation is rejected before durable stores are opened. A completed recovery replay with a different permit digest is also refused.
 
 ## 4. Missing-hold quarantine rule
 
@@ -96,7 +96,7 @@ Every successful mutation produces an immutable, digest-verified receipt binding
 - process-owned actor identity, method and binding digest;
 - recovery timestamp.
 
-The permit transition and receipt insertion commit in one restore-database transaction. Exact replay returns the existing receipt and performs no mutation.
+The permit transition and receipt insertion commit in one restore-database transaction. Exact replay requires the same original permit digest, returns the existing receipt, and performs no mutation.
 
 Inspect receipts without opening the hold store:
 
@@ -135,9 +135,12 @@ Focused reconstructed execution using the committed recovery logic and real SQLi
 
 - **7/7** core recovery checks;
 - **1/1** fresh-actor quarantine crash-replay check;
+- **1/1** wrong-digest completed-replay refusal check;
 - **3/3** CLI boundary checks;
 - focused Python compilation.
 
-The checks cover missing-hold quarantine, active-hold refusal, released-hold cleanup, age and marker refusal, exact replay, receipt tamper refusal, fresh signed-actor replay, pre-store confirmation, process-owned actor dispatch, and read-only status/list isolation.
+Aggregate focused result: **12/12**.
+
+The checks cover missing-hold quarantine, active-hold refusal, released-hold cleanup, age and marker refusal, exact replay, exact replay confirmation, receipt tamper refusal, fresh signed-actor replay, pre-store confirmation, process-owned actor dispatch, and read-only status/list isolation.
 
 This is not a complete exact-current repository pytest or platform matrix. Release readiness is not claimed.
