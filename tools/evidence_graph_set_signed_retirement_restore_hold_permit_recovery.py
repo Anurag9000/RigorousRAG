@@ -206,6 +206,8 @@ def recover_abandoned_hold_placement_permit(
             ).fetchone()
             if existing is not None:
                 receipt = receipt_from_row(existing)
+                if confirmed_permit != receipt.original_permit_digest:
+                    raise ValueError("permit digest confirmation differs.")
                 if (
                     state != "released"
                     or stored_digest != receipt.released_permit_digest
