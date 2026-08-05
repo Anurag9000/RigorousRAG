@@ -17,6 +17,7 @@ from tools.evidence_graph_claim_review import (
     approved_claim_annotations,
 )
 from tools.evidence_graph_claim_store import ScientificClaimReviewStore
+from tools.evidence_graph_claim_submission import submit_scientific_claim_proposals
 from tools.evidence_graph_relation_actor import ReviewActorBinding
 
 
@@ -124,16 +125,24 @@ def test_store_is_atomic_idempotent_and_detects_correction_branching(tmp_path):
     corrected = proposal(
         proposer="model-2", version="2", supersedes=original.proposal_id
     )
-    assert store.submit_many((original, corrected)) == (original, corrected)
-    assert store.submit_many((original, corrected)) == (original, corrected)
 
-    competing = replace(
+    # The canonical boundary accepts reverse caller order and inserts the
+    # predecessor first inside the store's single atomic transaction.
+    assert submit_scientific_claim_proposals(store, (corrected, original)) == (
         corrected,
-        proposal_id="f" * 64,
-        claim_key="claim-3",
+        original,
     )
+    assert submit_scientific_claim_proposals(store, (original, corrected)) == (
+        original,
+        corrected,
+    )
+
     with pytest.raises(ValueError, match="proposal_id"):
-        store.submit(competing)
+        replace(
+            corrected,
+            proposal_id="f" * 64,
+            claim_key="claim-3",
+        )
 
     other = proposal(
         proposer="model-3", version="3", supersedes=original.proposal_id
@@ -191,7 +200,7 @@ def test_correction_requires_superseded_predecessor_before_approval(tmp_path):
     corrected = proposal(
         proposer="model-2", version="2", supersedes=original.proposal_id
     )
-    store.submit_many((original, corrected))
+    submit_scientific_claim_proposals(store, (original, corrected))
     service = GovernedScientificClaimReviewService(
         store=store, policy=policy(), clock=lambda: 3.0
     )
