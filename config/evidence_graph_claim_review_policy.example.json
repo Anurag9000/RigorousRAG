@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "reviewers": [
+    {
+      "reviewer_id": "replace-with-reviewed-scientific-claim-reviewer-id",
+      "owners": [
+        "replace-with-owner-id"
+      ],
+      "doc_ids": [
+        "replace-with-document-id"
+      ],
+      "decisions": [
+        "approved",
+        "rejected",
+        "superseded"
+      ],
+      "expires_at": 4102444800
+    }
+  ]
+}
