@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "administrators": [
+    {
+      "administrator_id": "replace-with-extractor-administrator-id",
+      "owners": [
+        "replace-with-owner-id"
+      ],
+      "extractor_names": [
+        "replace-with-extractor-name"
+      ],
+      "actions": [
+        "register",
+        "retire"
+      ],
+      "expires_at": 4102444800
+    }
+  ]
+}
