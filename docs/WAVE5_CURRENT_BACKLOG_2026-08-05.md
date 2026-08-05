@@ -65,6 +65,16 @@ The restore-governance stack includes:
 - [x] Span-IoU, claim token-F1, type, modality and confidence-calibration metrics.
 - [x] Text-free digest-bound evaluation report verification.
 - [x] Descriptor-safe strict local evaluation fixture CLI.
+- [x] Owner-scoped immutable exact-version extractor registry.
+- [x] Model/rule extractor kinds with exact implementation/configuration/schema digests.
+- [x] Capability scopes for claim types, modalities and languages.
+- [x] Separate extractor-administrator policy and expiry.
+- [x] Process-actor-bound registration and monotonic retirement.
+- [x] No reactivation of retired extractor versions.
+- [x] Exact record-digest retirement confirmation.
+- [x] Canonical registered extraction for model and rule provenance.
+- [x] Registry provenance embedded into deterministic claim proposals.
+- [x] Credential-, prompt-, response- and source-text-free registry CLI.
 
 ## Current implementation priorities
 
@@ -76,14 +86,16 @@ The restore-governance stack includes:
 - [ ] Execute production live-agent, FastAPI and frontend regressions.
 - [ ] Run Docker/Compose persistence and restart tests.
 - [ ] Run Windows path, permission and reparse-point tests.
-- [ ] Execute all scientific-claim repository-native contracts together.
+- [ ] Execute all scientific-claim and extractor-registry repository-native contracts together.
 
 ### Distributed execution and fault injection
 
 - [ ] Add database-backed or distributed leadership for periodic graph jobs.
 - [ ] Test independent-process publication, retirement, restore, hold, permit-recovery and deletion contention.
 - [ ] Test independent-process claim proposal, correction and terminal-review contention.
+- [ ] Test independent-process extractor registration/retirement contention.
 - [ ] Inject process kills around claim proposal submission and decision/authorization commit.
+- [ ] Inject process kills around extractor registration and retirement compare-and-swap.
 - [ ] Inject process kills at every publication, retirement, restore, hold-permit, permit-recovery and deletion phase.
 - [ ] Inject SQLite busy/locked, WAL, I/O-error and disk-full failures.
 - [ ] Test graph-set pointer races with independent processes.
@@ -110,8 +122,11 @@ The restore-governance stack includes:
 ### Scientific graph quality
 
 - [x] Add reviewed scientific claim extraction foundation.
-- [ ] Add production model/rule extractor adapters registered by exact name/version.
-- [ ] Add governed extractor promotion, rollback and deprecation registry.
+- [x] Add governed exact-version model/rule extractor registry and execution boundary.
+- [ ] Add actual production model/rule extractor implementations.
+- [ ] Add governed extractor benchmark promotion and rollback reports.
+- [ ] Add active-version selection/promotion pointers while retaining exact-version execution.
+- [ ] Add deprecation reasons, compatibility windows and migration planning.
 - [ ] Add reviewed entity normalization and resolution proposals.
 - [ ] Add reviewed citation-link extraction proposals.
 - [ ] Add reviewed method and dataset extraction proposals.
@@ -143,7 +158,8 @@ The restore-governance stack includes:
 - [ ] Add multi-party or quorum review thresholds.
 - [ ] Add reviewer agreement and disagreement reporting.
 - [ ] Add public-key-signed review/export manifests and external transparency records.
-- [ ] Add separate governed roles for extractor promotion, claim review and semantic-relation adjudication.
+- [x] Add separately configurable extractor-administrator and claim-reviewer roles.
+- [ ] Add separately governed semantic-relation adjudicator roles.
 
 ## Permanent boundaries
 
@@ -158,6 +174,7 @@ The restore-governance stack includes:
 - A quarantine hold requires separate review and explicit release.
 - Logical database-row deletion is not secure physical erasure or SQLite page reclamation.
 - Scientific extractor output is a proposal, not a graph fact.
+- Extractor registration identifies governed bytes/configuration and capabilities; it is not benchmark promotion or proof of scientific quality.
 - Claim approval is a governed review record, not independent scientific verification.
 - Claim detection/span metrics are not semantic entailment.
 - Reviewed claim annotations do not imply support, contradiction, causality or truth.
