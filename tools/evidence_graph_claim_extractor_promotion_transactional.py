@@ -6,7 +6,7 @@ import json
 from dataclasses import asdict
 from typing import Any
 
-from tools.evidence_graph_claim_contracts import _digest, _identifier, _timestamp
+from tools.evidence_graph_claim_contracts import _identifier, _timestamp
 from tools.evidence_graph_claim_extractor_promotion import (
     _PROMOTION_ACTIONS,
     _optional_digest,
@@ -15,6 +15,31 @@ from tools.evidence_graph_claim_extractor_promotion import (
     ScientificClaimExtractorPromotionStore,
 )
 from tools.evidence_graph_relation_actor import ReviewActorBinding
+
+
+def _pairs(values: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in values:
+        if key in result:
+            raise ValueError("stored promotion payload contains a duplicate JSON key.")
+        result[key] = value
+    return result
+
+
+def _payload(value: str, label: str) -> dict[str, Any]:
+    if not isinstance(value, str) or len(value) > 20_000_000:
+        raise RuntimeError(f"stored {label} is corrupt.")
+    try:
+        raw = json.loads(
+            value,
+            object_pairs_hook=_pairs,
+            parse_constant=lambda token: (_ for _ in ()).throw(ValueError(token)),
+        )
+    except (json.JSONDecodeError, ValueError, RecursionError) as exc:
+        raise RuntimeError(f"stored {label} is corrupt.") from exc
+    if not isinstance(raw, dict):
+        raise RuntimeError(f"stored {label} is corrupt.")
+    return raw
 
 
 def _report_scope(value: ScientificClaimExtractorPromotionReport) -> tuple[Any, ...]:
@@ -55,6 +80,52 @@ class TransactionalScientificClaimExtractorPromotionStore(
     ScientificClaimExtractorPromotionStore
 ):
     """Preserve first timestamps and recover exact pointer-activation replays."""
+
+    @staticmethod
+    def _report(row: Any) -> ScientificClaimExtractorPromotionReport:
+        try:
+            value = ScientificClaimExtractorPromotionReport(
+                **_payload(row["payload_json"], "promotion report")
+            )
+        except Exception as exc:
+            if isinstance(exc, RuntimeError):
+                raise
+            raise RuntimeError("stored promotion report is corrupt.") from exc
+        if (
+            value.report_digest != row["report_digest"]
+            or value.owner_id != row["owner_id"]
+            or value.extractor_name != row["extractor_name"]
+            or value.extractor_version != row["extractor_version"]
+            or value.extractor_record_digest != row["extractor_record_digest"]
+            or int(value.eligible) != int(row["eligible"])
+            or value.assessed_at != float(row["assessed_at"])
+        ):
+            raise RuntimeError("stored promotion report columns are corrupt.")
+        return value
+
+    @staticmethod
+    def _activation(row: Any) -> ScientificClaimExtractorActivation:
+        try:
+            value = ScientificClaimExtractorActivation(
+                **_payload(row["payload_json"], "extractor activation")
+            )
+        except Exception as exc:
+            if isinstance(exc, RuntimeError):
+                raise
+            raise RuntimeError("stored activation is corrupt.") from exc
+        if (
+            value.activation_id != row["activation_id"]
+            or value.owner_id != row["owner_id"]
+            or value.extractor_name != row["extractor_name"]
+            or value.extractor_version != row["extractor_version"]
+            or value.extractor_record_digest != row["extractor_record_digest"]
+            or value.promotion_report_digest != row["promotion_report_digest"]
+            or value.action != row["action"]
+            or value.previous_activation_id != row["previous_activation_id"]
+            or value.activated_at != float(row["activated_at"])
+        ):
+            raise RuntimeError("stored activation columns are corrupt.")
+        return value
 
     def store_report(
         self,
@@ -159,10 +230,8 @@ class TransactionalScientificClaimExtractorPromotionStore(
                     current = self._activation(current_row)
                     replay_scope = (
                         current.owner_id == stored_report.owner_id
-                        and current.extractor_name
-                        == stored_report.extractor_name
-                        and current.extractor_version
-                        == stored_report.extractor_version
+                        and current.extractor_name == stored_report.extractor_name
+                        and current.extractor_version == stored_report.extractor_version
                         and current.extractor_record_digest
                         == stored_report.extractor_record_digest
                         and current.promotion_report_digest
@@ -170,10 +239,8 @@ class TransactionalScientificClaimExtractorPromotionStore(
                         and current.action == selected_action
                         and current.previous_activation_id == expected
                         and current.actor_id == actor.actor_id
-                        and current.actor_binding_method
-                        == actor.binding_method
-                        and current.actor_binding_digest
-                        == actor.binding_digest
+                        and current.actor_binding_method == actor.binding_method
+                        and current.actor_binding_digest == actor.binding_digest
                     )
                     if replay_scope:
                         connection.execute("COMMIT")
@@ -186,9 +253,7 @@ class TransactionalScientificClaimExtractorPromotionStore(
                     owner_id=stored_report.owner_id,
                     extractor_name=stored_report.extractor_name,
                     extractor_version=stored_report.extractor_version,
-                    extractor_record_digest=(
-                        stored_report.extractor_record_digest
-                    ),
+                    extractor_record_digest=stored_report.extractor_record_digest,
                     promotion_report_digest=stored_report.report_digest,
                     action=selected_action,
                     previous_activation_id=current_id,
@@ -225,9 +290,7 @@ class TransactionalScientificClaimExtractorPromotionStore(
                     )
                 else:
                     activation = self._activation(row)
-                    if _activation_scope(activation) != _activation_scope(
-                        candidate
-                    ):
+                    if _activation_scope(activation) != _activation_scope(candidate):
                         raise RuntimeError(
                             "activation identity collision detected."
                         )
