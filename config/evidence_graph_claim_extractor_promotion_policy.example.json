@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "thresholds": {
+    "minimum_case_count": 10,
+    "minimum_gold_count": 100,
+    "minimum_precision": 0.9,
+    "minimum_recall": 0.9,
+    "minimum_f1": 0.9,
+    "minimum_exact_evidence_accuracy": 0.95,
+    "minimum_exact_locator_accuracy": 0.9,
+    "minimum_mean_span_iou": 0.9,
+    "minimum_mean_claim_token_f1": 0.9,
+    "minimum_claim_type_accuracy": 0.9,
+    "minimum_modality_accuracy": 0.9,
+    "maximum_confidence_brier_score": 0.1
+  },
+  "administrators": [
+    {
+      "administrator_id": "replace-with-extractor-promotion-administrator-id",
+      "owners": [
+        "replace-with-owner-id"
+      ],
+      "extractor_names": [
+        "replace-with-extractor-name"
+      ],
+      "actions": [
+        "promote",
+        "rollback"
+      ],
+      "expires_at": 4102444800
+    }
+  ]
+}
