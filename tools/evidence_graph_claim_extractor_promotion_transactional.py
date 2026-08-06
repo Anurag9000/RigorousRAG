@@ -42,6 +42,16 @@ def _payload(value: str, label: str) -> dict[str, Any]:
     return raw
 
 
+def _report_payload(value: str) -> dict[str, Any]:
+    """Restore immutable tuple fields lost by canonical JSON serialization."""
+
+    raw = _payload(value, "promotion report")
+    reasons = raw.get("reasons")
+    if isinstance(reasons, list):
+        raw["reasons"] = tuple(reasons)
+    return raw
+
+
 def _report_scope(value: ScientificClaimExtractorPromotionReport) -> tuple[Any, ...]:
     return (
         value.owner_id,
@@ -85,7 +95,7 @@ class TransactionalScientificClaimExtractorPromotionStore(
     def _report(row: Any) -> ScientificClaimExtractorPromotionReport:
         try:
             value = ScientificClaimExtractorPromotionReport(
-                **_payload(row["payload_json"], "promotion report")
+                **_report_payload(row["payload_json"])
             )
         except Exception as exc:
             if isinstance(exc, RuntimeError):
