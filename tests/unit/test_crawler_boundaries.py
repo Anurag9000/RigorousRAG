@@ -29,7 +29,7 @@ def test_constructor_rejects_nonfinite_malformed_and_boolean_limits():
         AcademicCrawler(allowed_domains=["example.test"], max_pages="bad")
     with pytest.raises(ValueError, match="iterable collection"):
         AcademicCrawler(allowed_domains="example.test")
-    with pytest.raises(ValueError, match="valid hostname"):
+    with pytest.raises(ValueError, match="canonical hostname-only authority"):
         AcademicCrawler(allowed_domains=["not a hostname / path"])
     with pytest.raises(ValueError, match="boolean"):
         AcademicCrawler(allowed_domains=["example.test"], robots_fail_open="yes")
@@ -40,7 +40,7 @@ def test_constructor_rejects_nonfinite_malformed_and_boolean_limits():
 
 
 def test_mixed_allowlist_does_not_silently_drop_invalid_entries():
-    with pytest.raises(ValueError, match="valid hostname"):
+    with pytest.raises(ValueError, match="canonical hostname-only authority"):
         AcademicCrawler(allowed_domains=["example.test", "not a host / path"])
     with pytest.raises(ValueError, match="hostname string"):
         AcademicCrawler(allowed_domains=["example.test", object()])
