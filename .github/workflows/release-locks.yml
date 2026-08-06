@@ -96,7 +96,31 @@ jobs:
       - name: Validate capability audit ledger
         run: python scripts/validate_capability_ledger.py
       - name: Run tests with branch coverage
-        run: python -m pytest
+        id: pytest
+        shell: bash
+        run: |
+          set +e
+          python -m pytest 2>&1 | tee pytest-${{ matrix.python-version }}.log
+          status=${PIPESTATUS[0]}
+          if (( status != 0 )); then
+            {
+              echo "### Pytest failure tail / Python ${{ matrix.python-version }}"
+              echo '```text'
+              tail -n 160 pytest-${{ matrix.python-version }}.log
+              echo '```'
+            } >> "${GITHUB_STEP_SUMMARY}"
+            tail_text="$(tail -n 35 pytest-${{ matrix.python-version }}.log | sed ':a;N;$!ba;s/%/%25/g;s/\r/%0D/g;s/\n/%0A/g')"
+            echo "::error title=pytest failure / Python ${{ matrix.python-version }}::${tail_text}"
+          fi
+          exit "${status}"
+      - name: Upload pytest diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: pytest-python-${{ matrix.python-version }}
+          path: pytest-${{ matrix.python-version }}.log
+          if-no-files-found: error
+          retention-days: 14
 
   windows-classic-storage:
     name: Windows classic storage / Python ${{ matrix.python-version }}
