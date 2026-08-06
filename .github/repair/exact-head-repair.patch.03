@@ -1,0 +1,35 @@
++        if any(not callable(getattr(sparse, name, None)) for name in required_sparse_methods):
++            raise ValueError("sparse must implement the SparseIndex contract.")
+         self.rag = rag
+         self.sparse = sparse
+ 
+diff --git a/tools/migration_cutover_saga.py b/tools/migration_cutover_saga.py
+index 06b01a7..ef1842e 100644
+--- a/tools/migration_cutover_saga.py
++++ b/tools/migration_cutover_saga.py
+@@ -368,7 +368,7 @@ def execute_cutover_saga(
+                         adapter.discard_hidden_target(operation, publication)
+                         phases.append("hidden_target_discarded")
+                         hook("hidden_target_discarded")
+-                    _require_source(operation, adapter.current_identity(operation))
++                        _require_source(operation, adapter.current_identity(operation))
+                     return CutoverSagaResult(
+                         operation_id=operation.operation_id,
+                         outcome="aborted",
+diff --git a/tools/rag_tool.py b/tools/rag_tool.py
+index 0b4c616..2dfc421 100644
+--- a/tools/rag_tool.py
++++ b/tools/rag_tool.py
+@@ -638,9 +638,10 @@ def search_uploaded_docs(
+                 "The retrieval expansion backend returned invalid text."
+             )
+         retrieval_query = generated.strip()
++        if not retrieval_query:
++            return []
+         if (
+-            not retrieval_query
+-            or len(retrieval_query) > 20_000
++            len(retrieval_query) > 20_000
+             or _contains_ascii_control(retrieval_query)
+         ):
+             raise RuntimeError(
