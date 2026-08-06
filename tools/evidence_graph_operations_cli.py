@@ -9,6 +9,10 @@ from dataclasses import asdict
 from typing import Any, Sequence
 
 from tools.evidence_graph_compaction import compact_evidence_graph_retention_plan
+from tools.evidence_graph_compaction_reconciliation import (
+    reconcile_evidence_graph_compactions,
+    recover_reconciled_compaction_receipts,
+)
 from tools.evidence_graph_compaction_runtime import get_evidence_graph_compaction_store
 from tools.evidence_graph_job_runtime import get_evidence_graph_job_journal
 from tools.evidence_graph_operations import (
@@ -81,6 +85,18 @@ def build_parser() -> argparse.ArgumentParser:
     listing.add_argument("--owner-id", required=True)
     listing.add_argument("--phase")
     listing.add_argument("--limit", type=int, default=100)
+
+    reconcile = commands.add_parser("compaction-reconcile")
+    reconcile.add_argument("--owner-id", required=True)
+    reconcile.add_argument("--limit", type=int, default=100)
+    reconcile.add_argument("--as-of", type=float)
+
+    recover = commands.add_parser("compaction-recover")
+    recover.add_argument("--owner-id", required=True)
+    recover.add_argument("--limit", type=int, default=100)
+    recover.add_argument("--as-of", type=float, required=True)
+    recover.add_argument("--confirm-report-digest", required=True)
+    recover.add_argument("--confirm-job-id", action="append", required=True)
     return parser
 
 
@@ -166,6 +182,44 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "contains_graph_text": False,
                 }
             )
+            return 0
+        if args.command in {"compaction-reconcile", "compaction-recover"}:
+            stores = {
+                "compactions": get_evidence_graph_compaction_store(),
+                "journal": get_evidence_graph_job_journal(),
+                "generations": get_generation_store(),
+                "graphs": get_evidence_graph_store(),
+            }
+            report = reconcile_evidence_graph_compactions(
+                owner_id=args.owner_id,
+                limit=args.limit,
+                now=args.as_of,
+                **stores,
+            )
+            if args.command == "compaction-reconcile":
+                payload = asdict(report)
+                payload["report_digest"] = report.report_digest
+                payload["healthy"] = report.healthy
+                payload["recoverable_job_ids"] = report.recoverable_job_ids
+                payload["conflict_job_ids"] = report.conflict_job_ids
+                payload["status_counts"] = dict(report.status_counts)
+                payload["mutation_performed"] = False
+                payload["contains_graph_text"] = False
+                _print(payload)
+                return 0
+            result = recover_reconciled_compaction_receipts(
+                report=report,
+                confirm_report_digest=args.confirm_report_digest,
+                confirm_job_ids=args.confirm_job_id,
+                now=args.as_of,
+                **stores,
+            )
+            payload = asdict(result)
+            payload["receipt_mutation_performed"] = bool(result.completed_job_ids)
+            payload["graph_payload_mutation_performed"] = False
+            payload["authoritative_mutation_performed"] = False
+            payload["contains_graph_text"] = False
+            _print(payload)
             return 0
         raise ValueError("unsupported graph operations command.")
     except (KeyError, OSError, RuntimeError, TypeError, ValueError):
