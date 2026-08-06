@@ -2,134 +2,38 @@ name: Exact-head result reporter
 
 on:
   workflow_run:
-    workflows: ["Exact-head verification and release locks"]
-    types: [completed]
+    workflows:
+      - Exact-head verification and release locks
+    types:
+      - completed
 
 permissions:
-  contents: write
-
-concurrency:
-  group: exact-head-result-reporter
-  cancel-in-progress: false
+  contents: read
 
 jobs:
-  record:
+  report:
+    if: github.event.workflow_run.head_branch == 'main'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: main
-          fetch-depth: 0
-      - name: Confirm run still matches current main
-        id: eligibility
-        shell: bash
+      - name: Publish workflow summary
         env:
           HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
-          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          RUN_URL: ${{ github.event.workflow_run.html_url }}
+          SOURCE_EVENT: ${{ github.event.workflow_run.event }}
+        shell: bash
         run: |
           set -euo pipefail
           if [[ ! "${HEAD_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
             echo "Invalid workflow head SHA."
             exit 1
           fi
-          if [[ "${HEAD_BRANCH}" != "main" ]]; then
-            echo "publish=false" >> "${GITHUB_OUTPUT}"
-            exit 0
-          fi
-          current_main="$(git rev-parse HEAD)"
-          if [[ "${current_main}" != "${HEAD_SHA}" ]]; then
-            echo "Completed workflow is stale relative to current main."
-            echo "publish=false" >> "${GITHUB_OUTPUT}"
-            exit 0
-          fi
-          echo "publish=true" >> "${GITHUB_OUTPUT}"
-      - name: Write bounded run result
-        if: steps.eligibility.outputs.publish == 'true'
-        env:
-          RUN_ID: ${{ github.event.workflow_run.id }}
-          RUN_NUMBER: ${{ github.event.workflow_run.run_number }}
-          RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
-          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
-          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
-          CONCLUSION: ${{ github.event.workflow_run.conclusion }}
-          EVENT_NAME: ${{ github.event.workflow_run.event }}
-          RUN_URL: ${{ github.event.workflow_run.html_url }}
-          CREATED_AT: ${{ github.event.workflow_run.created_at }}
-          UPDATED_AT: ${{ github.event.workflow_run.updated_at }}
-        run: |
-          python - <<'PY'
-          from __future__ import annotations
-
-          import os
-          import re
-          from pathlib import Path
-
-          def bounded(name: str, pattern: str, maximum: int) -> str:
-              value = os.environ.get(name, "")
-              if len(value) > maximum or not re.fullmatch(pattern, value):
-                  raise SystemExit(f"Invalid workflow-run field: {name}")
-              return value
-
-          run_id = bounded("RUN_ID", r"[0-9]+", 30)
-          run_number = bounded("RUN_NUMBER", r"[0-9]+", 20)
-          run_attempt = bounded("RUN_ATTEMPT", r"[0-9]+", 10)
-          head_sha = bounded("HEAD_SHA", r"[0-9a-f]{40}", 40)
-          head_branch = bounded("HEAD_BRANCH", r"main", 4)
-          conclusion = bounded(
-              "CONCLUSION",
-              r"success|failure|cancelled|skipped|timed_out|action_required|neutral|stale|startup_failure",
-              30,
-          )
-          event_name = bounded(
-              "EVENT_NAME",
-              r"push|workflow_dispatch",
-              30,
-          )
-          run_url = bounded(
-              "RUN_URL",
-              r"https://github[.]com/Anurag9000/RigorousRAG/actions/runs/[0-9]+",
-              200,
-          )
-          created_at = bounded("CREATED_AT", r"[0-9TZ:+.-]+", 64)
-          updated_at = bounded("UPDATED_AT", r"[0-9TZ:+.-]+", 64)
-
-          content = f"""# Latest exact-head workflow result
-
-- Run ID: `{run_id}`
-- Run number: `{run_number}`
-- Attempt: `{run_attempt}`
-- Head SHA: `{head_sha}`
-- Branch: `{head_branch}`
-- Event: `{event_name}`
-- Conclusion: **{conclusion}**
-- Created: `{created_at}`
-- Updated: `{updated_at}`
-- Run URL: {run_url}
-
-This file is generated only after the authoritative exact-head workflow completes. A
-`success` conclusion certifies that exact `main` head only; later commits require another
-run. Stale, pull-request, merge-queue, and non-main results are never published here.
-"""
-          Path("docs/LATEST_EXACT_HEAD_RESULT.md").write_text(content, encoding="utf-8")
-          PY
-      - name: Publish result without triggering another matrix
-        if: steps.eligibility.outputs.publish == 'true'
-        shell: bash
-        env:
-          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
-        run: |
-          set -euo pipefail
-          git fetch --no-tags origin main
-          if [[ "$(git rev-parse origin/main)" != "${HEAD_SHA}" ]]; then
-            echo "Main advanced while the result was being prepared; skipping publication."
-            exit 0
-          fi
-          git config user.name "RigorousRAG Verification"
-          git config user.email "actions@users.noreply.github.com"
-          git add docs/LATEST_EXACT_HEAD_RESULT.md
-          if git diff --cached --quiet; then
-            exit 0
-          fi
-          git commit -m "chore: record exact-head result [skip ci]"
-          git push origin HEAD:main
+          {
+            echo "## Exact-head verification"
+            echo
+            echo "- Head SHA: \`${HEAD_SHA}\`"
+            echo "- Source event: \`${SOURCE_EVENT}\`"
+            echo "- Conclusion: \`${CONCLUSION}\`"
+            echo "- Run: ${RUN_URL}"
+          } >> "${GITHUB_STEP_SUMMARY}"
