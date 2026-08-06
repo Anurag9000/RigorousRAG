@@ -27,7 +27,7 @@ jobs:
         run: |
           set -euo pipefail
           cat .github/repair/exact-head-repair.patch.* > /tmp/exact-head-repair.patch
-          test "$(wc -c < /tmp/exact-head-repair.patch)" -eq 46930
+          test "$(wc -c < /tmp/exact-head-repair.patch)" -eq 51791
           git apply --check /tmp/exact-head-repair.patch
           git apply --whitespace=error-all /tmp/exact-head-repair.patch
           rm -rf .github/repair
