@@ -1,0 +1,82 @@
+name: One-shot exact main repair
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/one-shot-main-autofix.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: one-shot-exact-main-repair
+  cancel-in-progress: false
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          fetch-depth: 0
+      - name: Apply exact reviewed repairs
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace_exact(path: str, old: str, new: str, expected: int = 1) -> None:
+              selected = Path(path)
+              text = selected.read_text(encoding="utf-8")
+              found = text.count(old)
+              if found != expected:
+                  raise SystemExit(
+                      f"{path}: expected {expected} exact replacement target(s), found {found}"
+                  )
+              selected.write_text(text.replace(old, new, expected), encoding="utf-8")
+
+          replace_exact(
+              "tools/evidence_graph_set_signed_retirement_restore_custody_signature_key_contracts.py",
+              '"retired_actor_id_digest": redired_actor,',
+              '"retired_actor_id_digest": retired_actor,',
+          )
+          replace_exact(
+              "scripts/generate_release_lock.py",
+              '            "--allow-unsafe",\n            "--no-annotate",',
+              '            "--allow-unsafe",\n            "--no-header",\n            "--no-annotate",',
+          )
+          replace_exact(
+              "storage.py",
+              '''            except FileNotFoundError:\n                return None\n            except (\n                OSError,\n                UnicodeDecodeError,\n                json.JSONDecodeError,\n                RecursionError,\n                TypeError,\n                ValueError,\n            ):\n                should_quarantine = identity is not None\n''',
+              '''            except FileNotFoundError:\n                return None\n            except OSError:\n                # Root-integrity failures are authority failures, not corrupt members.\n                # Revalidation re-raises a swapped/missing root while preserving the\n                # quarantine path for ordinary member-level I/O errors.\n                self._ensure_storage_root()\n                should_quarantine = identity is not None\n            except (\n                UnicodeDecodeError,\n                json.JSONDecodeError,\n                RecursionError,\n                TypeError,\n                ValueError,\n            ):\n                should_quarantine = identity is not None\n''',
+          )
+          Path(".github/workflows/one-shot-main-autofix.yml").unlink()
+          PY
+      - name: Verify repaired surfaces
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check
+          python -m compileall -q storage.py scripts/generate_release_lock.py tools/evidence_graph_set_signed_retirement_restore_custody_signature_key_contracts.py
+          python - <<'PY'
+          from pathlib import Path
+          source = Path("scripts/generate_release_lock.py").read_text(encoding="utf-8")
+          if '"--no-header"' not in source:
+              raise SystemExit("lock generator header suppression is absent")
+          source = Path("tools/evidence_graph_set_signed_retirement_restore_custody_signature_key_contracts.py").read_text(encoding="utf-8")
+          if "redired_actor" in source:
+              raise SystemExit("custody signer typo remains")
+          PY
+      - name: Commit reviewed repairs directly to main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "RigorousRAG Main Repair"
+          git config user.email "actions@users.noreply.github.com"
+          git add storage.py scripts/generate_release_lock.py tools/evidence_graph_set_signed_retirement_restore_custody_signature_key_contracts.py .github/workflows/one-shot-main-autofix.yml
+          git commit -m "Fix exact-head lint lock and Windows storage blockers"
+          git push origin HEAD:main
