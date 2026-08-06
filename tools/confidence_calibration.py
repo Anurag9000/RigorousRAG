@@ -7,6 +7,7 @@ import itertools
 import math
 import operator
 from dataclasses import dataclass
+from numbers import Real
 from typing import Any, Iterable
 
 _MAX_EXAMPLES = 100_000
@@ -26,7 +27,7 @@ def _integer(value: Any, label: str, minimum: int, maximum: int) -> int:
 
 
 def _probability(value: Any, label: str) -> float:
-    if isinstance(value, bool):
+    if isinstance(value, bool) or not isinstance(value, Real):
         raise ValueError(f"{label} must be numeric.")
     try:
         parsed = float(value)
