@@ -122,3 +122,74 @@ def test_invalid_age_fails_closed(monkeypatch, capsys):
         == 2
     )
     assert read(capsys) == {"error": "invalid_or_unavailable"}
+
+
+def install_compaction(monkeypatch, tmp_path, *, graph_present):
+    from tools.evidence_graph_compaction import EvidenceGraphCompactionStore
+
+    selected = completed_job()
+    store = EvidenceGraphCompactionStore(tmp_path / "compaction.sqlite3")
+    store.begin(job=selected, plan_digest="1" * 64, now=3.0)
+
+    class RecoveryJournal(Journal):
+        def get(self, job_id):
+            return selected if job_id == selected.job_id else None
+
+    class RecoveryGraphs(Graphs):
+        def get(self, **kwargs):
+            if not graph_present:
+                raise KeyError(kwargs["generation"])
+            return super().get(**kwargs)
+
+    monkeypatch.setattr(cli, "get_evidence_graph_compaction_store", lambda: store)
+    monkeypatch.setattr(cli, "get_evidence_graph_job_journal", lambda: RecoveryJournal())
+    monkeypatch.setattr(cli, "get_generation_store", lambda: Generations())
+    monkeypatch.setattr(cli, "get_evidence_graph_store", lambda: RecoveryGraphs())
+    return selected, store
+
+
+def test_compaction_reconcile_is_read_only_and_classifies_pending_delete(
+    monkeypatch, capsys, tmp_path
+):
+    selected, store = install_compaction(monkeypatch, tmp_path, graph_present=True)
+
+    assert cli.main(
+        ["compaction-reconcile", "--owner-id", "alice", "--as-of", "5"]
+    ) == 0
+    output = read(capsys)
+
+    assert output["mutation_performed"] is False
+    assert output["contains_graph_text"] is False
+    assert output["healthy"] is True
+    assert output["findings"][0]["status"] == "deletion_pending"
+    assert store.get(selected.job_id).phase == "planned"
+
+
+def test_compaction_recover_requires_exact_report_and_only_completes_receipt(
+    monkeypatch, capsys, tmp_path
+):
+    selected, store = install_compaction(monkeypatch, tmp_path, graph_present=False)
+    base = ["--owner-id", "alice", "--as-of", "5"]
+    assert cli.main(["compaction-reconcile", *base]) == 0
+    report = read(capsys)
+
+    assert cli.main(
+        [
+            "compaction-recover",
+            "--owner-id",
+            "alice",
+            "--as-of",
+            "6",
+            "--confirm-report-digest",
+            report["report_digest"],
+            "--confirm-job-id",
+            selected.job_id,
+        ]
+    ) == 0
+    output = read(capsys)
+
+    assert output["completed_job_ids"] == [selected.job_id]
+    assert output["receipt_mutation_performed"] is True
+    assert output["graph_payload_mutation_performed"] is False
+    assert output["authoritative_mutation_performed"] is False
+    assert store.get(selected.job_id).phase == "completed"
