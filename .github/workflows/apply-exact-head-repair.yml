@@ -4,8 +4,6 @@ on:
   push:
     branches:
       - main
-    paths:
-      - .github/workflows/apply-exact-head-repair.yml
   workflow_dispatch:
 
 permissions:
