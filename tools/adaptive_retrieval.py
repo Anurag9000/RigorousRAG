@@ -17,7 +17,24 @@ _IDENTIFIER_RE = re.compile(
 _COMPARATIVE = {"compare", "versus", "vs", "difference", "better", "worse", "contrast"}
 _TEMPORAL = {"latest", "recent", "before", "after", "trend", "year", "timeline", "changed"}
 _QUANTITATIVE = {"effect", "estimate", "rate", "risk", "ratio", "percent", "confidence", "p-value"}
-_METHOD = {"method", "protocol", "dataset", "sample", "design", "procedure", "algorithm"}
+_METHOD = {
+    "method",
+    "methods",
+    "methodology",
+    "methodological",
+    "protocol",
+    "protocols",
+    "dataset",
+    "datasets",
+    "sample",
+    "samples",
+    "design",
+    "designs",
+    "procedure",
+    "procedures",
+    "algorithm",
+    "algorithms",
+}
 _CITATION = {"cite", "citation", "source", "evidence", "paper", "reference"}
 _EXPLANATORY = {"why", "how", "explain", "mechanism", "cause", "reason"}
 _MAX_QUERY_CHARS = 20_000
