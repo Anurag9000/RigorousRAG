@@ -78,27 +78,28 @@ def test_exact_head_workflow_pins_third_party_actions_by_commit():
 
     assert workflow.count(_CHECKOUT_PIN) == 5
     assert workflow.count(_SETUP_PYTHON_PIN) == 3
-    assert workflow.count(_UPLOAD_ARTIFACT_PIN) == 1
+    # One artifact carries pytest diagnostics and one carries each generated lock.
+    assert workflow.count(_UPLOAD_ARTIFACT_PIN) == 2
     assert "actions/checkout@v" not in workflow
     assert "actions/setup-python@v" not in workflow
     assert "actions/upload-artifact@v" not in workflow
     assert workflow.count("persist-credentials: false") == 5
 
 
-def test_exact_head_reporter_only_publishes_the_current_main_head():
+def test_exact_head_reporter_is_read_only_and_non_mutating():
     workflow = EXACT_HEAD_REPORTER.read_text(encoding="utf-8")
 
-    assert "HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}" in workflow
-    assert 'if [[ "${HEAD_BRANCH}" != "main" ]]' in workflow
-    assert 'current_main="$(git rev-parse HEAD)"' in workflow
-    assert 'if [[ "${current_main}" != "${HEAD_SHA}" ]]' in workflow
-    assert "git fetch --no-tags origin main" in workflow
-    assert 'if [[ "$(git rev-parse origin/main)" != "${HEAD_SHA}" ]]' in workflow
-    assert workflow.count("if: steps.eligibility.outputs.publish == 'true'") == 2
-    assert 'r"push|workflow_dispatch"' in workflow
-    assert "pull_request|merge_group" not in workflow.split(
-        "run_url = bounded", 1
-    )[0].split("event_name = bounded", 1)[1]
+    assert "permissions:\n  contents: read" in workflow
+    assert "if: github.event.workflow_run.head_branch == 'main'" in workflow
+    assert "github.event.workflow_run.head_sha" in workflow
+    assert "github.event.workflow_run.conclusion" in workflow
+    assert "github.event.workflow_run.html_url" in workflow
+    assert "github.event.workflow_run.event" in workflow
+    assert "GITHUB_STEP_SUMMARY" in workflow
+    assert "contents: write" not in workflow
+    assert "actions/checkout@" not in workflow
+    assert "git commit" not in workflow
+    assert "git push" not in workflow
 
 
 def test_obsolete_duplicate_workflows_are_absent():
