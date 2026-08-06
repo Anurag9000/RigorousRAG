@@ -509,6 +509,7 @@ def generate_lock(
             "--resolver=backtracking",
             "--generate-hashes",
             "--allow-unsafe",
+            "--no-header",
             "--no-annotate",
             "--index-url",
             _PUBLIC_INDEX_URL,

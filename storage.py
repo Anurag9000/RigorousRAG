@@ -356,8 +356,13 @@ class _StorageManagerBoundary(_original_storage_manager):
                 )
             except FileNotFoundError:
                 return None
+            except OSError:
+                # Root-integrity failures are authority failures, not corrupt members.
+                # Revalidation re-raises a swapped/missing root while preserving the
+                # quarantine path for ordinary member-level I/O errors.
+                self._ensure_storage_root()
+                should_quarantine = identity is not None
             except (
-                OSError,
                 UnicodeDecodeError,
                 json.JSONDecodeError,
                 RecursionError,

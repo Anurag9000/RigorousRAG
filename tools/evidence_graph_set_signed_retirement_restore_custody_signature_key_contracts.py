@@ -213,7 +213,7 @@ class CustodySignerKeyRecord:
             "registered_binding_method": registered_method,
             "registered_binding_digest": registered_binding,
             "registered_at": registered_at,
-            "retired_actor_id_digest": redired_actor,
+            "retired_actor_id_digest": retired_actor,
             "retired_binding_method": retired_method,
             "retired_binding_digest": retired_binding,
             "retired_at": retired_at,
