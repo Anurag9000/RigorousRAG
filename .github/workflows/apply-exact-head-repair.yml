@@ -1,0 +1,48 @@
+name: Apply validated exact-head repair
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/apply-exact-head-repair.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: apply-validated-exact-head-repair
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout current main
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Verify and apply reviewed repair
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat .github/repair/exact-head-repair.patch.* > /tmp/exact-head-repair.patch
+          test "$(wc -c < /tmp/exact-head-repair.patch)" -eq 43513
+          git apply --check /tmp/exact-head-repair.patch
+          git apply --whitespace=error-all /tmp/exact-head-repair.patch
+          rm -rf .github/repair
+          rm -f .github/workflows/source-snapshot.yml
+          rm -f .github/workflows/apply-exact-head-repair.yml
+          python -m compileall -q .
+          git diff --check
+      - name: Publish one direct-to-main repair commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --check
+          git commit -m "fix: restore exact-head compatibility and lifecycle contracts"
+          git push origin HEAD:main
