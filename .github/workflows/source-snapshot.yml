@@ -10,23 +10,29 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: exact-head-source-snapshot
+  cancel-in-progress: true
+
 jobs:
   snapshot:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - name: Checkout exact head
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
-      - name: Confirm exact checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Confirm and archive exact checkout
         shell: bash
-        run: test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
-      - name: Upload source tree
+        run: |
+          test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
+          git archive --format=tar.gz --output=rigorousrag-source.tar.gz HEAD
+          test -s rigorousrag-source.tar.gz
+      - name: Upload tracked source archive
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: rigorousrag-source-${{ github.sha }}
-          path: |
-            .
-            !.git
-          include-hidden-files: true
+          path: rigorousrag-source.tar.gz
           if-no-files-found: error
           retention-days: 1
