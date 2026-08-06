@@ -126,13 +126,14 @@ def _plan(*jobs: EvidenceGraphJob) -> EvidenceGraphRetentionPlan:
     )
 
 
-def test_verified_historical_graph_is_deleted_and_receipted(tmp_path):
-    job = _job(4, "completed", graph_digest="4" * 64)
-    plan = _plan(job)
-    graphs = Graphs()
-    store = EvidenceGraphCompactionStore(tmp_path / "compaction.sqlite3")
-
-    result = compact_evidence_graph_retention_plan(
+def _compact(
+    *,
+    job: EvidenceGraphJob,
+    plan: EvidenceGraphRetentionPlan,
+    graphs: Graphs,
+    store: EvidenceGraphCompactionStore,
+):
+    return compact_evidence_graph_retention_plan(
         plan=plan,
         journal=Journal((job,)),
         generations=Generations(),
@@ -142,6 +143,15 @@ def test_verified_historical_graph_is_deleted_and_receipted(tmp_path):
         confirm_job_ids=[job.job_id],
         now=101.0,
     )
+
+
+def test_verified_historical_graph_is_deleted_and_receipted(tmp_path):
+    job = _job(4, "completed", graph_digest="4" * 64)
+    plan = _plan(job)
+    graphs = Graphs()
+    store = EvidenceGraphCompactionStore(tmp_path / "compaction.sqlite3")
+
+    result = _compact(job=job, plan=plan, graphs=graphs, store=store)
 
     assert graphs.deleted == [4]
     assert result.deleted_graph_generation_job_ids == (job.job_id,)
@@ -154,16 +164,7 @@ def test_cancelled_job_keeps_audit_row_and_records_no_graph_deletion(tmp_path):
     graphs = Graphs()
     store = EvidenceGraphCompactionStore(tmp_path / "compaction.sqlite3")
 
-    result = compact_evidence_graph_retention_plan(
-        plan=plan,
-        journal=Journal((job,)),
-        generations=Generations(),
-        graphs=graphs,
-        compactions=store,
-        confirm_plan_digest=plan.plan_digest,
-        confirm_job_ids=[job.job_id],
-        now=101.0,
-    )
+    result = _compact(job=job, plan=plan, graphs=graphs, store=store)
 
     assert graphs.deleted == []
     assert result.retained_job_audit_only_ids == (job.job_id,)
@@ -211,16 +212,7 @@ def test_resume_after_graph_delete_before_receipt_completion(tmp_path):
         confirm_graph_digest="4" * 64,
     )
 
-    result = compact_evidence_graph_retention_plan(
-        plan=plan,
-        journal=Journal((job,)),
-        generations=Generations(),
-        graphs=graphs,
-        compactions=store,
-        confirm_plan_digest=plan.plan_digest,
-        confirm_job_ids=[job.job_id],
-        now=101.0,
-    )
+    result = _compact(job=job, plan=plan, graphs=graphs, store=store)
 
     assert result.completed_job_ids == (job.job_id,)
     assert store.get(job.job_id).phase == "completed"
@@ -234,13 +226,42 @@ def test_current_authoritative_job_is_refused(tmp_path):
     store = EvidenceGraphCompactionStore(tmp_path / "compaction.sqlite3")
 
     with pytest.raises(RuntimeError, match="authoritative-current"):
-        compact_evidence_graph_retention_plan(
-            plan=plan,
-            journal=Journal((job,)),
-            generations=Generations(),
-            graphs=graphs,
-            compactions=store,
-            confirm_plan_digest=plan.plan_digest,
-            confirm_job_ids=[job.job_id],
-            now=101.0,
-        )
+        _compact(job=job, plan=plan, graphs=graphs, store=store)
+
+
+def test_completed_compaction_is_idempotent(tmp_path):
+    job = _job(4, "completed", graph_digest="4" * 64)
+    plan = _plan(job)
+    graphs = Graphs()
+    store = EvidenceGraphCompactionStore(tmp_path / "compaction.sqlite3")
+
+    first = _compact(job=job, plan=plan, graphs=graphs, store=store)
+    second = _compact(job=job, plan=plan, graphs=graphs, store=store)
+
+    assert first.completed_job_ids == (job.job_id,)
+    assert second.completed_job_ids == ()
+    assert second.already_completed_job_ids == (job.job_id,)
+    assert graphs.deleted == [4]
+
+
+def test_missing_graph_without_prior_intent_is_refused(tmp_path):
+    job = _job(4, "completed", graph_digest="4" * 64)
+    plan = _plan(job)
+    graphs = Graphs()
+    del graphs.values[4]
+    store = EvidenceGraphCompactionStore(tmp_path / "compaction.sqlite3")
+
+    with pytest.raises(RuntimeError, match="without a resumable compaction intent"):
+        _compact(job=job, plan=plan, graphs=graphs, store=store)
+
+
+def test_compaction_receipts_can_be_filtered_by_owner_and_phase(tmp_path):
+    job = _job(6, "cancelled")
+    plan = _plan(job)
+    store = EvidenceGraphCompactionStore(tmp_path / "compaction.sqlite3")
+    _compact(job=job, plan=plan, graphs=Graphs(), store=store)
+
+    values = store.list(owner_id="alice", phase="completed")
+
+    assert tuple(value.job_id for value in values) == (job.job_id,)
+    assert store.list(owner_id="bob", phase="completed") == ()
