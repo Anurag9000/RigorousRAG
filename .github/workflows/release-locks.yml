@@ -41,14 +41,6 @@ jobs:
       TOKENIZERS_PARALLELISM: "false"
       PIP_DISABLE_PIP_VERSION_CHECK: "1"
       SINGLE_USER_OWNER_ID: ci-user
-      CHROMA_PATH: ${{ runner.temp }}/rigorousrag-vectors
-      SPARSE_INDEX_PATH: ${{ runner.temp }}/rigorousrag-sparse.sqlite3
-      INDEX_GENERATION_DB_PATH: ${{ runner.temp }}/rigorousrag-generations.sqlite3
-      JOB_DB_PATH: ${{ runner.temp }}/rigorousrag-jobs.sqlite3
-      DOCUMENT_DB_PATH: ${{ runner.temp }}/rigorousrag-documents.sqlite3
-      UPLOAD_DIR: ${{ runner.temp }}/rigorousrag-uploads
-      CLASSIC_STORAGE_DIR: ${{ runner.temp }}/rigorousrag-classic
-      USAGE_LOG_FILE: ${{ runner.temp }}/rigorousrag-usage.jsonl
       ORPHAN_CLEANUP_ON_STARTUP: "false"
       ENABLE_OCR: "false"
     steps:
@@ -56,6 +48,22 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+      - name: Configure isolated runtime paths
+        shell: bash
+        run: |
+          {
+            echo "CHROMA_PATH=${RUNNER_TEMP}/rigorousrag-vectors"
+            echo "SPARSE_INDEX_PATH=${RUNNER_TEMP}/rigorousrag-sparse.sqlite3"
+            echo "INDEX_GENERATION_DB_PATH=${RUNNER_TEMP}/rigorousrag-generations.sqlite3"
+            echo "JOB_DB_PATH=${RUNNER_TEMP}/rigorousrag-jobs.sqlite3"
+            echo "DOCUMENT_DB_PATH=${RUNNER_TEMP}/rigorousrag-documents.sqlite3"
+            echo "UPLOAD_DIR=${RUNNER_TEMP}/rigorousrag-uploads"
+            echo "CLASSIC_STORAGE_DIR=${RUNNER_TEMP}/rigorousrag-classic"
+            echo "USAGE_LOG_FILE=${RUNNER_TEMP}/rigorousrag-usage.jsonl"
+            echo "EVIDENCE_GRAPH_DB_PATH=${RUNNER_TEMP}/rigorousrag-evidence-graph.sqlite3"
+            echo "EVIDENCE_GRAPH_JOB_DB_PATH=${RUNNER_TEMP}/rigorousrag-evidence-graph-jobs.sqlite3"
+            echo "EVIDENCE_GRAPH_COMPACTION_DB_PATH=${RUNNER_TEMP}/rigorousrag-evidence-graph-compaction.sqlite3"
+          } >> "${GITHUB_ENV}"
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: ${{ matrix.python-version }}
@@ -100,11 +108,13 @@ jobs:
       PYTHONHASHSEED: "0"
       PYTHONDONTWRITEBYTECODE: "1"
       PIP_DISABLE_PIP_VERSION_CHECK: "1"
-      CLASSIC_STORAGE_DIR: ${{ runner.temp }}\rigorousrag-classic
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Configure isolated classic-storage path
+        shell: pwsh
+        run: '"CLASSIC_STORAGE_DIR=$env:RUNNER_TEMP\rigorousrag-classic" >> $env:GITHUB_ENV'
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: ${{ matrix.python-version }}
