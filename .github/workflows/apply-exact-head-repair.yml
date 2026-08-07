@@ -18,14 +18,17 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: Checkout current main
+      - name: Checkout live main
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: main
           fetch-depth: 0
       - name: Verify and apply reviewed repair
         shell: bash
         run: |
           set -euo pipefail
+          git fetch --no-tags origin main
+          test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)"
           cat .github/repair/exact-head-repair.patch.* > /tmp/exact-head-repair.patch
           test "$(wc -c < /tmp/exact-head-repair.patch)" -eq 51791
           git apply --check /tmp/exact-head-repair.patch
