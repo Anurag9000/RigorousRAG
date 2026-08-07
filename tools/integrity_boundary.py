@@ -9,10 +9,13 @@ byte snapshot.
 from __future__ import annotations
 
 import base64
+import hashlib
 import itertools
+import json
 import math
 import re
 import sys
+import uuid
 from typing import Any, Iterable, List, Optional, Tuple
 
 import fitz
@@ -102,6 +105,65 @@ def _bounded_values(
         if value not in bounded:
             bounded.append(value)
     return bounded
+
+
+def _verified_registry_document_id(
+    *,
+    owner_id: str,
+    source_bytes: bytes | bytearray | memoryview,
+    document_id: str,
+) -> str | None:
+    """Return a document ID only when exact retained bytes prove it is server-owned."""
+
+    if not isinstance(source_bytes, (bytes, bytearray, memoryview)):
+        return None
+    payload = bytes(source_bytes)
+    if not payload:
+        return None
+    digest = hashlib.sha256(payload).hexdigest()
+    expected = str(
+        uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            f"rigorousrag:{owner_id}:{digest}",
+        )
+    )
+    return document_id if expected == document_id else None
+
+
+def _json_with_verified_document_citation(
+    data: dict[str, Any],
+    *,
+    owner_id: str,
+    source_bytes: bytes | bytearray | memoryview,
+    document_id: str,
+) -> str:
+    """Keep global privacy masking but restore a cryptographically derived private ID."""
+
+    rendered = _implementation._json(data)
+    trusted_id = _verified_registry_document_id(
+        owner_id=owner_id,
+        source_bytes=source_bytes,
+        document_id=document_id,
+    )
+    if trusted_id is None:
+        return rendered
+    try:
+        parsed = json.loads(rendered)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return rendered
+    if not isinstance(parsed, dict):
+        return rendered
+    citations = parsed.get("citations")
+    if not isinstance(citations, list) or not citations:
+        return rendered
+    first = citations[0]
+    if not isinstance(first, dict):
+        return rendered
+    # These two values are server-derived from the verified retained bytes. Other
+    # citation text and identifiers remain under the normal recursive privacy mask.
+    first["doc_id"] = trusted_id
+    first["url"] = f"local://{trusted_id}"
+    return json.dumps(parsed, ensure_ascii=False)
 
 
 def _extract_figure_region(pdf_bytes: bytes, figure_id: str) -> Tuple[str, int, str]:
@@ -313,7 +375,12 @@ def check_visual_entailment(
             )
     response = result.model_dump()
     response["citations"] = [citation.model_dump(exclude_none=True)]
-    return _implementation._json(response)
+    return _json_with_verified_document_citation(
+        response,
+        owner_id=owner,
+        source_bytes=source_bytes,
+        document_id=document_id,
+    )
 
 
 def compare_papers(
