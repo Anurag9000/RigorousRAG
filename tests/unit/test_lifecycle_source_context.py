@@ -78,6 +78,46 @@ def test_owner_or_document_mismatch_fails_closed_and_clears_intent(tmp_path):
         )
 
 
+def test_document_bound_unrelated_intent_is_discarded_before_stale_path(tmp_path):
+    root, source = owner_file(tmp_path)
+    payload = source.read_bytes()
+    digest = hashlib.sha256(payload).hexdigest()
+    lifecycle_source_context.remember_retained_source(
+        owner_id="alice",
+        source_path=source,
+        expected_doc_id=doc_id("alice", payload),
+        source_sha256=digest,
+    )
+    source.unlink()
+
+    assert lifecycle_source_context.consume_retained_source(
+        owner_id="alice",
+        doc_id=doc_id("alice", b"another document"),
+        upload_root=root,
+    ) is None
+
+
+def test_document_bound_matching_intent_refuses_changed_copied_bytes(tmp_path):
+    root, source = owner_file(tmp_path)
+    payload = source.read_bytes()
+    digest = hashlib.sha256(payload).hexdigest()
+    identifier = doc_id("alice", payload)
+    lifecycle_source_context.remember_retained_source(
+        owner_id="alice",
+        source_path=source,
+        expected_doc_id=identifier,
+        source_sha256=digest,
+    )
+    source.write_bytes(b"changed")
+
+    with pytest.raises(RuntimeError, match="source bytes changed"):
+        lifecycle_source_context.consume_retained_source(
+            owner_id="alice",
+            doc_id=identifier,
+            upload_root=root,
+        )
+
+
 def test_document_store_boundary_records_successful_copy_only(tmp_path):
     module = ModuleType("fake_document_store")
     copied = tmp_path / "copied.pdf"
@@ -108,6 +148,38 @@ def test_document_store_boundary_records_successful_copy_only(tmp_path):
     pending = lifecycle_source_context._PENDING.get()
     assert pending.owner_id == "alice"
     assert pending.source_path == str(copied)
+    assert pending.expected_doc_id is None
+    assert pending.source_sha256 is None
+    lifecycle_source_context.clear_retained_source()
+
+
+def test_document_store_boundary_binds_existing_copy_to_exact_bytes(tmp_path):
+    root, source = owner_file(tmp_path)
+    module = ModuleType("fake_document_store_with_copy")
+
+    class DocumentStore:
+        upload_root = root
+
+        def copy_source(self, **kwargs):
+            return source
+
+        def register(self, **kwargs):
+            return "registered"
+
+        def get(self, **kwargs):
+            return None
+
+    module.DocumentStore = DocumentStore
+    lifecycle_source_context.install_document_store_source_boundary(module)
+    DocumentStore().copy_source(
+        owner_id="alice",
+        source_path="original.pdf",
+        max_bytes=1024,
+    )
+    pending = lifecycle_source_context._PENDING.get()
+    assert pending is not None
+    assert pending.expected_doc_id == doc_id("alice", b"paper")
+    assert pending.source_sha256 == hashlib.sha256(b"paper").hexdigest()
     lifecycle_source_context.clear_retained_source()
 
 
