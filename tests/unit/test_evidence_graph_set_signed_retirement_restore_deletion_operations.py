@@ -256,7 +256,7 @@ def test_cli_has_only_read_only_commands(monkeypatch, capsys):
     with pytest.raises(SystemExit):
         parser.parse_args(["delete"])
 
-    report = SimpleNamespace(
+    report = operations.RestoreDeletionOperationalReport(
         owner_id="alice",
         generated_at=1.0,
         item_count=0,

@@ -1,4 +1,5 @@
 import os
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -25,15 +26,40 @@ def test_indexing_rejects_same_size_same_timestamp_source_replacement(tmp_path):
     rag.add_document.assert_not_called()
 
 
-def test_indexing_accepts_unchanged_ingested_source(tmp_path):
+def test_indexing_accepts_unchanged_ingested_source(tmp_path, monkeypatch):
     source = tmp_path / "paper.txt"
     source.write_text("stable evidence", encoding="utf-8")
     result = ingest_file(str(source), owner_id="alice")
     assert result.success and result.document is not None
     rag = MagicMock()
+    rag.collection.get.return_value = {
+        "ids": [],
+        "documents": [],
+        "metadatas": [],
+    }
     rag.add_document.return_value = 2
 
-    indexed = index_document(result.document, owner_id="alice", rag=rag)
+    def commit(document, **kwargs):
+        count = rag.add_document(
+            document.id,
+            document.text,
+            kwargs["metadata"],
+            sections=document.sections,
+            chunk_size=1_000,
+            overlap=120,
+            replace=True,
+        )
+        return SimpleNamespace(vector_rows=count)
+
+    monkeypatch.setattr(
+        "tools.document_service.commit_finalized_document",
+        commit,
+    )
+    indexed = index_document(
+        result.document,
+        owner_id="alice",
+        rag=rag,
+    )
 
     assert indexed.chunk_count == 2
     rag.add_document.assert_called_once()

@@ -115,7 +115,11 @@ def test_sqlite_lock_refuses_hold_insert_without_partial_row(tmp_path):
     issuance_id = "1" * 64
     locker = sqlite3.connect(path, isolation_level=None)
     locker.execute("BEGIN IMMEDIATE")
-    actor = ReviewActorBinding.create(actor_id="officer", loaded_at=1.0)
+    actor = ReviewActorBinding.create(
+        actor_id="officer",
+        binding_method="process_environment",
+        loaded_at=1.0,
+    )
     try:
         with pytest.raises(sqlite3.OperationalError, match="locked"):
             store.place(

@@ -39,22 +39,47 @@ def _job_id(metadata: Mapping[str, Any], audit_metadata: Any) -> str | None:
     return None
 
 
+def _authority_scope(coordinator: Any | None) -> str | None:
+    """Return a stable digest for an explicitly selected generation authority."""
+
+    if coordinator is None:
+        return None
+    generations = getattr(coordinator, "generations", None)
+    path = getattr(generations, "path", None)
+    if path is None:
+        return None
+    try:
+        rendered = str(path.absolute())
+    except Exception:
+        rendered = str(path)
+    if not rendered or len(rendered) > 4_096 or any(
+        ord(character) < 32 or ord(character) == 127 for character in rendered
+    ):
+        raise ValueError("generation authority path is invalid.")
+    return hashlib.sha256(rendered.encode("utf-8")).hexdigest()
+
+
 def _idempotency_key(
     *,
     job_id: str | None,
     source_path: str | None,
     metadata: Mapping[str, Any],
+    authority_scope: str | None = None,
 ) -> str:
     if job_id is not None:
-        return f"job:{job_id}"
-    if source_path is not None:
-        return "source:" + hashlib.sha256(source_path.encode("utf-8")).hexdigest()
-    fallback = (
-        str(metadata.get("filename") or "")
-        + "\0"
-        + str(metadata.get("mime_type") or "")
-    )
-    return "metadata:" + hashlib.sha256(fallback.encode("utf-8")).hexdigest()
+        base = f"job:{job_id}"
+    elif source_path is not None:
+        base = "source:" + hashlib.sha256(source_path.encode("utf-8")).hexdigest()
+    else:
+        fallback = (
+            str(metadata.get("filename") or "")
+            + "\0"
+            + str(metadata.get("mime_type") or "")
+        )
+        base = "metadata:" + hashlib.sha256(fallback.encode("utf-8")).hexdigest()
+    if authority_scope is None:
+        return base
+    return f"{base}:authority:{authority_scope}"
 
 
 def _document_store() -> Any:
@@ -159,6 +184,7 @@ def install_authoritative_lifecycle_boundary(module: ModuleType) -> None:
             job_id=job_id,
             source_path=source_path,
             metadata=metadata,
+            authority_scope=_authority_scope(coordinator),
         )
         operation_id = operation_id_for(
             kind="replace",

@@ -660,6 +660,10 @@ if not hasattr(_implementation, "_boundary_public_SearchAgent"):
     _implementation._boundary_public_SearchAgent = _SearchAgentBoundary
 ToolExecution = _implementation._boundary_public_ToolExecution
 SearchAgent = _implementation._boundary_public_SearchAgent
+ToolExecution.__name__ = "ToolExecution"
+ToolExecution.__qualname__ = "ToolExecution"
+SearchAgent.__name__ = "SearchAgent"
+SearchAgent.__qualname__ = "SearchAgent"
 
 _implementation._validate_schema_value = _validate_schema_value
 _implementation.ToolExecution = ToolExecution

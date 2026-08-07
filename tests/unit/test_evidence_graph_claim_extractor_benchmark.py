@@ -55,7 +55,7 @@ def locator(*, evidence="evidence", start=0, end=10):
     )
 
 
-def proposal(value, *, key="p1", confidence=0.8):
+def proposal(value, *, key="p1", confidence=0.8, registry_digest=None):
     return ScientificClaimProposal.create(
         owner_id="alice",
         doc_id="doc1",
@@ -73,7 +73,7 @@ def proposal(value, *, key="p1", confidence=0.8):
         extractor_version=value.extractor_version,
         confidence=confidence,
         metadata={
-            "extractor_registry_record_digest": value.record_digest,
+            "extractor_registry_record_digest": registry_digest or value.record_digest,
             "extractor_output_schema_sha256": SCIENTIFIC_CLAIM_OUTPUT_SCHEMA_SHA256,
         },
         created_at=1.0,
@@ -121,10 +121,7 @@ def test_case_requires_exact_registered_proposal_identity_and_is_text_free():
     assert value.contains_evidence_text is False
     assert len(value.case_digest) == 64
 
-    wrong = replace(
-        proposal(record()),
-        metadata={"extractor_registry_record_digest": "f" * 64},
-    )
+    wrong = proposal(record(), registry_digest="f" * 64)
     report = evaluation(record(), (wrong,))
     with pytest.raises(PermissionError, match="registry digest"):
         build_scientific_claim_extractor_benchmark_case(

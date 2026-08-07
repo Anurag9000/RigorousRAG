@@ -128,7 +128,7 @@ def test_scope_expiry_and_direct_bindings_fail_closed(tmp_path):
     selected_decision = decision(selected_proposal)
     with pytest.raises(PermissionError, match="expired"):
         SignedActorUseRecord.create(
-            binding=binding(loaded_at=101.0),
+            binding=binding(loaded_at=99.0),
             proposal=selected_proposal,
             decision=selected_decision,
             reserved_at=101.0,

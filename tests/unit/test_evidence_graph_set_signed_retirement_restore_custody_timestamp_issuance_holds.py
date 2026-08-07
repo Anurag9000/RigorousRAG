@@ -34,11 +34,19 @@ class Issuances:
 
 
 def actor(name="officer", *, loaded=1.0, expires=None):
+    if expires is not None:
+        return ReviewActorBinding.create(
+            actor_id=name,
+            binding_method="hmac_assertion",
+            assertion_digest="7" * 64,
+            issuer="review-control-plane",
+            loaded_at=loaded,
+            expires_at=expires,
+        )
     return ReviewActorBinding.create(
         actor_id=name,
         binding_method="process_environment",
         loaded_at=loaded,
-        expires_at=expires,
     )
 
 

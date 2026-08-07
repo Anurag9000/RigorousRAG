@@ -247,18 +247,24 @@ def _exclusive_write(path: Path, payload: bytes, *, label: str) -> None:
             os.close(descriptor)
 
 
-def _destination_identity(path: Path) -> tuple[int, int] | None:
+def _destination_identity(path: Path) -> tuple[int, int, int, int, int] | None:
     if not (path.exists() or path.is_symlink()):
         return None
     info = os.lstat(path)
     if _is_link_or_reparse(info) or not stat.S_ISREG(info.st_mode):
         raise ValueError("The lock output must be absent or a safe regular file.")
-    return _identity(info)
+    return (
+        int(info.st_dev),
+        int(info.st_ino),
+        int(info.st_size),
+        int(getattr(info, "st_mtime_ns", int(info.st_mtime * 1_000_000_000))),
+        int(getattr(info, "st_ctime_ns", int(info.st_ctime * 1_000_000_000))),
+    )
 
 
 def _assert_expected_destination(
     destination: Path,
-    expected_identity: tuple[int, int] | None,
+    expected_identity: tuple[int, int, int, int, int] | None,
 ) -> None:
     exists = destination.exists() or destination.is_symlink()
     if expected_identity is None:
@@ -268,10 +274,17 @@ def _assert_expected_destination(
     if not exists:
         raise ValueError("The existing lock output disappeared during generation.")
     info = os.lstat(destination)
+    current_identity = (
+        int(info.st_dev),
+        int(info.st_ino),
+        int(info.st_size),
+        int(getattr(info, "st_mtime_ns", int(info.st_mtime * 1_000_000_000))),
+        int(getattr(info, "st_ctime_ns", int(info.st_ctime * 1_000_000_000))),
+    )
     if (
         _is_link_or_reparse(info)
         or not stat.S_ISREG(info.st_mode)
-        or _identity(info) != expected_identity
+        or current_identity != expected_identity
     ):
         raise ValueError("The existing lock output identity changed during generation.")
 
@@ -281,7 +294,7 @@ def _publish_lock(
     payload: bytes,
     *,
     expected_parent_identity: tuple[int, int],
-    expected_destination_identity: tuple[int, int] | None,
+    expected_destination_identity: tuple[int, int, int, int, int] | None,
 ) -> Path:
     """Publish verified lock bytes through an atomic private-file replacement."""
 

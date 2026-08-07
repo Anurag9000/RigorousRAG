@@ -638,9 +638,10 @@ def search_uploaded_docs(
                 "The retrieval expansion backend returned invalid text."
             )
         retrieval_query = generated.strip()
+        if not retrieval_query:
+            return []
         if (
-            not retrieval_query
-            or len(retrieval_query) > 20_000
+            len(retrieval_query) > 20_000
             or _contains_ascii_control(retrieval_query)
         ):
             raise RuntimeError(

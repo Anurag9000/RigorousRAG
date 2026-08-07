@@ -110,7 +110,9 @@ def _bounded_scalar(value: Any, field: str) -> str:
         rendered = value
     else:
         return ""
-    return mask_metadata_text(rendered)[:limit]
+    # Bound attacker-controlled text before privacy regexes and escaping. Apply
+    # the output bound again because redaction placeholders can expand text.
+    return mask_metadata_text(rendered[:limit])[:limit]
 
 
 def _escape_bibtex(value: Any) -> str:

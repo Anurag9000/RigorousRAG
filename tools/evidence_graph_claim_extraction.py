@@ -59,13 +59,18 @@ def _pairs(values: list[tuple[str, Any]]) -> dict[str, Any]:
 def _parse_output(value: str | bytes | bytearray | Mapping[str, Any]) -> tuple[dict[str, Any], str]:
     if isinstance(value, Mapping):
         raw = dict(value)
-        payload = json.dumps(
-            raw,
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-            allow_nan=False,
-        ).encode("utf-8")
+        try:
+            payload = json.dumps(
+                raw,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            ).encode("utf-8")
+        except ValueError as exc:
+            raise ValueError(
+                "extractor output contains a non-finite or invalid JSON value."
+            ) from exc
     else:
         payload = bytes(value) if isinstance(value, (bytes, bytearray)) else None
         if payload is None:
@@ -80,7 +85,11 @@ def _parse_output(value: str | bytes | bytearray | Mapping[str, Any]) -> tuple[d
                 object_pairs_hook=_pairs,
                 parse_constant=lambda token: (_ for _ in ()).throw(ValueError(token)),
             )
-        except (UnicodeDecodeError, json.JSONDecodeError, ValueError, RecursionError) as exc:
+        except ValueError as exc:
+            if "duplicate JSON key" in str(exc):
+                raise
+            raise ValueError("extractor output JSON is invalid.") from exc
+        except (UnicodeDecodeError, json.JSONDecodeError, RecursionError) as exc:
             raise ValueError("extractor output JSON is invalid.") from exc
     if not isinstance(raw, dict) or set(raw) != {"schema_version", "claims"}:
         raise ValueError("extractor output schema is invalid.")

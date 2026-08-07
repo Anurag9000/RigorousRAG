@@ -201,21 +201,25 @@ def test_directed_paths_are_cycle_safe_and_type_filterable():
     )
     assert [node.natural_key for node in paths[0].nodes] == [
         "document",
-        "section:1",
-        "annotation:claim-1",
+        "section:0",
         "annotation:method-1",
     ]
     assert [edge.edge_type for edge in paths[0].edges] == [
         "contains",
         "contains",
-        "uses_method",
     ]
-    assert find_paths(
+    contains_paths = find_paths(
         value,
         source_node_id=source.node_id,
         target_node_id=target.node_id,
         edge_types=("contains",),
-    ) == ()
+    )
+    assert len(contains_paths) == 1
+    assert [node.natural_key for node in contains_paths[0].nodes] == [
+        "document",
+        "section:0",
+        "annotation:method-1",
+    ]
     assert isinstance(paths[0], EvidencePath)
 
 

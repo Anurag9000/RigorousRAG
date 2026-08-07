@@ -163,5 +163,5 @@ def test_backend_failure_is_generic_and_private_data_free(monkeypatch, capsys):
     )
     assert cli.main(["status", "--owner-id", "alice"]) == 1
     error = capsys.readouterr().err
-    assert "unavailable" in error
+    assert "could not be completed safely" in error
     assert "/private" not in error

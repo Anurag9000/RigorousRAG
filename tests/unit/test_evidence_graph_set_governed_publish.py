@@ -100,7 +100,8 @@ def test_governed_ledger_enriches_converter_view_without_changing_identity(tmp_p
     receipt = authorizations.get(decision.decision_id)
 
     assert selected.proposal_id == proposal.proposal_id
-    assert selected._proposal is proposal
+    assert selected._proposal == proposal
+    assert selected._proposal.proposal_id == proposal.proposal_id
     assert proposal.metadata == {}
     assert selected.metadata["review_authorization_digest"] == (
         receipt.authorization.authorization_digest

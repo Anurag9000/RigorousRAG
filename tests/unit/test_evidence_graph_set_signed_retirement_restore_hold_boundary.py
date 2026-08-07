@@ -9,11 +9,12 @@ from tools.evidence_graph_set_signed_retirement_restore_hold_boundary import (
 from tools.evidence_graph_set_signed_retirement_restore_holds import (
     SignedRetirementRestoreHold,
 )
-
-
-class RestoreJournal:
-    def get(self, restore_id):
-        return type("Restore", (), {"owner_id": "alice"})()
+from tools.evidence_graph_set_signed_retirement_restore_contracts import (
+    SignedRetirementRestoreAttempt,
+)
+from tools.evidence_graph_set_signed_retirement_restore_journal import (
+    SignedRetirementRestoreJournal,
+)
 
 
 def actor():
@@ -28,13 +29,22 @@ def test_governed_hold_boundary_refuses_recomputed_unsupported_actor_method(
     tmp_path,
 ):
     store = GovernedSignedRetirementRestoreHoldStore(tmp_path / "holds.sqlite3")
+    restore_journal = SignedRetirementRestoreJournal(tmp_path / "restores.sqlite3")
+    restore = SignedRetirementRestoreAttempt.create(
+        owner_id="alice",
+        snapshot_digest="1" * 64,
+        target_path_digest="2" * 64,
+        snapshot_record_count=1,
+        now=1.0,
+    )
+    restore_journal.seed(restore)
     value = store.place(
         owner_id="alice",
-        restore_id="1" * 64,
+        restore_id=restore.restore_id,
         hold_key="case",
         reason_code="litigation",
         actor=actor(),
-        restore_journal=RestoreJournal(),
+        restore_journal=restore_journal,
         now=2.0,
     )
     tampered = SignedRetirementRestoreHold(

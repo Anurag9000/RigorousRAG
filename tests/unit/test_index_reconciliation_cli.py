@@ -170,5 +170,5 @@ def test_runtime_failure_is_generic(monkeypatch, capsys):
     )
     assert cli.main(["scan", "--owner-id", "alice"]) == 1
     error = capsys.readouterr().err
-    assert "unavailable" in error
+    assert "could not be completed safely" in error
     assert "/private" not in error

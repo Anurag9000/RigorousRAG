@@ -136,8 +136,15 @@ class IndexCoordinator:
     def __init__(self, *, rag: Any, sparse: SparseIndex) -> None:
         if not hasattr(rag, "add_document") or not hasattr(rag, "delete_document"):
             raise ValueError("rag must expose add_document and delete_document.")
-        if not isinstance(sparse, SparseIndex):
-            raise ValueError("sparse must be a SparseIndex.")
+        required_sparse_methods = (
+            "snapshot_document",
+            "restore_document",
+            "replace_document",
+            "delete_document",
+            "list_document_ids",
+        )
+        if any(not callable(getattr(sparse, name, None)) for name in required_sparse_methods):
+            raise ValueError("sparse must implement the SparseIndex contract.")
         self.rag = rag
         self.sparse = sparse
 

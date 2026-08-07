@@ -106,5 +106,5 @@ def test_frontend_directory_rejects_reparse_flagged_package_root(tmp_path, monke
     monkeypatch.setattr(frontend_static, "__file__", str(resolver))
     monkeypatch.setattr(frontend_static.os, "lstat", fake_lstat)
 
-    with pytest.raises(RuntimeError, match="real non-symlink directory"):
+    with pytest.raises(RuntimeError, match="symbolic-link or reparse-point components"):
         frontend_static.frontend_directory()

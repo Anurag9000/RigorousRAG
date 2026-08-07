@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import asdict, replace
 
 import pytest
@@ -107,7 +108,7 @@ def test_fingerprint_and_run_contract_mismatch_are_refused():
 
 def test_report_and_policy_mapping_are_strict():
     baseline = report()
-    value = asdict(baseline)
+    value = json.loads(json.dumps(asdict(baseline)))
     value["report_digest"] = baseline.report_digest
     value["contains_raw_query"] = False
     value["contains_evidence_text"] = False

@@ -368,7 +368,7 @@ def execute_cutover_saga(
                         adapter.discard_hidden_target(operation, publication)
                         phases.append("hidden_target_discarded")
                         hook("hidden_target_discarded")
-                    _require_source(operation, adapter.current_identity(operation))
+                        _require_source(operation, adapter.current_identity(operation))
                     return CutoverSagaResult(
                         operation_id=operation.operation_id,
                         outcome="aborted",

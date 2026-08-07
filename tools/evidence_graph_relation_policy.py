@@ -504,7 +504,11 @@ def load_relation_review_policy(
             object_pairs_hook=_pairs,
             parse_constant=lambda value: (_ for _ in ()).throw(ValueError(value)),
         )
-    except (UnicodeError, ValueError, json.JSONDecodeError, RecursionError) as exc:
+    except ValueError as exc:
+        if "duplicate JSON key" in str(exc):
+            raise
+        raise ValueError("relation review policy JSON is invalid.") from exc
+    except (UnicodeError, json.JSONDecodeError, RecursionError) as exc:
         raise ValueError("relation review policy JSON is invalid.") from exc
     return RelationReviewPolicy.from_mapping(raw)
 

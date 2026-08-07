@@ -14,8 +14,15 @@ from tools.evidence_graph_set_signed_retirement_restore_custody_export_boundary 
     CustodyArtifactEvidence,
     RestoreChainOfCustodyManifest,
 )
+from tools.evidence_graph_set_signed_retirement_restore_custody_export import (
+    _canonical_digest,
+)
+from tools.evidence_graph_set_signed_retirement_restore_contracts import (
+    deterministic_signed_retirement_restore_id,
+)
 from tools.evidence_graph_set_signed_retirement_restore_custody_rfc3161_contracts import (
     Rfc3161TimestampVerificationReceipt,
+    canonical_digest as rfc3161_canonical_digest,
 )
 from tools.evidence_graph_set_signed_retirement_restore_custody_signature import (
     bind_rfc3161_timestamp_to_signed_custody,
@@ -33,10 +40,9 @@ from tools.evidence_graph_set_signed_retirement_snapshot import _canonical_bytes
 
 
 def actor(digit: str = "a") -> ReviewActorBinding:
-    return ReviewActorBinding(
+    return ReviewActorBinding.create(
         actor_id=f"actor-{digit}",
         binding_method="process_environment",
-        binding_digest=digit * 64,
         loaded_at=1.0,
     )
 
@@ -60,11 +66,63 @@ def keypair(tmp_path, name: str = "key"):
 
 
 def manifest_file(tmp_path):
-    value = RestoreChainOfCustodyManifest(
+    snapshot_digest = "1" * 64
+    target_path_digest = "2" * 64
+    restore_id = deterministic_signed_retirement_restore_id(
         owner_id="alice",
-        chain_digest="1" * 64,
-        artifacts=(CustodyArtifactEvidence(artifact_id="a" * 64),),
-        generated_at=2.0,
+        snapshot_digest=snapshot_digest,
+        target_path_digest=target_path_digest,
+    )
+    artifact = CustodyArtifactEvidence(
+        artifact_id="a" * 64,
+        backup_path_digest="3" * 64,
+        receipt_path_digest="4" * 64,
+        backup_sha256="5" * 64,
+        backup_size_bytes=10,
+        receipt_digest="6" * 64,
+        actor_id_digest="7" * 64,
+        binding_method="process_environment",
+        binding_digest="8" * 64,
+        completed_at=1.0,
+    )
+    fields = {
+        "owner_id": "alice",
+        "restore_id": restore_id,
+        "snapshot_digest": snapshot_digest,
+        "target_path_digest": target_path_digest,
+        "snapshot_record_count": 1,
+        "restore_target_verification_digest": "9" * 64,
+        "restore_completed_at": 1.0,
+        "custody_id": "b" * 64,
+        "custody_manifest_digest": "c" * 64,
+        "pre_receipt_digest": artifact.receipt_digest,
+        "backup_sha256": artifact.backup_sha256,
+        "backup_size_bytes": artifact.backup_size_bytes,
+        "pre_actor_id_digest": artifact.actor_id_digest,
+        "pre_binding_method": artifact.binding_method,
+        "pre_binding_digest": artifact.binding_digest,
+        "pre_bound_at": 1.0,
+        "post_receipt_digest": "d" * 64,
+        "post_target_verification_digest": "9" * 64,
+        "post_actor_id_digest": "e" * 64,
+        "post_binding_method": "process_environment",
+        "post_binding_digest": "f" * 64,
+        "post_bound_at": 2.0,
+        "legal_hold_status": "not_checked",
+        "artifacts": (artifact,),
+        "generated_at": 2.0,
+        "schema_version": 1,
+    }
+    stable = {
+        "scope": "rigorousrag-external-restore-chain-of-custody-v1",
+        **{
+            key: ([artifact.__dict__] if key == "artifacts" else value)
+            for key, value in fields.items()
+        },
+    }
+    value = RestoreChainOfCustodyManifest(
+        **fields,
+        chain_digest=_canonical_digest(stable),
     )
     path = tmp_path / "manifest.json"
     path.write_bytes(_canonical_bytes(value.public_payload()) + b"\n")
@@ -166,11 +224,42 @@ def test_timestamp_binding_and_retired_historical_verification(tmp_path, monkeyp
         now=3.0,
     )
     subject = hashlib.sha256(signed_path.read_bytes()).hexdigest()
+    receipt_fields = {
+        "owner_id": "alice",
+        "request_bundle_digest": "1" * 64,
+        "request_sha256": "2" * 64,
+        "subject_sha256": subject,
+        "response_sha256": "3" * 64,
+        "token_sha256": "4" * 64,
+        "status": "granted",
+        "policy_oid": "1.2.3.4",
+        "message_imprint_sha256": subject,
+        "nonce_sha256": "5" * 64,
+        "serial_decimal": "1",
+        "generated_at_rfc3339": "1970-01-01T00:00:05Z",
+        "generated_at_unix": 5.0,
+        "accuracy_seconds": None,
+        "accuracy_millis": None,
+        "accuracy_micros": None,
+        "ordering": False,
+        "signer_certificate_sha256": "6" * 64,
+        "signer_certificate_serial_hex": "01",
+        "signer_public_key_algorithm": "ed25519",
+        "signature_algorithm": "ed25519",
+        "digest_algorithm": "sha256",
+        "trust_anchor_bundle_sha256": "7" * 64,
+        "untrusted_bundle_sha256": None,
+        "crl_bundle_sha256": None,
+        "verifier_version_sha256": "8" * 64,
+        "schema_version": 1,
+    }
+    receipt_stable = {
+        "scope": "rigorousrag-restore-custody-rfc3161-receipt-v1",
+        **receipt_fields,
+    }
     receipt = Rfc3161TimestampVerificationReceipt(
-        owner_id="alice",
-        subject_sha256=subject,
-        generated_at_unix=5.0,
-        receipt_digest="9" * 64,
+        **receipt_fields,
+        receipt_digest=rfc3161_canonical_digest(receipt_stable),
     )
     receipt_path = tmp_path / "receipt.json"
     receipt_path.write_text(json.dumps(receipt.public_payload()), encoding="utf-8")

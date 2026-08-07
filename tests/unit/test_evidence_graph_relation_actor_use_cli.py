@@ -107,8 +107,9 @@ def test_status_and_list_are_read_only_and_secret_free(
     assert listing["count"] == 1
     assert listing["actor_uses"][0]["use_digest"] == selected.use_digest
     rendered = json.dumps(listing).lower()
-    assert "signature\"" not in rendered
-    assert "key_material" in rendered
+    assert listing["contains_signature"] is False
+    assert listing["contains_key_material"] is False
+    assert listing["contains_source_text"] is False
     assert "private text" not in rendered
 
 

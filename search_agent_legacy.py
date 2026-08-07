@@ -5,11 +5,17 @@ from __future__ import annotations
 import json
 import os
 import re
+import sys
 import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
+
+# A module reload recreates the schema and agent class, so stale integration
+# markers must not suppress installation on the newly executed definitions.
+globals().pop("_evidence_graph_agent_tool_installed", None)
+globals().pop("_evidence_graph_original_dispatch", None)
 
 try:
     from openai import OpenAI
@@ -736,3 +742,13 @@ class SearchAgent:
         if self.base_url:
             return self.model
         return "gpt-4o-mini"
+
+
+# Install the reviewed evidence-graph tools explicitly as a final import step.
+# The lazy import hook remains useful for unusual import orders, while this call
+# guarantees direct imports and reloads end with one complete registration.
+from tools.evidence_graph_agent_integration import (  # noqa: E402
+    install_evidence_graph_agent_tool,
+)
+
+install_evidence_graph_agent_tool(sys.modules[__name__])

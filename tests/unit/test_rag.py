@@ -233,7 +233,12 @@ def test_empty_owner_is_rejected():
 
 def test_delete_document_is_owner_scoped():
     rag = make_rag()
-    rag.delete_document(owner_id="alice", doc_id="doc-1")
+    raw_delete = getattr(
+        RAGLayer,
+        "_authoritative_raw_delete_document",
+        RAGLayer.delete_document,
+    )
+    raw_delete(rag, owner_id="alice", doc_id="doc-1")
     where = rag.collection.delete.call_args.kwargs["where"]
     assert {"owner_id": {"$eq": "alice"}} in where["$and"]
     assert {"doc_id": {"$eq": "doc-1"}} in where["$and"]

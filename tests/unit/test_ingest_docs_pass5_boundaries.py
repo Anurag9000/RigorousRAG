@@ -11,12 +11,12 @@ def test_directory_traversal_has_a_bounded_entry_inspection_budget(monkeypatch, 
     for index in range(21):
         (tmp_path / f"unsupported-{index}.bin").write_bytes(b"x")
 
-    with pytest.raises(ValueError, match="entry-inspection limit"):
+    with pytest.raises(ValueError, match="bounded inspection limit"):
         list(ingest_docs._directory_files(tmp_path, recursive=False))
 
 
 def test_collect_files_rejects_non_string_path_members(tmp_path):
-    with pytest.raises(ValueError, match="Every input path"):
+    with pytest.raises(ValueError, match="paths must be a list of strings"):
         ingest_docs._collect_files(
             [str(tmp_path), object()],
             recursive=False,
@@ -34,7 +34,7 @@ def test_prior_generation_is_bounded_at_backend_request():
 
     generation = ingest_docs._capture_generation(rag, "alice", "doc-1")
 
-    assert generation.ids == []
+    assert generation.ids == ()
     rag.collection.get.assert_called_once_with(
         where={
             "$and": [

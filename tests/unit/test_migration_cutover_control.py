@@ -123,7 +123,9 @@ def test_blocked_report_or_mismatched_staging_is_refused(tmp_path):
 
 def test_stale_generation_is_refused(tmp_path):
     values = list(prerequisites(tmp_path))
-    values[5] = replace(values[5], sequence=values[5].sequence + 1)
+    values[5] = SimpleNamespace(
+        **{**vars(values[5]), "sequence": values[5].sequence + 1}
+    )
     with pytest.raises(RuntimeError, match="changed"):
         build_cutover_preparation(
             task=values[0], preflight=values[1], promotion=values[2],

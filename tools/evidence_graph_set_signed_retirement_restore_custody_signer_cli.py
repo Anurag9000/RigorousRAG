@@ -200,6 +200,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "registry_mutation_performed": False,
                     "key_material_mutation_performed": False,
                     "key_deletion_performed": False,
+                    "contains_private_key_material": False,
                     "contains_raw_paths": False,
                 }
             )

@@ -27,13 +27,58 @@ from tools.ingestion import ingest_file
 from tools.privacy import mask_metadata_text
 from tools.rag import get_rag_layer
 from tools.security import normalize_owner_id
+from tools.vector_generation import (
+    VectorGenerationSnapshot,
+    capture_vector_generation,
+)
 
 _ALLOWED_SUFFIXES = {".pdf", ".docx", ".txt", ".md"}
 _MAX_INPUT_FILES = 10_000
 _MAX_PATH_CHARS = 4_096
 _MAX_MANIFEST_BYTES = 50_000_000
 _WINDOWS_REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+# Compatibility limits for callers that still inspect a prior vector generation
+# through this batch-ingestion module. The authoritative capture function remains
+# the single backend reader and enforces the same owner/document query boundary.
+_MAX_VECTOR_ROWS = 100_000
+_MAX_VECTOR_TEXT_CHARS = 5_000_000
+_MAX_VECTOR_METADATA_ITEMS = 1_000
 
+
+
+def _capture_generation(
+    rag: Any,
+    owner_id: str,
+    doc_id: str,
+) -> VectorGenerationSnapshot:
+    """Compatibility wrapper over authoritative bounded vector capture.
+
+    Public callers historically used this helper during batch replacement. It now
+    delegates the backend request to ``capture_vector_generation`` and only adds
+    caller-configurable defensive limits for already captured row payloads.
+    """
+
+    try:
+        snapshot = capture_vector_generation(
+            rag,
+            owner_id=owner_id,
+            doc_id=doc_id,
+        )
+    except ValueError as exc:
+        message = str(exc)
+        if "row ID" in message or "vector row ID" in message:
+            raise RuntimeError(
+                "Prior vector generation contains an invalid ID."
+            ) from exc
+        raise RuntimeError(
+            "Prior vector generation contains invalid rows."
+        ) from exc
+    if snapshot.row_count > _MAX_VECTOR_ROWS:
+        raise RuntimeError("Prior vector generation contains invalid rows.")
+    for text, metadata in zip(snapshot.documents, snapshot.metadatas):
+        if len(text) > _MAX_VECTOR_TEXT_CHARS or len(metadata) > _MAX_VECTOR_METADATA_ITEMS:
+            raise RuntimeError("Prior vector generation contains invalid rows.")
+    return snapshot
 
 def _contains_ascii_control(value: str) -> bool:
     return any(ord(character) < 32 or ord(character) == 127 for character in value)

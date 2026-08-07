@@ -295,6 +295,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "key_material_mutation_performed": False,
                 "key_deletion_performed": False,
                 "source_text_returned": False,
+                "contains_source_text": False,
             }
         )
         return 0

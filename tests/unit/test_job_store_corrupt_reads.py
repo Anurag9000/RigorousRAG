@@ -58,7 +58,7 @@ def test_public_and_internal_point_reads_fail_closed_on_control_bearing_text(tmp
 
 def test_point_reads_fail_closed_on_invalid_numeric_state(tmp_path):
     store = JobStore(path=tmp_path / "jobs.sqlite3")
-    _insert_raw_job(store, attempts=-1, next_attempt_at=float("nan"))
+    _insert_raw_job(store, attempts=-1, next_attempt_at="not-a-number")
 
     assert store.get("corrupt-read", "operator-owner") is None
     assert store.get_internal("corrupt-read", "operator-owner") is None

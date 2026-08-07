@@ -217,11 +217,16 @@ def test_status_and_list_hide_actor_ids_and_paths(monkeypatch, capsys):
     assert cli.main(
         ["status", "--owner-id", "alice", "--key-id", "key-1"]
     ) == 0
-    status = capsys.readouterr().out
-    assert "registrar" not in status
-    assert "path" not in status.lower()
+    status = json.loads(capsys.readouterr().out)
+    rendered_status = json.dumps(status)
+    assert "registrar" not in rendered_status
+    assert status["contains_raw_paths"] is False
+    assert status["contains_private_key_material"] is False
 
     assert cli.main(["list", "--owner-id", "alice"]) == 0
-    listing = capsys.readouterr().out
-    assert "registrar" not in listing
-    assert "key_material_mutation_performed" in listing
+    listing = json.loads(capsys.readouterr().out)
+    rendered_listing = json.dumps(listing)
+    assert "registrar" not in rendered_listing
+    assert listing["contains_raw_paths"] is False
+    assert listing["contains_private_key_material"] is False
+    assert listing["key_material_mutation_performed"] is False

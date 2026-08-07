@@ -217,8 +217,14 @@ def select_route(case: RouteExperimentCase, *, available_routes: Iterable[str] =
         preferred = "corpus-sparse"
     elif analysis.temporal:
         preferred = "web"
-    elif case.domain == "scholarly" or analysis.methodological or analysis.citation_seeking:
+    elif analysis.comparative:
+        # Mixed-scope comparisons need local hybrid evidence even when the query
+        # also contains generic methodological nouns such as "methods".
+        preferred = "corpus-hybrid"
+    elif case.domain == "scholarly" or analysis.citation_seeking:
         preferred = "scholarly"
+    elif analysis.methodological:
+        preferred = "corpus-hybrid"
     else:
         preferred = "corpus-hybrid"
     if preferred in available:

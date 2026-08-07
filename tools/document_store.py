@@ -273,6 +273,10 @@ class _DocumentStoreBoundary(_original_document_store):
 if not hasattr(_implementation, "_boundary_public_DocumentStore"):
     _implementation._boundary_public_DocumentStore = _DocumentStoreBoundary
 DocumentStore = _implementation._boundary_public_DocumentStore
+# Preserve the documented public class identity even though the implementation is
+# wrapped by a hardened boundary subclass.
+DocumentStore.__name__ = "DocumentStore"
+DocumentStore.__qualname__ = "DocumentStore"
 
 
 def get_document_store(
