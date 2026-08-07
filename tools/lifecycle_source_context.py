@@ -27,10 +27,23 @@ _PENDING: ContextVar["PendingRetainedSource | None"] = ContextVar(
 )
 
 
+def _document_identity(owner_id: str, payload: bytes) -> tuple[str, str]:
+    digest = hashlib.sha256(payload).hexdigest()
+    identifier = str(
+        uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            f"rigorousrag:{owner_id}:{digest}",
+        )
+    )
+    return identifier, digest
+
+
 @dataclass(frozen=True)
 class PendingRetainedSource:
     owner_id: str
     source_path: str
+    expected_doc_id: str | None = None
+    source_sha256: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "owner_id", normalize_owner_id(self.owner_id))
@@ -44,10 +57,43 @@ class PendingRetainedSource:
         ):
             raise ValueError("source_path is invalid.")
         object.__setattr__(self, "source_path", rendered)
+        if self.expected_doc_id is not None:
+            if not isinstance(self.expected_doc_id, str):
+                raise ValueError("expected_doc_id must be a string.")
+            expected = self.expected_doc_id.strip()
+            if (
+                not expected
+                or len(expected) > 200
+                or any(ord(character) < 32 or ord(character) == 127 for character in expected)
+            ):
+                raise ValueError("expected_doc_id is invalid.")
+            object.__setattr__(self, "expected_doc_id", expected)
+        if self.source_sha256 is not None:
+            if not isinstance(self.source_sha256, str):
+                raise ValueError("source_sha256 must be a string.")
+            digest = self.source_sha256.strip().lower()
+            if len(digest) != 64 or any(
+                character not in "0123456789abcdef" for character in digest
+            ):
+                raise ValueError("source_sha256 must be a SHA-256 digest.")
+            object.__setattr__(self, "source_sha256", digest)
 
 
-def remember_retained_source(*, owner_id: str, source_path: str | Path) -> None:
-    _PENDING.set(PendingRetainedSource(owner_id, str(source_path)))
+def remember_retained_source(
+    *,
+    owner_id: str,
+    source_path: str | Path,
+    expected_doc_id: str | None = None,
+    source_sha256: str | None = None,
+) -> None:
+    _PENDING.set(
+        PendingRetainedSource(
+            owner_id,
+            str(source_path),
+            expected_doc_id=expected_doc_id,
+            source_sha256=source_sha256,
+        )
+    )
 
 
 def clear_retained_source() -> None:
@@ -69,6 +115,18 @@ def consume_retained_source(
         raise RuntimeError("retained-source intent belongs to another owner.")
     if not isinstance(doc_id, str) or not doc_id.strip():
         raise RuntimeError("retained-source intent requires a document identity.")
+    requested_doc_id = doc_id.strip()
+
+    # Real retained copies are bound to their immutable content identity when the
+    # copy is created. A one-shot intent from a different document may remain in a
+    # context after an interrupted caller/test; discard that unrelated intent before
+    # touching its potentially stale path. Matching intents remain fail-closed below.
+    if (
+        pending.expected_doc_id is not None
+        and pending.expected_doc_id != requested_doc_id
+    ):
+        return None
+
     candidate = validated_owner_file_path(upload_root, pending.source_path)
     if candidate is None:
         raise RuntimeError("retained-source intent no longer identifies a safe file.")
@@ -79,14 +137,12 @@ def consume_retained_source(
     )
     if payload is None:
         raise RuntimeError("retained-source intent could not read the copied source.")
-    digest = hashlib.sha256(payload).hexdigest()
-    expected = str(
-        uuid.uuid5(
-            uuid.NAMESPACE_URL,
-            f"rigorousrag:{owner}:{digest}",
-        )
-    )
-    if expected != doc_id.strip():
+    expected, digest = _document_identity(owner, payload)
+    if pending.source_sha256 is not None and pending.source_sha256 != digest:
+        raise RuntimeError("retained-source intent source bytes changed after copying.")
+    if pending.expected_doc_id is not None and pending.expected_doc_id != expected:
+        raise RuntimeError("retained-source intent source identity changed after copying.")
+    if expected != requested_doc_id:
         raise RuntimeError("retained-source intent does not match the document bytes.")
     return str(candidate)
 
@@ -109,13 +165,30 @@ def install_document_store_source_boundary(module: ModuleType) -> None:
         source_path: Any,
         max_bytes: int = DEFAULT_MAX_UPLOAD_BYTES,
     ):
+        owner = normalize_owner_id(owner_id)
         copied = original_copy(
             self,
-            owner_id=owner_id,
+            owner_id=owner,
             source_path=source_path,
             max_bytes=max_bytes,
         )
-        remember_retained_source(owner_id=owner_id, source_path=copied)
+        expected_doc_id = None
+        source_sha256 = None
+        candidate = validated_owner_file_path(self.upload_root, copied)
+        if candidate is not None:
+            payload = read_owner_file(
+                self.upload_root,
+                candidate,
+                max_bytes=max_bytes,
+            )
+            if payload is not None:
+                expected_doc_id, source_sha256 = _document_identity(owner, payload)
+        remember_retained_source(
+            owner_id=owner,
+            source_path=copied,
+            expected_doc_id=expected_doc_id,
+            source_sha256=source_sha256,
+        )
         return copied
 
     def register(
