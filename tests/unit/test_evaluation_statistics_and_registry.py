@@ -80,14 +80,16 @@ def test_paired_permutation_is_deterministic_and_two_sided():
 
 def test_calibration_metrics_reward_well_calibrated_predictions():
     good_confidence = [0.9, 0.8, 0.2, 0.1]
-    bad_confidence = [0.6, 0.6, 0.6, 0.6]
+    bad_confidence = [0.1, 0.2, 0.8, 0.9]
     outcomes = [1, 1, 0, 0]
     assert brier_score(good_confidence, outcomes) < brier_score(
         bad_confidence, outcomes
     )
-    assert expected_calibration_error(
-        good_confidence, outcomes, bins=4
-    ) < expected_calibration_error(bad_confidence, outcomes, bins=4)
+    good_ece = expected_calibration_error(good_confidence, outcomes, bins=4)
+    bad_ece = expected_calibration_error(bad_confidence, outcomes, bins=4)
+    assert good_ece == pytest.approx(0.15)
+    assert bad_ece == pytest.approx(0.85)
+    assert good_ece < bad_ece
 
 
 def test_selective_risk_falls_when_low_confidence_high_loss_cases_are_abstained():
