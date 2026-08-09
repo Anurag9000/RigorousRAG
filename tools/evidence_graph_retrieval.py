@@ -9,6 +9,10 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
+from tools.evidence_graph_temporal import (
+    propagate_retraction_risk,
+    temporal_evidence_status,
+)
 from tools.evidence_graph_types import (
     EDGE_TYPES,
     NODE_TYPES,
@@ -25,6 +29,7 @@ _MAX_RESULTS = 1_000
 _MAX_DEPTH = 20
 _MAX_PATHS = 1_000
 _MAX_VISITED = 100_000
+_TEMPORAL_STATUSES = frozenset({"active", "not_yet_valid", "expired", "retracted"})
 
 
 def _integer(value: Any, label: str, minimum: int, maximum: int) -> int:
@@ -33,6 +38,18 @@ def _integer(value: Any, label: str, minimum: int, maximum: int) -> int:
     if not minimum <= value <= maximum:
         raise ValueError(f"{label} must be between {minimum} and {maximum}.")
     return value
+
+
+def _unit(value: Any, label: str) -> float:
+    if isinstance(value, bool):
+        raise ValueError(f"{label} must be between 0 and 1.")
+    try:
+        result = float(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(f"{label} must be between 0 and 1.") from exc
+    if not math.isfinite(result) or not 0.0 <= result <= 1.0:
+        raise ValueError(f"{label} must be between 0 and 1.")
+    return result
 
 
 def _tokens(value: str) -> tuple[str, ...]:
@@ -107,6 +124,54 @@ class NodeSearchResult:
             raise ValueError("matched_terms must be a non-empty sorted unique tuple.")
 
 
+@dataclass(frozen=True)
+class GovernedNodeSearchResult:
+    """One lexical result annotated with derived temporal/retraction governance."""
+
+    lexical_result: NodeSearchResult
+    adjusted_score: float
+    temporal_status: str
+    retraction_risk: float
+    retracted_source_ids: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.lexical_result, NodeSearchResult):
+            raise ValueError("lexical_result must be NodeSearchResult.")
+        if isinstance(self.adjusted_score, bool):
+            raise ValueError("adjusted_score must be finite and non-negative.")
+        try:
+            score = float(self.adjusted_score)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("adjusted_score must be finite and non-negative.") from exc
+        if not math.isfinite(score) or score < 0.0:
+            raise ValueError("adjusted_score must be finite and non-negative.")
+        object.__setattr__(self, "adjusted_score", score)
+        if self.temporal_status not in _TEMPORAL_STATUSES:
+            raise ValueError("temporal_status is unsupported.")
+        object.__setattr__(
+            self,
+            "retraction_risk",
+            _unit(self.retraction_risk, "retraction_risk"),
+        )
+        if (
+            not isinstance(self.retracted_source_ids, tuple)
+            or tuple(sorted(set(self.retracted_source_ids))) != self.retracted_source_ids
+        ):
+            raise ValueError("retracted_source_ids must be a sorted unique tuple.")
+
+    @property
+    def node(self) -> EvidenceNode:
+        return self.lexical_result.node
+
+    @property
+    def matched_terms(self) -> tuple[str, ...]:
+        return self.lexical_result.matched_terms
+
+    @property
+    def lexical_score(self) -> float:
+        return self.lexical_result.score
+
+
 def search_nodes(
     batch: EvidenceGraphBatch,
     query: str,
@@ -143,6 +208,83 @@ def search_nodes(
     candidates.sort(
         key=lambda item: (
             -item.score,
+            item.node.node_type,
+            item.node.label.casefold(),
+            item.node.node_id,
+        )
+    )
+    return tuple(candidates[:count])
+
+
+def search_nodes_governed(
+    batch: EvidenceGraphBatch,
+    query: str,
+    *,
+    as_of: float,
+    node_types: Iterable[str] | None = None,
+    limit: int = 20,
+    retraction_policy: str = "exclude",
+    max_retraction_risk: float = 0.0,
+    risk_penalty: float = 1.0,
+) -> tuple[GovernedNodeSearchResult, ...]:
+    """Apply explicit temporal validity and conservative retraction risk to search.
+
+    Non-active nodes are always excluded. Under ``exclude``, active nodes above
+    ``max_retraction_risk`` are excluded. Under ``penalize``, active nodes remain
+    eligible and their lexical score is multiplied by ``1 - risk_penalty * risk``.
+    The authoritative graph is never mutated and ``as_of`` is mandatory.
+    """
+
+    if not isinstance(batch, EvidenceGraphBatch):
+        raise ValueError("batch must be EvidenceGraphBatch.")
+    if retraction_policy not in {"exclude", "penalize"}:
+        raise ValueError("retraction_policy must be exclude or penalize.")
+    count = _integer(limit, "limit", 1, _MAX_RESULTS)
+    threshold = _unit(max_retraction_risk, "max_retraction_risk")
+    penalty = _unit(risk_penalty, "risk_penalty")
+
+    # The derived temporal layer validates the complete graph and explicit as_of.
+    statuses = {
+        node.node_id: temporal_evidence_status(node, as_of=as_of)
+        for node in batch.nodes
+    }
+    risks = propagate_retraction_risk(
+        batch.nodes,
+        batch.edges,
+        as_of=as_of,
+    )
+    lexical = search_nodes(
+        batch,
+        query,
+        node_types=node_types,
+        limit=_MAX_RESULTS,
+    )
+    candidates: list[GovernedNodeSearchResult] = []
+    for item in lexical:
+        status = statuses[item.node.node_id]
+        if status.status != "active":
+            continue
+        risk_record = risks.get(item.node.node_id)
+        risk = 0.0 if risk_record is None else risk_record.risk
+        sources = () if risk_record is None else risk_record.retracted_source_ids
+        if retraction_policy == "exclude" and risk > threshold:
+            continue
+        adjusted = item.score
+        if retraction_policy == "penalize":
+            adjusted *= max(0.0, 1.0 - penalty * risk)
+        candidates.append(
+            GovernedNodeSearchResult(
+                lexical_result=item,
+                adjusted_score=adjusted,
+                temporal_status=status.status,
+                retraction_risk=risk,
+                retracted_source_ids=sources,
+            )
+        )
+    candidates.sort(
+        key=lambda item: (
+            -item.adjusted_score,
+            -item.lexical_score,
             item.node.node_type,
             item.node.label.casefold(),
             item.node.node_id,
@@ -263,8 +405,10 @@ def outgoing_neighbors(
 
 
 __all__ = [
+    "GovernedNodeSearchResult",
     "NodeSearchResult",
     "find_paths",
     "outgoing_neighbors",
     "search_nodes",
+    "search_nodes_governed",
 ]

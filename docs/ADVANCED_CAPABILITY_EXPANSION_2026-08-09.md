@@ -12,7 +12,7 @@ Before this expansion, exact-head run `31297259618` passed all 16 registered job
 - Compose/container build;
 - release-lock generation, verification and hash-only installation on Ubuntu, macOS and Windows for Python 3.10, 3.11 and 3.12.
 
-The expansion below must receive its own exact-head proof; the earlier green baseline is provenance, not evidence for later commits.
+After the expansion and correction of the calibration-regression fixture, exact-head run `31302042911` passed the same 16/16 matrix on commit `01e5008909cf0e8b435e974ca9f83533d6f69856`. All three Linux lanes passed the complete 1,930-test suite. That proof covers the expansion through `01e5008`; subsequent capability commits require their own unchanged-head proof.
 
 ## P1 — durable compaction-recovery evidence
 
@@ -65,6 +65,8 @@ Kept the authoritative evidence-graph schema stable and added derived scientific
 
 These are derived signals. They do not rewrite authoritative graph identities or graph payloads.
 
+Added a governed graph-search surface alongside the legacy lexical search. It requires an explicit `as_of`, always excludes evidence that is not temporally active, and either excludes active evidence above an explicit conservative retraction-risk threshold or deterministically penalizes its lexical score. Retraction source IDs remain derived provenance; the authoritative graph is not mutated.
+
 ## Multimodal evidence lineage
 
 Added immutable page-coordinate evidence regions for text, tables, figures, captions, charts and equations. Region identity binds owner/document/source digest/page/kind/normalized bounding box/content digest/extractor. Raw extracted OCR/layout text is not stored in the derived region object. Added deterministic coordinate citation IDs, overlap deduplication, extractor contracts, bounded extractor iteration and fail-closed type validation.
@@ -111,6 +113,8 @@ The existing migration benchmark remains the authoritative paired quality/resour
 - owner/generation/profile/retrieval-config-bound cache keys;
 - fail-closed cache reuse after any cutover-relevant identity change.
 
+Added the corresponding durable SQLite retrieval cache. Cache rows are keyed by the full cutover-safe identity and persist only bounded result handles, scores and content digests—not snippets or retrieved document text. Reads verify canonical payload schema, timing identity and result digest; live-key collisions fail closed; expiry, owner invalidation and pre-generation invalidation are explicit and deterministic.
+
 ## Distributed production hardening
 
 The ingestion job store already had durable retry timing/backoff and terminal failure states. Added missing production primitives:
@@ -126,4 +130,4 @@ The ingestion job store already had durable retry timing/backoff and terminal fa
 
 This expansion deliberately does not claim that optional external model weights, third-party benchmark corpora, production OCR engines, a production cutover adapter, disaster-recovery infrastructure or deployment-specific SLO dashboards exist merely because interfaces/evaluators now exist. Those require environment-specific artifacts and execution evidence.
 
-The next audit should prioritize: production migration execution/cutover adapter proof; concrete SPLADE/ColBERT/multilingual model adapters and model-card/version governance; image-text embedding and chart entailment adapters; contradiction/retraction-aware retrieval integration; online policy shadow traffic and rollback state; tenant quota/admission persistence; DR/failover exercises; retrieval cache implementation using the new cutover-safe key contract; continual embedding/index adaptation experiments; expert adjudication workflows; benchmark acquisition/version manifests; and full final exact-head CI evidence.
+The next audit should prioritize: production migration execution/cutover adapter proof; concrete SPLADE/ColBERT/multilingual model adapters and model-card/version governance; image-text embedding and chart entailment adapters; online policy shadow traffic and rollback state; tenant quota/admission persistence; DR/failover exercises; continual embedding/index adaptation experiments; expert adjudication workflows; benchmark acquisition/version manifests; and full final exact-head CI evidence.
