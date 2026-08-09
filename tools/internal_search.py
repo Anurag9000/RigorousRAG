@@ -131,20 +131,22 @@ def _cache_digest(key: _DigestCacheKey, value: str) -> str:
 
 
 def _file_content_digest(path: Path, before: os.stat_result) -> str:
-    """Hash one stable regular file once per strong metadata identity.
+    """Hash one stable regular file, caching only where metadata identity is reliable.
 
-    The cache key includes Windows creation time (``st_birthtime_ns`` when exposed)
-    in addition to inode/device, ctime, mtime and size. That closes the Windows 3.12
-    replacement gap where a newly replaced file can otherwise present the same
-    size/mtime and a reused file index. Reads are streamed and bounded by the same
-    maximum scale supported by classic snapshots; no file content is retained.
+    POSIX systems reuse a bounded digest cache keyed by strong file metadata. Windows
+    deliberately rehashes on every storage-signature check because a rapid replace can
+    present the same file index, creation/ctime, mtime and size on hosted/filesystem
+    implementations. Correct replacement detection therefore takes precedence over
+    metadata-keyed caching on Windows. Reads remain streamed and bounded; file content
+    is never retained.
     """
 
     key = _metadata_key(path, before)
-    with _DIGEST_CACHE_LOCK:
-        cached = _DIGEST_CACHE.get(key)
-    if cached is not None:
-        return cached
+    if os.name != "nt":
+        with _DIGEST_CACHE_LOCK:
+            cached = _DIGEST_CACHE.get(key)
+        if cached is not None:
+            return cached
     if before.st_size < 0 or before.st_size > _MAX_SIGNATURE_FILE_BYTES:
         return "oversize"
 
@@ -190,7 +192,10 @@ def _file_content_digest(path: Path, before: os.stat_result) -> str:
         or not _same_file_metadata(before, after)
     ):
         return "unstable"
-    return _cache_digest(key, hasher.hexdigest())
+    computed = hasher.hexdigest()
+    if os.name == "nt":
+        return computed
+    return _cache_digest(key, computed)
 
 
 def _file_identity(path: Path) -> _FileIdentity:
