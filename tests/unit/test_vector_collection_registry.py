@@ -313,7 +313,7 @@ def test_registry_requires_explicit_dimensions_and_safe_transition_controls(tmp_
         generation_sequence=1,
         now=2.0,
     )
-    with pytest.raises(ValueError, match="switch or rollback"):
+    with pytest.raises(ValueError, match="switch, rollback or generation_advance"):
         registry.transition_route(
             owner_id="alice",
             doc_id="doc",
