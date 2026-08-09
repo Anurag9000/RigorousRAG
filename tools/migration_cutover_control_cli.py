@@ -32,6 +32,7 @@ def _summary(operation: Any) -> dict[str, Any]:
         "doc_id": preparation.doc_id,
         "state": operation.state,
         "attempt": operation.attempt,
+        "fencing_token": operation.fencing_token,
         "source_sequence": preparation.source_sequence,
         "source_profile_fingerprint": preparation.source_profile_fingerprint,
         "target_profile_fingerprint": preparation.target_profile_fingerprint,
