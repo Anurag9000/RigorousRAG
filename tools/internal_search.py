@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import itertools
 import json
 import operator
@@ -16,12 +17,17 @@ from pydantic import BaseModel, ConfigDict, Field
 from Searching import AcademicSearchEngine, SearchHit
 from tools.models import Citation
 
-_FileIdentity = Tuple[str, int, int, int, int, int]
+_FileIdentity = Tuple[str, int, int, int, int, int, int, str]
 _StorageSignature = Tuple[str, Tuple[_FileIdentity, ...]]
+_DigestCacheKey = Tuple[str, int, int, int, int, int, int]
 _ENGINE_INSTANCE: Optional[AcademicSearchEngine] = None
 _ENGINE_SIGNATURE: Optional[_StorageSignature] = None
 _ENGINE_LOCK = threading.Lock()
+_DIGEST_CACHE: dict[_DigestCacheKey, str] = {}
+_DIGEST_CACHE_LOCK = threading.Lock()
+_MAX_DIGEST_CACHE_ENTRIES = 32
 _MAX_MANIFEST_BYTES = 1_000_000
+_MAX_SIGNATURE_FILE_BYTES = 2_000_000_000
 _MAX_STORAGE_PATH_CHARS = 4096
 _MAX_RESULTS = 20
 _MAX_ENGINE_RELOAD_ATTEMPTS = 3
@@ -39,6 +45,22 @@ def _is_link_or_reparse(info: os.stat_result) -> bool:
 
 def _identity(info: os.stat_result) -> tuple[int, int]:
     return int(info.st_dev), int(info.st_ino)
+
+
+def _birthtime_ns(info: os.stat_result) -> int:
+    value = getattr(info, "st_birthtime_ns", None)
+    if value is not None:
+        try:
+            return int(value)
+        except (TypeError, ValueError, OverflowError):
+            return 0
+    seconds = getattr(info, "st_birthtime", None)
+    if seconds is None:
+        return 0
+    try:
+        return int(float(seconds) * 1_000_000_000)
+    except (TypeError, ValueError, OverflowError):
+        return 0
 
 
 def _absolute_without_resolving(path: str | os.PathLike[str]) -> Path:
@@ -75,23 +97,121 @@ def _absolute_without_resolving(path: str | os.PathLike[str]) -> Path:
     return absolute
 
 
+def _metadata_key(path: Path, info: os.stat_result) -> _DigestCacheKey:
+    return (
+        str(path),
+        int(info.st_dev),
+        int(info.st_ino),
+        _birthtime_ns(info),
+        int(info.st_ctime_ns),
+        int(info.st_mtime_ns),
+        int(info.st_size),
+    )
+
+
+def _same_file_metadata(left: os.stat_result, right: os.stat_result) -> bool:
+    return (
+        _identity(left) == _identity(right)
+        and _birthtime_ns(left) == _birthtime_ns(right)
+        and int(left.st_ctime_ns) == int(right.st_ctime_ns)
+        and int(left.st_mtime_ns) == int(right.st_mtime_ns)
+        and int(left.st_size) == int(right.st_size)
+    )
+
+
+def _cache_digest(key: _DigestCacheKey, value: str) -> str:
+    with _DIGEST_CACHE_LOCK:
+        if key in _DIGEST_CACHE:
+            return _DIGEST_CACHE[key]
+        if len(_DIGEST_CACHE) >= _MAX_DIGEST_CACHE_ENTRIES:
+            oldest = next(iter(_DIGEST_CACHE))
+            _DIGEST_CACHE.pop(oldest, None)
+        _DIGEST_CACHE[key] = value
+    return value
+
+
+def _file_content_digest(path: Path, before: os.stat_result) -> str:
+    """Hash one stable regular file once per strong metadata identity.
+
+    The cache key includes Windows creation time (``st_birthtime_ns`` when exposed)
+    in addition to inode/device, ctime, mtime and size. That closes the Windows 3.12
+    replacement gap where a newly replaced file can otherwise present the same
+    size/mtime and a reused file index. Reads are streamed and bounded by the same
+    maximum scale supported by classic snapshots; no file content is retained.
+    """
+
+    key = _metadata_key(path, before)
+    with _DIGEST_CACHE_LOCK:
+        cached = _DIGEST_CACHE.get(key)
+    if cached is not None:
+        return cached
+    if before.st_size < 0 or before.st_size > _MAX_SIGNATURE_FILE_BYTES:
+        return "oversize"
+
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
+    flags |= getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOINHERIT", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError:
+        return "unreadable"
+    try:
+        opened = os.fstat(descriptor)
+        if (
+            _is_link_or_reparse(opened)
+            or not stat.S_ISREG(opened.st_mode)
+            or not _same_file_metadata(before, opened)
+        ):
+            return "unstable"
+        hasher = hashlib.sha256()
+        total = 0
+        while True:
+            chunk = os.read(descriptor, 64 * 1024)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > _MAX_SIGNATURE_FILE_BYTES:
+                return "oversize"
+            hasher.update(chunk)
+        opened_after = os.fstat(descriptor)
+        if not _same_file_metadata(before, opened_after):
+            return "unstable"
+    except OSError:
+        return "unreadable"
+    finally:
+        os.close(descriptor)
+
+    try:
+        after = os.lstat(path)
+    except OSError:
+        return "unreadable"
+    if (
+        _is_link_or_reparse(after)
+        or not stat.S_ISREG(after.st_mode)
+        or not _same_file_metadata(before, after)
+    ):
+        return "unstable"
+    return _cache_digest(key, hasher.hexdigest())
+
+
 def _file_identity(path: Path) -> _FileIdentity:
-    """Return identity that changes on replacement, metadata change, or removal."""
+    """Return identity that changes on replacement, content/metadata change, or removal."""
 
     try:
         info = os.lstat(path)
         if _is_link_or_reparse(info) or not stat.S_ISREG(info.st_mode):
-            return (path.name, -2, -2, -2, -2, -2)
+            return (path.name, -2, -2, -2, -2, -2, -2, "invalid")
         return (
             path.name,
             int(info.st_dev),
             int(info.st_ino),
+            _birthtime_ns(info),
             int(info.st_ctime_ns),
             int(info.st_mtime_ns),
             int(info.st_size),
+            _file_content_digest(path, info),
         )
     except OSError:
-        return (path.name, -1, -1, -1, -1, -1)
+        return (path.name, -1, -1, -1, -1, -1, -1, "missing")
 
 
 def _safe_manifest_path(manifest: Path) -> Optional[Path]:
@@ -128,6 +248,7 @@ def _read_manifest(manifest: Path) -> Optional[dict[str, Any]]:
         return None
     expected_identity = _identity(before)
     expected_metadata = (
+        _birthtime_ns(before),
         int(before.st_ctime_ns),
         int(before.st_mtime_ns),
         int(before.st_size),
@@ -136,6 +257,8 @@ def _read_manifest(manifest: Path) -> Optional[dict[str, Any]]:
         os.O_RDONLY
         | getattr(os, "O_NOFOLLOW", 0)
         | getattr(os, "O_NONBLOCK", 0)
+        | getattr(os, "O_BINARY", 0)
+        | getattr(os, "O_NOINHERIT", 0)
     )
     try:
         descriptor = os.open(absolute, flags)
@@ -166,6 +289,7 @@ def _read_manifest(manifest: Path) -> Optional[dict[str, Any]]:
         if (
             _identity(opened_after) != expected_identity
             or (
+                _birthtime_ns(opened_after),
                 int(opened_after.st_ctime_ns),
                 int(opened_after.st_mtime_ns),
                 int(opened_after.st_size),
@@ -186,6 +310,7 @@ def _read_manifest(manifest: Path) -> Optional[dict[str, Any]]:
         or not stat.S_ISREG(after.st_mode)
         or _identity(after) != expected_identity
         or (
+            _birthtime_ns(after),
             int(after.st_ctime_ns),
             int(after.st_mtime_ns),
             int(after.st_size),
