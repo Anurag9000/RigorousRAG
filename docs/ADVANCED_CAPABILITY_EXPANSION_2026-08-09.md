@@ -12,7 +12,9 @@ Before this expansion, exact-head run `31297259618` passed all 16 registered job
 - Compose/container build;
 - release-lock generation, verification and hash-only installation on Ubuntu, macOS and Windows for Python 3.10, 3.11 and 3.12.
 
-After the expansion and correction of the calibration-regression fixture, exact-head run `31302042911` passed the same 16/16 matrix on commit `01e5008909cf0e8b435e974ca9f83533d6f69856`. All three Linux lanes passed the complete 1,930-test suite. That proof covers the expansion through `01e5008`; subsequent capability commits require their own unchanged-head proof.
+After the expansion and correction of the calibration-regression fixture, exact-head run `31302042911` passed the same 16/16 matrix on commit `01e5008909cf0e8b435e974ca9f83533d6f69856`. All three Linux lanes passed the complete 1,930-test suite.
+
+The cache/governed-retrieval head `3edf570eaa11cf8a7558a219b459c68009d0e9ce` subsequently passed exact-head run `31302611641` 16/16. The adaptive-policy/tenant-quota head `2ed570bbeebc8d1e29f1e66c0cc3ae88bfaa4f3e` subsequently passed exact-head run `31302915963` 16/16. These proofs cover the expansion through `2ed570b`; subsequent capability commits require their own unchanged-head proof.
 
 ## P1 — durable compaction-recovery evidence
 
@@ -21,6 +23,14 @@ Added a dedicated durable compaction-recovery journal in the graph-compaction SQ
 ## P2 — migration cutover fencing
 
 The existing cutover preparation journal already had expiring leases and takeover after expiry. The missing guarantee was monotonic fencing. Each claim now increments a persistent fencing token, terminal transitions require the exact live token in addition to worker identity and lease validity, runtime orchestration propagates that token, and existing unfenced SQLite journals are migrated in place. A same-named stale worker cannot complete a newer claim with its older token.
+
+## Concrete local cutover execution
+
+Added a concrete single-host cutover adapter over the existing authoritative vector, sparse and generation stores. It consumes the already validated migration shadow rather than rebuilding target rows during cutover, binds the exact task/profile/content/artifact identity, captures source vector embeddings before mutation, verifies source identity again immediately before visibility, publishes the validated precomputed target vectors, replaces the sparse generation, and advances the append-only generation pointer only after both stores succeed.
+
+The adapter performs local compensation inside the visibility commit if vector, sparse or generation publication fails. For post-visibility saga faults it restores the captured source embeddings, sparse snapshot and authoritative generation, then verifies the prepared source snapshot digests and captured embeddings. Tests cover successful publication, post-visibility rollback, source drift, and dimensional incompatibility.
+
+This adapter intentionally fails **before visibility** when target vector dimensionality differs from the current physical Chroma collection. The current repository still needs a blue/green physical-collection registry and atomic collection-pointer cutover before dimension-changing embedding migrations can be called production-ready. The adapter is therefore a concrete single-host same-dimension production path, not distributed or dimension-changing cutover proof.
 
 ## Retrieval architecture expansion
 
@@ -132,6 +142,6 @@ Added durable tenant quota/admission accounting. Per-owner quota configuration c
 
 ## Intentionally remaining boundaries
 
-This expansion deliberately does not claim that optional external model weights, third-party benchmark corpora, production OCR engines, a production cutover adapter, disaster-recovery infrastructure or deployment-specific SLO dashboards exist merely because interfaces/evaluators now exist. Those require environment-specific artifacts and execution evidence.
+This expansion deliberately does not claim that optional external model weights, third-party benchmark corpora, production OCR engines, blue/green dimension-changing vector cutover, distributed disaster-recovery infrastructure or deployment-specific SLO dashboards exist merely because interfaces/evaluators now exist. Those require environment-specific artifacts and execution evidence.
 
-The next audit should prioritize: production migration execution/cutover adapter proof; concrete SPLADE/ColBERT/multilingual model adapters and model-card/version governance; image-text embedding and chart entailment adapters; DR/failover exercises; continual embedding/index adaptation experiments; expert adjudication workflows; benchmark acquisition/version manifests; and full final exact-head CI evidence.
+The next audit should prioritize: blue/green physical vector-collection registry and atomic collection-pointer cutover; concrete SPLADE/ColBERT/multilingual model adapters and model-card/version governance; image-text embedding and chart entailment adapters; DR/failover snapshot/restore exercises; continual embedding/index adaptation experiments; expert adjudication workflows; benchmark acquisition/version manifests; and full final exact-head CI evidence.
