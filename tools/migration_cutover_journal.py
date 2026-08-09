@@ -93,7 +93,7 @@ def _decoded(value: Any) -> CutoverPreparation:
 
 
 class MigrationCutoverJournal:
-    """Preparation-only journal; it intentionally has no executing/committed state."""
+    """Preparation-only journal with expiring leases and monotonic fencing tokens."""
 
     def __init__(self, path: str | os.PathLike[str]) -> None:
         self.path = _path(path)
@@ -149,6 +149,7 @@ class MigrationCutoverJournal:
                     lease_owner TEXT,
                     lease_expires_at REAL,
                     failure_type TEXT,
+                    fencing_token INTEGER NOT NULL DEFAULT 0,
                     schema_version INTEGER NOT NULL
                 );
                 CREATE UNIQUE INDEX IF NOT EXISTS cutover_task_operation
@@ -157,6 +158,15 @@ class MigrationCutoverJournal:
                     ON cutover_operations(owner_id, state, lease_expires_at, created_at);
                 """
             )
+            columns = {
+                str(row[1])
+                for row in connection.execute("PRAGMA table_info(cutover_operations)")
+            }
+            if "fencing_token" not in columns:
+                connection.execute(
+                    "ALTER TABLE cutover_operations "
+                    "ADD COLUMN fencing_token INTEGER NOT NULL DEFAULT 0"
+                )
 
     @staticmethod
     def _operation(row: sqlite3.Row) -> CutoverOperation:
@@ -172,6 +182,7 @@ class MigrationCutoverJournal:
             lease_owner=row["lease_owner"],
             lease_expires_at=row["lease_expires_at"],
             failure_type=row["failure_type"],
+            fencing_token=row["fencing_token"],
         )
 
     def seed(
@@ -193,8 +204,9 @@ class MigrationCutoverJournal:
                     INSERT OR IGNORE INTO cutover_operations(
                         operation_id, owner_id, task_id, preparation_json,
                         state, attempt, created_at, updated_at,
-                        lease_owner, lease_expires_at, failure_type, schema_version
-                    ) VALUES (?, ?, ?, ?, 'planned', 0, ?, ?, NULL, NULL, NULL, 1)
+                        lease_owner, lease_expires_at, failure_type,
+                        fencing_token, schema_version
+                    ) VALUES (?, ?, ?, ?, 'planned', 0, ?, ?, NULL, NULL, NULL, 0, 1)
                     """,
                     (
                         operation_id,
@@ -271,7 +283,8 @@ class MigrationCutoverJournal:
                 """
                 UPDATE cutover_operations
                 SET state='running', attempt=attempt+1, updated_at=?,
-                    lease_owner=?, lease_expires_at=?, failure_type=NULL
+                    lease_owner=?, lease_expires_at=?, failure_type=NULL,
+                    fencing_token=fencing_token+1
                 WHERE operation_id=? AND attempt < ? AND (
                     state='planned'
                     OR state='failed'
@@ -299,12 +312,14 @@ class MigrationCutoverJournal:
         operation_id: str,
         *,
         worker_id: str,
+        fencing_token: int,
         new_state: str,
         failure_type: str | None = None,
         now: float | None = None,
     ) -> CutoverOperation:
         operation = identifier(operation_id, "operation_id", 64)
         worker = identifier(worker_id, "worker_id", 128)
+        fence = exact_integer(fencing_token, "fencing_token", 1, 2**63 - 1)
         current = timestamp(time.time() if now is None else now)
         failure = (
             identifier(failure_type, "failure_type", 200)
@@ -318,12 +333,12 @@ class MigrationCutoverJournal:
                 SET state=?, updated_at=?, lease_owner=NULL,
                     lease_expires_at=NULL, failure_type=?
                 WHERE operation_id=? AND state='running'
-                  AND lease_owner=? AND lease_expires_at > ?
+                  AND lease_owner=? AND fencing_token=? AND lease_expires_at > ?
                 """,
-                (new_state, current, failure, operation, worker, current),
+                (new_state, current, failure, operation, worker, fence, current),
             )
             if cursor.rowcount != 1:
-                raise RuntimeError("cutover operation lease or state changed.")
+                raise RuntimeError("cutover operation lease, fence or state changed.")
         result = self.get(operation)
         if result is None:
             raise RuntimeError("cutover operation disappeared after transition.")
@@ -334,11 +349,13 @@ class MigrationCutoverJournal:
         operation_id: str,
         *,
         worker_id: str,
+        fencing_token: int,
         now: float | None = None,
     ) -> CutoverOperation:
         return self._transition(
             operation_id,
             worker_id=worker_id,
+            fencing_token=fencing_token,
             new_state="ready",
             now=now,
         )
@@ -348,12 +365,14 @@ class MigrationCutoverJournal:
         operation_id: str,
         *,
         worker_id: str,
+        fencing_token: int,
         failure_type: str,
         now: float | None = None,
     ) -> CutoverOperation:
         return self._transition(
             operation_id,
             worker_id=worker_id,
+            fencing_token=fencing_token,
             new_state="failed",
             failure_type=failure_type,
             now=now,
