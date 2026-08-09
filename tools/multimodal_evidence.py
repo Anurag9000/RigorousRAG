@@ -8,6 +8,7 @@ protocol so extraction can be model-specific without weakening citation lineage.
 from __future__ import annotations
 
 import hashlib
+import itertools
 import json
 import math
 import operator
@@ -335,7 +336,9 @@ def normalize_extracted_regions(
     if not callable(method):
         raise ValueError("extractor must expose extract_regions().")
     try:
-        raw_regions = list(method(source_bytes))
+        raw_regions = list(
+            itertools.islice(iter(method(source_bytes)), _MAX_REGIONS + 1)
+        )
     except Exception as exc:
         raise RuntimeError("layout extraction failed.") from exc
     if len(raw_regions) > _MAX_REGIONS:
@@ -392,10 +395,13 @@ def deduplicate_overlapping_regions(
 
     if isinstance(regions, (str, bytes, bytearray)) or len(regions) > _MAX_REGIONS:
         raise ValueError("regions must be a bounded sequence.")
+    values = tuple(regions)
+    if any(not isinstance(region, EvidenceRegion) for region in values):
+        raise ValueError("every region must be EvidenceRegion.")
     threshold = _unit(iou_threshold, "iou_threshold")
     result: list[EvidenceRegion] = []
     for region in sorted(
-        regions,
+        values,
         key=lambda value: (
             value.page_number,
             value.kind,
@@ -403,8 +409,6 @@ def deduplicate_overlapping_regions(
             value.region_id,
         ),
     ):
-        if not isinstance(region, EvidenceRegion):
-            raise ValueError("every region must be EvidenceRegion.")
         duplicate = any(
             existing.doc_id == region.doc_id
             and existing.source_sha256 == region.source_sha256
