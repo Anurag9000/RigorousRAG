@@ -271,4 +271,6 @@ def test_nonregular_generation_member_has_invalid_signature(tmp_path):
 
     identity = internal_search._file_identity(member)
 
-    assert identity[1:] == (-2, -2, -2, -2, -2)
+    assert identity[0] == "index.json"
+    assert all(item == -2 for item in identity[1:-1])
+    assert identity[-1] == "invalid"
