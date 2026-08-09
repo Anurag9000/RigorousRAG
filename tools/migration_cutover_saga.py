@@ -279,6 +279,26 @@ def _validate_aborted_source(
     _require_source(operation, adapter.current_identity(operation))
 
 
+def _validate_rejected_drift_unchanged(
+    operation: CutoverOperation,
+    adapter: CutoverBackendAdapter,
+    observed: BackendStateIdentity,
+) -> None:
+    """Prove a pre-publication source-drift rejection did not mutate the source.
+
+    A source that already differs from the preparation must not be "restored" by the
+    cutover saga, because that drift may be a legitimate concurrent update. Instead,
+    when publication never started, the saga compares the locked source identity seen
+    at rejection with a second locked read and requires exact equality.
+    """
+
+    if not isinstance(observed, BackendStateIdentity):
+        raise RuntimeError("cutover adapter returned invalid source identity.")
+    current = adapter.current_identity(operation)
+    if not isinstance(current, BackendStateIdentity) or current != observed:
+        raise RuntimeError("authoritative source changed while drift rejection was verified.")
+
+
 def execute_cutover_saga(
     operation: CutoverOperation,
     adapter: CutoverBackendAdapter,
@@ -292,6 +312,8 @@ def execute_cutover_saga(
     compensation execute inside the adapter-provided exclusive lock. Pre-visibility
     recovery is verified exactly by default; adapters with append-only recovery
     journals may provide ``validate_aborted_source`` to prove restored semantics.
+    Source drift detected before publication is never overwritten: the saga instead
+    verifies that the already-drifted identity remained unchanged under the same lock.
     """
 
     if not isinstance(operation, CutoverOperation) or operation.state != "ready":
@@ -322,9 +344,13 @@ def execute_cutover_saga(
             hook("lock_acquired")
             publication: TargetPublication | None = None
             visible = False
+            source_revalidated = False
+            observed_source: BackendStateIdentity | None = None
             failure_phase = "lock_acquired"
             try:
-                _require_source(operation, adapter.current_identity(operation))
+                observed_source = adapter.current_identity(operation)
+                _require_source(operation, observed_source)
+                source_revalidated = True
                 failure_phase = "source_revalidated"
                 phases.append("source_revalidated")
                 hook("source_revalidated")
@@ -391,7 +417,14 @@ def execute_cutover_saga(
                         adapter.discard_hidden_target(operation, publication)
                         phases.append("hidden_target_discarded")
                         hook("hidden_target_discarded")
-                    _validate_aborted_source(operation, adapter)
+                    if source_revalidated or publication is not None:
+                        _validate_aborted_source(operation, adapter)
+                    elif observed_source is not None:
+                        _validate_rejected_drift_unchanged(
+                            operation,
+                            adapter,
+                            observed_source,
+                        )
                     return CutoverSagaResult(
                         operation_id=operation.operation_id,
                         outcome="aborted",
