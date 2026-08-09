@@ -130,6 +130,7 @@ class CutoverOperation:
     lease_owner: str | None = None
     lease_expires_at: float | None = None
     failure_type: str | None = None
+    fencing_token: int = 0
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -147,6 +148,11 @@ class CutoverOperation:
             self,
             "attempt",
             exact_integer(self.attempt, "attempt", 0, 1_000_000),
+        )
+        object.__setattr__(
+            self,
+            "fencing_token",
+            exact_integer(self.fencing_token, "fencing_token", 0, 2**63 - 1),
         )
         object.__setattr__(self, "created_at", timestamp(self.created_at, "created_at"))
         object.__setattr__(self, "updated_at", timestamp(self.updated_at, "updated_at"))
@@ -169,9 +175,11 @@ class CutoverOperation:
                 identifier(self.failure_type, "failure_type", 200),
             )
         if self.state == "running" and (
-            self.lease_owner is None or self.lease_expires_at is None
+            self.lease_owner is None
+            or self.lease_expires_at is None
+            or self.fencing_token < 1
         ):
-            raise ValueError("running cutover preparation requires a lease.")
+            raise ValueError("running cutover preparation requires a fenced lease.")
         if self.state != "running" and (
             self.lease_owner is not None or self.lease_expires_at is not None
         ):
