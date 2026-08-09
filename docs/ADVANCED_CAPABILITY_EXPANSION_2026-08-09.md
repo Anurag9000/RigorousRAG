@@ -14,7 +14,7 @@ Before this expansion, exact-head run `31297259618` passed all 16 registered job
 
 After the expansion and correction of the calibration-regression fixture, exact-head run `31302042911` passed the same 16/16 matrix on commit `01e5008909cf0e8b435e974ca9f83533d6f69856`. All three Linux lanes passed the complete 1,930-test suite.
 
-The cache/governed-retrieval head `3edf570eaa11cf8a7558a219b459c68009d0e9ce` subsequently passed exact-head run `31302611641` 16/16. The adaptive-policy/tenant-quota head `2ed570bbeebc8d1e29f1e66c0cc3ae88bfaa4f3e` subsequently passed exact-head run `31302915963` 16/16. These proofs cover the expansion through `2ed570b`; subsequent capability commits require their own unchanged-head proof.
+The cache/governed-retrieval head `3edf570eaa11cf8a7558a219b459c68009d0e9ce` subsequently passed exact-head run `31302611641` 16/16. The adaptive-policy/tenant-quota head `2ed570bbeebc8d1e29f1e66c0cc3ae88bfaa4f3e` subsequently passed exact-head run `31302915963` 16/16. The concrete local cutover head `d40f4f838310cebedc9e82c4b567b8768c52ea72` subsequently passed exact-head run `31303310249` 16/16. These proofs cover the expansion through `d40f4f8`; subsequent capability commits require their own unchanged-head proof.
 
 ## P1 — durable compaction-recovery evidence
 
@@ -30,7 +30,23 @@ Added a concrete single-host cutover adapter over the existing authoritative vec
 
 The adapter performs local compensation inside the visibility commit if vector, sparse or generation publication fails. For post-visibility saga faults it restores the captured source embeddings, sparse snapshot and authoritative generation, then verifies the prepared source snapshot digests and captured embeddings. Tests cover successful publication, post-visibility rollback, source drift, and dimensional incompatibility.
 
-This adapter intentionally fails **before visibility** when target vector dimensionality differs from the current physical Chroma collection. The current repository still needs a blue/green physical-collection registry and atomic collection-pointer cutover before dimension-changing embedding migrations can be called production-ready. The adapter is therefore a concrete single-host same-dimension production path, not distributed or dimension-changing cutover proof.
+The local adapter intentionally fails **before visibility** when target vector dimensionality differs from the current physical Chroma collection. Dimension-changing migrations are handled by the separate blue/green routing control plane below rather than by mutating one dimension-fixed collection in place.
+
+## Blue/green physical vector routing
+
+Added a durable physical vector-collection registry and append-only per-document route journal for dimension-changing migrations:
+
+- immutable physical collection specifications are derived from the complete embedding-profile fingerprint, model name and explicit dimensionality;
+- Chroma-safe physical collection names are deterministic rather than caller-selected;
+- one profile fingerprint maps to one registered physical collection identity;
+- per-owner/document routing history is append-only with monotonic revisions and authoritative generation sequence binding;
+- the current route head advances through an atomic SQLite compare-and-swap over expected revision, collection, profile and generation identity;
+- rollback is another audited route revision and must advance the authoritative generation sequence instead of rewinding history;
+- physical collections cannot be retired while any current route still references them, and retirement requires exact collection-ID confirmation;
+- owner/document route isolation and bounded current-route/history reads are enforced;
+- `VectorCollectionRouter` resolves a document against the current physical collection and caches layer instances by immutable collection ID, so a successful route switch changes the physical collection used by subsequent queries without mutating the old collection.
+
+This control plane makes different embedding dimensionalities representable and routable. A subsequent adapter integration must populate the target registered collection, validate it, advance sparse/generation state and route CAS coherently; distributed multi-process transaction coordination and remote storage failover remain separate concerns.
 
 ## Retrieval architecture expansion
 
@@ -142,6 +158,6 @@ Added durable tenant quota/admission accounting. Per-owner quota configuration c
 
 ## Intentionally remaining boundaries
 
-This expansion deliberately does not claim that optional external model weights, third-party benchmark corpora, production OCR engines, blue/green dimension-changing vector cutover, distributed disaster-recovery infrastructure or deployment-specific SLO dashboards exist merely because interfaces/evaluators now exist. Those require environment-specific artifacts and execution evidence.
+This expansion deliberately does not claim that optional external model weights, third-party benchmark corpora, production OCR engines, distributed disaster-recovery infrastructure or deployment-specific SLO dashboards exist merely because interfaces/evaluators now exist. Those require environment-specific artifacts and execution evidence.
 
-The next audit should prioritize: blue/green physical vector-collection registry and atomic collection-pointer cutover; concrete SPLADE/ColBERT/multilingual model adapters and model-card/version governance; image-text embedding and chart entailment adapters; DR/failover snapshot/restore exercises; continual embedding/index adaptation experiments; expert adjudication workflows; benchmark acquisition/version manifests; and full final exact-head CI evidence.
+The next audit should prioritize: integrating the blue/green collection registry into a dimension-changing cutover adapter; crash-resumable/durable target-population receipts for physical collections; concrete SPLADE/ColBERT/multilingual model adapters and model-card/version governance; image-text embedding and chart entailment adapters; DR/failover snapshot/restore exercises; continual embedding/index adaptation experiments; expert adjudication workflows; benchmark acquisition/version manifests; cross-profile corpus retrieval/fusion; and full final exact-head CI evidence.

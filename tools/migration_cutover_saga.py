@@ -1,7 +1,9 @@
-"""Adapter-only cutover saga and compensation contract.
+"""Cutover saga and verified compensation contract.
 
-This module has no production adapter and no CLI. It defines the exact mutation and
-recovery ordering a future authoritative adapter must satisfy.
+The concrete single-host, same-dimension adapter lives in
+``tools.migration_cutover_local``. Dimension-changing blue/green and distributed
+adapters remain separate deployment concerns. This module owns mutation/recovery
+ordering and the adapter protocol only.
 """
 
 from __future__ import annotations
@@ -264,11 +266,12 @@ def execute_cutover_saga(
     *,
     fault_hook: Callable[[str], None] | None = None,
 ) -> CutoverSagaResult:
-    """Execute the adapter contract with mandatory verified compensation.
+    """Execute a cutover adapter with mandatory verified compensation.
 
-    No production adapter is provided by this repository slice. Callers must supply
-    an adapter explicitly; tests use an in-memory fake only. Publication and all
-    compensation execute inside the same adapter-provided exclusive lock.
+    Callers select an adapter explicitly. The repository includes a concrete local
+    same-dimension adapter in ``tools.migration_cutover_local``; alternative
+    blue/green or distributed adapters must satisfy the same protocol. Publication
+    and compensation execute inside the adapter-provided exclusive lock.
     """
 
     if not isinstance(operation, CutoverOperation) or operation.state != "ready":
