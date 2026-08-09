@@ -171,3 +171,33 @@ def test_bbox_and_layout_boundaries_fail_closed_without_raw_content_leakage():
             source_bytes=b"pdf-bytes",
             extractor=BadExtractor(),
         )
+
+
+def test_layout_extractor_iteration_is_bounded_before_materialization():
+    class UnboundedExtractor:
+        extractor_id = "layout-v1"
+
+        def extract_regions(self, document_bytes):
+            for index in range(100_001):
+                yield {
+                    "page_number": 1,
+                    "kind": "text",
+                    "x0": 0.0,
+                    "y0": 0.0,
+                    "x1": 1.0,
+                    "y1": 1.0,
+                    "content": str(index),
+                }
+
+    with pytest.raises(ValueError, match="count exceeds"):
+        normalize_extracted_regions(
+            owner_id="alice",
+            doc_id="doc-1",
+            source_bytes=b"pdf-bytes",
+            extractor=UnboundedExtractor(),
+        )
+
+
+def test_deduplication_validates_region_types_before_sorting():
+    with pytest.raises(ValueError, match="EvidenceRegion"):
+        deduplicate_overlapping_regions([object()])
