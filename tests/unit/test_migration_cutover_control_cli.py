@@ -16,8 +16,13 @@ def parse(capsys):
 def test_prepare_output_is_path_free_and_nonmutating(tmp_path, monkeypatch, capsys):
     journal = MigrationCutoverJournal(tmp_path / "cutovers.sqlite3")
     seeded = journal.seed(preparation(), now=1)
-    journal.claim(seeded.operation_id, worker_id="worker", now=2)
-    ready = journal.mark_ready(seeded.operation_id, worker_id="worker", now=3)
+    running = journal.claim(seeded.operation_id, worker_id="worker", now=2)
+    ready = journal.mark_ready(
+        seeded.operation_id,
+        worker_id="worker",
+        fencing_token=running.fencing_token,
+        now=3,
+    )
     monkeypatch.setattr(
         cli,
         "prepare_cutover_operation",
@@ -37,6 +42,7 @@ def test_prepare_output_is_path_free_and_nonmutating(tmp_path, monkeypatch, caps
     output, error = parse(capsys)
     assert error is None
     assert output["state"] == "ready"
+    assert output["fencing_token"] == running.fencing_token
     assert output["authoritative_mutation_performed"] is False
     assert output["restore_performed"] is False
     assert output["cutover_performed"] is False
@@ -50,6 +56,7 @@ def test_status_list_and_cancel_boundaries(tmp_path, monkeypatch, capsys):
     assert cli.main(["status", seeded.operation_id]) == 0
     status, error = parse(capsys)
     assert error is None and status["state"] == "planned"
+    assert status["fencing_token"] == 0
     assert cli.main(["list", "--owner-id", "alice"]) == 0
     listing, error = parse(capsys)
     assert error is None and listing["count"] == 1
