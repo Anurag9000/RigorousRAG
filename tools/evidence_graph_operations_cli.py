@@ -58,7 +58,7 @@ def _recovery_summary(value: Any) -> dict[str, Any]:
         "report_digest": value.report_digest,
         "confirmed_job_ids": value.confirmed_job_ids,
         "actor_id": value.actor_id,
-        "reason": value.reason,
+        "reason_recorded": bool(value.reason),
         "phase": value.phase,
         "attempt_count": value.attempt_count,
         "completed_job_ids": value.completed_job_ids,
