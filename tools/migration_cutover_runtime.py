@@ -112,6 +112,7 @@ def prepare_cutover_operation(
         return selected_journal.mark_ready(
             operation.operation_id,
             worker_id=worker,
+            fencing_token=claimed.fencing_token,
         )
     except Exception as exc:
         if claimed is not None:
@@ -119,6 +120,7 @@ def prepare_cutover_operation(
                 selected_journal.mark_failed(
                     operation.operation_id,
                     worker_id=worker,
+                    fencing_token=claimed.fencing_token,
                     failure_type=type(exc).__name__,
                 )
             except Exception:
