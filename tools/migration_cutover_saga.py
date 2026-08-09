@@ -1,9 +1,9 @@
 """Cutover saga and verified compensation contract.
 
-The concrete single-host, same-dimension adapter lives in
-``tools.migration_cutover_local``. Dimension-changing blue/green and distributed
-adapters remain separate deployment concerns. This module owns mutation/recovery
-ordering and the adapter protocol only.
+Concrete single-host same-dimension and blue/green dimension-changing adapters live in
+``tools.migration_cutover_local`` and ``tools.migration_cutover_blue_green``. This
+module owns mutation/recovery ordering and the adapter protocol; distributed adapters
+remain a separate deployment concern.
 """
 
 from __future__ import annotations
@@ -260,6 +260,25 @@ def _require_target(
     return actual
 
 
+def _validate_aborted_source(
+    operation: CutoverOperation,
+    adapter: CutoverBackendAdapter,
+) -> None:
+    """Verify an aborted source, allowing append-only semantic recovery adapters.
+
+    Most adapters must restore the exact prepared backend identity. An adapter that
+    advances append-only generation/route journals while restoring the same source
+    semantics may expose ``validate_aborted_source(operation)``. The method is
+    optional and intentionally excluded from the required backend protocol.
+    """
+
+    validator = getattr(adapter, "validate_aborted_source", None)
+    if callable(validator):
+        validator(operation)
+        return
+    _require_source(operation, adapter.current_identity(operation))
+
+
 def execute_cutover_saga(
     operation: CutoverOperation,
     adapter: CutoverBackendAdapter,
@@ -268,10 +287,11 @@ def execute_cutover_saga(
 ) -> CutoverSagaResult:
     """Execute a cutover adapter with mandatory verified compensation.
 
-    Callers select an adapter explicitly. The repository includes a concrete local
-    same-dimension adapter in ``tools.migration_cutover_local``; alternative
-    blue/green or distributed adapters must satisfy the same protocol. Publication
-    and compensation execute inside the adapter-provided exclusive lock.
+    Callers select an adapter explicitly. The repository includes concrete local
+    same-dimension and blue/green dimension-changing adapters. Publication and
+    compensation execute inside the adapter-provided exclusive lock. Pre-visibility
+    recovery is verified exactly by default; adapters with append-only recovery
+    journals may provide ``validate_aborted_source`` to prove restored semantics.
     """
 
     if not isinstance(operation, CutoverOperation) or operation.state != "ready":
@@ -371,7 +391,7 @@ def execute_cutover_saga(
                         adapter.discard_hidden_target(operation, publication)
                         phases.append("hidden_target_discarded")
                         hook("hidden_target_discarded")
-                        _require_source(operation, adapter.current_identity(operation))
+                    _validate_aborted_source(operation, adapter)
                     return CutoverSagaResult(
                         operation_id=operation.operation_id,
                         outcome="aborted",

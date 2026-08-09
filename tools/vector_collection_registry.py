@@ -16,7 +16,7 @@ from tools.embedding_models import EmbeddingProfile
 from tools.security import normalize_owner_id
 
 _COLLECTION_STATES = frozenset({"ready", "retired"})
-_ROUTE_ACTIONS = frozenset({"bootstrap", "switch", "rollback"})
+_ROUTE_ACTIONS = frozenset({"bootstrap", "switch", "rollback", "generation_advance"})
 _MAX_TIME = 1.0e15
 _MAX_DIMENSIONS = 1_000_000
 _MAX_HISTORY = 10_000
@@ -529,8 +529,10 @@ class VectorCollectionRegistry:
         action: str,
         now: float,
     ) -> VectorRouteRevision:
-        if action not in {"switch", "rollback"}:
-            raise ValueError("route transition action must be switch or rollback.")
+        if action not in {"switch", "rollback", "generation_advance"}:
+            raise ValueError(
+                "route transition action must be switch, rollback or generation_advance."
+            )
         owner = normalize_owner_id(owner_id)
         document = _identifier(doc_id, "doc_id", 200)
         revision = _positive_integer(expected_revision, "expected_revision")
@@ -549,8 +551,11 @@ class VectorCollectionRegistry:
         created = _timestamp(now, "now")
         if target_generation <= expected_generation:
             raise ValueError("target_generation_sequence must advance monotonically.")
-        if target_collection == expected_collection:
-            raise ValueError("route transition requires a different physical collection.")
+        same_collection = target_collection == expected_collection
+        if action == "generation_advance" and not same_collection:
+            raise ValueError("generation_advance must retain the physical collection.")
+        if action in {"switch", "rollback"} and same_collection:
+            raise ValueError(f"{action} requires a different physical collection.")
         with self._lock:
             try:
                 self._connection.execute("BEGIN IMMEDIATE")
@@ -558,18 +563,6 @@ class VectorCollectionRegistry:
                 if current is None:
                     self._connection.execute("ROLLBACK")
                     raise RuntimeError("vector route is unavailable.")
-                if (
-                    current.revision != revision
-                    or current.collection_id != expected_collection
-                    or current.profile_fingerprint != expected_profile
-                    or current.generation_sequence != expected_generation
-                ):
-                    self._connection.execute("ROLLBACK")
-                    raise RuntimeError("vector route compare-and-swap precondition failed.")
-                target = self._get_collection(target_collection)
-                if target is None or target.state != "ready":
-                    self._connection.execute("ROLLBACK")
-                    raise RuntimeError("target physical vector collection is not ready.")
                 existing_operation = self._connection.execute(
                     """
                     SELECT owner_id, doc_id, revision, collection_id, profile_fingerprint,
@@ -582,15 +575,34 @@ class VectorCollectionRegistry:
                 ).fetchone()
                 if existing_operation is not None:
                     recorded = self._route(existing_operation)
-                    self._connection.execute("COMMIT")
                     if (
                         recorded is None
-                        or recorded.collection_id != target.collection_id
+                        or recorded.collection_id != target_collection
                         or recorded.generation_sequence != target_generation
                         or recorded.action != action
                     ):
+                        self._connection.execute("ROLLBACK")
                         raise RuntimeError("route operation ID collision.")
+                    if current.revision != recorded.revision or current != recorded:
+                        self._connection.execute("ROLLBACK")
+                        raise RuntimeError("route operation already completed and was superseded.")
+                    self._connection.execute("COMMIT")
                     return recorded
+                if (
+                    current.revision != revision
+                    or current.collection_id != expected_collection
+                    or current.profile_fingerprint != expected_profile
+                    or current.generation_sequence != expected_generation
+                ):
+                    self._connection.execute("ROLLBACK")
+                    raise RuntimeError("vector route compare-and-swap precondition failed.")
+                target = self._get_collection(target_collection)
+                if target is None or target.state != "ready":
+                    self._connection.execute("ROLLBACK")
+                    raise RuntimeError("target physical vector collection is not ready.")
+                if action == "generation_advance" and target.profile_fingerprint != expected_profile:
+                    self._connection.execute("ROLLBACK")
+                    raise RuntimeError("generation advance may not change the embedding profile.")
                 route = VectorRouteRevision(
                     owner_id=owner,
                     doc_id=document,
@@ -788,14 +800,13 @@ class VectorCollectionRouter:
         **kwargs: Any,
     ) -> Any:
         route, _, layer = self.resolve(owner_id, doc_id)
-        results = layer.query(
+        return layer.query(
             query_text,
             n_results=n_results,
             owner_id=route.owner_id,
             doc_id=route.doc_id,
             **kwargs,
         )
-        return results
 
 
 __all__ = [
