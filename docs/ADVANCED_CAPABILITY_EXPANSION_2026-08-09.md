@@ -39,7 +39,7 @@ Added model-agnostic primitives and a bounded advanced retrieval pipeline for:
 
 Existing embedding profile support, including BGE-M3 dense/sparse/multi-vector modes and explicit model-adapter registration, is retained rather than duplicated.
 
-## Adaptive routing governance
+## Adaptive routing governance and operational state
 
 The existing route benchmark already measured selected versus oracle route outcomes, regret, cost and latency. Added the governance layer needed to use those results operationally:
 
@@ -51,6 +51,8 @@ The existing route benchmark already measured selected versus oracle route outco
 - explicit hold and rollback recommendations.
 
 Added a separate uncertainty-aware stopping policy that can stop, continue, escalate or abstain based on evidence sufficiency, answer confidence, agent disagreement, contradiction risk, uncertainty, marginal improvement, currentness requirements and remaining budget.
+
+Added a durable SQLite policy-state journal. Each owner has at most one promoted policy; candidate revisions enter shadow state against the exact promoted baseline, shadow evidence is immutable within a revision and bound to comparison/metrics digests, promotion requires the exact eligible decision digest, and rollback requires the exact promoted candidate and restores the superseded baseline revision. Policy revisions are monotonic and the store persists only bounded policy IDs/digests and governance evidence—not prompts or query text.
 
 ## Scientific graph depth
 
@@ -126,8 +128,10 @@ The ingestion job store already had durable retry timing/backoff and terminal fa
 - closed/open/half-open circuit-breaker transitions;
 - availability, error-rate, p50/p95/p99 latency, latency-SLO compliance and error-budget burn evidence.
 
+Added durable tenant quota/admission accounting. Per-owner quota configuration controls requests, work units, concurrent inflight reservations, window duration and lease duration. Reservations are atomic, have monotonic fencing tokens, expire automatically to release abandoned capacity, and require the exact live token for renewal/commit/release. Committed usage is windowed and owner-isolated; reservation records carry IDs and numeric accounting only, never request payloads.
+
 ## Intentionally remaining boundaries
 
 This expansion deliberately does not claim that optional external model weights, third-party benchmark corpora, production OCR engines, a production cutover adapter, disaster-recovery infrastructure or deployment-specific SLO dashboards exist merely because interfaces/evaluators now exist. Those require environment-specific artifacts and execution evidence.
 
-The next audit should prioritize: production migration execution/cutover adapter proof; concrete SPLADE/ColBERT/multilingual model adapters and model-card/version governance; image-text embedding and chart entailment adapters; online policy shadow traffic and rollback state; tenant quota/admission persistence; DR/failover exercises; continual embedding/index adaptation experiments; expert adjudication workflows; benchmark acquisition/version manifests; and full final exact-head CI evidence.
+The next audit should prioritize: production migration execution/cutover adapter proof; concrete SPLADE/ColBERT/multilingual model adapters and model-card/version governance; image-text embedding and chart entailment adapters; DR/failover exercises; continual embedding/index adaptation experiments; expert adjudication workflows; benchmark acquisition/version manifests; and full final exact-head CI evidence.
