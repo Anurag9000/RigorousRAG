@@ -1,0 +1,96 @@
+{{- if .Values.distributedMode.enabled }}
+{{- fail "distributedMode is not yet supported: configure and validate external durable stores, distributed leasing, and idempotent effects before enabling it" }}
+{{- end }}
+{{- if gt (int .Values.replicaCount) 1 }}
+{{- fail "replicaCount > 1 is intentionally blocked while RigorousRAG uses local SQLite/Chroma persistence" }}
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "rigorousrag.fullname" . }}
+  labels:
+    {{- include "rigorousrag.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "rigorousrag.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "rigorousrag.selectorLabels" . | nindent 8 }}
+    spec:
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: rigorousrag
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: 8000
+              protocol: TCP
+          env:
+            - name: SINGLE_USER_OWNER_ID
+              value: {{ .Values.env.SINGLE_USER_OWNER_ID | quote }}
+            - name: ENABLE_OCR
+              value: {{ .Values.env.ENABLE_OCR | quote }}
+            - name: ORPHAN_CLEANUP_ON_STARTUP
+              value: {{ .Values.env.ORPHAN_CLEANUP_ON_STARTUP | quote }}
+            - name: CHROMA_PATH
+              value: /data/vectors
+            - name: SPARSE_INDEX_PATH
+              value: /data/sparse.sqlite3
+            - name: INDEX_GENERATION_DB_PATH
+              value: /data/generations.sqlite3
+            - name: JOB_DB_PATH
+              value: /data/jobs.sqlite3
+            - name: DOCUMENT_DB_PATH
+              value: /data/documents.sqlite3
+            - name: UPLOAD_DIR
+              value: /data/uploads
+            - name: CLASSIC_STORAGE_DIR
+              value: /data/classic
+            - name: USAGE_LOG_FILE
+              value: /data/usage.jsonl
+            - name: EVIDENCE_GRAPH_DB_PATH
+              value: /data/evidence-graph.sqlite3
+            - name: EVIDENCE_GRAPH_JOB_DB_PATH
+              value: /data/evidence-graph-jobs.sqlite3
+            - name: EVIDENCE_GRAPH_COMPACTION_DB_PATH
+              value: /data/evidence-graph-compaction.sqlite3
+          startupProbe:
+            exec:
+              command: ["python", "-m", "tools.healthcheck"]
+            periodSeconds: 10
+            timeoutSeconds: 8
+            failureThreshold: 18
+          readinessProbe:
+            exec:
+              command: ["python", "-m", "tools.healthcheck"]
+            periodSeconds: 15
+            timeoutSeconds: 8
+            failureThreshold: 3
+          livenessProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: data
+          {{- if .Values.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "rigorousrag.fullname" . }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
