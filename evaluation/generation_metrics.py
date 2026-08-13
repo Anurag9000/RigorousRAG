@@ -39,7 +39,13 @@ def rouge_l(candidate: str, reference: str) -> float:
 
 
 def chrf(candidate: str, reference: str, *, max_order: int = 6, beta: float = 2.0) -> float:
-    """Character n-gram F-score inspired by chrF, dependency-free."""
+    """Character n-gram F-score inspired by chrF, dependency-free.
+
+    Orders that cannot exist in either string are excluded from the effective-order
+    average. This preserves the expected identity property for short exact matches
+    (for example, ``chrf("Paris", "Paris") == 1``) instead of penalizing the pair
+    for unavailable six-character n-grams.
+    """
 
     if max_order <= 0 or beta <= 0:
         raise ValueError("max_order and beta must be positive.")
@@ -52,14 +58,16 @@ def chrf(candidate: str, reference: str, *, max_order: int = 6, beta: float = 2.
     for order in range(1, max_order + 1):
         cand = Counter(candidate[i:i + order] for i in range(max(len(candidate) - order + 1, 0)))
         ref = Counter(reference[i:i + order] for i in range(max(len(reference) - order + 1, 0)))
-        overlap = sum((cand & ref).values())
         cand_total = sum(cand.values())
         ref_total = sum(ref.values())
+        if not cand_total and not ref_total:
+            continue
+        overlap = sum((cand & ref).values())
         precision = overlap / cand_total if cand_total else 0.0
         recall = overlap / ref_total if ref_total else 0.0
         denom = beta2 * precision + recall
         scores.append(((1 + beta2) * precision * recall / denom) if denom else 0.0)
-    return sum(scores) / len(scores)
+    return sum(scores) / len(scores) if scores else 0.0
 
 
 def split_claims(text: str) -> Tuple[str, ...]:
@@ -97,7 +105,7 @@ def unsupported_claim_rate(
         if not claim_tokens:
             return 1.0
         evidence_tokens = set()
-        for passage in passages:
+        for passage in evidence:
             evidence_tokens.update(_tokens(passage))
         return len(claim_tokens & evidence_tokens) / len(claim_tokens)
 
