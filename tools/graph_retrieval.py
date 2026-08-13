@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Iterable, List, Mapping, Optional, Sequence, Tuple
 
-from tools.evidence_graph import EvidenceGraph, SupportPath
+from tools.evidence_graph import EvidenceGraph
 
 
 @dataclass(frozen=True)
@@ -13,8 +13,8 @@ class GraphEvidence:
     node_id: str
     source_id: str
     score: float
-    support_path: Tuple[str, ...]
-    relations: Tuple[str, ...]
+    support_path: tuple[str, ...]
+    relations: tuple[str, ...]
     text: str
     metadata: Mapping[str, str]
 
@@ -22,7 +22,7 @@ class GraphEvidence:
 @dataclass(frozen=True)
 class GraphRetrievalResult:
     claim_id: str
-    evidence: Tuple[GraphEvidence, ...]
+    evidence: tuple[GraphEvidence, ...]
     complete_paths: int
     unique_sources: int
     truncated: bool
@@ -49,7 +49,7 @@ def retrieve_supporting_evidence(
         source_kinds=source_kinds,
         limit=max(limit * max(per_source_cap, 2) * 4, limit),
     )
-    selected: List[GraphEvidence] = []
+    selected: list[GraphEvidence] = []
     source_counts: dict[str, int] = {}
     seen_nodes = set()
     for path in paths:
