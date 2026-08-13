@@ -127,8 +127,10 @@ def run_governed_answer_flow(
 
     if security_check is not None and not bool(security_check(owner, query)):
         decision = route_for_review(aggregate_uncertainty=0.0, security_violation=True, policy=review_policy)
-        context = normalize_query_context(query, entity_resolver=entity_resolver, temporal_parser=temporal_parser)
-        routing = route_query_by_domain(query, classifier=classifier, classifier_version=classifier_version)
+        # Blocked input is processed only by deterministic in-process fallbacks; it is
+        # never forwarded to caller-injected classifiers, entity resolvers, or parsers.
+        context = normalize_query_context(query)
+        routing = route_query_by_domain(query)
         emit("blocked", {"request_id": request, "reason": "security_violation"})
         return AnswerFlowResult(owner, request, context, routing, None, None, decision, None, False)
 
