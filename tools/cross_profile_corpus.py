@@ -334,6 +334,8 @@ def retrieve_cross_profile_evidence(
                 score,
             )
         )
+    if not candidates:
+        return ()
     selected_rows = mmr_select(
         candidates,
         top_k=min(requested, len(candidates)),
