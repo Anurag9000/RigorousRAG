@@ -105,7 +105,7 @@ def unsupported_claim_rate(
         if not claim_tokens:
             return 1.0
         evidence_tokens = set()
-        for passage in evidence:
+        for passage in passages:
             evidence_tokens.update(_tokens(passage))
         return len(claim_tokens & evidence_tokens) / len(claim_tokens)
 
