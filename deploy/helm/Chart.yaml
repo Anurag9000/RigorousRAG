@@ -2,5 +2,5 @@ apiVersion: v2
 name: rigorousrag
 description: Single-replica production baseline for RigorousRAG
 version: 0.1.0
-appVersion: "0.1.0"
+appVersion: "4.4.0"
 type: application
