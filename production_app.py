@@ -3,6 +3,7 @@ from pathlib import Path
 import os
 
 import server as base
+from fastapi import Request
 from tools.control_api import build_control_router
 from tools.feedback_store import FeedbackStore
 from tools.review_store import ReviewStore
@@ -21,5 +22,14 @@ if not any(getattr(route, "path", None) == "/reviews" for route in app.routes):
             feedback_store=feedback,
         )
     )
+
+
+@app.middleware("http")
+async def governance_no_store(request: Request, call_next):
+    response = await call_next(request)
+    if request.url.path.startswith(("/reviews", "/feedback")):
+        response.headers["Cache-Control"] = "no-store"
+    return response
+
 
 __all__ = ["app", "feedback", "reviews"]
