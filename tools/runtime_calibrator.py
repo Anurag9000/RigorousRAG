@@ -7,7 +7,6 @@ import json
 import math
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Optional, Sequence, Tuple
 
 
 @dataclass(frozen=True)
@@ -27,12 +26,22 @@ class CalibrationProfile:
     version: str
     corpus_profile: str
     benchmark: str
-    points: Tuple[CalibrationPoint, ...]
+    points: tuple[CalibrationPoint, ...]
     answer_threshold: float = 0.5
 
     def __post_init__(self) -> None:
-        if any(not value.strip() for value in (self.calibrator_id, self.version, self.corpus_profile, self.benchmark)):
-            raise ValueError("calibrator identity, version, corpus profile, and benchmark are required.")
+        if any(
+            not value.strip()
+            for value in (
+                self.calibrator_id,
+                self.version,
+                self.corpus_profile,
+                self.benchmark,
+            )
+        ):
+            raise ValueError(
+                "calibrator identity, version, corpus profile, and benchmark are required."
+            )
         if not self.points:
             raise ValueError("at least one calibration point is required.")
         raw_values = [point.raw for point in self.points]
@@ -114,8 +123,12 @@ class RuntimeCalibratorRegistry:
                 "no active calibrator exists for the requested corpus/benchmark profile."
             ) from exc
 
-    def calibrate(self, raw_confidence: float, *, corpus_profile: str, benchmark: str) -> float:
-        return self.selected(corpus_profile=corpus_profile, benchmark=benchmark).calibrate(raw_confidence)
+    def calibrate(
+        self, raw_confidence: float, *, corpus_profile: str, benchmark: str
+    ) -> float:
+        return self.selected(
+            corpus_profile=corpus_profile, benchmark=benchmark
+        ).calibrate(raw_confidence)
 
     def _persist(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -135,7 +148,9 @@ class RuntimeCalibratorRegistry:
             ],
         }
         temporary = self.path.with_suffix(self.path.suffix + ".tmp")
-        temporary.write_text(json.dumps(payload, sort_keys=True, indent=2), encoding="utf-8")
+        temporary.write_text(
+            json.dumps(payload, sort_keys=True, indent=2), encoding="utf-8"
+        )
         temporary.replace(self.path)
 
     def _load(self) -> None:
