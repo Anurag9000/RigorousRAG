@@ -23,6 +23,7 @@ from tools.security import normalize_owner_id
 
 _MAX_RETAIN = 1_000_000
 _MAX_EXPORT = 1_000
+_MAX_AGGREGATE_SAMPLE = 1_000
 _MIN_SECRET_BYTES = 16
 
 
@@ -122,9 +123,10 @@ class PrivacySafeTraceExport:
 @dataclass(frozen=True)
 class TraceGovernanceReport:
     deleted_runs: int
-    retained_runs: int
+    retention_cap: int
+    retained_sample_size: int
     exportable_runs: int
-    aggregate: AdaptiveTraceAggregate
+    aggregate_sample: AdaptiveTraceAggregate
 
 
 def apply_trace_retention(
@@ -133,7 +135,11 @@ def apply_trace_retention(
     owner_id: str,
     policy: TraceRetentionPolicy | None = None,
 ) -> TraceGovernanceReport:
-    """Apply count-bounded retention using the trace store's atomic owner prune."""
+    """Apply count-bounded retention using the trace store's atomic owner prune.
+
+    Aggregate reporting is explicitly sampled because the underlying public trace-store
+    API intentionally caps list/aggregate reads at 1,000 records.
+    """
 
     if not isinstance(store, AdaptiveTraceStore):
         raise ValueError("store must be AdaptiveTraceStore.")
@@ -142,13 +148,19 @@ def apply_trace_retention(
         raise ValueError("policy must be TraceRetentionPolicy.")
     owner = normalize_owner_id(owner_id)
     deleted = store.prune_owner(owner_id=owner, retain_latest=selected.retain_latest)
-    retained = len(store.list_runs(owner_id=owner, limit=min(max(selected.retain_latest, 1), _MAX_EXPORT))) if selected.retain_latest else 0
-    aggregate = store.aggregate(owner_id=owner, limit=min(max(selected.retain_latest, 1), _MAX_EXPORT)) if selected.retain_latest else AdaptiveTraceAggregate(0, 0, 0, 0, 0.0, 0.0, (), ())
+    if selected.retain_latest:
+        sample_limit = min(selected.retain_latest, _MAX_AGGREGATE_SAMPLE)
+        retained_sample = len(store.list_runs(owner_id=owner, limit=sample_limit))
+        aggregate = store.aggregate(owner_id=owner, limit=sample_limit)
+    else:
+        retained_sample = 0
+        aggregate = AdaptiveTraceAggregate(0, 0, 0, 0, 0.0, 0.0, (), ())
     return TraceGovernanceReport(
         deleted_runs=deleted,
-        retained_runs=retained,
-        exportable_runs=min(retained, selected.export_limit),
-        aggregate=aggregate,
+        retention_cap=selected.retain_latest,
+        retained_sample_size=retained_sample,
+        exportable_runs=min(retained_sample, selected.export_limit),
+        aggregate_sample=aggregate,
     )
 
 
