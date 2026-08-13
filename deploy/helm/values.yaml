@@ -23,14 +23,11 @@ resources:
     memory: 4Gi
 
 podSecurityContext:
-  runAsNonRoot: true
-  runAsUser: 999
-  runAsGroup: 999
-  fsGroup: 999
   seccompProfile:
     type: RuntimeDefault
 
 containerSecurityContext:
+  runAsNonRoot: true
   allowPrivilegeEscalation: false
   readOnlyRootFilesystem: false
   capabilities:
@@ -45,7 +42,7 @@ networkPolicy:
   enabled: true
 
 # Local SQLite/Chroma persistence is not safe for active-active horizontal scaling.
-# Keep this false until external durable stores, distributed leasing, and idempotent
-# cross-worker effects are configured and validated.
+# This chart deliberately rejects distributed mode and replicaCount > 1 until external
+# durable stores, distributed leasing, and idempotent cross-worker effects are validated.
 distributedMode:
   enabled: false
