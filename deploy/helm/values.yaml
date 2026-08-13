@@ -1,0 +1,51 @@
+replicaCount: 1
+
+image:
+  repository: rigorousrag
+  tag: latest
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 8000
+
+persistence:
+  enabled: true
+  size: 20Gi
+  storageClassName: ""
+
+resources:
+  requests:
+    cpu: 500m
+    memory: 1Gi
+  limits:
+    cpu: "2"
+    memory: 4Gi
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 999
+  runAsGroup: 999
+  fsGroup: 999
+  seccompProfile:
+    type: RuntimeDefault
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: false
+  capabilities:
+    drop: ["ALL"]
+
+env:
+  SINGLE_USER_OWNER_ID: production-user
+  ENABLE_OCR: "false"
+  ORPHAN_CLEANUP_ON_STARTUP: "false"
+
+networkPolicy:
+  enabled: true
+
+# Local SQLite/Chroma persistence is not safe for active-active horizontal scaling.
+# Keep this false until external durable stores, distributed leasing, and idempotent
+# cross-worker effects are configured and validated.
+distributedMode:
+  enabled: false
