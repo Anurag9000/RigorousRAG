@@ -34,6 +34,11 @@ spec:
             - name: http
               containerPort: 8000
               protocol: TCP
+          {{- if .Values.existingSecret }}
+          envFrom:
+            - secretRef:
+                name: {{ .Values.existingSecret | quote }}
+          {{- end }}
           env:
             - name: SINGLE_USER_OWNER_ID
               value: {{ .Values.env.SINGLE_USER_OWNER_ID | quote }}
