@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import math
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Mapping, Optional, Tuple
@@ -120,7 +119,12 @@ class DatasetRegistry:
 
     def _persist(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        payload = [asdict(card) for card in sorted(self._cards.values(), key=lambda item: (item.dataset_id, item.version))]
+        payload = [
+            asdict(card)
+            for card in sorted(
+                self._cards.values(), key=lambda item: (item.dataset_id, item.version)
+            )
+        ]
         temporary = self.path.with_suffix(self.path.suffix + ".tmp")
         temporary.write_text(json.dumps(payload, sort_keys=True, indent=2), encoding="utf-8")
         temporary.replace(self.path)
