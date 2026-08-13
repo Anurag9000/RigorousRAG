@@ -73,8 +73,10 @@ def test_temporal_retraction_and_source_caps() -> None:
     state = revise_belief("claim", events, as_of=104.0)
     assert "old" not in state.active_evidence_ids
     assert state.retracted_evidence_ids == ("old",)
-    assert state.status == "contradicted"
+    assert state.status == "conflicted"
     assert state.independent_sources == ("source-a", "source-b")
+    decisive = revise_belief("claim", events, as_of=104.0, conflict_margin=0.05)
+    assert decisive.status == "contradicted"
 
 
 def test_semantic_cache_enforces_partition_freshness_and_source_versions() -> None:
