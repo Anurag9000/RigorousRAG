@@ -28,4 +28,4 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=8s --start-period=90s --retries=3 \
   CMD ["python", "-m", "tools.healthcheck"]
 
-CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
+CMD ["uvicorn", "production_app:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
