@@ -38,6 +38,10 @@ env:
   ENABLE_OCR: "false"
   ORPHAN_CLEANUP_ON_STARTUP: "false"
 
+# Optional pre-existing Secret injected with envFrom. Provider keys and other credentials
+# belong in this Secret, not in values.yaml.
+existingSecret: ""
+
 networkPolicy:
   enabled: true
 
