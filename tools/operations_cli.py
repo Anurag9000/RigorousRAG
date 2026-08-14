@@ -26,7 +26,9 @@ from tools.release_inventory import (
     load_pip_list,
     reproducible_timestamp,
     write_canonical_json,
+    write_provenance,
 )
+from tools.release_supply_chain import ReleaseProvenance, sha256_file
 
 
 def _manifest(path: str | Path) -> BackupManifest:
@@ -117,6 +119,21 @@ def _inventory(args: argparse.Namespace) -> int:
     return 0
 
 
+def _provenance(args: argparse.Namespace) -> int:
+    provenance = ReleaseProvenance(
+        commit_sha=args.commit_sha,
+        dependency_lock_sha256=sha256_file(args.dependency_lock),
+        sbom_sha256=sha256_file(args.sbom),
+        artifact_sha256=args.artifact_sha256,
+        image_digest=args.image_digest,
+        workflow=args.workflow,
+        run_id=args.run_id,
+    )
+    digest = write_provenance(args.output, provenance)
+    _print({"output": str(args.output), "sha256": digest})
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="rigorousrag-operations")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -160,6 +177,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     inventory.add_argument("--source-date-epoch", default=os.getenv("SOURCE_DATE_EPOCH"))
     inventory.set_defaults(handler=_inventory)
+
+    provenance = commands.add_parser("provenance-build")
+    provenance.add_argument("--commit-sha", required=True)
+    provenance.add_argument("--dependency-lock", required=True)
+    provenance.add_argument("--sbom", required=True)
+    provenance.add_argument("--artifact-sha256", required=True)
+    provenance.add_argument("--image-digest")
+    provenance.add_argument("--workflow", required=True)
+    provenance.add_argument("--run-id", required=True)
+    provenance.add_argument("--output", required=True)
+    provenance.set_defaults(handler=_provenance)
     return parser
 
 
