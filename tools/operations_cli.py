@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from dataclasses import asdict
 from pathlib import Path
@@ -23,6 +24,7 @@ from tools.release_inventory import (
     build_cyclonedx_sbom,
     build_spdx_sbom,
     load_pip_list,
+    reproducible_timestamp,
     write_canonical_json,
 )
 
@@ -32,8 +34,8 @@ def _manifest(path: str | Path) -> BackupManifest:
     if not isinstance(raw, dict):
         raise ValueError("backup manifest must be a JSON object.")
     entries = raw.get("entries")
-    if not isinstance(entries, list):
-        raise ValueError("backup manifest entries must be an array.")
+    if not isinstance(entries, list) or not all(isinstance(item, dict) for item in entries):
+        raise ValueError("backup manifest entries must be an array of objects.")
     return BackupManifest(
         schema=str(raw.get("schema", "")),
         generation=str(raw.get("generation", "")),
@@ -44,7 +46,6 @@ def _manifest(path: str | Path) -> BackupManifest:
                 sha256=str(item["sha256"]),
             )
             for item in entries
-            if isinstance(item, dict)
         ),
         encryption_key_id=(
             None if raw.get("encryption_key_id") is None else str(raw["encryption_key_id"])
@@ -104,7 +105,13 @@ def _inventory(args: argparse.Namespace) -> int:
     if args.format == "cyclonedx":
         document = build_cyclonedx_sbom(records)
     else:
-        document = build_spdx_sbom(records, namespace=args.namespace)
+        if args.source_date_epoch is None:
+            raise ValueError("SPDX inventory requires --source-date-epoch or SOURCE_DATE_EPOCH.")
+        document = build_spdx_sbom(
+            records,
+            namespace=args.namespace,
+            created=reproducible_timestamp(args.source_date_epoch),
+        )
     digest = write_canonical_json(args.output, document)
     _print({"output": str(args.output), "sha256": digest, "component_count": len(records)})
     return 0
@@ -151,6 +158,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--namespace",
         default="https://github.com/Anurag9000/RigorousRAG/releases/sbom",
     )
+    inventory.add_argument("--source-date-epoch", default=os.getenv("SOURCE_DATE_EPOCH"))
     inventory.set_defaults(handler=_inventory)
     return parser
 
