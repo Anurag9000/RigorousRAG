@@ -183,19 +183,19 @@ jobs:
           source_date_epoch="$(git show -s --format=%ct HEAD)"
           image_digest="$(docker image inspect rigorousrag:ci --format '{{.Id}}')"
           image_sha256="${image_digest#sha256:}"
-          docker run --rm --entrypoint python -v "${PWD}:/workspace" -w /workspace rigorousrag:ci \
+          docker run --rm --user "$(id -u):$(id -g)" --entrypoint python -v "${PWD}:/workspace" -w /workspace rigorousrag:ci \
             scripts/operations_frontier.py inventory-build \
             --pip-list installed-packages.json \
             --output rigorousrag.cdx.json \
             --format cyclonedx
-          docker run --rm --entrypoint python -v "${PWD}:/workspace" -w /workspace rigorousrag:ci \
+          docker run --rm --user "$(id -u):$(id -g)" --entrypoint python -v "${PWD}:/workspace" -w /workspace rigorousrag:ci \
             scripts/operations_frontier.py inventory-build \
             --pip-list installed-packages.json \
             --output rigorousrag.spdx.json \
             --format spdx \
             --namespace "https://github.com/Anurag9000/RigorousRAG/sbom/${GITHUB_SHA}" \
             --source-date-epoch "${source_date_epoch}"
-          docker run --rm --entrypoint python -v "${PWD}:/workspace" -w /workspace rigorousrag:ci \
+          docker run --rm --user "$(id -u):$(id -g)" --entrypoint python -v "${PWD}:/workspace" -w /workspace rigorousrag:ci \
             scripts/operations_frontier.py provenance-build \
             --commit-sha "${GITHUB_SHA}" \
             --dependency-lock installed-packages.json \
