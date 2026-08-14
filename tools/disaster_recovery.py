@@ -1,221 +1,187 @@
-"""Backup integrity, recovery-objective, canary and rollback control primitives."""
+"""Checksum-verified local backup/restore and canary rollback policy primitives."""
 
 from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Mapping, Sequence
-from dataclasses import asdict, dataclass, replace
-from enum import Enum
-
-from tools.supply_chain import sha256_bytes
-
-
-def _canonical_json(value: object) -> bytes:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
+import os
+import shutil
+import tempfile
+from dataclasses import asdict, dataclass
+from pathlib import Path
+from typing import Iterable
 
 
-@dataclass(frozen=True, order=True)
-class BackupArtifact:
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _safe_name(value: str) -> str:
+    name = str(value).strip()
+    if not name or name in {".", ".."} or "/" in name or "\\" in name:
+        raise ValueError("backup entry names must be simple file names.")
+    return name
+
+
+@dataclass(frozen=True)
+class BackupEntry:
     name: str
-    sha256: str
     size_bytes: int
-    created_at: float
+    sha256: str
 
 
 @dataclass(frozen=True)
 class BackupManifest:
-    artifacts: tuple[BackupArtifact, ...]
+    schema: str
+    generation: str
+    entries: tuple[BackupEntry, ...]
+    encryption_key_id: str | None
+
+
+@dataclass(frozen=True)
+class RestoreReport:
+    restored: tuple[str, ...]
     manifest_sha256: str
 
 
-def build_backup_manifest(files: Mapping[str, bytes], *, created_at: float) -> BackupManifest:
-    artifacts = tuple(
-        sorted(
-            (
-                BackupArtifact(name, sha256_bytes(content), len(content), float(created_at))
-                for name, content in files.items()
-            ),
-            key=lambda item: item.name,
-        )
-    )
-    digest = sha256_bytes(_canonical_json([asdict(item) for item in artifacts]))
-    return BackupManifest(artifacts, digest)
-
-
-def verify_backup_manifest(manifest: BackupManifest, files: Mapping[str, bytes]) -> bool:
-    expected = build_backup_manifest(
-        files,
-        created_at=min((item.created_at for item in manifest.artifacts), default=0.0),
-    )
-    return expected == manifest
-
-
 @dataclass(frozen=True)
-class RecoveryObjective:
-    max_rpo_seconds: float
-    max_rto_seconds: float
-
-    def __post_init__(self) -> None:
-        if self.max_rpo_seconds < 0.0 or self.max_rto_seconds < 0.0:
-            raise ValueError("recovery objectives must not be negative")
-
-
-@dataclass(frozen=True)
-class RestoreRehearsal:
-    incident_at: float
-    backup_at: float
-    restore_started_at: float
-    restore_completed_at: float
-    required_artifacts: tuple[str, ...]
-    restored_artifacts: tuple[str, ...]
-    integrity_ok: bool
-
-
-@dataclass(frozen=True)
-class RecoveryDecision:
-    ready: bool
-    rpo_seconds: float
-    rto_seconds: float
-    reason_codes: tuple[str, ...]
-
-
-def evaluate_recovery(
-    rehearsal: RestoreRehearsal,
-    objective: RecoveryObjective,
-) -> RecoveryDecision:
-    rpo = max(0.0, rehearsal.incident_at - rehearsal.backup_at)
-    rto = max(0.0, rehearsal.restore_completed_at - rehearsal.incident_at)
-    reasons: list[str] = []
-    if rehearsal.restore_started_at < rehearsal.incident_at:
-        reasons.append("restore_started_before_incident")
-    if rehearsal.restore_completed_at < rehearsal.restore_started_at:
-        reasons.append("restore_completion_precedes_start")
-    if rpo > objective.max_rpo_seconds:
-        reasons.append("rpo_exceeded")
-    if rto > objective.max_rto_seconds:
-        reasons.append("rto_exceeded")
-    missing = set(rehearsal.required_artifacts) - set(rehearsal.restored_artifacts)
-    if missing:
-        reasons.append("restore_artifacts_missing")
-    if not rehearsal.integrity_ok:
-        reasons.append("restore_integrity_failed")
-    return RecoveryDecision(not reasons, rpo, rto, tuple(reasons))
-
-
-@dataclass(frozen=True)
-class CanaryThresholds:
-    min_samples: int = 100
+class CanaryPolicy:
     max_error_rate: float = 0.01
-    max_p95_latency_ms: float = 1000.0
-    min_quality_score: float = 0.0
-
-    def __post_init__(self) -> None:
-        if self.min_samples < 1:
-            raise ValueError("min_samples must be positive")
-        if not 0.0 <= self.max_error_rate <= 1.0:
-            raise ValueError("max_error_rate must be between zero and one")
-        if self.max_p95_latency_ms <= 0.0:
-            raise ValueError("max_p95_latency_ms must be positive")
+    max_p95_latency_ratio: float = 1.20
+    min_quality_delta: float = -0.005
 
 
 @dataclass(frozen=True)
 class CanaryObservation:
-    samples: int
-    error_rate: float
-    p95_latency_ms: float
-    quality_score: float
-
-
-class CanaryAction(str, Enum):
-    HOLD = "hold"
-    PROMOTE = "promote"
-    ROLLBACK = "rollback"
+    requests: int
+    errors: int
+    baseline_p95_latency_ms: float
+    canary_p95_latency_ms: float
+    quality_delta: float
 
 
 @dataclass(frozen=True)
 class CanaryDecision:
-    action: CanaryAction
+    promote: bool
+    rollback: bool
     reason_codes: tuple[str, ...]
 
 
-def evaluate_canary(
-    observation: CanaryObservation,
-    thresholds: CanaryThresholds | None = None,
-) -> CanaryDecision:
-    selected = thresholds or CanaryThresholds()
-    if observation.samples < selected.min_samples:
-        return CanaryDecision(CanaryAction.HOLD, ("insufficient_samples",))
-    reasons: list[str] = []
-    if observation.error_rate > selected.max_error_rate:
-        reasons.append("error_rate_exceeded")
-    if observation.p95_latency_ms > selected.max_p95_latency_ms:
-        reasons.append("latency_budget_exceeded")
-    if observation.quality_score < selected.min_quality_score:
-        reasons.append("quality_floor_missed")
-    if reasons:
-        return CanaryDecision(CanaryAction.ROLLBACK, tuple(reasons))
-    return CanaryDecision(CanaryAction.PROMOTE, ())
+def manifest_sha256(manifest: BackupManifest) -> str:
+    payload = json.dumps(asdict(manifest), sort_keys=True, separators=(",", ":"), allow_nan=False)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-class RollbackState(str, Enum):
-    PREPARED = "prepared"
-    APPLIED = "applied"
-    COMPLETED = "completed"
-
-
-@dataclass(frozen=True)
-class RollbackAction:
-    action_id: str
-    resource: str
-    from_version: str
-    to_version: str
-    state: RollbackState = RollbackState.PREPARED
-
-
-def prepare_rollback(resource: str, from_version: str, to_version: str) -> RollbackAction:
-    if not resource.strip() or not from_version.strip() or not to_version.strip():
-        raise ValueError("rollback identifiers must be non-empty")
-    payload = {
-        "resource": resource.strip(),
-        "from_version": from_version.strip(),
-        "to_version": to_version.strip(),
-    }
-    action_id = hashlib.sha256(_canonical_json(payload)).hexdigest()
-    return RollbackAction(action_id, payload["resource"], payload["from_version"], payload["to_version"])
-
-
-def advance_rollback(action: RollbackAction, next_state: RollbackState) -> RollbackAction:
-    order: Sequence[RollbackState] = (
-        RollbackState.PREPARED,
-        RollbackState.APPLIED,
-        RollbackState.COMPLETED,
+def create_backup(
+    *,
+    sources: Iterable[str | Path],
+    destination: str | Path,
+    generation: str,
+    encryption_key_id: str | None = None,
+) -> BackupManifest:
+    target = Path(destination)
+    target.mkdir(parents=True, exist_ok=True)
+    entries: list[BackupEntry] = []
+    seen: set[str] = set()
+    for source_value in sources:
+        source = Path(source_value)
+        if not source.is_file():
+            raise ValueError(f"backup source is not a file: {source}")
+        name = _safe_name(source.name)
+        if name in seen:
+            raise ValueError("backup source names must be unique.")
+        seen.add(name)
+        copied = target / name
+        shutil.copyfile(source, copied)
+        entries.append(BackupEntry(name, copied.stat().st_size, _sha256_file(copied)))
+    entries.sort(key=lambda item: item.name)
+    manifest = BackupManifest(
+        schema="rigorousrag-backup/v1",
+        generation=str(generation),
+        entries=tuple(entries),
+        encryption_key_id=encryption_key_id,
     )
-    current_index = order.index(action.state)
-    target_index = order.index(next_state)
-    if target_index == current_index:
-        return action
-    if target_index != current_index + 1:
-        raise ValueError("rollback state transitions must be sequential")
-    return replace(action, state=next_state)
+    (target / "manifest.json").write_text(
+        json.dumps(asdict(manifest), sort_keys=True, indent=2, allow_nan=False) + "\n",
+        encoding="utf-8",
+    )
+    return manifest
+
+
+def verify_backup(*, source: str | Path, manifest: BackupManifest) -> bool:
+    root = Path(source)
+    for entry in manifest.entries:
+        path = root / _safe_name(entry.name)
+        if not path.is_file() or path.stat().st_size != entry.size_bytes:
+            return False
+        if _sha256_file(path) != entry.sha256:
+            return False
+    return True
+
+
+def restore_backup(
+    *, source: str | Path, destination: str | Path, manifest: BackupManifest
+) -> RestoreReport:
+    backup_root = Path(source)
+    if not verify_backup(source=backup_root, manifest=manifest):
+        raise ValueError("backup verification failed.")
+    target = Path(destination)
+    target.mkdir(parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(prefix="rigorousrag-restore-", dir=str(target.parent)))
+    restored: list[str] = []
+    try:
+        for entry in manifest.entries:
+            name = _safe_name(entry.name)
+            shutil.copyfile(backup_root / name, staging / name)
+        for entry in manifest.entries:
+            name = _safe_name(entry.name)
+            os.replace(staging / name, target / name)
+            restored.append(name)
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+    return RestoreReport(tuple(sorted(restored)), manifest_sha256(manifest))
+
+
+def evaluate_canary(
+    observation: CanaryObservation, policy: CanaryPolicy | None = None
+) -> CanaryDecision:
+    selected = policy or CanaryPolicy()
+    if observation.requests < 1 or observation.errors < 0 or observation.errors > observation.requests:
+        raise ValueError("canary request/error counts are invalid.")
+    if observation.baseline_p95_latency_ms < 0 or observation.canary_p95_latency_ms < 0:
+        raise ValueError("latencies must be non-negative.")
+    reasons: list[str] = []
+    error_rate = observation.errors / observation.requests
+    latency_ratio = (
+        1.0
+        if observation.baseline_p95_latency_ms == observation.canary_p95_latency_ms == 0
+        else float("inf")
+        if observation.baseline_p95_latency_ms == 0
+        else observation.canary_p95_latency_ms / observation.baseline_p95_latency_ms
+    )
+    if error_rate > selected.max_error_rate:
+        reasons.append("canary_error_rate_exceeded")
+    if latency_ratio > selected.max_p95_latency_ratio:
+        reasons.append("canary_latency_regression")
+    if observation.quality_delta < selected.min_quality_delta:
+        reasons.append("canary_quality_regression")
+    return CanaryDecision(promote=not reasons, rollback=bool(reasons), reason_codes=tuple(reasons))
 
 
 __all__ = [
-    "BackupArtifact",
+    "BackupEntry",
     "BackupManifest",
-    "CanaryAction",
     "CanaryDecision",
     "CanaryObservation",
-    "CanaryThresholds",
-    "RecoveryDecision",
-    "RecoveryObjective",
-    "RestoreRehearsal",
-    "RollbackAction",
-    "RollbackState",
-    "advance_rollback",
-    "build_backup_manifest",
+    "CanaryPolicy",
+    "RestoreReport",
+    "create_backup",
     "evaluate_canary",
-    "evaluate_recovery",
-    "prepare_rollback",
-    "verify_backup_manifest",
+    "manifest_sha256",
+    "restore_backup",
+    "verify_backup",
 ]
