@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from tools.continual_promotion import (
     ContinualEvidence,
     ContinualPromotionPolicy,
@@ -57,8 +59,8 @@ def test_multi_window_burn_rate_requires_both_windows_and_full_sample() -> None:
             long_burn_threshold=5,
         ),
     )
-    assert report.short_burn_rate == 10.0
-    assert report.long_burn_rate == 10.0
+    assert report.short_burn_rate == pytest.approx(10.0)
+    assert report.long_burn_rate == pytest.approx(10.0)
     assert report.alert
 
     partial = evaluate_burn_rate(observations[:10], BurnRatePolicy())
