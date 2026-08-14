@@ -96,7 +96,7 @@ def evaluate_deployment_canary(
         action = decision.action
         reasons = decision.reason_codes
     rollback = candidate.known_good_artifacts if action == CanaryAction.ROLLBACK else ()
-    payload = {
+    identity_payload = {
         "candidate_id": candidate.candidate_id,
         "action": action.value,
         "reason_codes": reasons,
@@ -104,8 +104,16 @@ def evaluate_deployment_canary(
         "rollback_artifacts": rollback,
         "evaluated_at": evaluated_at,
     }
-    decision_id = hashlib.sha256(_canonical(payload)).hexdigest()
-    return DeploymentDecision(decision_id=decision_id, **payload)
+    decision_id = hashlib.sha256(_canonical(identity_payload)).hexdigest()
+    return DeploymentDecision(
+        decision_id=decision_id,
+        candidate_id=candidate.candidate_id,
+        action=action,
+        reason_codes=reasons,
+        candidate_artifacts=candidate.candidate_artifacts,
+        rollback_artifacts=rollback,
+        evaluated_at=evaluated_at,
+    )
 
 
 @dataclass(frozen=True)
