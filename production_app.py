@@ -14,7 +14,20 @@ reviews = ReviewStore(root / "reviews.sqlite3")
 feedback = FeedbackStore(root / "feedback.sqlite3")
 app = base.app
 
-if not any(getattr(route, "path", None) == "/reviews" for route in app.routes):
+_REQUIRED_GOVERNANCE_ROUTES = frozenset({"/reviews", "/reviews/claim", "/feedback"})
+
+
+def _route_paths() -> set[str]:
+    return {
+        path
+        for route in app.routes
+        if isinstance((path := getattr(route, "path", None)), str)
+    }
+
+
+def _ensure_governance_routes() -> None:
+    if _REQUIRED_GOVERNANCE_ROUTES.issubset(_route_paths()):
+        return
     app.include_router(
         build_control_router(
             principal_dependency=base.get_principal,
@@ -22,6 +35,14 @@ if not any(getattr(route, "path", None) == "/reviews" for route in app.routes):
             feedback_store=feedback,
         )
     )
+    missing = _REQUIRED_GOVERNANCE_ROUTES.difference(_route_paths())
+    if missing:
+        raise RuntimeError(
+            "Production governance routes failed to mount: " + ", ".join(sorted(missing))
+        )
+
+
+_ensure_governance_routes()
 
 
 @app.middleware("http")
