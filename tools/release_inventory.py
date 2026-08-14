@@ -6,12 +6,14 @@ import hashlib
 import json
 import re
 from dataclasses import asdict
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable, Mapping
 
 from tools.release_supply_chain import ReleaseProvenance
 
 _NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+_TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
 
 
 def canonical_json_bytes(value: object) -> bytes:
@@ -67,12 +69,25 @@ def build_cyclonedx_sbom(records: Iterable[Mapping[str, object]]) -> Mapping[str
     }
 
 
+def reproducible_timestamp(source_date_epoch: int | str) -> str:
+    try:
+        epoch = int(source_date_epoch)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("SOURCE_DATE_EPOCH must be an integer timestamp.") from exc
+    if epoch < 0:
+        raise ValueError("SOURCE_DATE_EPOCH must be non-negative.")
+    return datetime.fromtimestamp(epoch, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def build_spdx_sbom(
-    records: Iterable[Mapping[str, object]], *, namespace: str
+    records: Iterable[Mapping[str, object]], *, namespace: str, created: str
 ) -> Mapping[str, object]:
     selected_namespace = str(namespace).strip()
     if not selected_namespace.startswith(("https://", "urn:")):
         raise ValueError("SPDX document namespace must be an https URL or URN.")
+    selected_created = str(created).strip()
+    if not _TIMESTAMP.fullmatch(selected_created):
+        raise ValueError("SPDX creation timestamp must use YYYY-MM-DDTHH:MM:SSZ.")
     components = normalize_components(records)
     packages = []
     relationships = []
@@ -107,7 +122,10 @@ def build_spdx_sbom(
         "SPDXID": "SPDXRef-DOCUMENT",
         "name": "RigorousRAG release inventory",
         "documentNamespace": selected_namespace,
-        "creationInfo": {"creators": ["Tool: RigorousRAG-release-inventory"]},
+        "creationInfo": {
+            "created": selected_created,
+            "creators": ["Tool: RigorousRAG-release-inventory"],
+        },
         "packages": packages,
         "relationships": relationships,
     }
@@ -139,6 +157,7 @@ __all__ = [
     "canonical_sha256",
     "load_pip_list",
     "normalize_components",
+    "reproducible_timestamp",
     "write_canonical_json",
     "write_provenance",
 ]
