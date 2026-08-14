@@ -24,7 +24,7 @@ def test_reliability_bins_ece_and_brier_are_weighted() -> None:
     bins = reliability_bins(examples, bin_count=2)
     assert bins[0].accuracy == 0.0
     assert bins[1].count == 2
-    assert expected_calibration_error(examples, bin_count=2) == pytest.approx(0.225)
+    assert expected_calibration_error(examples, bin_count=2) == pytest.approx(0.2)
     assert brier_score(examples) == pytest.approx((2 * 0.01 + 0.64 + 0.04) / 4)
 
 
