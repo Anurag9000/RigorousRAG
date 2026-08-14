@@ -245,6 +245,8 @@ def _safe_manifest_path(manifest: Path) -> Optional[Path]:
 
 
 def _read_manifest(manifest: Path) -> Optional[dict[str, Any]]:
+    """Read one bounded regular manifest without trusting NT path/handle identity parity."""
+
     absolute = _safe_manifest_path(manifest)
     if absolute is None:
         return None
@@ -282,10 +284,14 @@ def _read_manifest(manifest: Path) -> Optional[dict[str, Any]]:
         if (
             _is_link_or_reparse(metadata)
             or not stat.S_ISREG(metadata.st_mode)
-            or _identity(metadata) != expected_identity
             or metadata.st_size <= 0
             or metadata.st_size > _MAX_MANIFEST_BYTES
         ):
+            return None
+        if os.name == "nt":
+            if int(metadata.st_size) != int(before.st_size):
+                return None
+        elif _identity(metadata) != expected_identity:
             return None
         payload = bytearray()
         while True:
@@ -298,8 +304,13 @@ def _read_manifest(manifest: Path) -> Optional[dict[str, Any]]:
             payload.extend(chunk)
             if len(payload) > _MAX_MANIFEST_BYTES:
                 return None
+        if len(payload) != int(metadata.st_size):
+            return None
         opened_after = os.fstat(descriptor)
-        if (
+        if os.name == "nt":
+            if not _same_file_metadata(metadata, opened_after):
+                return None
+        elif (
             _identity(opened_after) != expected_identity
             or (
                 _birthtime_ns(opened_after),
@@ -318,10 +329,13 @@ def _read_manifest(manifest: Path) -> Optional[dict[str, Any]]:
         after = os.lstat(safe_after)
     except OSError:
         return None
-    if (
-        _is_link_or_reparse(after)
-        or not stat.S_ISREG(after.st_mode)
-        or _identity(after) != expected_identity
+    if _is_link_or_reparse(after) or not stat.S_ISREG(after.st_mode):
+        return None
+    if os.name == "nt":
+        if int(after.st_size) != len(payload):
+            return None
+    elif (
+        _identity(after) != expected_identity
         or (
             _birthtime_ns(after),
             int(after.st_ctime_ns),
