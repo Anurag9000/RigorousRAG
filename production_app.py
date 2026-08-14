@@ -28,13 +28,17 @@ def _route_paths() -> set[str]:
 def _ensure_governance_routes() -> None:
     if _REQUIRED_GOVERNANCE_ROUTES.issubset(_route_paths()):
         return
-    app.include_router(
-        build_control_router(
-            principal_dependency=base.get_principal,
-            review_store=reviews,
-            feedback_store=feedback,
-        )
+    governance = build_control_router(
+        principal_dependency=base.get_principal,
+        review_store=reviews,
+        feedback_store=feedback,
     )
+    known_paths = _route_paths()
+    for route in governance.routes:
+        path = getattr(route, "path", None)
+        if isinstance(path, str) and path not in known_paths:
+            app.router.routes.append(route)
+            known_paths.add(path)
     missing = _REQUIRED_GOVERNANCE_ROUTES.difference(_route_paths())
     if missing:
         raise RuntimeError(
