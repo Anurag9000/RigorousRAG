@@ -133,12 +133,11 @@ def _cache_digest(key: _DigestCacheKey, value: str) -> str:
 def _file_content_digest(path: Path, before: os.stat_result) -> str:
     """Hash one stable regular file, caching only where metadata identity is reliable.
 
-    POSIX systems reuse a bounded digest cache keyed by strong file metadata. Windows
-    deliberately rehashes on every storage-signature check because a rapid replace can
-    present the same file index, creation/ctime, mtime and size on hosted/filesystem
-    implementations. Correct replacement detection therefore takes precedence over
-    metadata-keyed caching on Windows. Reads remain streamed and bounded; file content
-    is never retained.
+    Windows deliberately rehashes on every signature check. Hosted NT filesystems can
+    report path and handle timestamps/file identifiers differently for the same regular
+    file, so Windows validates descriptor stability and size rather than requiring an
+    exact lstat/fstat metadata tuple. The digest itself remains content-sensitive, and
+    the caller compares complete storage signatures before and after engine construction.
     """
 
     key = _metadata_key(path, before)
@@ -158,12 +157,14 @@ def _file_content_digest(path: Path, before: os.stat_result) -> str:
         return "unreadable"
     try:
         opened = os.fstat(descriptor)
-        if (
-            _is_link_or_reparse(opened)
-            or not stat.S_ISREG(opened.st_mode)
-            or not _same_file_metadata(before, opened)
-        ):
+        if _is_link_or_reparse(opened) or not stat.S_ISREG(opened.st_mode):
             return "unstable"
+        if os.name == "nt":
+            if int(before.st_size) != int(opened.st_size):
+                return "unstable"
+        elif not _same_file_metadata(before, opened):
+            return "unstable"
+
         hasher = hashlib.sha256()
         total = 0
         while True:
@@ -174,8 +175,13 @@ def _file_content_digest(path: Path, before: os.stat_result) -> str:
             if total > _MAX_SIGNATURE_FILE_BYTES:
                 return "oversize"
             hasher.update(chunk)
+        if total != int(opened.st_size):
+            return "unstable"
         opened_after = os.fstat(descriptor)
-        if not _same_file_metadata(before, opened_after):
+        if os.name == "nt":
+            if not _same_file_metadata(opened, opened_after):
+                return "unstable"
+        elif not _same_file_metadata(before, opened_after):
             return "unstable"
     except OSError:
         return "unreadable"
@@ -186,12 +192,14 @@ def _file_content_digest(path: Path, before: os.stat_result) -> str:
         after = os.lstat(path)
     except OSError:
         return "unreadable"
-    if (
-        _is_link_or_reparse(after)
-        or not stat.S_ISREG(after.st_mode)
-        or not _same_file_metadata(before, after)
-    ):
+    if _is_link_or_reparse(after) or not stat.S_ISREG(after.st_mode):
         return "unstable"
+    if os.name == "nt":
+        if int(after.st_size) != total:
+            return "unstable"
+    elif not _same_file_metadata(before, after):
+        return "unstable"
+
     computed = hasher.hexdigest()
     if os.name == "nt":
         return computed
