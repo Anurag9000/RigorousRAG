@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import pytest
 
-from tools.disaster_recovery import (
+from tools.distributed_coordination import InMemoryLeaseCoordinator
+from tools.durable_queue import CoordinationError, InMemoryDurableQueue
+from tools.recovery_control import (
     CanaryAction,
     CanaryObservation,
     CanaryThresholds,
@@ -15,11 +17,6 @@ from tools.disaster_recovery import (
     evaluate_recovery,
     prepare_rollback,
     verify_backup_manifest,
-)
-from tools.distributed_coordination import (
-    CoordinationError,
-    InMemoryDurableQueue,
-    InMemoryLeaseCoordinator,
 )
 from tools.supply_chain import (
     BuildProvenance,
@@ -49,18 +46,17 @@ class Clock:
         self.now += seconds
 
 
-def test_fenced_leases_reject_stale_writers() -> None:
+def test_fenced_leases_reject_stale_holders() -> None:
     clock = Clock()
     coordinator = InMemoryLeaseCoordinator(clock=clock)
-    first = coordinator.acquire("index", "worker-a", 5)
-    coordinator.assert_fencing_token("index", first.fencing_token)
+    first = coordinator.acquire(name="index", holder="worker-a", ttl_seconds=5)
+    assert first is not None
     clock.advance(6)
-    second = coordinator.acquire("index", "worker-b", 5)
-    assert second.fencing_token == first.fencing_token + 1
-    with pytest.raises(CoordinationError):
-        coordinator.assert_valid(first)
-    with pytest.raises(CoordinationError):
-        coordinator.assert_fencing_token("index", first.fencing_token)
+    second = coordinator.acquire(name="index", holder="worker-b", ttl_seconds=5)
+    assert second is not None
+    assert second.token == first.token + 1
+    assert coordinator.renew(first, ttl_seconds=5) is None
+    assert not coordinator.release(first)
 
 
 def test_queue_is_idempotent_and_redelivers_then_dead_letters() -> None:
@@ -78,7 +74,7 @@ def test_queue_is_idempotent_and_redelivers_then_dead_letters() -> None:
     assert queue.dead_letters()[0].message_id == first_id
 
 
-def test_queue_ack_and_retry_delay() -> None:
+def test_queue_ack_retry_delay_and_expired_receipt_rejection() -> None:
     clock = Clock()
     queue = InMemoryDurableQueue(clock=clock)
     queue.enqueue({"job": "parse"}, idempotency_key="source-2")
@@ -89,7 +85,13 @@ def test_queue_ack_and_retry_delay() -> None:
     clock.advance(10)
     retried = queue.claim("worker", visibility_timeout=5)
     assert retried is not None and retried.attempts == 2
-    queue.ack(retried.receipt)
+    stale_receipt = retried.receipt
+    clock.advance(6)
+    with pytest.raises(CoordinationError):
+        queue.ack(stale_receipt)
+    redelivered = queue.claim("worker-2", visibility_timeout=5)
+    assert redelivered is not None and redelivered.attempts == 3
+    queue.ack(redelivered.receipt)
     assert queue.claim("worker", visibility_timeout=5) is None
 
 
