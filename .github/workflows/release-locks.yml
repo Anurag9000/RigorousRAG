@@ -162,7 +162,7 @@ jobs:
           --no-cov
 
   container:
-    name: Compose and container build
+    name: Compose, container, SBOM, provenance
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -173,6 +173,50 @@ jobs:
         run: docker compose config --quiet
       - name: Build container
         run: docker build --tag rigorousrag:ci .
+      - name: Export exact installed package inventory
+        run: docker run --rm --entrypoint python rigorousrag:ci -m pip list --format=json > installed-packages.json
+      - name: Build deterministic SBOMs and provenance
+        shell: bash
+        env:
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          source_date_epoch="$(git show -s --format=%ct HEAD)"
+          image_digest="$(docker image inspect rigorousrag:ci --format '{{.Id}}')"
+          image_sha256="${image_digest#sha256:}"
+          docker run --rm --entrypoint python -v "${PWD}:/workspace" -w /workspace rigorousrag:ci \
+            scripts/operations_frontier.py inventory-build \
+            --pip-list installed-packages.json \
+            --output rigorousrag.cdx.json \
+            --format cyclonedx
+          docker run --rm --entrypoint python -v "${PWD}:/workspace" -w /workspace rigorousrag:ci \
+            scripts/operations_frontier.py inventory-build \
+            --pip-list installed-packages.json \
+            --output rigorousrag.spdx.json \
+            --format spdx \
+            --namespace "https://github.com/Anurag9000/RigorousRAG/sbom/${GITHUB_SHA}" \
+            --source-date-epoch "${source_date_epoch}"
+          docker run --rm --entrypoint python -v "${PWD}:/workspace" -w /workspace rigorousrag:ci \
+            scripts/operations_frontier.py provenance-build \
+            --commit-sha "${GITHUB_SHA}" \
+            --dependency-lock installed-packages.json \
+            --sbom rigorousrag.cdx.json \
+            --artifact-sha256 "${image_sha256}" \
+            --image-digest "${image_digest}" \
+            --workflow release-locks \
+            --run-id "${RUN_ID}" \
+            --output rigorousrag.provenance.json
+          sha256sum installed-packages.json rigorousrag.cdx.json rigorousrag.spdx.json rigorousrag.provenance.json
+      - name: Upload image supply-chain evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: exact-image-supply-chain-${{ github.sha }}
+          path: |
+            installed-packages.json
+            rigorousrag.cdx.json
+            rigorousrag.spdx.json
+            rigorousrag.provenance.json
+          if-no-files-found: error
+          retention-days: 30
 
   lock:
     name: Release lock / ${{ matrix.os }} / Python ${{ matrix.python-version }}
