@@ -1,261 +1,291 @@
-"""Fenced distributed lease contracts with in-memory, SQL, and Redis providers."""
+"""Deterministic coordination primitives for distributed RigorousRAG deployments.
+
+The in-memory implementations are reference/contract implementations for unit tests and
+single-process development. Production deployments should provide an external coordinator
+and durable queue with equivalent fencing and visibility semantics.
+"""
 
 from __future__ import annotations
 
-import secrets
-import sqlite3
-import threading
 import time
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Any, Callable, Protocol
+from typing import Protocol
+
+
+class CoordinationError(RuntimeError):
+    """Raised when a lease or queue state transition is invalid."""
 
 
 @dataclass(frozen=True)
-class Lease:
-    name: str
-    holder: str
-    token: int
+class FencedLease:
+    key: str
+    owner: str
+    fencing_token: int
     expires_at: float
 
 
 class LeaseCoordinator(Protocol):
-    def acquire(self, *, name: str, holder: str, ttl_seconds: float) -> Lease | None: ...
-    def renew(self, lease: Lease, *, ttl_seconds: float) -> Lease | None: ...
-    def release(self, lease: Lease) -> bool: ...
+    def acquire(self, key: str, owner: str, ttl_seconds: float) -> FencedLease: ...
+
+    def renew(self, lease: FencedLease, ttl_seconds: float) -> FencedLease: ...
+
+    def release(self, lease: FencedLease) -> None: ...
+
+    def assert_valid(self, lease: FencedLease) -> None: ...
 
 
-def _text(value: str, label: str, maximum: int = 500) -> str:
-    if not isinstance(value, str):
-        raise ValueError(f"{label} must be a string.")
-    text = value.strip()
-    if not text or len(text) > maximum or any(ord(ch) < 32 or ord(ch) == 127 for ch in text):
-        raise ValueError(f"{label} is invalid.")
-    return text
-
-
-def _ttl(value: float) -> float:
-    parsed = float(value)
-    if not 0.05 <= parsed <= 86_400.0:
-        raise ValueError("ttl_seconds is outside the supported range.")
-    return parsed
+@dataclass
+class _LeaseState:
+    fencing_token: int = 0
+    owner: str | None = None
+    expires_at: float = 0.0
 
 
 class InMemoryLeaseCoordinator:
-    """Deterministic test/local coordinator with monotonically increasing fencing tokens."""
+    """Reference lease coordinator with monotonically increasing fencing tokens."""
 
-    def __init__(self, *, clock: Callable[[], float] = time.time) -> None:
+    def __init__(self, *, clock: Callable[[], float] = time.monotonic) -> None:
         self._clock = clock
-        self._lock = threading.Lock()
-        self._leases: dict[str, Lease] = {}
-        self._tokens: dict[str, int] = {}
+        self._states: dict[str, _LeaseState] = {}
 
-    def acquire(self, *, name: str, holder: str, ttl_seconds: float) -> Lease | None:
-        key = _text(name, "name")
-        owner = _text(holder, "holder")
-        ttl = _ttl(ttl_seconds)
-        with self._lock:
-            now = self._clock()
-            current = self._leases.get(key)
-            if current is not None and current.expires_at > now and current.holder != owner:
-                return None
-            token = self._tokens.get(key, 0) + 1
-            self._tokens[key] = token
-            lease = Lease(key, owner, token, now + ttl)
-            self._leases[key] = lease
-            return lease
+    @staticmethod
+    def _identifier(value: str, label: str) -> str:
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"{label} must be non-empty.")
+        return value.strip()
 
-    def renew(self, lease: Lease, *, ttl_seconds: float) -> Lease | None:
-        ttl = _ttl(ttl_seconds)
-        with self._lock:
-            current = self._leases.get(lease.name)
-            now = self._clock()
-            if current != lease or lease.expires_at <= now:
-                return None
-            renewed = Lease(lease.name, lease.holder, lease.token, now + ttl)
-            self._leases[lease.name] = renewed
-            return renewed
+    @staticmethod
+    def _ttl(value: float) -> float:
+        ttl = float(value)
+        if ttl <= 0.0:
+            raise ValueError("ttl_seconds must be positive.")
+        return ttl
 
-    def release(self, lease: Lease) -> bool:
-        with self._lock:
-            if self._leases.get(lease.name) != lease:
-                return False
-            del self._leases[lease.name]
-            return True
+    def acquire(self, key: str, owner: str, ttl_seconds: float) -> FencedLease:
+        resource = self._identifier(key, "key")
+        holder = self._identifier(owner, "owner")
+        ttl = self._ttl(ttl_seconds)
+        now = self._clock()
+        state = self._states.setdefault(resource, _LeaseState())
+        if state.owner is not None and state.expires_at > now:
+            raise CoordinationError("lease is already held")
+        state.fencing_token += 1
+        state.owner = holder
+        state.expires_at = now + ttl
+        return FencedLease(resource, holder, state.fencing_token, state.expires_at)
+
+    def _validate(self, lease: FencedLease, *, require_unexpired: bool = True) -> _LeaseState:
+        state = self._states.get(lease.key)
+        if state is None:
+            raise CoordinationError("lease does not exist")
+        if state.fencing_token != lease.fencing_token or state.owner != lease.owner:
+            raise CoordinationError("stale or foreign lease")
+        if require_unexpired and state.expires_at <= self._clock():
+            raise CoordinationError("lease has expired")
+        return state
+
+    def renew(self, lease: FencedLease, ttl_seconds: float) -> FencedLease:
+        ttl = self._ttl(ttl_seconds)
+        state = self._validate(lease)
+        state.expires_at = self._clock() + ttl
+        return FencedLease(lease.key, lease.owner, lease.fencing_token, state.expires_at)
+
+    def release(self, lease: FencedLease) -> None:
+        state = self._validate(lease)
+        state.owner = None
+        state.expires_at = 0.0
+
+    def assert_valid(self, lease: FencedLease) -> None:
+        self._validate(lease)
+
+    def assert_fencing_token(self, key: str, fencing_token: int) -> None:
+        """Reject stale writers even when they still hold an old process-local handle."""
+
+        state = self._states.get(key)
+        if (
+            state is None
+            or state.owner is None
+            or state.expires_at <= self._clock()
+            or state.fencing_token != fencing_token
+        ):
+            raise CoordinationError("fencing token is not current")
 
 
-class SQLLeaseCoordinator:
-    """Durable fenced coordinator over DB-API SQL.
+@dataclass(frozen=True)
+class QueueMessage:
+    message_id: str
+    payload: Mapping[str, object]
+    idempotency_key: str
+    attempts: int
 
-    The default factory uses SQLite for single-host durability.  A PostgreSQL connection
-    factory can be supplied with ``placeholder='%s'``; the state transition remains a
-    compare-and-swap transaction and fencing tokens monotonically increase per lease name.
-    """
+
+@dataclass(frozen=True)
+class ClaimedMessage(QueueMessage):
+    receipt: str
+    owner: str
+    visibility_deadline: float
+
+
+class DurableQueue(Protocol):
+    def enqueue(self, payload: Mapping[str, object], *, idempotency_key: str) -> str: ...
+
+    def claim(self, owner: str, *, visibility_timeout: float) -> ClaimedMessage | None: ...
+
+    def ack(self, receipt: str) -> None: ...
+
+    def nack(self, receipt: str, *, retry_delay: float = 0.0) -> None: ...
+
+
+@dataclass
+class _QueuedState:
+    message_id: str
+    payload: dict[str, object]
+    idempotency_key: str
+    sequence: int
+    available_at: float
+    invisible_until: float = 0.0
+    receipt: str | None = None
+    owner: str | None = None
+    attempts: int = 0
+    acked: bool = False
+    dead_lettered: bool = False
+
+
+class InMemoryDurableQueue:
+    """Reference at-least-once queue with idempotency, visibility, retries and DLQ."""
 
     def __init__(
         self,
-        path: str | Path | None = None,
         *,
-        connection_factory: Callable[[], Any] | None = None,
-        placeholder: str = "?",
-        clock: Callable[[], float] = time.time,
+        max_attempts: int = 3,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
-        if connection_factory is None:
-            if path is None:
-                raise ValueError("path or connection_factory is required.")
-            selected_path = Path(path)
-            selected_path.parent.mkdir(parents=True, exist_ok=True)
-            connection_factory = lambda: sqlite3.connect(str(selected_path), timeout=10.0)
-        if placeholder not in {"?", "%s"}:
-            raise ValueError("placeholder is unsupported.")
-        self._connect = connection_factory
-        self._p = placeholder
+        if isinstance(max_attempts, bool) or max_attempts < 1:
+            raise ValueError("max_attempts must be a positive integer.")
+        self._max_attempts = int(max_attempts)
         self._clock = clock
-        with self._connect() as connection:
-            cursor = connection.cursor()
-            cursor.execute(
-                "CREATE TABLE IF NOT EXISTS rigorousrag_leases ("
-                "name TEXT PRIMARY KEY, holder TEXT NOT NULL, token BIGINT NOT NULL, expires_at DOUBLE PRECISION NOT NULL)"
-            )
-
-    def acquire(self, *, name: str, holder: str, ttl_seconds: float) -> Lease | None:
-        key = _text(name, "name")
-        owner = _text(holder, "holder")
-        ttl = _ttl(ttl_seconds)
-        now = self._clock()
-        expires = now + ttl
-        p = self._p
-        with self._connect() as connection:
-            cursor = connection.cursor()
-            cursor.execute(
-                f"INSERT INTO rigorousrag_leases(name,holder,token,expires_at) "
-                f"VALUES({p},{p},{p},{p}) ON CONFLICT(name) DO NOTHING",
-                (key, owner, 1, expires),
-            )
-            if cursor.rowcount == 1:
-                return Lease(key, owner, 1, expires)
-            cursor.execute(
-                f"SELECT holder,token,expires_at FROM rigorousrag_leases WHERE name={p}", (key,)
-            )
-            row = cursor.fetchone()
-            if row is None:
-                return None
-            current_holder, token, current_expires = str(row[0]), int(row[1]), float(row[2])
-            if current_expires > now and current_holder != owner:
-                return None
-            next_token = token + 1
-            cursor.execute(
-                f"UPDATE rigorousrag_leases SET holder={p},token={p},expires_at={p} "
-                f"WHERE name={p} AND token={p}",
-                (owner, next_token, expires, key, token),
-            )
-            if cursor.rowcount != 1:
-                return None
-            return Lease(key, owner, next_token, expires)
-
-    def renew(self, lease: Lease, *, ttl_seconds: float) -> Lease | None:
-        ttl = _ttl(ttl_seconds)
-        now = self._clock()
-        if lease.expires_at <= now:
-            return None
-        expires = now + ttl
-        p = self._p
-        with self._connect() as connection:
-            cursor = connection.cursor()
-            cursor.execute(
-                f"UPDATE rigorousrag_leases SET expires_at={p} WHERE name={p} AND holder={p} "
-                f"AND token={p} AND expires_at>{p}",
-                (expires, lease.name, lease.holder, lease.token, now),
-            )
-            if cursor.rowcount != 1:
-                return None
-        return Lease(lease.name, lease.holder, lease.token, expires)
-
-    def release(self, lease: Lease) -> bool:
-        p = self._p
-        with self._connect() as connection:
-            cursor = connection.cursor()
-            cursor.execute(
-                f"DELETE FROM rigorousrag_leases WHERE name={p} AND holder={p} AND token={p}",
-                (lease.name, lease.holder, lease.token),
-            )
-            return cursor.rowcount == 1
-
-
-class RedisLeaseCoordinator:
-    """Concrete redis-py compatible fenced lease adapter.
-
-    The injected client must provide ``set``, ``get``, ``incr`` and ``eval`` methods. Lease
-    ownership is represented by an opaque value containing holder and fencing token; renew and
-    release use compare-and-set Lua scripts so an expired holder cannot affect its successor.
-    """
-
-    _RENEW = """
-    if redis.call('get', KEYS[1]) == ARGV[1] then
-      return redis.call('pexpire', KEYS[1], ARGV[2])
-    end
-    return 0
-    """
-    _RELEASE = """
-    if redis.call('get', KEYS[1]) == ARGV[1] then
-      return redis.call('del', KEYS[1])
-    end
-    return 0
-    """
-
-    def __init__(self, client: Any, *, prefix: str = "rigorousrag:lease", clock: Callable[[], float] = time.time) -> None:
-        self._client = client
-        self._prefix = _text(prefix, "prefix")
-        self._clock = clock
-
-    def _keys(self, name: str) -> tuple[str, str]:
-        key = _text(name, "name")
-        return f"{self._prefix}:{key}", f"{self._prefix}:token:{key}"
+        self._sequence = 0
+        self._receipt_sequence = 0
+        self._messages: dict[str, _QueuedState] = {}
+        self._idempotency: dict[str, str] = {}
 
     @staticmethod
-    def _value(holder: str, token: int) -> str:
-        return f"{holder}:{token}"
+    def _identifier(value: str, label: str) -> str:
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"{label} must be non-empty.")
+        return value.strip()
 
-    def acquire(self, *, name: str, holder: str, ttl_seconds: float) -> Lease | None:
-        owner = _text(holder, "holder")
-        ttl = _ttl(ttl_seconds)
-        key, token_key = self._keys(name)
-        token = int(self._client.incr(token_key))
-        value = self._value(owner, token)
-        milliseconds = max(1, int(ttl * 1_000))
-        acquired = self._client.set(key, value, nx=True, px=milliseconds)
-        if not acquired:
-            return None
-        return Lease(_text(name, "name"), owner, token, self._clock() + ttl)
-
-    def renew(self, lease: Lease, *, ttl_seconds: float) -> Lease | None:
-        ttl = _ttl(ttl_seconds)
-        if lease.expires_at <= self._clock():
-            return None
-        key, _ = self._keys(lease.name)
-        milliseconds = max(1, int(ttl * 1_000))
-        result = self._client.eval(
-            self._RENEW, 1, key, self._value(lease.holder, lease.token), milliseconds
+    def enqueue(self, payload: Mapping[str, object], *, idempotency_key: str) -> str:
+        key = self._identifier(idempotency_key, "idempotency_key")
+        existing = self._idempotency.get(key)
+        if existing is not None:
+            return existing
+        self._sequence += 1
+        message_id = f"msg-{self._sequence:016d}"
+        self._messages[message_id] = _QueuedState(
+            message_id=message_id,
+            payload=dict(payload),
+            idempotency_key=key,
+            sequence=self._sequence,
+            available_at=self._clock(),
         )
-        if int(result or 0) != 1:
-            return None
-        return Lease(lease.name, lease.holder, lease.token, self._clock() + ttl)
+        self._idempotency[key] = message_id
+        return message_id
 
-    def release(self, lease: Lease) -> bool:
-        key, _ = self._keys(lease.name)
-        result = self._client.eval(self._RELEASE, 1, key, self._value(lease.holder, lease.token))
-        return int(result or 0) == 1
+    def _expire_or_dead_letter(self, state: _QueuedState, now: float) -> None:
+        if state.receipt is None or state.invisible_until > now:
+            return
+        state.receipt = None
+        state.owner = None
+        state.invisible_until = 0.0
+        if state.attempts >= self._max_attempts:
+            state.dead_lettered = True
 
+    def claim(self, owner: str, *, visibility_timeout: float) -> ClaimedMessage | None:
+        holder = self._identifier(owner, "owner")
+        timeout = float(visibility_timeout)
+        if timeout <= 0.0:
+            raise ValueError("visibility_timeout must be positive.")
+        now = self._clock()
+        for state in sorted(self._messages.values(), key=lambda item: item.sequence):
+            self._expire_or_dead_letter(state, now)
+            if (
+                state.acked
+                or state.dead_lettered
+                or state.available_at > now
+                or state.receipt is not None
+            ):
+                continue
+            state.attempts += 1
+            self._receipt_sequence += 1
+            state.receipt = f"receipt-{self._receipt_sequence:016d}"
+            state.owner = holder
+            state.invisible_until = now + timeout
+            return ClaimedMessage(
+                state.message_id,
+                dict(state.payload),
+                state.idempotency_key,
+                state.attempts,
+                state.receipt,
+                holder,
+                state.invisible_until,
+            )
+        return None
 
-def new_worker_id(prefix: str = "worker") -> str:
-    return f"{_text(prefix, 'prefix', 100)}-{secrets.token_hex(8)}"
+    def _by_receipt(self, receipt: str) -> _QueuedState:
+        token = self._identifier(receipt, "receipt")
+        for state in self._messages.values():
+            if state.receipt == token and not state.acked and not state.dead_lettered:
+                if state.invisible_until <= self._clock():
+                    self._expire_or_dead_letter(state, self._clock())
+                    break
+                return state
+        raise CoordinationError("receipt is invalid or expired")
+
+    def ack(self, receipt: str) -> None:
+        state = self._by_receipt(receipt)
+        state.acked = True
+        state.receipt = None
+        state.owner = None
+        state.invisible_until = 0.0
+
+    def nack(self, receipt: str, *, retry_delay: float = 0.0) -> None:
+        delay = float(retry_delay)
+        if delay < 0.0:
+            raise ValueError("retry_delay must not be negative.")
+        state = self._by_receipt(receipt)
+        state.receipt = None
+        state.owner = None
+        state.invisible_until = 0.0
+        if state.attempts >= self._max_attempts:
+            state.dead_lettered = True
+        else:
+            state.available_at = self._clock() + delay
+
+    def dead_letters(self) -> tuple[QueueMessage, ...]:
+        now = self._clock()
+        for state in self._messages.values():
+            self._expire_or_dead_letter(state, now)
+        return tuple(
+            QueueMessage(
+                item.message_id,
+                dict(item.payload),
+                item.idempotency_key,
+                item.attempts,
+            )
+            for item in sorted(self._messages.values(), key=lambda value: value.sequence)
+            if item.dead_lettered
+        )
 
 
 __all__ = [
+    "ClaimedMessage",
+    "CoordinationError",
+    "DurableQueue",
+    "FencedLease",
+    "InMemoryDurableQueue",
     "InMemoryLeaseCoordinator",
-    "Lease",
     "LeaseCoordinator",
-    "RedisLeaseCoordinator",
-    "SQLLeaseCoordinator",
-    "new_worker_id",
+    "QueueMessage",
 ]
