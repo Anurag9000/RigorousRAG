@@ -7,9 +7,10 @@ The hook covers three import orders without importing the retrieval stacks eager
 * a module currently executing is temporarily watched until its schema registry
   and ``SearchAgent`` class have all been assigned.
 
-The evidence-graph, bounded multi-hop and optional claim-entailment integrations share
-this hook so an in-progress ``search_agent_legacy`` import needs only one temporary
-module-class watcher. Each integration remains independently idempotent and fail closed.
+The explicit governed tool registry, evidence-graph, bounded multi-hop and optional
+claim-entailment integrations share this hook so an in-progress ``search_agent_legacy``
+import needs only one temporary module-class watcher. Each integration remains
+independently idempotent and fail closed.
 """
 
 from __future__ import annotations
@@ -27,6 +28,8 @@ _REQUIRED_ATTRIBUTES = frozenset(
 )
 _ORIGINAL_MODULE_CLASS = "_evidence_graph_original_module_class"
 _INTEGRATION_MARKERS = (
+    "_agent_tool_registry_bridge_installed",
+    "_agent_tool_registry_original_dispatch",
     "_evidence_graph_agent_tool_installed",
     "_evidence_graph_original_dispatch",
     "_multihop_agent_tool_installed",
@@ -41,6 +44,7 @@ def _ready(module: ModuleType) -> bool:
 
 
 def _install(module: ModuleType) -> None:
+    from tools.agent_tool_registry_integration import install_agent_tool_registry_bridge
     from tools.claim_entailment_agent_integration import (
         install_claim_entailment_agent_gate,
     )
@@ -49,6 +53,7 @@ def _install(module: ModuleType) -> None:
     )
     from tools.multihop_agent_integration import install_multihop_agent_tool
 
+    install_agent_tool_registry_bridge(module)
     install_evidence_graph_agent_tool(module)
     install_multihop_agent_tool(module)
     install_claim_entailment_agent_gate(module)
