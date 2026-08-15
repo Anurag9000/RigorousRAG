@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
-from typing import Any, Callable, Mapping, Protocol, Sequence
+from typing import Any, Callable, Mapping, Protocol
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 
+from tools.dependency_invalidation import DependencyInvalidationStore, DependencyRef
+from tools.research_dependencies import register_report_dependencies, stale_reasons
 from tools.research_report import ReportSection, ResearchReport, report_markdown
 from tools.research_report_store import ResearchReportStore, StoredResearchReport
 from tools.research_result_store import ResearchResultStore
@@ -30,8 +32,20 @@ def _owner(principal: Any) -> str:
     return value
 
 
-def _stored_payload(stored: StoredResearchReport) -> Mapping[str, Any]:
+def _stored_payload(
+    stored: StoredResearchReport,
+    *,
+    owner_id: str | None = None,
+    invalidation_store: DependencyInvalidationStore | None = None,
+) -> Mapping[str, Any]:
     report = stored.report
+    stale = ()
+    if owner_id is not None and invalidation_store is not None:
+        stale = stale_reasons(
+            invalidation_store,
+            owner_id,
+            DependencyRef("report", stored.report_id),
+        )
     return {
         "report_id": stored.report_id,
         "result_id": stored.result_id,
@@ -71,6 +85,8 @@ def _stored_payload(stored: StoredResearchReport) -> Mapping[str, Any]:
         "conflicts": list(report.conflicts),
         "limitations": list(report.limitations),
         "warnings": list(report.warnings),
+        "stale": bool(stale),
+        "stale_reasons": list(stale),
     }
 
 
@@ -80,14 +96,14 @@ def build_research_report_router(
     workspace_store: WorkspaceStore,
     result_store: ResearchResultStore,
     report_store: ResearchReportStore,
+    invalidation_store: DependencyInvalidationStore | None = None,
 ) -> APIRouter:
+    if invalidation_store is not None and not isinstance(invalidation_store, DependencyInvalidationStore):
+        raise TypeError("invalidation_store must be DependencyInvalidationStore or null")
     router = APIRouter(prefix="/research", tags=["research-reports"])
 
     @router.post("/reports", status_code=201)
-    async def create_report(
-        request: CreateReportRequest,
-        principal: Any = Depends(principal_dependency),
-    ) -> Mapping[str, Any]:
+    async def create_report(request: CreateReportRequest, principal: Any = Depends(principal_dependency)) -> Mapping[str, Any]:
         owner = _owner(principal)
         try:
             project = workspace_store.get_project(owner, request.project_id)
@@ -103,12 +119,19 @@ def build_research_report_router(
             raise HTTPException(status_code=400, detail="Research result ID is invalid.") from exc
         except Exception as exc:
             raise HTTPException(status_code=503, detail="Research result persistence is unavailable.") from exc
-        if len(result.citations) > 100:
-            raise HTTPException(
-                status_code=409,
-                detail="The authoritative result exceeds the current 100-citation report limit.",
+        if invalidation_store is not None:
+            result_stale = stale_reasons(
+                invalidation_store,
+                owner,
+                DependencyRef("result", result.result_id),
             )
-        citation_ids = result.citation_ids
+            if result_stale:
+                raise HTTPException(
+                    status_code=409,
+                    detail="A new report cannot be derived from a stale research result; recompute or explicitly resolve its invalidation first.",
+                )
+        if len(result.citations) > 100:
+            raise HTTPException(status_code=409, detail="The authoritative result exceeds the current 100-citation report limit.")
         report = ResearchReport(
             title=project.title,
             question=project.research_question,
@@ -117,7 +140,7 @@ def build_research_report_router(
                 ReportSection(
                     heading="Synthesis",
                     body=result.answer,
-                    citation_ids=citation_ids,
+                    citation_ids=result.citation_ids,
                 ),
             ),
             evidence_matrix=(),
@@ -133,7 +156,18 @@ def build_research_report_router(
             )
         except Exception as exc:
             raise HTTPException(status_code=503, detail="Research report persistence is unavailable.") from exc
-        return _stored_payload(stored)
+        if invalidation_store is not None:
+            try:
+                register_report_dependencies(invalidation_store, owner, stored)
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=503,
+                    detail=(
+                        "Research report was persisted, but dependency lineage could not be "
+                        f"registered. Report ID: {stored.report_id}"
+                    ),
+                ) from exc
+        return _stored_payload(stored, owner_id=owner, invalidation_store=invalidation_store)
 
     @router.get("/reports")
     async def list_reports(
@@ -146,8 +180,10 @@ def build_research_report_router(
             values = report_store.list(owner, project_id=project_id, limit=limit)
         except Exception as exc:
             raise HTTPException(status_code=503, detail="Research report persistence is unavailable.") from exc
-        return {
-            "reports": [
+        rows = []
+        for item in values:
+            stale = stale_reasons(invalidation_store, owner, DependencyRef("report", item.report_id), maximum=20) if invalidation_store is not None else ()
+            rows.append(
                 {
                     "report_id": item.report_id,
                     "result_id": item.result_id,
@@ -155,19 +191,18 @@ def build_research_report_router(
                     "title": item.report.title,
                     "fingerprint": item.report.fingerprint,
                     "created_at": item.created_at,
+                    "stale": bool(stale),
+                    "stale_reasons": list(stale),
                 }
-                for item in values
-            ]
-        }
+            )
+        return {"reports": rows}
 
     @router.get("/reports/{report_id}")
-    async def get_report(
-        report_id: str,
-        principal: Any = Depends(principal_dependency),
-    ) -> Mapping[str, Any]:
+    async def get_report(report_id: str, principal: Any = Depends(principal_dependency)) -> Mapping[str, Any]:
         owner = _owner(principal)
         try:
-            return _stored_payload(report_store.get(owner, report_id))
+            stored = report_store.get(owner, report_id)
+            return _stored_payload(stored, owner_id=owner, invalidation_store=invalidation_store)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="Research report not found.") from exc
         except ValueError as exc:
@@ -176,10 +211,7 @@ def build_research_report_router(
             raise HTTPException(status_code=503, detail="Research report persistence is unavailable.") from exc
 
     @router.get("/reports/{report_id}/markdown", response_class=PlainTextResponse)
-    async def get_report_markdown(
-        report_id: str,
-        principal: Any = Depends(principal_dependency),
-    ) -> PlainTextResponse:
+    async def get_report_markdown(report_id: str, principal: Any = Depends(principal_dependency)) -> PlainTextResponse:
         owner = _owner(principal)
         try:
             stored = report_store.get(owner, report_id)
@@ -189,6 +221,12 @@ def build_research_report_router(
             raise HTTPException(status_code=400, detail="Research report ID is invalid.") from exc
         except Exception as exc:
             raise HTTPException(status_code=503, detail="Research report persistence is unavailable.") from exc
+        stale = stale_reasons(invalidation_store, owner, DependencyRef("report", stored.report_id)) if invalidation_store is not None else ()
+        if stale:
+            raise HTTPException(
+                status_code=409,
+                detail="This report is stale; inspect its invalidation state before exporting it as current evidence.",
+            )
         return PlainTextResponse(
             report_markdown(stored.report),
             media_type="text/markdown; charset=utf-8",
