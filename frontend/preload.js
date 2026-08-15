@@ -19,11 +19,14 @@
     });
   };
 
-  // Optional research-workspace extension. It owns its own safe-DOM bindings so it can
-  // be delivered independently from the core chat bundle without inline script policy.
-  const researchScript = document.createElement("script");
-  researchScript.src = "/static/research.js";
-  researchScript.defer = true;
-  researchScript.dataset.rigorousragExtension = "research-workspace";
-  document.head.appendChild(researchScript);
+  function loadExtension(src, name) {
+    const script = document.createElement("script");
+    script.src = src;
+    script.defer = true;
+    script.dataset.rigorousragExtension = name;
+    document.head.appendChild(script);
+  }
+
+  loadExtension("/static/research_query.js", "research-query-persistence");
+  loadExtension("/static/research.js", "research-workspace");
 })();
