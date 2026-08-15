@@ -83,6 +83,15 @@ def _storage_capability(kind: str, value: str) -> str:
     return capability
 
 
+def _workspace_capability(metadata_backend: str) -> str:
+    normalized = metadata_backend.strip().lower()
+    if normalized == "sqlite":
+        return "research.workspace"
+    if normalized in {"postgres", "postgresql"}:
+        return "research.workspace.postgres"
+    raise ValueError(f"unsupported workspace metadata backend: {normalized}")
+
+
 def _selected_healthy(registry: CapabilityRegistry, capability_id: str) -> str:
     resolution = registry.resolve(capability_id, allow_fallback=True)
     return resolution.selected.capability_id
@@ -97,10 +106,6 @@ def build_runtime_composition(
     env = os.environ if environ is None else environ
     selected_config = config or load_runtime_config(environ=env)
 
-    # Trusted injected provider bindings are the strongest default signal because they
-    # prove that an application object actually exists in this process. Environment
-    # flags remain useful for external wrappers and are only used when no binding has
-    # already supplied a capability state. Explicit ``runtime_health`` overrides both.
     health: dict[str, Any] = dict(runtime_providers.capability_health())
     health.setdefault("nli.claim_entailment", _bool_env(env.get("RIGOROUSRAG_NLI_CONFIGURED")))
     health.setdefault(
@@ -147,12 +152,13 @@ def build_runtime_composition(
 
     metadata_id = _storage_capability("metadata", selected_config.storage.metadata_backend)
     object_id = _storage_capability("object", selected_config.storage.object_backend)
+    workspace_id = _workspace_capability(selected_config.storage.metadata_backend)
     selected: dict[str, str] = {
         "retrieval": _selected_healthy(capabilities, retrieval_id),
         "policy": _selected_healthy(capabilities, policy_id),
         "metadata_storage": _selected_healthy(capabilities, metadata_id),
         "object_storage": _selected_healthy(capabilities, object_id),
-        "workspace": _selected_healthy(capabilities, "research.workspace"),
+        "workspace": _selected_healthy(capabilities, workspace_id),
         "domain": _selected_healthy(capabilities, "domain.hydrology"),
     }
     if selected_config.retrieval.enable_graph:
