@@ -109,7 +109,7 @@ def build_default_capability_registry(
         _descriptor(
             "storage.metadata.postgres",
             kind="storage",
-            provider="tools.postgres_control_plane",
+            provider="tools.sql_control_plane.PostgresControlPlane",
             trust_level="private_remote",
             max_concurrency=128,
         ),
@@ -210,7 +210,7 @@ def build_default_capability_registry(
         _descriptor(
             "policy.learned_adaptive",
             kind="router",
-            provider="tools.learned_retrieval_policy",
+            provider="tools.adaptive_policy_runtime",
             dependencies=("policy.deterministic_adaptive",),
             fallbacks=("policy.deterministic_adaptive",),
             max_calls=64,
@@ -250,9 +250,17 @@ def build_default_capability_registry(
         _descriptor(
             "research.workspace",
             kind="storage",
-            provider="tools.research_workspace_sqlite",
+            provider="tools.research_workspace_sqlite.SQLiteResearchWorkspaceStore",
             dependencies=("storage.metadata.sqlite",),
             max_concurrency=64,
+        ),
+        _descriptor(
+            "research.workspace.postgres",
+            kind="storage",
+            provider="tools.postgres_workspace_store.PostgresResearchWorkspaceStore",
+            dependencies=("storage.metadata.postgres",),
+            trust_level="private_remote",
+            max_concurrency=128,
         ),
     )
 
