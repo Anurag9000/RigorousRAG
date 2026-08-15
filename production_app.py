@@ -8,6 +8,8 @@ from tools.control_api import build_control_router
 from tools.feedback_store import FeedbackStore
 from tools.research_api import build_research_router
 from tools.research_query_api import build_research_query_router
+from tools.research_report_api import build_research_report_router
+from tools.research_report_store import ResearchReportStore
 from tools.research_result_store import ResearchResultStore
 from tools.research_workspace_sqlite import SQLiteResearchWorkspaceStore
 from tools.review_store import ReviewStore
@@ -20,6 +22,7 @@ reviews = ReviewStore(root / "reviews.sqlite3")
 feedback = FeedbackStore(root / "feedback.sqlite3")
 workspace = SQLiteResearchWorkspaceStore(root / "research_workspace.sqlite3")
 results = ResearchResultStore(root / "research_results.sqlite3")
+reports = ResearchReportStore(root / "research_reports.sqlite3")
 composition = build_runtime_composition()
 app = base.app
 
@@ -37,6 +40,9 @@ _REQUIRED_RESEARCH_ROUTES = frozenset(
         "/research/query",
         "/research/results",
         "/research/results/{result_id}",
+        "/research/reports",
+        "/research/reports/{report_id}",
+        "/research/reports/{report_id}/markdown",
     }
 )
 
@@ -93,9 +99,16 @@ def _ensure_research_routes() -> None:
             workspace_store=workspace,
             composition=composition,
         )
+        report = build_research_report_router(
+            principal_dependency=base.get_rate_limited_principal,
+            workspace_store=workspace,
+            result_store=results,
+            report_store=reports,
+        )
         _append_missing_routes(research)
         _append_missing_routes(runtime)
         _append_missing_routes(query)
+        _append_missing_routes(report)
     missing = _REQUIRED_RESEARCH_ROUTES.difference(_route_paths())
     if missing:
         raise RuntimeError(
@@ -119,6 +132,7 @@ __all__ = [
     "app",
     "composition",
     "feedback",
+    "reports",
     "results",
     "reviews",
     "workspace",
