@@ -192,11 +192,49 @@ class ResearchRecomputeExecutor:
         self.invalidations.finish_recompute(owner_id, task.task_id, success=True)
         return RecomputeOutcome(task, True, replacement)
 
-    def process_one(self, owner_id: str, *, kinds: tuple[str, ...] = ()) -> RecomputeOutcome | None:
+    def _load_claimed_task(self, owner_id: str, task_id: str) -> RecomputeTask:
+        """Reload a claimed task from the authoritative ledger before side effects."""
+
         owner = normalize_owner_id(owner_id)
-        task = self.invalidations.claim_recompute(owner, kinds=kinds)
-        if task is None:
-            return None
+        if not isinstance(task_id, str) or not task_id.strip() or len(task_id.strip()) > 256:
+            raise ValueError("task_id is invalid")
+        connection = sqlite3.connect(str(self.invalidations.path), timeout=30.0)
+        connection.row_factory = sqlite3.Row
+        try:
+            connection.execute("PRAGMA busy_timeout=30000")
+            row = connection.execute(
+                "SELECT * FROM recompute_tasks WHERE owner_id=? AND task_id=?",
+                (owner, task_id.strip()),
+            ).fetchone()
+        finally:
+            connection.close()
+        if row is None:
+            raise KeyError(task_id.strip())
+        if str(row["status"]) != "claimed":
+            raise RuntimeError("recompute task must be claimed before execution")
+        return RecomputeTask(
+            task_id=str(row["task_id"]),
+            artifact=DependencyRef(str(row["artifact_kind"]), str(row["artifact_id"])),
+            triggering_event_sha256=str(row["event_sha256"]),
+            reason=str(row["reason"]),
+            status=str(row["status"]),
+            attempts=int(row["attempts"]),
+            created_at=float(row["created_at"]),
+            claimed_at=float(row["claimed_at"]) if row["claimed_at"] is not None else None,
+            completed_at=float(row["completed_at"]) if row["completed_at"] is not None else None,
+            error_type=str(row["error_type"] or ""),
+        )
+
+    def execute_claimed(self, owner_id: str, task_id: str) -> RecomputeOutcome:
+        """Execute exactly one already-claimed authoritative recompute task.
+
+        Distributed transports pass only a task identifier.  This method reloads the
+        task from the owner-scoped ledger before invoking any handler so callers cannot
+        forge artifact identity, event lineage, reason text, or claim state.
+        """
+
+        owner = normalize_owner_id(owner_id)
+        task = self._load_claimed_task(owner, task_id)
         try:
             replacement = self._handler(task)(owner, task)
             return self._complete(owner, task, replacement)
@@ -210,6 +248,13 @@ class ResearchRecomputeExecutor:
                 acknowledge_stale=False,
             )
             return RecomputeOutcome(task, False, None, error_type)
+
+    def process_one(self, owner_id: str, *, kinds: tuple[str, ...] = ()) -> RecomputeOutcome | None:
+        owner = normalize_owner_id(owner_id)
+        task = self.invalidations.claim_recompute(owner, kinds=kinds)
+        if task is None:
+            return None
+        return self.execute_claimed(owner, task.task_id)
 
     def drain(self, owner_id: str, *, max_tasks: int = 100) -> tuple[RecomputeOutcome, ...]:
         if isinstance(max_tasks, bool) or not isinstance(max_tasks, int) or not 1 <= max_tasks <= 10_000:
