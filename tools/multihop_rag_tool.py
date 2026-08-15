@@ -11,6 +11,7 @@ from collections import Counter
 from dataclasses import asdict, dataclass
 from typing import Any
 
+from tools.adaptive_policy_runtime import RetrievalPolicyProvider
 from tools.adaptive_rag_tool import search_uploaded_docs_adaptive
 from tools.decomposition_model import (
     DecompositionDecision,
@@ -56,49 +57,16 @@ MULTIHOP_RAG_SEARCH_TOOL_DEF = {
             "properties": {
                 "query": {"type": "string", "minLength": 1, "maxLength": 10_000},
                 "doc_id": {"type": "string", "minLength": 1, "maxLength": 200},
-                "max_subquestions": {
-                    "type": "integer", "minimum": 1, "maximum": 12, "default": 8
-                },
-                "per_hop_limit": {
-                    "type": "integer", "minimum": 1, "maximum": 50, "default": 8
-                },
-                "max_workers": {
-                    "type": "integer", "minimum": 1, "maximum": 16, "default": 4
-                },
-                "hop_timeout_seconds": {
-                    "type": "number",
-                    "exclusiveMinimum": 0,
-                    "maximum": 600,
-                    "default": 30,
-                },
-                "global_timeout_seconds": {
-                    "type": "number",
-                    "exclusiveMinimum": 0,
-                    "maximum": 3600,
-                    "default": 120,
-                },
+                "max_subquestions": {"type": "integer", "minimum": 1, "maximum": 12, "default": 8},
+                "per_hop_limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 8},
+                "max_workers": {"type": "integer", "minimum": 1, "maximum": 16, "default": 4},
+                "hop_timeout_seconds": {"type": "number", "exclusiveMinimum": 0, "maximum": 600, "default": 30},
+                "global_timeout_seconds": {"type": "number", "exclusiveMinimum": 0, "maximum": 3600, "default": 120},
                 "use_model_decomposition": {"type": "boolean", "default": False},
-                "decomposition_model": {
-                    "type": "string",
-                    "minLength": 1,
-                    "maxLength": 200,
-                    "default": "gpt-4o-mini",
-                },
-                "max_attempts": {
-                    "type": "integer", "minimum": 1, "maximum": 6, "default": 3
-                },
-                "max_total_estimated_cost": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "maximum": 100000,
-                    "default": 1200,
-                },
-                "max_estimated_cost": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "maximum": 10000,
-                    "default": 500,
-                },
+                "decomposition_model": {"type": "string", "minLength": 1, "maxLength": 200, "default": "gpt-4o-mini"},
+                "max_attempts": {"type": "integer", "minimum": 1, "maximum": 6, "default": 3},
+                "max_total_estimated_cost": {"type": "integer", "minimum": 1, "maximum": 100000, "default": 1200},
+                "max_estimated_cost": {"type": "integer", "minimum": 1, "maximum": 10000, "default": 500},
             },
             "required": ["query"],
             "additionalProperties": False,
@@ -131,23 +99,14 @@ def _positive_float(value: Any, label: str, maximum: float) -> float:
     return parsed
 
 
-def _propagated_terms(
-    question: Subquestion,
-    dependencies: tuple[HopEvidence, ...],
-) -> tuple[str, ...]:
+def _propagated_terms(question: Subquestion, dependencies: tuple[HopEvidence, ...]) -> tuple[str, ...]:
     """Derive bounded lexical hints without turning evidence prose into a citation."""
-
     original = {token.lower() for token in _TOKEN_RE.findall(question.text)}
     counts: Counter[str] = Counter()
     for item in dependencies[:100]:
         for token in itertools.islice(_TOKEN_RE.findall(item.text), 500):
             lowered = token.lower()
-            if (
-                len(lowered) < 3
-                or len(lowered) > _MAX_PROPAGATED_TERM_CHARS
-                or lowered in original
-                or lowered in _STOPWORDS
-            ):
+            if len(lowered) < 3 or len(lowered) > _MAX_PROPAGATED_TERM_CHARS or lowered in original or lowered in _STOPWORDS:
                 continue
             counts[lowered] += 1
     ranked = sorted(counts.items(), key=lambda pair: (-pair[1], pair[0]))
@@ -156,9 +115,7 @@ def _propagated_terms(
 
 def _hop_query(question: Subquestion, dependencies: tuple[HopEvidence, ...]) -> str:
     parts = [question.text]
-    constraints = tuple(
-        dict.fromkeys((*question.entities, *question.temporal_constraints))
-    )
+    constraints = tuple(dict.fromkeys((*question.entities, *question.temporal_constraints)))
     if constraints:
         parts.append("Constraints: " + ", ".join(constraints))
     propagated = _propagated_terms(question, dependencies)
@@ -214,40 +171,27 @@ def search_uploaded_docs_multihop(
     diversity_lambda: float = 0.82,
     trace_store: MultiHopTraceStore | None = None,
     trace_run_id: str | None = None,
+    policy_provider: RetrievalPolicyProvider | None = None,
+    domain_registry: Any = None,
 ) -> MultiHopRAGResult:
     """Execute adaptive uploaded-document retrieval over a bounded decomposition DAG."""
 
     if trace_store is not None and not isinstance(trace_store, MultiHopTraceStore):
         raise ValueError("trace_store must be a MultiHopTraceStore or null.")
-    selected_trace_store = (
-        trace_store if trace_store is not None else get_multihop_trace_store()
-    )
+    selected_trace_store = trace_store if trace_store is not None else get_multihop_trace_store()
     started_at = time.time()
     question_limit = _integer(max_subquestions, "max_subquestions", 1, 12)
     result_limit = _integer(per_hop_limit, "per_hop_limit", 1, 50)
     workers = _integer(max_workers, "max_workers", 1, 16)
-    hop_timeout = _positive_float(
-        hop_timeout_seconds, "hop_timeout_seconds", 600.0
-    )
-    global_timeout = _positive_float(
-        global_timeout_seconds, "global_timeout_seconds", 3_600.0
-    )
+    hop_timeout = _positive_float(hop_timeout_seconds, "hop_timeout_seconds", 600.0)
+    global_timeout = _positive_float(global_timeout_seconds, "global_timeout_seconds", 3_600.0)
     attempts = _integer(max_attempts, "max_attempts", 1, 6)
-    total_cost = _integer(
-        max_total_estimated_cost,
-        "max_total_estimated_cost",
-        1,
-        100_000,
-    )
-    per_hop_cost = _integer(
-        max_estimated_cost, "max_estimated_cost", 1, 10_000
-    )
+    total_cost = _integer(max_total_estimated_cost, "max_total_estimated_cost", 1, 100_000)
+    per_hop_cost = _integer(max_estimated_cost, "max_estimated_cost", 1, 10_000)
     if not isinstance(use_model_decomposition, bool):
         raise ValueError("use_model_decomposition must be a boolean.")
 
-    deterministic = build_decomposition_plan(
-        query, max_subquestions=question_limit
-    )
+    deterministic = build_decomposition_plan(query, max_subquestions=question_limit)
     if use_model_decomposition:
         decision = propose_decomposition(
             deterministic.query,
@@ -272,22 +216,19 @@ def search_uploaded_docs_multihop(
     )
     budget_by_id = budget.by_id()
 
-    def retrieve(
-        question: Subquestion,
-        dependencies: tuple[HopEvidence, ...],
-    ) -> tuple[Any, ...]:
+    def retrieve(question: Subquestion, dependencies: tuple[HopEvidence, ...]) -> tuple[Any, ...]:
         adaptive = search_uploaded_docs_adaptive(
             _hop_query(question, dependencies),
             owner_id=owner_id,
             doc_id=doc_id,
             top_k=result_limit,
             max_attempts=attempts,
-            max_estimated_cost=budget_by_id[
-                question.question_id
-            ].max_estimated_cost,
+            max_estimated_cost=budget_by_id[question.question_id].max_estimated_cost,
             agent_client=agent_client,
             expansion_model=expansion_model,
             diversity_lambda=diversity_lambda,
+            policy_provider=policy_provider,
+            domain_registry=domain_registry,
         )
         return adaptive.evidence
 
@@ -318,7 +259,6 @@ def search_uploaded_docs_multihop(
 
 def multihop_result_payload(result: MultiHopRAGResult) -> dict[str, Any]:
     """Serialize bounded traces while keeping citations and lineage separate."""
-
     if not isinstance(result, MultiHopRAGResult):
         raise ValueError("result must be a MultiHopRAGResult.")
     retrieval = result.retrieval
@@ -347,16 +287,9 @@ def multihop_result_payload(result: MultiHopRAGResult) -> dict[str, Any]:
             "fallback_reason": result.decomposition.fallback_reason,
             "response_digest": result.decomposition.response_digest,
             "quality": asdict(result.decomposition.quality),
-            "subquestions": [
-                asdict(item)
-                for item in result.decomposition.plan.subquestions
-            ],
-            "batches": [
-                list(batch) for batch in result.decomposition.plan.batches
-            ],
-            "terminal_questions": list(
-                result.decomposition.plan.terminal_questions
-            ),
+            "subquestions": [asdict(item) for item in result.decomposition.plan.subquestions],
+            "batches": [list(batch) for batch in result.decomposition.plan.batches],
+            "terminal_questions": list(result.decomposition.plan.terminal_questions),
         },
         "budget": asdict(result.budget),
         "evidence": evidence,
