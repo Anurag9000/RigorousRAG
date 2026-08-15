@@ -107,6 +107,8 @@ _REQUIRED_RESEARCH_ROUTES = frozenset(
         "/research/source-status",
         "/research/source-status/{source_id}",
         "/research/source-trust",
+        "/research/source-trust/pending",
+        "/research/source-trust/reconcile",
         "/research/source-trust/{source_id}",
         "/research/invalidate",
         "/research/stale",
