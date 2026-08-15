@@ -1,17 +1,17 @@
-"""Owner-scoped human review API for source-trust governance records."""
+"""Owner-scoped human review and reconciliation API for source-trust governance."""
 
 from __future__ import annotations
 
-import hashlib
-import time
+from dataclasses import asdict
 from typing import Any, Callable, Literal, Mapping
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
-from tools.dependency_invalidation import DependencyInvalidationStore, DependencyRef
+from tools.dependency_invalidation import DependencyInvalidationStore
 from tools.source_trust import SourceTrustFeatures, SourceTrustPolicy, evaluate_source_trust
-from tools.source_trust_store import SourceTrustRevision, SourceTrustStore
+from tools.source_trust_reconciliation import reconcile_source_trust_activations
+from tools.source_trust_store import SourceTrustActivation, SourceTrustRevision, SourceTrustStore
 
 
 class SourceTrustReviewRequest(BaseModel):
@@ -48,6 +48,11 @@ class SourceTrustReviewRequest(BaseModel):
     review_basis: str = Field(..., min_length=1, max_length=5000)
 
 
+class SourceTrustReconcileRequest(BaseModel):
+    source_id: str | None = Field(default=None, min_length=1, max_length=1000)
+    limit: int = Field(default=1000, ge=1, le=10_000)
+
+
 def _owner(principal: Any) -> str:
     value = getattr(principal, "owner_id", None)
     if not isinstance(value, str) or not value:
@@ -76,62 +81,28 @@ def _payload(revision: SourceTrustRevision) -> Mapping[str, Any]:
     }
 
 
-def _transition_event_sha(
-    owner_id: str,
-    previous: SourceTrustRevision | None,
-    current: SourceTrustRevision,
-) -> str:
-    payload = "\x1f".join(
-        (
-            owner_id,
-            current.features.source_id,
-            previous.revision_id if previous is not None else "",
-            current.revision_id,
-            str(time.time_ns()),
-        )
-    )
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
-
-
-def _invalidate_review_change(
-    invalidations: DependencyInvalidationStore,
-    owner_id: str,
-    previous: SourceTrustRevision | None,
-    current: SourceTrustRevision,
-) -> Mapping[str, Any]:
-    """Invalidate legacy citations, evaluated subjects and the exact prior review."""
-
-    if previous is not None and previous.revision_id == current.revision_id:
-        return {"changed": False, "event_sha256": "", "affected_artifacts": 0, "recompute_tasks": 0}
-    reason = "reviewed source-trust features changed; evidence admissibility requires re-evaluation"
-    event_sha = _transition_event_sha(owner_id, previous, current)
-    roots = [
-        DependencyRef("source_trust_subject", current.features.source_id),
-        # Legacy/final-citation dependencies created before source_trust_subject existed.
-        DependencyRef("source", current.features.source_id),
-    ]
-    if previous is not None:
-        roots.append(DependencyRef("source_trust_revision", previous.revision_id))
-
-    affected: dict[str, DependencyRef] = {}
-    task_ids: set[str] = set()
-    for root in roots:
-        impact = invalidations.invalidate(
-            owner_id,
-            root=root,
-            reason=reason,
-            event_type="source_trust_review_changed",
-            replacement_id=current.revision_id,
-            event_sha256=event_sha,
-        )
-        for artifact in impact.affected:
-            affected[artifact.key] = artifact
-        task_ids.update(task.task_id for task in impact.recompute_tasks)
+def _activation_payload(activation: SourceTrustActivation) -> Mapping[str, Any]:
     return {
-        "changed": True,
-        "event_sha256": event_sha,
-        "affected_artifacts": len(affected),
-        "recompute_tasks": len(task_ids),
+        "activation_id": activation.activation_id,
+        "source_id": activation.source_id,
+        "previous_revision_id": activation.previous_revision_id,
+        "revision_id": activation.revision_id,
+        "activated_at": activation.activated_at,
+        "invalidation_completed_at": activation.invalidation_completed_at,
+        "pending": activation.pending,
+        "last_error": activation.last_error,
+    }
+
+
+def _reconcile_payload(summary: Any) -> Mapping[str, Any]:
+    return {
+        "changed": summary.attempted > 0,
+        "attempted": summary.attempted,
+        "completed": summary.completed,
+        "failed": summary.failed,
+        "affected_artifacts": summary.affected_artifacts,
+        "recompute_tasks": summary.recompute_tasks,
+        "activations": [asdict(item) for item in summary.outcomes],
     }
 
 
@@ -156,7 +127,6 @@ def build_source_trust_router(
     ) -> Mapping[str, Any]:
         owner = _owner(principal)
         try:
-            previous = store.latest(owner, request.source_id)
             notes = tuple(str(item).strip()[:500] for item in request.notes if str(item).strip())
             features = SourceTrustFeatures(
                 source_id=request.source_id,
@@ -177,15 +147,35 @@ def build_source_trust_router(
                 reviewer_id=owner,
                 review_basis=request.review_basis,
             )
-            invalidation = (
-                _invalidate_review_change(invalidation_store, owner, previous, revision)
-                if invalidation_store is not None
-                else {"changed": previous is None or previous.revision_id != revision.revision_id}
-            )
+            if invalidation_store is None:
+                pending = store.pending_activations(owner, source_id=request.source_id, limit=1000)
+                invalidation: Mapping[str, Any] = {
+                    "changed": bool(pending),
+                    "pending": len(pending),
+                    "reconciliation_configured": False,
+                }
+            else:
+                summary = reconcile_source_trust_activations(
+                    store,
+                    invalidation_store,
+                    owner,
+                    source_id=request.source_id,
+                    limit=1000,
+                    stop_on_error=True,
+                )
+                invalidation = _reconcile_payload(summary)
+                if summary.failed:
+                    raise RuntimeError("source trust activation invalidation remains pending")
         except ValueError as exc:
             raise HTTPException(status_code=400, detail="Source trust review is invalid.") from exc
         except Exception as exc:
-            raise HTTPException(status_code=503, detail="Source trust registry or invalidation ledger is unavailable.") from exc
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Source trust revision is durable, but downstream invalidation is not "
+                    "fully reconciled yet. Retry reconciliation before relying on the new review."
+                ),
+            ) from exc
         return {**_payload(revision), "invalidation": invalidation}
 
     @router.get("/source-trust")
@@ -200,6 +190,45 @@ def build_source_trust_router(
             raise HTTPException(status_code=503, detail="Source trust registry is unavailable.") from exc
         return {"sources": [_payload(item) for item in values]}
 
+    # Static routes intentionally precede /source-trust/{source_id}.
+    @router.get("/source-trust/pending")
+    async def pending_source_trust(
+        source_id: str | None = Query(default=None, min_length=1, max_length=1000),
+        limit: int = Query(default=1000, ge=1, le=10_000),
+        principal: Any = Depends(principal_dependency),
+    ) -> Mapping[str, Any]:
+        owner = _owner(principal)
+        try:
+            values = store.pending_activations(owner, source_id=source_id, limit=limit)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="Source trust pending query is invalid.") from exc
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail="Source trust registry is unavailable.") from exc
+        return {"pending": [_activation_payload(item) for item in values]}
+
+    @router.post("/source-trust/reconcile")
+    async def reconcile_source_trust(
+        request: SourceTrustReconcileRequest,
+        principal: Any = Depends(principal_dependency),
+    ) -> Mapping[str, Any]:
+        owner = _owner(principal)
+        if invalidation_store is None:
+            raise HTTPException(status_code=503, detail="Source trust invalidation reconciliation is not configured.")
+        try:
+            summary = reconcile_source_trust_activations(
+                store,
+                invalidation_store,
+                owner,
+                source_id=request.source_id,
+                limit=request.limit,
+                stop_on_error=False,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="Source trust reconciliation request is invalid.") from exc
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail="Source trust reconciliation is unavailable.") from exc
+        return _reconcile_payload(summary)
+
     @router.get("/source-trust/{source_id}")
     async def source_trust_history(
         source_id: str,
@@ -211,6 +240,7 @@ def build_source_trust_router(
         try:
             history = store.history(owner, source_id, limit=limit)
             latest = store.latest(owner, source_id)
+            activations = store.activation_history(owner, source_id, limit=limit)
             decision = (
                 evaluate_source_trust(latest.features, selected_policy, causal_claim=causal_claim)
                 if latest is not None
@@ -224,6 +254,7 @@ def build_source_trust_router(
             "source_id": source_id,
             "active_revision_id": latest.revision_id if latest is not None else None,
             "history": [_payload(item) for item in history],
+            "activations": [_activation_payload(item) for item in activations],
             "decision": (
                 {
                     "eligible_for_new_claims": decision.eligible_for_new_claims,
@@ -239,4 +270,8 @@ def build_source_trust_router(
     return router
 
 
-__all__ = ["SourceTrustReviewRequest", "build_source_trust_router"]
+__all__ = [
+    "SourceTrustReconcileRequest",
+    "SourceTrustReviewRequest",
+    "build_source_trust_router",
+]
