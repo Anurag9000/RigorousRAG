@@ -77,11 +77,27 @@ def install_evidence_admissibility_agent_gate(module: ModuleType) -> ModuleType:
                 f"{len(result.rejected_claim_ids)} claim(s) and "
                 f"{len(result.rejected_citation_labels)} citation(s)."
             )
+        trust_revision_ids = tuple(
+            dict.fromkeys(
+                item.trust_revision_id
+                for item in result.citation_decisions
+                if item.trust_revision_id
+            )
+        )[:100]
+        reviewed_sources = tuple(
+            dict.fromkeys(
+                item.source_id
+                for item in result.citation_decisions
+                if item.reviewed and item.trust_revision_id
+            )
+        )[:100]
         metadata = dict(answer.metadata or {})
         metadata["admissibility_gate"] = {
             "status": "applied",
             "policy_sha256": result.policy_sha256,
             "result_fingerprint": result.fingerprint,
+            "trust_revision_ids": list(trust_revision_ids),
+            "reviewed_source_ids": list(reviewed_sources),
             "rejected_claim_count": len(result.rejected_claim_ids),
             "rejected_citation_count": len(result.rejected_citation_labels),
             "claim_kinds": {
