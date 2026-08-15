@@ -24,6 +24,8 @@ from tools.review_store import ReviewStore
 from tools.runtime_api import build_runtime_router
 from tools.runtime_composition import build_runtime_composition
 from tools.runtime_providers import runtime_providers
+from tools.source_trust_api import build_source_trust_router
+from tools.source_trust_store import SourceTrustStore
 
 root = Path(os.environ.get("CLASSIC_STORAGE_DIR", "data")).resolve() / "governance"
 root.mkdir(parents=True, exist_ok=True)
@@ -47,6 +49,7 @@ results = ResearchResultStore(root / "research_results.sqlite3")
 reports = ResearchReportStore(root / "research_reports.sqlite3")
 invalidations = DependencyInvalidationStore(root / "research_invalidation.sqlite3")
 replacements = ArtifactReplacementStore(root / "research_replacements.sqlite3")
+source_trust = SourceTrustStore(root / "source_trust.sqlite3")
 replay_recipes = build_replay_recipe_store(
     root / "research_replay.sqlite3",
     providers=runtime_providers,
@@ -59,10 +62,12 @@ _base_new_agent = base._new_agent
 def _production_agent(owner_id: str, model=None):
     agent = _base_new_agent(owner_id, model)
     configured = configure_agent_runtime(agent, composition, providers=runtime_providers)
-    # The source-status gate is installed on the class but its owner-scoped ledger is a
-    # deployment object. Keeping it on each request-scoped agent prevents global tenant
-    # state and lets every citation decision query the same invalidation ledger.
+    # Publication governance is request scoped but reads durable owner-scoped ledgers.
+    # The class-level gates are installed by the shared import hook; these bindings avoid
+    # process-global tenant state while giving every citation/claim decision the same
+    # authoritative source-status and reviewed-trust view.
     configured.source_status_store = invalidations
+    configured.source_trust_store = source_trust
     return configured
 
 
@@ -101,6 +106,8 @@ _REQUIRED_RESEARCH_ROUTES = frozenset(
         "/research/reports/{report_id}/markdown",
         "/research/source-status",
         "/research/source-status/{source_id}",
+        "/research/source-trust",
+        "/research/source-trust/{source_id}",
         "/research/invalidate",
         "/research/stale",
         "/research/stale/acknowledge",
@@ -173,12 +180,18 @@ def _ensure_research_routes() -> None:
             principal_dependency=base.get_rate_limited_principal,
             replacements=replacements,
         )
+        trust = build_source_trust_router(
+            principal_dependency=base.get_rate_limited_principal,
+            store=source_trust,
+            invalidation_store=invalidations,
+        )
         _append_missing_routes(research)
         _append_missing_routes(runtime)
         _append_missing_routes(query)
         _append_missing_routes(report)
         _append_missing_routes(invalidation)
         _append_missing_routes(lineage)
+        _append_missing_routes(trust)
     missing = _REQUIRED_RESEARCH_ROUTES.difference(_route_paths())
     if missing:
         raise RuntimeError("Production research routes failed to mount: " + ", ".join(sorted(missing)))
@@ -207,5 +220,6 @@ __all__ = [
     "reports",
     "results",
     "reviews",
+    "source_trust",
     "workspace",
 ]
