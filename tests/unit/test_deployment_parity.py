@@ -78,8 +78,8 @@ def test_exact_head_workflow_pins_third_party_actions_by_commit():
 
     assert workflow.count(_CHECKOUT_PIN) == 5
     assert workflow.count(_SETUP_PYTHON_PIN) == 3
-    # One artifact carries pytest diagnostics and one carries each generated lock.
-    assert workflow.count(_UPLOAD_ARTIFACT_PIN) == 2
+    # Uploads cover pytest diagnostics, image supply-chain evidence, and generated locks.
+    assert workflow.count(_UPLOAD_ARTIFACT_PIN) == 3
     assert "actions/checkout@v" not in workflow
     assert "actions/setup-python@v" not in workflow
     assert "actions/upload-artifact@v" not in workflow
