@@ -5,6 +5,7 @@ import os
 import server as base
 from fastapi import Request
 from tools.agent_runtime import configure_agent_runtime
+from tools.artifact_lineage_api import build_artifact_lineage_router
 from tools.artifact_replacements import ArtifactReplacementStore
 from tools.control_api import build_control_router
 from tools.dependency_invalidation import DependencyInvalidationStore
@@ -57,7 +58,12 @@ _base_new_agent = base._new_agent
 
 def _production_agent(owner_id: str, model=None):
     agent = _base_new_agent(owner_id, model)
-    return configure_agent_runtime(agent, composition, providers=runtime_providers)
+    configured = configure_agent_runtime(agent, composition, providers=runtime_providers)
+    # The source-status gate is installed on the class but its owner-scoped ledger is a
+    # deployment object. Keeping it on each request-scoped agent prevents global tenant
+    # state and lets every citation decision query the same invalidation ledger.
+    configured.source_status_store = invalidations
+    return configured
 
 
 base._new_agent = _production_agent
@@ -99,6 +105,7 @@ _REQUIRED_RESEARCH_ROUTES = frozenset(
         "/research/stale",
         "/research/stale/acknowledge",
         "/research/recompute",
+        "/research/artifacts/{kind}/{resource_id}/lineage",
     }
 )
 
@@ -162,11 +169,16 @@ def _ensure_research_routes() -> None:
             principal_dependency=base.get_rate_limited_principal,
             store=invalidations,
         )
+        lineage = build_artifact_lineage_router(
+            principal_dependency=base.get_rate_limited_principal,
+            replacements=replacements,
+        )
         _append_missing_routes(research)
         _append_missing_routes(runtime)
         _append_missing_routes(query)
         _append_missing_routes(report)
         _append_missing_routes(invalidation)
+        _append_missing_routes(lineage)
     missing = _REQUIRED_RESEARCH_ROUTES.difference(_route_paths())
     if missing:
         raise RuntimeError("Production research routes failed to mount: " + ", ".join(sorted(missing)))
