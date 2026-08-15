@@ -125,6 +125,12 @@ class ResearchRecomputeExecutor:
             question = old.report.question
         if len(result.citations) > 100:
             raise RecomputeBlocked("current result exceeds report citation limit")
+        warnings = list(result.warnings)
+        if old.report.evidence_matrix or old.report.conflicts or old.report.limitations:
+            warnings.append(
+                "Structured analytical fields were cleared during upstream recomputation; "
+                "they require a dedicated governed regeneration pass."
+            )
         rebuilt = ResearchReport(
             title=title,
             question=question,
@@ -136,11 +142,13 @@ class ResearchRecomputeExecutor:
                     citation_ids=result.citation_ids,
                 ),
             ),
-            evidence_matrix=old.report.evidence_matrix,
+            # Never copy derived analysis that may have depended on invalidated evidence.
+            # Dedicated matrix/conflict/limitation handlers may repopulate these later.
+            evidence_matrix=(),
             citations=result.citations,
-            conflicts=old.report.conflicts,
-            limitations=old.report.limitations,
-            warnings=result.warnings,
+            conflicts=(),
+            limitations=(),
+            warnings=tuple(warnings),
         )
         new = self.reports.put(
             owner_id,
