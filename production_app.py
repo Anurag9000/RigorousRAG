@@ -7,6 +7,7 @@ from fastapi import Request
 from tools.control_api import build_control_router
 from tools.feedback_store import FeedbackStore
 from tools.research_api import build_research_router
+from tools.research_query_api import build_research_query_router
 from tools.research_result_store import ResearchResultStore
 from tools.research_workspace_sqlite import SQLiteResearchWorkspaceStore
 from tools.review_store import ReviewStore
@@ -33,6 +34,9 @@ _REQUIRED_RESEARCH_ROUTES = frozenset(
         "/research/sessions/{session_id}/close",
         "/research/capabilities",
         "/research/runtime",
+        "/research/query",
+        "/research/results",
+        "/research/results/{result_id}",
     }
 )
 
@@ -81,8 +85,17 @@ def _ensure_research_routes() -> None:
             principal_dependency=base.get_rate_limited_principal,
             composition=composition,
         )
+        query = build_research_query_router(
+            principal_dependency=base.get_rate_limited_principal,
+            agent_factory=base._new_agent,
+            run_research_task=base._run_research_task,
+            result_store=results,
+            workspace_store=workspace,
+            composition=composition,
+        )
         _append_missing_routes(research)
         _append_missing_routes(runtime)
+        _append_missing_routes(query)
     missing = _REQUIRED_RESEARCH_ROUTES.difference(_route_paths())
     if missing:
         raise RuntimeError(
