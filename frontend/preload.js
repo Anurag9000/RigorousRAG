@@ -18,4 +18,12 @@
       window.clearTimeout(timer);
     });
   };
+
+  // Optional research-workspace extension. It owns its own safe-DOM bindings so it can
+  // be delivered independently from the core chat bundle without inline script policy.
+  const researchScript = document.createElement("script");
+  researchScript.src = "/static/research.js";
+  researchScript.defer = true;
+  researchScript.dataset.rigorousragExtension = "research-workspace";
+  document.head.appendChild(researchScript);
 })();
