@@ -17,6 +17,7 @@ from tools.retrieval_runtime import BudgetLimits, RuntimeBudget
 
 _MARKER = "_agent_tool_registry_bridge_installed"
 _ORIGINAL = "_agent_tool_registry_original_dispatch"
+_DISPATCHER_NAME = "_agent_tool_registry_dispatcher_name"
 _REGISTRY = "AGENT_TOOL_REGISTRY"
 _MAX_TOOL_CALL_WALL_MS = 30_000.0
 
@@ -67,19 +68,30 @@ def register_governed_agent_tool(module: ModuleType, spec: AgentToolSpec) -> Non
     _sync_schemas(module)
 
 
+def _dispatcher_name(search_agent: type[Any]) -> str:
+    """Return the live dispatcher boundary, preferring the production ``_dispatch`` API."""
+
+    for name in ("_dispatch", "_dispatch_tool"):
+        if callable(getattr(search_agent, name, None)):
+            return name
+    raise RuntimeError("search_agent_legacy does not expose the expected SearchAgent dispatcher")
+
+
 def install_agent_tool_registry_bridge(module: ModuleType) -> None:
     if getattr(module, _MARKER, False):
         _sync_schemas(module)
         return
     search_agent = getattr(module, "SearchAgent", None)
-    if search_agent is None or not hasattr(search_agent, "_dispatch_tool"):
+    if not isinstance(search_agent, type):
         raise RuntimeError("search_agent_legacy does not expose the expected SearchAgent dispatcher")
-    registry = _registry(module)
-    del registry
+    dispatcher_name = _dispatcher_name(search_agent)
+    _registry(module)
     original = getattr(search_agent, _ORIGINAL, None)
     if original is None:
-        original = search_agent._dispatch_tool
+        original = getattr(search_agent, dispatcher_name)
         setattr(search_agent, _ORIGINAL, original)
+    if not callable(original):
+        raise RuntimeError("search_agent_legacy original dispatcher is incompatible")
 
     def dispatch_with_registry(self: Any, name: str, args: dict[str, Any]):
         current = _registry(module)
@@ -103,16 +115,17 @@ def install_agent_tool_registry_bridge(module: ModuleType) -> None:
             permissions=permissions,
             budget=budget,
         )
+        snapshot = budget.snapshot()
         content = json.dumps(
             {
                 "result": dict(result.content),
                 "warnings": list(result.warnings),
                 "runtime_budget": {
-                    "elapsed_ms": budget.snapshot().elapsed_ms,
-                    "calls": budget.snapshot().calls,
-                    "input_tokens": budget.snapshot().input_tokens,
-                    "output_tokens": budget.snapshot().output_tokens,
-                    "cost": budget.snapshot().cost,
+                    "elapsed_ms": snapshot.elapsed_ms,
+                    "calls": snapshot.calls,
+                    "input_tokens": snapshot.input_tokens,
+                    "output_tokens": snapshot.output_tokens,
+                    "cost": snapshot.cost,
                 },
             },
             sort_keys=True,
@@ -122,7 +135,8 @@ def install_agent_tool_registry_bridge(module: ModuleType) -> None:
         )
         return content, list(result.citations)
 
-    search_agent._dispatch_tool = dispatch_with_registry
+    setattr(search_agent, dispatcher_name, dispatch_with_registry)
+    setattr(module, _DISPATCHER_NAME, dispatcher_name)
     _sync_schemas(module)
     setattr(module, _MARKER, True)
 
