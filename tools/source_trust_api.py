@@ -7,6 +7,7 @@ from typing import Any, Callable, Literal, Mapping
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
+from tools.dependency_invalidation import DependencyInvalidationStore, DependencyRef
 from tools.source_trust import SourceTrustFeatures, SourceTrustPolicy, evaluate_source_trust
 from tools.source_trust_store import SourceTrustRevision, SourceTrustStore
 
@@ -19,6 +20,9 @@ class SourceTrustReviewRequest(BaseModel):
         "meta_analysis",
         "guideline",
         "dataset",
+        "technical_report",
+        "preprint",
+        "conference",
         "documentation",
         "web",
         "model_output",
@@ -70,14 +74,55 @@ def _payload(revision: SourceTrustRevision) -> Mapping[str, Any]:
     }
 
 
+def _invalidate_review_change(
+    invalidations: DependencyInvalidationStore,
+    owner_id: str,
+    previous: SourceTrustRevision | None,
+    current: SourceTrustRevision,
+) -> Mapping[str, Any]:
+    """Invalidate all source-dependent artifacts and exact old-review dependencies."""
+
+    if previous is not None and previous.revision_id == current.revision_id:
+        return {"changed": False, "source_event_sha256": "", "prior_revision_event_sha256": ""}
+    reason = "reviewed source-trust features changed; evidence admissibility requires re-evaluation"
+    source_impact = invalidations.invalidate(
+        owner_id,
+        root=DependencyRef("source", current.features.source_id),
+        reason=reason,
+        event_type="source_trust_review_changed",
+        replacement_id=current.revision_id,
+        event_sha256=current.revision_id,
+    )
+    previous_event = ""
+    if previous is not None:
+        prior_impact = invalidations.invalidate(
+            owner_id,
+            root=DependencyRef("source_trust_revision", previous.revision_id),
+            reason=reason,
+            event_type="source_trust_revision_superseded",
+            replacement_id=current.revision_id,
+        )
+        previous_event = prior_impact.event_sha256
+    return {
+        "changed": True,
+        "source_event_sha256": source_impact.event_sha256,
+        "prior_revision_event_sha256": previous_event,
+        "affected_artifacts": len(source_impact.affected),
+        "recompute_tasks": len(source_impact.recompute_tasks),
+    }
+
+
 def build_source_trust_router(
     *,
     principal_dependency: Callable[..., Any],
     store: SourceTrustStore,
     policy: SourceTrustPolicy | None = None,
+    invalidation_store: DependencyInvalidationStore | None = None,
 ) -> APIRouter:
     if not isinstance(store, SourceTrustStore):
         raise TypeError("store must be SourceTrustStore")
+    if invalidation_store is not None and not isinstance(invalidation_store, DependencyInvalidationStore):
+        raise TypeError("invalidation_store must be DependencyInvalidationStore or null")
     selected_policy = policy or SourceTrustPolicy()
     router = APIRouter(prefix="/research", tags=["source-trust"])
 
@@ -88,6 +133,7 @@ def build_source_trust_router(
     ) -> Mapping[str, Any]:
         owner = _owner(principal)
         try:
+            previous = store.latest(owner, request.source_id)
             notes = tuple(str(item).strip()[:500] for item in request.notes if str(item).strip())
             features = SourceTrustFeatures(
                 source_id=request.source_id,
@@ -108,11 +154,16 @@ def build_source_trust_router(
                 reviewer_id=owner,
                 review_basis=request.review_basis,
             )
+            invalidation = (
+                _invalidate_review_change(invalidation_store, owner, previous, revision)
+                if invalidation_store is not None
+                else {"changed": previous is None or previous.revision_id != revision.revision_id}
+            )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail="Source trust review is invalid.") from exc
         except Exception as exc:
-            raise HTTPException(status_code=503, detail="Source trust registry is unavailable.") from exc
-        return _payload(revision)
+            raise HTTPException(status_code=503, detail="Source trust registry or invalidation ledger is unavailable.") from exc
+        return {**_payload(revision), "invalidation": invalidation}
 
     @router.get("/source-trust")
     async def list_source_trust(
@@ -152,10 +203,9 @@ def build_source_trust_router(
             "decision": (
                 {
                     "eligible_for_new_claims": decision.eligible_for_new_claims,
-                    "trust_score": decision.trust_score,
+                    "trust_score": decision.score,
                     "reasons": list(decision.reasons),
-                    "warnings": list(decision.warnings),
-                    "decision_fingerprint": decision.decision_fingerprint,
+                    "policy_sha256": decision.policy_sha256,
                 }
                 if decision is not None
                 else None
