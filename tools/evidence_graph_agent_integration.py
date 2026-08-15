@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import json
+import sys
 from types import ModuleType
 from typing import Any
 
@@ -36,12 +37,35 @@ def _schema_name(value: Any) -> str | None:
     return name if isinstance(name, str) else None
 
 
+def _ensure_governed_pipeline_for_live_agent(module: ModuleType) -> None:
+    """Complete the ordered pipeline when legacy is imported directly.
+
+    ``search_agent_legacy`` historically finalised only the evidence-graph tool.
+    When this installer is invoked by that live module before the shared import
+    hook has run, bootstrap the shared hook after GraphRAG registration.  Calls
+    made for isolated/fake modules remain local, and calls made from the shared
+    pipeline are already marked by the registry bridge and therefore do not
+    recurse.
+    """
+
+    if sys.modules.get("search_agent_legacy") is not module:
+        return
+    if getattr(module, "_agent_tool_registry_bridge_installed", False):
+        return
+    from tools.evidence_graph_agent_import_hook import (
+        install_evidence_graph_agent_import_hook,
+    )
+
+    install_evidence_graph_agent_import_hook()
+
+
 def install_evidence_graph_agent_tool(module: ModuleType) -> ModuleType:
     """Extend one loaded ``search_agent_legacy`` module idempotently."""
 
     if not isinstance(module, ModuleType):
         raise ValueError("module must be a loaded module.")
     if getattr(module, "_evidence_graph_agent_tool_installed", False):
+        _ensure_governed_pipeline_for_live_agent(module)
         return module
     schemas = getattr(module, "TOOLS_SCHEMA", None)
     parameter_schemas = getattr(module, "_TOOL_PARAMETER_SCHEMAS", None)
@@ -109,6 +133,7 @@ def install_evidence_graph_agent_tool(module: ModuleType) -> ModuleType:
         module.SYSTEM_PROMPT = updated + "\n"
     module._evidence_graph_original_dispatch = original_dispatch
     module._evidence_graph_agent_tool_installed = True
+    _ensure_governed_pipeline_for_live_agent(module)
     return module
 
 
