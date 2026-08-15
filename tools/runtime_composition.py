@@ -2,8 +2,9 @@
 
 This module converts typed ``RuntimeConfig`` into explicit capability/domain selections.
 It does not dynamically import untrusted plugins, contact providers, download models or
-silently enable optional capabilities. Provider objects may be injected by trusted
-application bootstrap code and are represented through runtime-health signals.
+silently enable optional capabilities. Provider-backed health comes only from concrete
+trusted provider objects already registered in this process; configuration expresses
+desire, not availability.
 """
 
 from __future__ import annotations
@@ -17,14 +18,11 @@ from tools.capability_registry import CapabilityRegistry
 from tools.default_capability_registry import build_default_capability_registry
 from tools.default_domain_registry import build_default_domain_registry
 from tools.domain_adapter import DomainAdapterRegistry
+from tools.replay_runtime import ensure_replay_capability
 from tools.runtime_config import RuntimeConfig, apply_environment_overlays, runtime_config_from_mapping
 from tools.runtime_providers import runtime_providers
 
 _MAX_CONFIG_JSON_BYTES = 256_000
-
-
-def _bool_env(value: str | None) -> bool:
-    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def load_runtime_config(*, environ: Mapping[str, str] | None = None) -> RuntimeConfig:
@@ -106,39 +104,15 @@ def build_runtime_composition(
     env = os.environ if environ is None else environ
     selected_config = config or load_runtime_config(environ=env)
 
+    # Provider-backed health is derived from actual registered process objects. Trusted
+    # callers may override a health signal explicitly for controlled composition/tests,
+    # but environment strings cannot manufacture provider availability.
     health: dict[str, Any] = dict(runtime_providers.capability_health())
-    health.setdefault("nli.claim_entailment", _bool_env(env.get("RIGOROUSRAG_NLI_CONFIGURED")))
-    health.setdefault(
-        "retrieval.page_late_interaction",
-        selected_config.retrieval.enable_multimodal
-        and _bool_env(env.get("RIGOROUSRAG_PAGE_MODEL_CONFIGURED")),
-    )
-    health.setdefault(
-        "retrieval.multimodal",
-        selected_config.retrieval.enable_multimodal
-        and _bool_env(env.get("RIGOROUSRAG_MULTIMODAL_MODEL_CONFIGURED")),
-    )
-    health.setdefault(
-        "policy.learned_adaptive",
-        bool(selected_config.retrieval.policy_capability_id)
-        and _bool_env(env.get("RIGOROUSRAG_LEARNED_POLICY_CONFIGURED")),
-    )
-    health.setdefault(
-        "storage.metadata.postgres",
-        selected_config.storage.metadata_backend in {"postgres", "postgresql"}
-        and _bool_env(env.get("RIGOROUSRAG_POSTGRES_CONFIGURED")),
-    )
-    health.setdefault(
-        "storage.object.s3",
-        selected_config.storage.object_backend in {"s3", "s3-compatible"}
-        and _bool_env(env.get("RIGOROUSRAG_S3_CONFIGURED")),
-    )
-    health.setdefault("queue.redis", _bool_env(env.get("RIGOROUSRAG_REDIS_CONFIGURED")))
-    health.setdefault("secret.external", _bool_env(env.get("RIGOROUSRAG_SECRET_PROVIDER_CONFIGURED")))
     if runtime_health:
         health.update(dict(runtime_health))
 
     capabilities = build_default_capability_registry(runtime_health=health)
+    replay_descriptor = ensure_replay_capability(capabilities, providers=runtime_providers)
     domains = build_default_domain_registry()
 
     strategy_map = {
@@ -163,12 +137,16 @@ def build_runtime_composition(
     }
     if selected_config.retrieval.enable_graph:
         selected["graph"] = _selected_healthy(capabilities, "retrieval.graph")
-    if selected_config.retrieval.enable_multimodal and health.get("retrieval.multimodal"):
-        selected["multimodal"] = _selected_healthy(capabilities, "retrieval.multimodal")
-    if selected_config.retrieval.enable_multimodal and health.get("retrieval.page_late_interaction"):
-        selected["page_late_interaction"] = _selected_healthy(capabilities, "retrieval.page_late_interaction")
-    if health.get("nli.claim_entailment"):
+    if selected_config.retrieval.enable_multimodal:
+        if capabilities.health(capabilities.active("retrieval.multimodal")).available:
+            selected["multimodal"] = _selected_healthy(capabilities, "retrieval.multimodal")
+        if capabilities.health(capabilities.active("retrieval.page_late_interaction")).available:
+            selected["page_late_interaction"] = _selected_healthy(capabilities, "retrieval.page_late_interaction")
+    nli_descriptor = capabilities.active("nli.claim_entailment")
+    if nli_descriptor is not None and capabilities.health(nli_descriptor).available:
         selected["claim_entailment"] = _selected_healthy(capabilities, "nli.claim_entailment")
+    if capabilities.health(replay_descriptor).available:
+        selected["encrypted_replay"] = replay_descriptor.capability_id
 
     return RuntimeComposition(
         config=selected_config,
