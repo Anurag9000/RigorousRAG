@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 
 from tools.dependency_invalidation import DependencyInvalidationStore, DependencyRef
 from tools.models import AgentAnswer
+from tools.replay_recipe_store import EncryptedReplayRecipeStore
 from tools.research_dependencies import register_result_dependencies, stale_reasons
 from tools.research_result_store import ResearchResultStore, StoredResearchResult
 from tools.research_workspace import ResearchSession, ResearchTurn, append_turn
@@ -49,19 +50,10 @@ def _maybe_sha(value: Any) -> str:
     return digest if len(digest) == 64 and all(ch in "0123456789abcdef" for ch in digest) else ""
 
 
-def _result_payload(
-    result: StoredResearchResult,
-    *,
-    owner_id: str | None = None,
-    invalidation_store: DependencyInvalidationStore | None = None,
-) -> Mapping[str, Any]:
+def _result_payload(result: StoredResearchResult, *, owner_id: str | None = None, invalidation_store: DependencyInvalidationStore | None = None) -> Mapping[str, Any]:
     stale = ()
     if owner_id is not None and invalidation_store is not None:
-        stale = stale_reasons(
-            invalidation_store,
-            owner_id,
-            DependencyRef("result", result.result_id),
-        )
+        stale = stale_reasons(invalidation_store, owner_id, DependencyRef("result", result.result_id))
     return {
         "result_id": result.result_id,
         "query_sha256": result.query_sha256,
@@ -91,6 +83,7 @@ def build_research_query_router(
     workspace_store: WorkspaceStore,
     composition: RuntimeComposition,
     invalidation_store: DependencyInvalidationStore | None = None,
+    replay_recipe_store: EncryptedReplayRecipeStore | None = None,
 ) -> APIRouter:
     if not isinstance(result_store, ResearchResultStore):
         raise TypeError("result_store must be ResearchResultStore")
@@ -98,6 +91,8 @@ def build_research_query_router(
         raise TypeError("composition must be RuntimeComposition")
     if invalidation_store is not None and not isinstance(invalidation_store, DependencyInvalidationStore):
         raise TypeError("invalidation_store must be DependencyInvalidationStore or null")
+    if replay_recipe_store is not None and not isinstance(replay_recipe_store, EncryptedReplayRecipeStore):
+        raise TypeError("replay_recipe_store must be EncryptedReplayRecipeStore or null")
     router = APIRouter(prefix="/research", tags=["research-query"])
 
     @router.post("/query")
@@ -130,32 +125,46 @@ def build_research_query_router(
 
         query_sha256 = _sha_text(request.query)
         strategy = composition.config.retrieval.default_strategy
+        model = str(getattr(agent, "model", request.model or ""))
         try:
-            stored = result_store.put(
-                owner,
-                query_sha256=query_sha256,
-                answer=answer,
-                strategy=strategy,
-                model=str(getattr(agent, "model", request.model or "")),
-            )
+            stored = result_store.put(owner, query_sha256=query_sha256, answer=answer, strategy=strategy, model=model)
         except Exception as exc:
             raise HTTPException(status_code=503, detail="Research result persistence is unavailable.") from exc
 
         if invalidation_store is not None:
             try:
-                register_result_dependencies(
-                    invalidation_store,
-                    owner,
-                    stored,
-                    composition=composition,
-                )
+                register_result_dependencies(invalidation_store, owner, stored, composition=composition)
+                if session is not None:
+                    invalidation_store.register_dependencies(
+                        owner,
+                        downstream=DependencyRef("result", stored.result_id),
+                        upstreams=(
+                            (DependencyRef("session", session.session_id), "created_in_session"),
+                            (DependencyRef("project", session.project_id), "created_in_project"),
+                        ),
+                    )
             except Exception as exc:
                 raise HTTPException(
                     status_code=503,
-                    detail=(
-                        "Research result was persisted, but dependency lineage could not be "
-                        f"registered. Result ID: {stored.result_id}"
-                    ),
+                    detail=("Research result was persisted, but dependency lineage could not be registered. " f"Result ID: {stored.result_id}"),
+                ) from exc
+
+        replay_stored = False
+        if replay_recipe_store is not None:
+            try:
+                replay_recipe_store.put(
+                    owner,
+                    result_id=stored.result_id,
+                    query_sha256=query_sha256,
+                    query=request.query,
+                    model=model,
+                    strategy=strategy,
+                )
+                replay_stored = True
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=503,
+                    detail=("Research result was persisted, but its encrypted replay recipe could not be stored. " f"Result ID: {stored.result_id}"),
                 ) from exc
 
         updated_session: ResearchSession | None = None
@@ -181,19 +190,14 @@ def build_research_query_router(
                 updated_session = append_turn(session, turn)
                 workspace_store.put_session(updated_session, expected_fingerprint=request.expected_session_fingerprint.lower())
             except RuntimeError as exc:
-                raise HTTPException(
-                    status_code=409,
-                    detail=("Research result was persisted, but the session changed before the turn could be appended. " f"Result ID: {stored.result_id}"),
-                ) from exc
+                raise HTTPException(status_code=409, detail=("Research result was persisted, but the session changed before the turn could be appended. " f"Result ID: {stored.result_id}")) from exc
             except Exception as exc:
-                raise HTTPException(
-                    status_code=503,
-                    detail=("Research result was persisted, but the session turn could not be appended. " f"Result ID: {stored.result_id}"),
-                ) from exc
+                raise HTTPException(status_code=503, detail=("Research result was persisted, but the session turn could not be appended. " f"Result ID: {stored.result_id}")) from exc
 
         payload = dict(_result_payload(stored, owner_id=owner, invalidation_store=invalidation_store))
         payload["session_id"] = updated_session.session_id if updated_session else None
         payload["session_fingerprint"] = updated_session.fingerprint if updated_session else None
+        payload["encrypted_replay_recipe"] = replay_stored
         return payload
 
     @router.get("/results")
@@ -206,18 +210,7 @@ def build_research_query_router(
         rows = []
         for item in values:
             stale = stale_reasons(invalidation_store, owner, DependencyRef("result", item.result_id), maximum=20) if invalidation_store is not None else ()
-            rows.append(
-                {
-                    "result_id": item.result_id,
-                    "query_sha256": item.query_sha256,
-                    "strategy": item.strategy,
-                    "model": item.model,
-                    "created_at": item.created_at,
-                    "citation_count": len(item.citations),
-                    "stale": bool(stale),
-                    "stale_reasons": list(stale),
-                }
-            )
+            rows.append({"result_id": item.result_id, "query_sha256": item.query_sha256, "strategy": item.strategy, "model": item.model, "created_at": item.created_at, "citation_count": len(item.citations), "stale": bool(stale), "stale_reasons": list(stale)})
         return {"results": rows}
 
     @router.get("/results/{result_id}")
