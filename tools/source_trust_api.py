@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import time
 from typing import Any, Callable, Literal, Mapping
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -74,41 +76,62 @@ def _payload(revision: SourceTrustRevision) -> Mapping[str, Any]:
     }
 
 
+def _transition_event_sha(
+    owner_id: str,
+    previous: SourceTrustRevision | None,
+    current: SourceTrustRevision,
+) -> str:
+    payload = "\x1f".join(
+        (
+            owner_id,
+            current.features.source_id,
+            previous.revision_id if previous is not None else "",
+            current.revision_id,
+            str(time.time_ns()),
+        )
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
 def _invalidate_review_change(
     invalidations: DependencyInvalidationStore,
     owner_id: str,
     previous: SourceTrustRevision | None,
     current: SourceTrustRevision,
 ) -> Mapping[str, Any]:
-    """Invalidate all source-dependent artifacts and exact old-review dependencies."""
+    """Invalidate legacy citations, evaluated subjects and the exact prior review."""
 
     if previous is not None and previous.revision_id == current.revision_id:
-        return {"changed": False, "source_event_sha256": "", "prior_revision_event_sha256": ""}
+        return {"changed": False, "event_sha256": "", "affected_artifacts": 0, "recompute_tasks": 0}
     reason = "reviewed source-trust features changed; evidence admissibility requires re-evaluation"
-    source_impact = invalidations.invalidate(
-        owner_id,
-        root=DependencyRef("source", current.features.source_id),
-        reason=reason,
-        event_type="source_trust_review_changed",
-        replacement_id=current.revision_id,
-        event_sha256=current.revision_id,
-    )
-    previous_event = ""
+    event_sha = _transition_event_sha(owner_id, previous, current)
+    roots = [
+        DependencyRef("source_trust_subject", current.features.source_id),
+        # Legacy/final-citation dependencies created before source_trust_subject existed.
+        DependencyRef("source", current.features.source_id),
+    ]
     if previous is not None:
-        prior_impact = invalidations.invalidate(
+        roots.append(DependencyRef("source_trust_revision", previous.revision_id))
+
+    affected: dict[str, DependencyRef] = {}
+    task_ids: set[str] = set()
+    for root in roots:
+        impact = invalidations.invalidate(
             owner_id,
-            root=DependencyRef("source_trust_revision", previous.revision_id),
+            root=root,
             reason=reason,
-            event_type="source_trust_revision_superseded",
+            event_type="source_trust_review_changed",
             replacement_id=current.revision_id,
+            event_sha256=event_sha,
         )
-        previous_event = prior_impact.event_sha256
+        for artifact in impact.affected:
+            affected[artifact.key] = artifact
+        task_ids.update(task.task_id for task in impact.recompute_tasks)
     return {
         "changed": True,
-        "source_event_sha256": source_impact.event_sha256,
-        "prior_revision_event_sha256": previous_event,
-        "affected_artifacts": len(source_impact.affected),
-        "recompute_tasks": len(source_impact.recompute_tasks),
+        "event_sha256": event_sha,
+        "affected_artifacts": len(affected),
+        "recompute_tasks": len(task_ids),
     }
 
 
@@ -187,7 +210,7 @@ def build_source_trust_router(
         owner = _owner(principal)
         try:
             history = store.history(owner, source_id, limit=limit)
-            latest = history[0] if history else None
+            latest = store.latest(owner, source_id)
             decision = (
                 evaluate_source_trust(latest.features, selected_policy, causal_claim=causal_claim)
                 if latest is not None
@@ -199,6 +222,7 @@ def build_source_trust_router(
             raise HTTPException(status_code=503, detail="Source trust registry is unavailable.") from exc
         return {
             "source_id": source_id,
+            "active_revision_id": latest.revision_id if latest is not None else None,
             "history": [_payload(item) for item in history],
             "decision": (
                 {
