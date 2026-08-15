@@ -129,6 +129,18 @@ def register_result_dependencies(
                     DependencyRef("source_trust_revision", revision_id),
                     "admitted_under_source_review",
                 )
+        evaluated_source_ids = admissibility.get("evaluated_source_ids", ())
+        if isinstance(evaluated_source_ids, (list, tuple)):
+            for raw_source in evaluated_source_ids[:100]:
+                source_id = _safe_metadata_id(raw_source, 1000)
+                if not source_id:
+                    continue
+                _register_unique(
+                    upstreams,
+                    seen,
+                    DependencyRef("source_trust_subject", source_id),
+                    "evaluated_for_admissibility",
+                )
 
     store.register_dependencies(owner_id, downstream=downstream, upstreams=tuple(upstreams))
 
