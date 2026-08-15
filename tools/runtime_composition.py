@@ -76,7 +76,15 @@ def _storage_capability(kind: str, value: str) -> str:
         ("object", "s3"): "storage.object.s3",
         ("object", "s3-compatible"): "storage.object.s3",
     }
-    return options.get((kind, normalized), f"storage.{kind}.{normalized}")
+    capability = options.get((kind, normalized))
+    if capability is None:
+        raise ValueError(f"unsupported {kind} storage backend: {normalized}")
+    return capability
+
+
+def _selected_healthy(registry: CapabilityRegistry, capability_id: str) -> str:
+    resolution = registry.resolve(capability_id, allow_fallback=True)
+    return resolution.selected.capability_id
 
 
 def build_runtime_composition(
@@ -88,10 +96,7 @@ def build_runtime_composition(
     env = os.environ if environ is None else environ
     selected_config = config or load_runtime_config(environ=env)
     health = dict(runtime_health or {})
-    health.setdefault(
-        "nli.claim_entailment",
-        _bool_env(env.get("RIGOROUSRAG_NLI_CONFIGURED")),
-    )
+    health.setdefault("nli.claim_entailment", _bool_env(env.get("RIGOROUSRAG_NLI_CONFIGURED")))
     health.setdefault(
         "retrieval.page_late_interaction",
         selected_config.retrieval.enable_multimodal
@@ -107,6 +112,18 @@ def build_runtime_composition(
         bool(selected_config.retrieval.policy_capability_id)
         and _bool_env(env.get("RIGOROUSRAG_LEARNED_POLICY_CONFIGURED")),
     )
+    health.setdefault(
+        "storage.metadata.postgres",
+        selected_config.storage.metadata_backend in {"postgres", "postgresql"}
+        and _bool_env(env.get("RIGOROUSRAG_POSTGRES_CONFIGURED")),
+    )
+    health.setdefault(
+        "storage.object.s3",
+        selected_config.storage.object_backend in {"s3", "s3-compatible"}
+        and _bool_env(env.get("RIGOROUSRAG_S3_CONFIGURED")),
+    )
+    health.setdefault("queue.redis", _bool_env(env.get("RIGOROUSRAG_REDIS_CONFIGURED")))
+    health.setdefault("secret.external", _bool_env(env.get("RIGOROUSRAG_SECRET_PROVIDER_CONFIGURED")))
 
     capabilities = build_default_capability_registry(runtime_health=health)
     domains = build_default_domain_registry()
@@ -117,30 +134,27 @@ def build_runtime_composition(
         "multihop": "planner.multihop",
         "heterogeneous": "planner.multihop",
     }
-    policy = selected_config.retrieval.policy_capability_id.strip()
-    if policy:
-        policy_record = capabilities.active(policy)
-        if policy_record is None:
-            raise ValueError(f"configured policy capability is not registered: {policy}")
-        policy_id = policy
-    else:
-        policy_id = strategy_map[selected_config.retrieval.default_strategy]
+    retrieval_id = strategy_map[selected_config.retrieval.default_strategy]
+    policy_id = selected_config.retrieval.policy_capability_id.strip() or retrieval_id
 
+    metadata_id = _storage_capability("metadata", selected_config.storage.metadata_backend)
+    object_id = _storage_capability("object", selected_config.storage.object_backend)
     selected: dict[str, str] = {
-        "retrieval": strategy_map[selected_config.retrieval.default_strategy],
-        "policy": policy_id,
-        "metadata_storage": _storage_capability("metadata", selected_config.storage.metadata_backend),
-        "object_storage": _storage_capability("object", selected_config.storage.object_backend),
-        "workspace": "research.workspace",
-        "domain": "domain.hydrology",
+        "retrieval": _selected_healthy(capabilities, retrieval_id),
+        "policy": _selected_healthy(capabilities, policy_id),
+        "metadata_storage": _selected_healthy(capabilities, metadata_id),
+        "object_storage": _selected_healthy(capabilities, object_id),
+        "workspace": _selected_healthy(capabilities, "research.workspace"),
+        "domain": _selected_healthy(capabilities, "domain.hydrology"),
     }
     if selected_config.retrieval.enable_graph:
-        selected["graph"] = "retrieval.graph"
-    if selected_config.retrieval.enable_multimodal:
-        selected["multimodal"] = "retrieval.multimodal"
-        selected["page_late_interaction"] = "retrieval.page_late_interaction"
+        selected["graph"] = _selected_healthy(capabilities, "retrieval.graph")
+    if selected_config.retrieval.enable_multimodal and health.get("retrieval.multimodal"):
+        selected["multimodal"] = _selected_healthy(capabilities, "retrieval.multimodal")
+    if selected_config.retrieval.enable_multimodal and health.get("retrieval.page_late_interaction"):
+        selected["page_late_interaction"] = _selected_healthy(capabilities, "retrieval.page_late_interaction")
     if health.get("nli.claim_entailment"):
-        selected["claim_entailment"] = "nli.claim_entailment"
+        selected["claim_entailment"] = _selected_healthy(capabilities, "nli.claim_entailment")
 
     return RuntimeComposition(
         config=selected_config,
