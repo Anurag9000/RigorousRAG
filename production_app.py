@@ -5,11 +5,14 @@ import os
 import server as base
 from fastapi import Request
 from tools.agent_runtime import configure_agent_runtime
+from tools.artifact_replacements import ArtifactReplacementStore
 from tools.control_api import build_control_router
 from tools.dependency_invalidation import DependencyInvalidationStore
 from tools.feedback_store import FeedbackStore
 from tools.invalidation_api import build_invalidation_router
 from tools.postgres_workspace_store import PostgresResearchWorkspaceStore
+from tools.recompute_executor import ResearchRecomputeExecutor
+from tools.replay_runtime import build_replay_recipe_store
 from tools.research_api import build_research_router
 from tools.research_query_api import build_research_query_router
 from tools.research_report_api import build_research_report_router
@@ -42,6 +45,11 @@ workspace = _build_workspace_store()
 results = ResearchResultStore(root / "research_results.sqlite3")
 reports = ResearchReportStore(root / "research_reports.sqlite3")
 invalidations = DependencyInvalidationStore(root / "research_invalidation.sqlite3")
+replacements = ArtifactReplacementStore(root / "research_replacements.sqlite3")
+replay_recipes = build_replay_recipe_store(
+    root / "research_replay.sqlite3",
+    providers=runtime_providers,
+)
 app = base.app
 
 _base_new_agent = base._new_agent
@@ -53,6 +61,20 @@ def _production_agent(owner_id: str, model=None):
 
 
 base._new_agent = _production_agent
+
+# Deliberately not mounted as a public HTTP action: recomputation can incur model/provider
+# cost and is an operator/deployment-worker responsibility. The queue state remains
+# owner-visible through /research/recompute.
+recompute_executor = ResearchRecomputeExecutor(
+    invalidations=invalidations,
+    replacements=replacements,
+    results=results,
+    reports=reports,
+    workspace=workspace,
+    composition=composition,
+    agent_factory=_production_agent,
+    replay_recipes=replay_recipes,
+)
 
 _REQUIRED_GOVERNANCE_ROUTES = frozenset({"/reviews", "/reviews/claim", "/feedback"})
 _REQUIRED_RESEARCH_ROUTES = frozenset(
@@ -127,6 +149,7 @@ def _ensure_research_routes() -> None:
             workspace_store=workspace,
             composition=composition,
             invalidation_store=invalidations,
+            replay_recipe_store=replay_recipes,
         )
         report = build_research_report_router(
             principal_dependency=base.get_rate_limited_principal,
@@ -166,6 +189,9 @@ __all__ = [
     "composition",
     "feedback",
     "invalidations",
+    "recompute_executor",
+    "replacements",
+    "replay_recipes",
     "reports",
     "results",
     "reviews",
