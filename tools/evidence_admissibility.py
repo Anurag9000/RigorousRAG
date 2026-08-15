@@ -11,7 +11,7 @@ import hashlib
 import json
 import re
 from dataclasses import asdict, dataclass, field
-from typing import Any, Mapping, Protocol, Sequence
+from typing import Any, Protocol, Sequence
 
 from tools.claim_entailment import AtomicClaim, segment_atomic_claims
 from tools.models import Citation
@@ -138,8 +138,6 @@ def _source_id(citation: Citation) -> str:
 def _baseline_features(citation: Citation) -> SourceTrustFeatures:
     source_id = _source_id(citation)
     source_type = _SOURCE_TYPE_MAP.get(citation.source_type, "other")
-    # These are neutral policy baselines, not quality claims. Reviewed records can replace
-    # every field explicitly. Public web evidence starts slightly more conservatively.
     methodology = 0.35 if source_type == "web" else 0.5
     provenance = 0.8 if source_type == "web" else 1.0
     return SourceTrustFeatures(
@@ -157,13 +155,17 @@ def _baseline_features(citation: Citation) -> SourceTrustFeatures:
     )
 
 
-def _reviewed_features(reader: SourceTrustReader | None, owner_id: str, citation: Citation) -> tuple[SourceTrustFeatures, str]:
+def _reviewed_features(
+    reader: SourceTrustReader | None,
+    owner_id: str,
+    citation: Citation,
+) -> tuple[SourceTrustFeatures, str]:
     if reader is None:
         return _baseline_features(citation), ""
-    try:
-        revision = reader.latest(owner_id, _source_id(citation))
-    except Exception:
-        revision = None
+    # A healthy registry returns None for an unreviewed source. Storage/decoding failures
+    # deliberately propagate so the publication gate can fail closed rather than silently
+    # treating a governance outage as an unreviewed-but-otherwise-eligible source.
+    revision = reader.latest(owner_id, _source_id(citation))
     features = getattr(revision, "features", None) if revision is not None else None
     revision_id = getattr(revision, "revision_id", "") if revision is not None else ""
     if isinstance(features, SourceTrustFeatures):
@@ -183,7 +185,6 @@ def _rewrite_claim_markers(text: str, admitted: set[str]) -> str:
     def replace(match: re.Match[str]) -> str:
         label = f"[{match.group(1)}]"
         return label if label in admitted else ""
-
     return re.sub(r"\s+([,.;:!?])", r"\1", _MARKER_RE.sub(replace, text)).strip()
 
 
@@ -205,12 +206,12 @@ def evaluate_answer_admissibility(
         features, revision_id = _reviewed_features(trust_reader, owner_id, citation)
         decision = evaluate_source_trust(features, selected_policy.trust_policy, causal_claim=False)
         citation_decisions[citation.label] = CitationAdmissibility(
-            label=citation.label,
-            source_id=_source_id(citation),
-            eligible=decision.eligible_for_new_claims,
-            decision=decision,
-            trust_revision_id=revision_id,
-            reviewed=features.reviewed,
+            citation.label,
+            _source_id(citation),
+            decision.eligible_for_new_claims,
+            decision,
+            revision_id,
+            features.reviewed,
         )
 
     rendered_claims: list[str] = []
@@ -241,11 +242,10 @@ def evaluate_answer_admissibility(
                 rejected.append(label)
                 continue
             features, revision_id = _reviewed_features(trust_reader, owner_id, citation)
-            causal = kind == "causal"
             decision = evaluate_source_trust(
                 features,
                 selected_policy.trust_policy,
-                causal_claim=causal,
+                causal_claim=(kind == "causal"),
             )
             eligible = decision.eligible_for_new_claims
             if kind == "causal" and selected_policy.require_reviewed_for_causal_claims and not features.reviewed:
@@ -283,8 +283,7 @@ def evaluate_answer_admissibility(
         else:
             reason = "admissible"
         if admissible:
-            admitted_set = set(admitted)
-            rewritten = _rewrite_claim_markers(claim.text, admitted_set)
+            rewritten = _rewrite_claim_markers(claim.text, set(admitted))
             if rewritten:
                 rendered_claims.append(rewritten)
             admitted_labels_global.update(admitted)
@@ -292,13 +291,13 @@ def evaluate_answer_admissibility(
             rejected_claims.append(claim.claim_id)
         claim_decisions.append(
             ClaimAdmissibility(
-                claim=claim,
-                claim_kind=kind,
-                admissible=admissible,
-                cited_labels=labels,
-                admitted_labels=tuple(admitted),
-                rejected_labels=tuple(rejected),
-                reason=reason,
+                claim,
+                kind,
+                admissible,
+                labels,
+                tuple(admitted),
+                tuple(rejected),
+                reason,
             )
         )
 
