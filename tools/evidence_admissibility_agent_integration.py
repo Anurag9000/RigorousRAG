@@ -91,6 +91,9 @@ def install_evidence_admissibility_agent_gate(module: ModuleType) -> ModuleType:
                 if item.reviewed and item.trust_revision_id
             )
         )[:100]
+        evaluated_sources = tuple(
+            dict.fromkeys(item.source_id for item in result.citation_decisions if item.source_id)
+        )[:100]
         metadata = dict(answer.metadata or {})
         metadata["admissibility_gate"] = {
             "status": "applied",
@@ -98,6 +101,7 @@ def install_evidence_admissibility_agent_gate(module: ModuleType) -> ModuleType:
             "result_fingerprint": result.fingerprint,
             "trust_revision_ids": list(trust_revision_ids),
             "reviewed_source_ids": list(reviewed_sources),
+            "evaluated_source_ids": list(evaluated_sources),
             "rejected_claim_count": len(result.rejected_claim_ids),
             "rejected_citation_count": len(result.rejected_citation_labels),
             "claim_kinds": {
