@@ -1,11 +1,15 @@
-"""Lazy import hook that registers GraphRAG on the existing research agent.
+"""Lazy import hook that registers governed research-agent retrieval tools.
 
-The hook covers three import orders without importing the GraphRAG stack eagerly:
+The hook covers three import orders without importing the retrieval stacks eagerly:
 
 * a future ``search_agent_legacy`` import is wrapped through ``PathFinder``;
 * an already-complete module is installed immediately; and
 * a module currently executing is temporarily watched until its schema registry
   and ``SearchAgent`` class have all been assigned.
+
+The evidence-graph and bounded multi-hop integrations share this hook so an
+in-progress ``search_agent_legacy`` import needs only one temporary module-class
+watcher. Each integration remains independently idempotent and fail closed.
 """
 
 from __future__ import annotations
@@ -25,6 +29,8 @@ _ORIGINAL_MODULE_CLASS = "_evidence_graph_original_module_class"
 _INTEGRATION_MARKERS = (
     "_evidence_graph_agent_tool_installed",
     "_evidence_graph_original_dispatch",
+    "_multihop_agent_tool_installed",
+    "_multihop_original_dispatch",
 )
 
 
@@ -36,8 +42,10 @@ def _install(module: ModuleType) -> None:
     from tools.evidence_graph_agent_integration import (
         install_evidence_graph_agent_tool,
     )
+    from tools.multihop_agent_integration import install_multihop_agent_tool
 
     install_evidence_graph_agent_tool(module)
+    install_multihop_agent_tool(module)
 
 
 def _disarm(module: ModuleType) -> None:
