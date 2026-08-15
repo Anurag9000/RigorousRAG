@@ -8,9 +8,9 @@ The hook covers three import orders without importing the retrieval stacks eager
   and ``SearchAgent`` class have all been assigned.
 
 The explicit governed tool registry, adaptive retrieval, evidence-graph, bounded
-multi-hop and optional claim-entailment integrations share this hook so an in-progress
-``search_agent_legacy`` import needs only one temporary module-class watcher. Each
-integration remains independently idempotent and fail closed.
+multi-hop, source-status citation gate and optional claim-entailment gate share this
+hook so an in-progress ``search_agent_legacy`` import needs only one temporary
+module-class watcher. Each integration remains independently idempotent and fail closed.
 """
 
 from __future__ import annotations
@@ -34,6 +34,9 @@ _INTEGRATION_MARKERS = (
     "_evidence_graph_original_dispatch",
     "_multihop_agent_tool_installed",
     "_multihop_original_dispatch",
+    "_source_status_agent_gate_installed",
+    "_source_status_original_register_citations",
+    "_source_status_original_run",
     "_claim_entailment_agent_gate_installed",
     "_claim_entailment_original_run",
 )
@@ -49,11 +52,15 @@ def _install(module: ModuleType) -> None:
     from tools.claim_entailment_agent_integration import install_claim_entailment_agent_gate
     from tools.evidence_graph_agent_integration import install_evidence_graph_agent_tool
     from tools.multihop_agent_integration import install_multihop_agent_tool
+    from tools.source_status_agent_integration import install_source_status_agent_gate
 
     install_agent_tool_registry_bridge(module)
     install_adaptive_agent_tool(module)
     install_evidence_graph_agent_tool(module)
     install_multihop_agent_tool(module)
+    # Source status runs inside claim entailment: withheld citations are removed before
+    # the semantic gate determines which claims can remain publishable.
+    install_source_status_agent_gate(module)
     install_claim_entailment_agent_gate(module)
 
 
