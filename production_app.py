@@ -6,7 +6,9 @@ import server as base
 from fastapi import Request
 from tools.agent_runtime import configure_agent_runtime
 from tools.control_api import build_control_router
+from tools.dependency_invalidation import DependencyInvalidationStore
 from tools.feedback_store import FeedbackStore
+from tools.invalidation_api import build_invalidation_router
 from tools.postgres_workspace_store import PostgresResearchWorkspaceStore
 from tools.research_api import build_research_router
 from tools.research_query_api import build_research_query_router
@@ -39,6 +41,7 @@ feedback = FeedbackStore(root / "feedback.sqlite3")
 workspace = _build_workspace_store()
 results = ResearchResultStore(root / "research_results.sqlite3")
 reports = ResearchReportStore(root / "research_reports.sqlite3")
+invalidations = DependencyInvalidationStore(root / "research_invalidation.sqlite3")
 app = base.app
 
 _base_new_agent = base._new_agent
@@ -49,9 +52,6 @@ def _production_agent(owner_id: str, model=None):
     return configure_agent_runtime(agent, composition, providers=runtime_providers)
 
 
-# ``server_app`` resolves this module global at request/ingestion time, so replacing the
-# trusted factory here gives both legacy /query and ingestion-created agents the same
-# composed runtime without changing the compatibility constructor signature.
 base._new_agent = _production_agent
 
 _REQUIRED_GOVERNANCE_ROUTES = frozenset({"/reviews", "/reviews/claim", "/feedback"})
@@ -71,16 +71,18 @@ _REQUIRED_RESEARCH_ROUTES = frozenset(
         "/research/reports",
         "/research/reports/{report_id}",
         "/research/reports/{report_id}/markdown",
+        "/research/source-status",
+        "/research/source-status/{source_id}",
+        "/research/invalidate",
+        "/research/stale",
+        "/research/stale/acknowledge",
+        "/research/recompute",
     }
 )
 
 
 def _route_paths() -> set[str]:
-    return {
-        path
-        for route in app.routes
-        if isinstance((path := getattr(route, "path", None)), str)
-    }
+    return {path for route in app.routes if isinstance((path := getattr(route, "path", None)), str)}
 
 
 def _append_missing_routes(router) -> None:
@@ -102,9 +104,7 @@ def _ensure_governance_routes() -> None:
         _append_missing_routes(governance)
     missing = _REQUIRED_GOVERNANCE_ROUTES.difference(_route_paths())
     if missing:
-        raise RuntimeError(
-            "Production governance routes failed to mount: " + ", ".join(sorted(missing))
-        )
+        raise RuntimeError("Production governance routes failed to mount: " + ", ".join(sorted(missing)))
 
 
 def _ensure_research_routes() -> None:
@@ -126,22 +126,27 @@ def _ensure_research_routes() -> None:
             result_store=results,
             workspace_store=workspace,
             composition=composition,
+            invalidation_store=invalidations,
         )
         report = build_research_report_router(
             principal_dependency=base.get_rate_limited_principal,
             workspace_store=workspace,
             result_store=results,
             report_store=reports,
+            invalidation_store=invalidations,
+        )
+        invalidation = build_invalidation_router(
+            principal_dependency=base.get_rate_limited_principal,
+            store=invalidations,
         )
         _append_missing_routes(research)
         _append_missing_routes(runtime)
         _append_missing_routes(query)
         _append_missing_routes(report)
+        _append_missing_routes(invalidation)
     missing = _REQUIRED_RESEARCH_ROUTES.difference(_route_paths())
     if missing:
-        raise RuntimeError(
-            "Production research routes failed to mount: " + ", ".join(sorted(missing))
-        )
+        raise RuntimeError("Production research routes failed to mount: " + ", ".join(sorted(missing)))
 
 
 _ensure_governance_routes()
@@ -160,6 +165,7 @@ __all__ = [
     "app",
     "composition",
     "feedback",
+    "invalidations",
     "reports",
     "results",
     "reviews",
