@@ -117,10 +117,14 @@ def install_multihop_agent_tool(module: ModuleType) -> ModuleType:
         kwargs: dict[str, Any] = {
             "owner_id": getattr(self, "owner_id"),
             "agent_client": getattr(self, "client", None),
-            "policy_provider": getattr(self, "adaptive_policy_provider", None),
-            "domain_registry": getattr(self, "domain_registry", None),
             **arguments,
         }
+        policy_provider = getattr(self, "adaptive_policy_provider", None)
+        if policy_provider is not None:
+            kwargs["policy_provider"] = policy_provider
+        domain_registry = getattr(self, "domain_registry", None)
+        if domain_registry is not None:
+            kwargs["domain_registry"] = domain_registry
         if callable(expansion_model):
             kwargs["expansion_model"] = expansion_model()
         result = search_uploaded_docs_multihop(**kwargs)
