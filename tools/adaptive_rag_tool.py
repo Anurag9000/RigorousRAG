@@ -7,6 +7,7 @@ import time
 from dataclasses import asdict
 from typing import Any, Optional
 
+from tools.adaptive_policy_runtime import RetrievalPolicyProvider
 from tools.adaptive_retrieval_runner import (
     AdaptiveRetrievalResult,
     run_adaptive_retrieval,
@@ -118,6 +119,8 @@ def search_uploaded_docs_adaptive(
     diversity_lambda: float = 0.82,
     trace_store: AdaptiveTraceStore | None = None,
     trace_run_id: str | None = None,
+    policy_provider: RetrievalPolicyProvider | None = None,
+    domain_registry: Any = None,
 ) -> AdaptiveRetrievalResult:
     if trace_store is not None and not isinstance(trace_store, AdaptiveTraceStore):
         raise ValueError("trace_store must be an AdaptiveTraceStore or null.")
@@ -134,6 +137,8 @@ def search_uploaded_docs_adaptive(
         agent_client=agent_client,
         expansion_model=expansion_model,
         diversity_lambda=diversity_lambda,
+        policy_provider=policy_provider,
+        domain_registry=domain_registry,
     )
     if selected_trace_store is not None:
         selected_trace_store.record_result(
@@ -189,6 +194,13 @@ def adaptive_result_payload(result: AdaptiveRetrievalResult) -> dict[str, Any]:
         "exhausted": result.exhausted,
         "abstain": result.abstain,
         "estimated_cost": result.estimated_cost,
+        "policy": {
+            "policy_id": result.policy_id,
+            "version": result.policy_version,
+            "fallback_used": result.policy_fallback_used,
+            "feature_sha256": result.policy_feature_sha256,
+            "decision_sha256": result.policy_decision_sha256,
+        },
     }
 
 
