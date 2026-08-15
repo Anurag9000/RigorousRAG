@@ -7,10 +7,10 @@ The hook covers three import orders without importing the retrieval stacks eager
 * a module currently executing is temporarily watched until its schema registry
   and ``SearchAgent`` class have all been assigned.
 
-The explicit governed tool registry, adaptive retrieval, evidence-graph, bounded
-multi-hop, source-status citation gate and optional claim-entailment gate share this
-hook so an in-progress ``search_agent_legacy`` import needs only one temporary
-module-class watcher. Each integration remains independently idempotent and fail closed.
+The governed tool registry, adaptive retrieval, evidence graph, bounded multi-hop,
+source-status citation gate, optional semantic entailment gate and final evidence-
+admissibility gate share this hook so one import/reload path defines the production
+ordering. Each integration remains independently idempotent and fail closed.
 """
 
 from __future__ import annotations
@@ -28,6 +28,7 @@ _ORIGINAL_MODULE_CLASS = "_evidence_graph_original_module_class"
 _INTEGRATION_MARKERS = (
     "_agent_tool_registry_bridge_installed",
     "_agent_tool_registry_original_dispatch",
+    "_agent_tool_registry_dispatcher_name",
     "_adaptive_agent_tool_installed",
     "_adaptive_original_dispatch",
     "_evidence_graph_agent_tool_installed",
@@ -39,6 +40,8 @@ _INTEGRATION_MARKERS = (
     "_source_status_original_run",
     "_claim_entailment_agent_gate_installed",
     "_claim_entailment_original_run",
+    "_evidence_admissibility_agent_gate_installed",
+    "_evidence_admissibility_original_run",
 )
 
 
@@ -50,6 +53,9 @@ def _install(module: ModuleType) -> None:
     from tools.adaptive_agent_integration import install_adaptive_agent_tool
     from tools.agent_tool_registry_integration import install_agent_tool_registry_bridge
     from tools.claim_entailment_agent_integration import install_claim_entailment_agent_gate
+    from tools.evidence_admissibility_agent_integration import (
+        install_evidence_admissibility_agent_gate,
+    )
     from tools.evidence_graph_agent_integration import install_evidence_graph_agent_tool
     from tools.multihop_agent_integration import install_multihop_agent_tool
     from tools.source_status_agent_integration import install_source_status_agent_gate
@@ -58,10 +64,13 @@ def _install(module: ModuleType) -> None:
     install_adaptive_agent_tool(module)
     install_evidence_graph_agent_tool(module)
     install_multihop_agent_tool(module)
-    # Source status runs inside claim entailment: withheld citations are removed before
-    # the semantic gate determines which claims can remain publishable.
+    # Publication order is deliberate:
+    # 1. source status removes administratively unusable evidence;
+    # 2. entailment removes semantically unsupported claims/citations when configured;
+    # 3. admissibility applies reviewed trust/method policy to what remains.
     install_source_status_agent_gate(module)
     install_claim_entailment_agent_gate(module)
+    install_evidence_admissibility_agent_gate(module)
 
 
 def _disarm(module: ModuleType) -> None:
