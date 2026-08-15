@@ -2,6 +2,7 @@
 
 (() => {
   const API_KEY_KEY = "rigorousrag_session_api_key";
+  const ACTIVE_SESSION_KEY = "rigorousrag_active_research_session_v1";
 
   function node(tag, text, className = "") {
     const element = document.createElement(tag);
@@ -26,24 +27,58 @@
     } catch { payload = null; }
     if (!response.ok) {
       const detail = payload && typeof payload === "object" ? payload.detail : payload;
-      throw new Error(detail || `Request failed with status ${response.status}.`);
+      const error = new Error(detail || `Request failed with status ${response.status}.`);
+      error.status = response.status;
+      throw error;
     }
     return payload;
   }
 
+  function activeSession() {
+    try {
+      const value = JSON.parse(sessionStorage.getItem(ACTIVE_SESSION_KEY) || "null");
+      if (!value || typeof value !== "object") return null;
+      if (typeof value.session_id !== "string" || typeof value.fingerprint !== "string") return null;
+      return value;
+    } catch {
+      sessionStorage.removeItem(ACTIVE_SESSION_KEY);
+      return null;
+    }
+  }
+
+  function setActiveSession(session, project) {
+    if (!session) {
+      sessionStorage.removeItem(ACTIVE_SESSION_KEY);
+      window.dispatchEvent(new CustomEvent("rigorousrag:research-session-changed", { detail: null }));
+      return;
+    }
+    const value = {
+      session_id: String(session.session_id || ""),
+      fingerprint: String(session.fingerprint || ""),
+      project_id: String(project && project.project_id || session.project_id || ""),
+      project_title: String(project && project.title || ""),
+      closed_at: session.closed_at || null,
+    };
+    if (!value.session_id || !/^[0-9a-f]{64}$/i.test(value.fingerprint) || value.closed_at) return;
+    sessionStorage.setItem(ACTIVE_SESSION_KEY, JSON.stringify(value));
+    window.dispatchEvent(new CustomEvent("rigorousrag:research-session-changed", { detail: value }));
+  }
+
   function selectWorkspace(button, pane) {
-    document.querySelectorAll('[data-tab-group="right"]').forEach((item) => item.setAttribute("aria-selected", "false"));
+    document.querySelectorAll('[data-tab-group="tools"]').forEach((item) => item.setAttribute("aria-selected", "false"));
     document.querySelectorAll(".right-panel .tool-pane").forEach((item) => item.classList.remove("active"));
     button.setAttribute("aria-selected", "true");
     pane.classList.add("active");
   }
 
   function field(label, id, { multiline = false, placeholder = "" } = {}) {
-    const wrapper = node("label", null, "field");
-    wrapper.appendChild(node("span", label));
+    const wrapper = document.createElement("div");
+    wrapper.appendChild(node("label", label, "label"));
     const input = document.createElement(multiline ? "textarea" : "input");
+    input.className = "field";
     input.id = id;
     input.placeholder = placeholder;
+    input.maxLength = multiline ? 20000 : 1000;
     if (!multiline) input.type = "text";
     wrapper.appendChild(input);
     return wrapper;
@@ -65,13 +100,13 @@
   }
 
   async function install() {
-    const tabs = document.querySelector(".right-panel .tool-tabs");
-    const body = document.querySelector(".right-panel .tool-body");
-    if (!tabs || !body || document.getElementById("tool-workspace")) return;
+    const rightPanel = document.querySelector(".right-panel");
+    const tabs = rightPanel && rightPanel.querySelector(".tool-tabs");
+    if (!rightPanel || !tabs || document.getElementById("tool-workspace")) return;
 
-    const button = node("button", "Workspace", "tool-tab");
+    const button = node("button", "Workspace", "tab");
     button.type = "button";
-    button.dataset.tabGroup = "right";
+    button.dataset.tabGroup = "tools";
     button.dataset.tab = "workspace";
     button.setAttribute("aria-selected", "false");
     tabs.appendChild(button);
@@ -79,43 +114,86 @@
     const pane = node("section", null, "tool-pane");
     pane.id = "tool-workspace";
     pane.appendChild(node("h3", "Research workspace"));
-    pane.appendChild(node("p", "Persist projects and research-session fingerprints without copying private evidence into browser history.", "meta"));
+    pane.appendChild(node("p", "Persist projects, authoritative result IDs and server-owned citation fingerprints without copying private evidence into browser history.", "privacy-note"));
 
-    const createBox = node("div", null, "tool-form");
+    const activeBox = node("div", null, "section");
+    const activeLabel = node("div", "No active research session. Chat results will still be stored when the research API is available.", "meta");
+    const clearActive = node("button", "Use stateless research", "btn small");
+    clearActive.type = "button";
+    clearActive.style.marginTop = ".4rem";
+    clearActive.addEventListener("click", () => {
+      setActiveSession(null, null);
+      renderActive();
+    });
+    activeBox.appendChild(activeLabel);
+    activeBox.appendChild(clearActive);
+    pane.appendChild(activeBox);
+
+    const createBox = node("div", null, "section");
     createBox.appendChild(field("Project title", "workspace-title", { placeholder: "Systematic review of …" }));
     createBox.appendChild(field("Research question", "workspace-question", { multiline: true, placeholder: "What evidence answers …?" }));
     createBox.appendChild(field("Tags", "workspace-tags", { placeholder: "climate, retrieval, methods" }));
     const createButton = node("button", "Create project", "btn primary");
     createButton.type = "button";
+    createButton.style.marginTop = ".6rem";
     createBox.appendChild(createButton);
     pane.appendChild(createBox);
 
-    const toolbar = node("div", "", "tool-actions");
+    const toolbar = node("div", null, "section");
     const refreshButton = node("button", "Refresh projects", "btn small");
     refreshButton.type = "button";
     toolbar.appendChild(refreshButton);
     pane.appendChild(toolbar);
 
     const status = node("div", "", "meta");
+    status.style.padding = ".6rem";
     pane.appendChild(status);
     const projects = node("div", null, "doc-list");
     pane.appendChild(projects);
 
-    const sessionBox = node("section", null, "tool-form");
+    const sessionBox = node("section", null, "section");
     sessionBox.hidden = true;
     const sessionHeading = node("h4", "Sessions");
     sessionBox.appendChild(sessionHeading);
-    const sessionActions = node("div", null, "tool-actions");
     const newSession = node("button", "New session", "btn small");
     newSession.type = "button";
-    sessionActions.appendChild(newSession);
-    sessionBox.appendChild(sessionActions);
+    sessionBox.appendChild(newSession);
     const sessions = node("div", null, "doc-list");
+    sessions.style.padding = ".6rem 0 0";
     sessionBox.appendChild(sessions);
     pane.appendChild(sessionBox);
-    body.appendChild(pane);
+    rightPanel.appendChild(pane);
 
     let activeProject = null;
+
+    function renderActive() {
+      const current = activeSession();
+      if (!current) {
+        activeLabel.textContent = "No active research session. Chat results will still be stored when the research API is available.";
+        clearActive.disabled = true;
+        return;
+      }
+      activeLabel.textContent = `Active session: ${current.session_id}${current.project_title ? ` · ${current.project_title}` : ""}`;
+      clearActive.disabled = false;
+    }
+
+    async function closeSession(session, project) {
+      try {
+        const updated = await request(`/research/sessions/${encodeURIComponent(session.session_id)}/close`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ expected_session_fingerprint: session.fingerprint }),
+        });
+        const current = activeSession();
+        if (current && current.session_id === session.session_id) setActiveSession(null, null);
+        renderActive();
+        await loadSessions(project);
+        return updated;
+      } catch (error) {
+        status.textContent = `Could not close session: ${error.message}`;
+        return null;
+      }
+    }
 
     async function loadSessions(project) {
       activeProject = project;
@@ -131,11 +209,33 @@
           sessions.appendChild(node("div", "No sessions yet.", "empty"));
           return;
         }
+        const current = activeSession();
         for (const session of rows) {
+          if (current && current.session_id === session.session_id && !session.closed_at && current.fingerprint !== session.fingerprint) {
+            setActiveSession(session, project);
+          }
           const card = node("article", null, "doc-card");
-          card.appendChild(node("div", session.session_id, "doc-title"));
+          const head = node("div", null, "doc-card-head");
+          head.appendChild(node("div", session.session_id, "doc-title"));
+          const actions = node("div", null, "doc-actions");
+          if (!session.closed_at) {
+            const use = node("button", "Use", "btn small");
+            use.type = "button";
+            use.addEventListener("click", () => {
+              setActiveSession(session, project);
+              renderActive();
+              status.textContent = `Active session set to ${session.session_id}.`;
+            });
+            actions.appendChild(use);
+            const close = node("button", "Close", "btn small danger");
+            close.type = "button";
+            close.addEventListener("click", () => closeSession(session, project));
+            actions.appendChild(close);
+          }
+          head.appendChild(actions);
+          card.appendChild(head);
           card.appendChild(node("div", `${(session.turns || []).length} turns · ${session.closed_at ? "closed" : "open"}`, "meta"));
-          card.title = `Session fingerprint ${session.fingerprint}`;
+          card.appendChild(node("div", `Fingerprint ${session.fingerprint}`, "meta"));
           sessions.appendChild(card);
         }
       } catch (error) {
@@ -160,6 +260,7 @@
 
     button.addEventListener("click", () => {
       selectWorkspace(button, pane);
+      renderActive();
       loadProjects();
     });
     refreshButton.addEventListener("click", loadProjects);
@@ -192,11 +293,13 @@
       if (!activeProject) return;
       newSession.disabled = true;
       try {
-        await request(`/research/projects/${encodeURIComponent(activeProject.project_id)}/sessions`, {
+        const created = await request(`/research/projects/${encodeURIComponent(activeProject.project_id)}/sessions`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({}),
         });
+        setActiveSession(created, activeProject);
+        renderActive();
         await loadSessions(activeProject);
       } catch (error) {
         status.textContent = `Could not create session: ${error.message}`;
@@ -204,6 +307,8 @@
         newSession.disabled = false;
       }
     });
+
+    renderActive();
   }
 
   if (document.readyState === "loading") {
