@@ -32,30 +32,36 @@ def _assert_success(result: subprocess.CompletedProcess[str]) -> None:
     )
 
 
+_ASSERT_PIPELINE = """
+names = [item["function"]["name"] for item in MODULE.TOOLS_SCHEMA]
+assert names.count("search_uploaded_docs_adaptive") == 1
+assert names.count("search_uploaded_docs_multihop") == 1
+assert MODULE._agent_tool_registry_bridge_installed is True
+assert MODULE._agent_tool_registry_dispatcher_name == "_dispatch"
+assert MODULE._adaptive_agent_tool_installed is True
+assert MODULE._evidence_graph_agent_tool_installed is True
+assert MODULE._multihop_agent_tool_installed is True
+assert MODULE._source_status_agent_gate_installed is True
+assert MODULE._claim_entailment_agent_gate_installed is True
+assert MODULE._evidence_admissibility_agent_gate_installed is True
+"""
+
+
 @pytest.mark.parametrize(
     "source",
     [
         """
-import search_agent_legacy as legacy
-names = [item["function"]["name"] for item in legacy.TOOLS_SCHEMA]
-assert names.count("search_uploaded_docs_multihop") == 1
-assert legacy._multihop_agent_tool_installed is True
-""",
+import search_agent_legacy as MODULE
+""" + _ASSERT_PIPELINE,
         """
-import search_agent
-names = [item["function"]["name"] for item in search_agent.TOOLS_SCHEMA]
-assert names.count("search_uploaded_docs_multihop") == 1
-assert search_agent._multihop_agent_tool_installed is True
-""",
+import search_agent as MODULE
+""" + _ASSERT_PIPELINE,
         """
 import importlib
-import search_agent_legacy as legacy
-legacy = importlib.reload(legacy)
-names = [item["function"]["name"] for item in legacy.TOOLS_SCHEMA]
-assert names.count("search_uploaded_docs_multihop") == 1
-assert legacy._multihop_agent_tool_installed is True
-""",
+import search_agent_legacy as MODULE
+MODULE = importlib.reload(MODULE)
+""" + _ASSERT_PIPELINE,
     ],
 )
-def test_multihop_agent_installation_survives_import_orders(source: str) -> None:
+def test_governed_agent_installation_survives_import_orders(source: str) -> None:
     _assert_success(_run_import_script(source))
