@@ -1,9 +1,10 @@
 """Trusted built-in capability catalog for RigorousRAG.
 
 The catalog separates implementation availability from deployment readiness. Optional
-provider-backed capabilities (for example an injected NLI or page model) can be declared
-without being reported healthy until trusted application composition supplies a positive
-runtime-health signal. No model is downloaded and no provider is contacted here.
+provider-backed capabilities (for example an injected NLI, page model, PostgreSQL,
+S3-compatible store or Redis queue) can be declared without being reported healthy
+until trusted application composition supplies a positive runtime-health signal. No
+model is downloaded and no provider is contacted here.
 """
 
 from __future__ import annotations
@@ -79,49 +80,78 @@ def build_default_capability_registry(
     *,
     runtime_health: Mapping[str, Any] | None = None,
 ) -> CapabilityRegistry:
-    """Build the trusted built-in capability catalog.
-
-    ``runtime_health`` is supplied only by trusted application composition. Missing
-    values default to healthy for dependency-free local implementations. Optional model
-    capabilities are explicitly seeded unhealthy below unless the caller overrides them.
-    """
+    """Build the trusted built-in capability catalog."""
 
     health: dict[str, Any] = {
         "nli.claim_entailment": False,
         "retrieval.page_late_interaction": False,
         "retrieval.multimodal": False,
         "policy.learned_adaptive": False,
+        "storage.metadata.postgres": False,
+        "storage.object.s3": False,
+        "queue.redis": False,
+        "secret.external": False,
     }
     if runtime_health:
         health.update(dict(runtime_health))
 
+    all_modalities = (
+        "text", "image", "page_image", "table", "figure", "formula",
+        "graph", "raster", "timeseries", "geospatial",
+    )
     descriptors = (
         _descriptor(
             "storage.metadata.sqlite",
             kind="storage",
             provider="tools.research_workspace_sqlite",
-            modalities=("text",),
             max_concurrency=64,
+        ),
+        _descriptor(
+            "storage.metadata.postgres",
+            kind="storage",
+            provider="tools.postgres_control_plane",
+            trust_level="private_remote",
+            max_concurrency=128,
         ),
         _descriptor(
             "storage.object.local",
             kind="storage",
             provider="tools.production_runtime",
-            modalities=("text", "image", "page_image", "table", "figure", "formula", "graph", "raster", "timeseries", "geospatial"),
+            modalities=all_modalities,
             max_concurrency=32,
+        ),
+        _descriptor(
+            "storage.object.s3",
+            kind="storage",
+            provider="tools.production_providers.InjectedS3ObjectStore",
+            modalities=all_modalities,
+            trust_level="private_remote",
+            max_concurrency=64,
         ),
         _descriptor(
             "queue.local",
             kind="queue",
             provider="tools.production_runtime",
-            modalities=("text",),
+            max_concurrency=64,
+        ),
+        _descriptor(
+            "queue.redis",
+            kind="queue",
+            provider="tools.production_providers.InjectedRedisLeaseQueue",
+            trust_level="private_remote",
+            max_concurrency=128,
+        ),
+        _descriptor(
+            "secret.external",
+            kind="secret_provider",
+            provider="tools.production_providers.InjectedSecretProvider",
+            trust_level="private_remote",
             max_concurrency=64,
         ),
         _descriptor(
             "retrieval.dense",
             kind="embedding",
             provider="tools.rag",
-            modalities=("text",),
             max_calls=64,
             max_input_bytes=5_000_000,
             max_output_bytes=5_000_000,
@@ -131,7 +161,6 @@ def build_default_capability_registry(
             "retrieval.sparse",
             kind="sparse_retriever",
             provider="tools.sparse_index",
-            modalities=("text",),
             max_calls=64,
             max_input_bytes=5_000_000,
             max_output_bytes=5_000_000,
@@ -207,7 +236,6 @@ def build_default_capability_registry(
             "nli.claim_entailment",
             kind="reranker",
             provider="tools.transformer_entailment",
-            modalities=("text",),
             max_calls=128,
             max_concurrency=16,
         ),
@@ -223,7 +251,6 @@ def build_default_capability_registry(
             "research.workspace",
             kind="storage",
             provider="tools.research_workspace_sqlite",
-            modalities=("text",),
             dependencies=("storage.metadata.sqlite",),
             max_concurrency=64,
         ),
