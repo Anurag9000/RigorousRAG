@@ -46,13 +46,8 @@ def _citation_key(citation: Citation) -> tuple[str, str, str]:
     )
 
 
-def _authoritative_citations(
-    result: MultiHopRAGResult,
-    *,
-    maximum: int,
-) -> list[Citation]:
+def _authoritative_citations(result: MultiHopRAGResult, *, maximum: int) -> list[Citation]:
     """Return source citations only when the dependency chain reaches evidence."""
-
     if result.abstain:
         return []
     citations: list[Citation] = []
@@ -71,13 +66,8 @@ def _authoritative_citations(
     return citations
 
 
-def _agent_payload(
-    result: MultiHopRAGResult,
-    *,
-    citation_count: int,
-) -> dict[str, Any]:
+def _agent_payload(result: MultiHopRAGResult, *, citation_count: int) -> dict[str, Any]:
     """Strip local citation labels; the outer agent supplies authoritative labels."""
-
     payload = multihop_result_payload(result)
     lineage: list[dict[str, Any]] = []
     raw_evidence = payload.get("evidence")
@@ -92,16 +82,13 @@ def _agent_payload(
     payload["citation_gate"] = {
         "status": "abstain" if result.abstain else "terminal_evidence_available",
         "authoritative_citation_count": citation_count,
-        "instruction": (
-            "Use only the server-supplied citation objects outside this result payload."
-        ),
+        "instruction": "Use only the server-supplied citation objects outside this result payload.",
     }
     return payload
 
 
 def install_multihop_agent_tool(module: ModuleType) -> ModuleType:
     """Extend one loaded ``search_agent_legacy`` module idempotently."""
-
     if not isinstance(module, ModuleType):
         raise ValueError("module must be a loaded module.")
     if getattr(module, "_multihop_agent_tool_installed", False):
@@ -120,9 +107,7 @@ def install_multihop_agent_tool(module: ModuleType) -> ModuleType:
     definition = copy.deepcopy(MULTIHOP_RAG_SEARCH_TOOL_DEF)
     schemas[:] = [value for value in schemas if _schema_name(value) != _TOOL_NAME]
     schemas.append(definition)
-    parameter_schemas[_TOOL_NAME] = copy.deepcopy(
-        definition["function"]["parameters"]
-    )
+    parameter_schemas[_TOOL_NAME] = copy.deepcopy(definition["function"]["parameters"])
     maximum = _citation_limit(module)
 
     def dispatch(self: Any, tool_name: str, arguments: dict[str, Any]):
@@ -132,6 +117,8 @@ def install_multihop_agent_tool(module: ModuleType) -> ModuleType:
         kwargs: dict[str, Any] = {
             "owner_id": getattr(self, "owner_id"),
             "agent_client": getattr(self, "client", None),
+            "policy_provider": getattr(self, "adaptive_policy_provider", None),
+            "domain_registry": getattr(self, "domain_registry", None),
             **arguments,
         }
         if callable(expansion_model):
