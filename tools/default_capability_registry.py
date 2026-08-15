@@ -103,7 +103,7 @@ def build_default_capability_registry(
         _descriptor(
             "storage.metadata.sqlite",
             kind="storage",
-            provider="tools.research_workspace_sqlite",
+            provider="tools.research_workspace_sqlite.SQLiteResearchWorkspaceStore",
             max_concurrency=64,
         ),
         _descriptor(
@@ -219,7 +219,7 @@ def build_default_capability_registry(
         _descriptor(
             "retrieval.multimodal",
             kind="multimodal_retriever",
-            provider="tools.hf_multimodal_backend",
+            provider="tools.hf_multimodal_backend.HuggingFaceMultimodalBackend",
             modalities=("text", "image"),
             max_calls=32,
             max_concurrency=8,
@@ -227,7 +227,7 @@ def build_default_capability_registry(
         _descriptor(
             "retrieval.page_late_interaction",
             kind="late_interaction",
-            provider="tools.transformer_page_late_interaction",
+            provider="tools.transformer_page_backend.InjectedTransformerPageBackend",
             modalities=("text", "page_image"),
             max_calls=32,
             max_concurrency=8,
@@ -235,14 +235,14 @@ def build_default_capability_registry(
         _descriptor(
             "nli.claim_entailment",
             kind="reranker",
-            provider="tools.transformer_entailment",
+            provider="tools.transformer_entailment.InjectedTransformerEntailmentProvider",
             max_calls=128,
             max_concurrency=16,
         ),
         _descriptor(
             "domain.hydrology",
             kind="domain_adapter",
-            provider="tools.hydrology_domain_adapter",
+            provider="tools.hydrology_domain_adapter.HydrologyDomainAdapter",
             modalities=("text", "table", "graph", "raster", "timeseries", "geospatial"),
             max_calls=64,
             max_concurrency=16,
