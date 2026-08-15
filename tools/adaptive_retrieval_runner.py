@@ -1,4 +1,4 @@
-"""Bounded execution of deterministic corrective retrieval plans."""
+"""Bounded execution of deterministic or learned corrective retrieval plans."""
 
 from __future__ import annotations
 
@@ -8,9 +8,16 @@ import math
 from dataclasses import dataclass
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
+from tools.adaptive_policy_runtime import (
+    RetrievalPolicyFeatures,
+    RetrievalPolicyProvider,
+    decide_policy,
+)
 from tools.adaptive_retrieval import (
+    CorrectivePlan,
     EvidenceSignals,
     RetrievalAttempt,
+    analyze_query,
     build_corrective_plan,
     evaluate_evidence,
 )
@@ -125,6 +132,11 @@ class AdaptiveRetrievalResult:
     exhausted: bool
     abstain: bool
     estimated_cost: int
+    policy_id: str = "deterministic-adaptive"
+    policy_version: str = "1.0.0"
+    policy_fallback_used: bool = False
+    policy_feature_sha256: str = ""
+    policy_decision_sha256: str = ""
 
 
 def _bounded_results(values: Any, maximum: int) -> list[Any]:
@@ -136,6 +148,129 @@ def _bounded_results(values: Any, maximum: int) -> list[Any]:
         return list(itertools.islice(iter(values), maximum + 1))[:maximum]
     except Exception as exc:
         raise RuntimeError("retrieval returned an invalid evidence collection.") from exc
+
+
+def _domain_scores(domain_registry: Any, query: str) -> Mapping[str, float]:
+    if domain_registry is None or not hasattr(domain_registry, "route"):
+        return {}
+    output: dict[str, float] = {}
+    try:
+        routed = domain_registry.route(query, minimum_score=0.0)
+    except Exception:
+        return {}
+    for adapter, features in tuple(routed)[:32]:
+        try:
+            domain_id = str(adapter.descriptor.domain_id)
+            score = max((float(value) for value in features.scores.values()), default=0.0)
+        except Exception:
+            continue
+        if math.isfinite(score):
+            output[domain_id[:100]] = max(0.0, min(score, 1.0))
+    return output
+
+
+def _policy_features(query: str, *, domain_registry: Any = None) -> RetrievalPolicyFeatures:
+    analysis = analyze_query(query)
+    token_count = max(1, analysis.token_count)
+    lexical_specificity = min(1.0, (0.45 if analysis.exact_identifier else 0.0) + min(token_count / 30.0, 0.55))
+    entity_proxy = int(analysis.comparative) * 2 + int(analysis.exact_identifier)
+    return RetrievalPolicyFeatures(
+        query_length=max(1, len(query.strip())),
+        lexical_specificity=lexical_specificity,
+        entity_count=entity_proxy,
+        temporal_signal=1.0 if analysis.temporal else 0.0,
+        comparison_signal=1.0 if analysis.comparative else 0.0,
+        numerical_signal=1.0 if analysis.quantitative else 0.0,
+        domain_scores=_domain_scores(domain_registry, query),
+    )
+
+
+def _attempt_from_policy(query: str, action: Any, *, requested_top_k: int) -> RetrievalAttempt:
+    route_to_mode = {
+        "dense": "dense",
+        "sparse": "corpus-sparse",
+        "hybrid": "corpus-hybrid",
+    }
+    mode = route_to_mode.get(action.route)
+    if mode is None:
+        raise ValueError("learned policy selected a route unsupported by uploaded-document retrieval")
+    top_k = max(1, min(50, int(action.top_k), requested_top_k if requested_top_k > 0 else 50))
+    candidate_pool = max(top_k, min(50, max(int(action.top_k), top_k * max(1, int(action.depth)))))
+    reranker = "heuristic" if bool(action.rerank) else "none"
+    return RetrievalAttempt(
+        mode=mode,
+        top_k=top_k,
+        candidate_pool=candidate_pool,
+        use_multi_query=bool(action.expand_query),
+        use_hyde=False,
+        reranker=reranker,
+        reason=f"policy:{str(action.reason_code)[:180]}",
+    )
+
+
+def _policy_plan(
+    query: str,
+    *,
+    provider: RetrievalPolicyProvider | None,
+    domain_registry: Any,
+    top_k: int,
+    max_attempts: int,
+    max_estimated_cost: int,
+) -> tuple[CorrectivePlan, Any]:
+    features = _policy_features(query, domain_registry=domain_registry)
+    decision = decide_policy(
+        features,
+        provider=provider,
+        allowed_routes=("dense", "sparse", "hybrid"),
+    )
+    baseline = build_corrective_plan(
+        query,
+        top_k=top_k,
+        max_attempts=max_attempts,
+        max_estimated_cost=max_estimated_cost,
+    )
+    if decision.action.abstain:
+        return baseline, decision
+    try:
+        first = _attempt_from_policy(query, decision.action, requested_top_k=top_k)
+    except Exception:
+        return baseline, decision
+
+    attempts: list[RetrievalAttempt] = [first]
+    seen = {
+        (
+            first.mode,
+            first.top_k,
+            first.candidate_pool,
+            first.use_multi_query,
+            first.use_hyde,
+            first.reranker,
+        )
+    }
+    cost = first.estimated_cost
+    for attempt in baseline.attempts:
+        key = (
+            attempt.mode,
+            attempt.top_k,
+            attempt.candidate_pool,
+            attempt.use_multi_query,
+            attempt.use_hyde,
+            attempt.reranker,
+        )
+        if key in seen or len(attempts) >= max_attempts:
+            continue
+        if cost + attempt.estimated_cost > max_estimated_cost:
+            continue
+        attempts.append(attempt)
+        seen.add(key)
+        cost += attempt.estimated_cost
+    return CorrectivePlan(
+        analysis=baseline.analysis,
+        signals=None,
+        attempts=tuple(attempts),
+        estimated_cost=cost,
+        abstain_after_exhaustion=True,
+    ), decision
 
 
 def run_adaptive_retrieval(
@@ -150,14 +285,18 @@ def run_adaptive_retrieval(
     agent_client: Any = None,
     expansion_model: str = "gpt-4o-mini",
     diversity_lambda: float = 0.82,
+    policy_provider: RetrievalPolicyProvider | None = None,
+    domain_registry: Any = None,
 ) -> AdaptiveRetrievalResult:
-    """Execute a corrective plan without recursively selecting adaptive mode."""
+    """Execute an owner-scoped corrective plan with safe learned-policy fallback."""
 
     if not callable(search):
         raise ValueError("search must be callable.")
     owner = normalize_owner_id(owner_id)
-    plan = build_corrective_plan(
+    plan, policy_decision = _policy_plan(
         query,
+        provider=policy_provider,
+        domain_registry=domain_registry,
         top_k=top_k,
         max_attempts=max_attempts,
         max_estimated_cost=max_estimated_cost,
@@ -216,6 +355,11 @@ def run_adaptive_retrieval(
         exhausted=exhausted,
         abstain=abstain,
         estimated_cost=sum(trace.attempt.estimated_cost for trace in traces),
+        policy_id=policy_decision.policy_id,
+        policy_version=policy_decision.version,
+        policy_fallback_used=policy_decision.fallback_used,
+        policy_feature_sha256=policy_decision.feature_sha256,
+        policy_decision_sha256=policy_decision.decision_sha256,
     )
 
 
