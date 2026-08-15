@@ -21,6 +21,19 @@ def _safe_metadata_id(value: Any, maximum: int = 1000) -> str:
     return cleaned
 
 
+def _register_unique(
+    upstreams: list[tuple[DependencyRef, str]],
+    seen: set[tuple[str, str]],
+    ref: DependencyRef,
+    relation: str,
+) -> None:
+    key = (ref.kind, ref.resource_id)
+    if key in seen:
+        return
+    seen.add(key)
+    upstreams.append((ref, relation))
+
+
 def register_result_dependencies(
     store: DependencyInvalidationStore,
     owner_id: str,
@@ -38,32 +51,38 @@ def register_result_dependencies(
 
     for citation in result.citations:
         source_id = _safe_metadata_id(citation.source_id or citation.url)
-        if source_id and ("source", source_id) not in seen:
-            seen.add(("source", source_id))
-            upstreams.append((DependencyRef("source", source_id), "cites"))
+        if source_id:
+            _register_unique(upstreams, seen, DependencyRef("source", source_id), "cites")
         doc_id = _safe_metadata_id(citation.doc_id or "", 256)
-        if doc_id and ("document", doc_id) not in seen:
-            seen.add(("document", doc_id))
-            upstreams.append((DependencyRef("document", doc_id), "retrieved_from"))
+        if doc_id:
+            _register_unique(upstreams, seen, DependencyRef("document", doc_id), "retrieved_from")
 
     model_id = _safe_metadata_id(result.model, 256)
     if model_id:
-        upstreams.append((DependencyRef("model", model_id), "generated_with"))
+        _register_unique(upstreams, seen, DependencyRef("model", model_id), "generated_with")
 
     selected_policy = composition.selected_capabilities.get("policy", "")
     if selected_policy:
         descriptor = composition.capabilities.active(selected_policy)
         if descriptor is not None:
-            upstreams.append((DependencyRef("policy", descriptor.fingerprint), "routed_with"))
+            _register_unique(
+                upstreams,
+                seen,
+                DependencyRef("policy", descriptor.fingerprint),
+                "routed_with",
+            )
 
-    upstreams.append(
-        (DependencyRef("runtime_config", composition.config.fingerprint), "configured_with")
+    _register_unique(
+        upstreams,
+        seen,
+        DependencyRef("runtime_config", composition.config.fingerprint),
+        "configured_with",
     )
-    upstreams.append(
-        (
-            DependencyRef("capability_registry", composition.capabilities.fingerprint),
-            "resolved_with",
-        )
+    _register_unique(
+        upstreams,
+        seen,
+        DependencyRef("capability_registry", composition.capabilities.fingerprint),
+        "resolved_with",
     )
 
     metadata: Mapping[str, Any] = result.metadata
@@ -76,12 +95,40 @@ def register_result_dependencies(
     ):
         value = _safe_metadata_id(metadata.get(key), 256)
         if value:
-            upstreams.append((DependencyRef("index_generation", value), "retrieved_from_generation"))
+            _register_unique(
+                upstreams,
+                seen,
+                DependencyRef("index_generation", value),
+                "retrieved_from_generation",
+            )
     plan = _safe_metadata_id(
         metadata.get("plan_fingerprint") or metadata.get("plan_sha256"), 256
     )
     if plan:
-        upstreams.append((DependencyRef("plan", plan), "executed_plan"))
+        _register_unique(upstreams, seen, DependencyRef("plan", plan), "executed_plan")
+
+    admissibility = metadata.get("admissibility_gate")
+    if isinstance(admissibility, Mapping):
+        policy_sha = _safe_metadata_id(admissibility.get("policy_sha256"), 64)
+        if len(policy_sha) == 64:
+            _register_unique(
+                upstreams,
+                seen,
+                DependencyRef("admissibility_policy", policy_sha),
+                "published_under_admissibility_policy",
+            )
+        revision_ids = admissibility.get("trust_revision_ids", ())
+        if isinstance(revision_ids, (list, tuple)):
+            for raw_revision in revision_ids[:100]:
+                revision_id = _safe_metadata_id(raw_revision, 64)
+                if len(revision_id) != 64:
+                    continue
+                _register_unique(
+                    upstreams,
+                    seen,
+                    DependencyRef("source_trust_revision", revision_id),
+                    "admitted_under_source_review",
+                )
 
     store.register_dependencies(owner_id, downstream=downstream, upstreams=tuple(upstreams))
 
@@ -114,7 +161,6 @@ def stale_reasons(
 ) -> tuple[Mapping[str, Any], ...]:
     if not 1 <= maximum <= 1000:
         raise ValueError("maximum is invalid")
-    # ``list_stale`` is bounded; filtering here avoids exposing SQL internals to callers.
     rows = store.list_stale(owner_id, kind=artifact.kind, limit=10_000)
     output: list[Mapping[str, Any]] = []
     for row in rows:
