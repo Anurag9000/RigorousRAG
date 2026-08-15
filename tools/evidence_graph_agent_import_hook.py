@@ -1,4 +1,4 @@
-"""Lazy import hook that registers governed research-agent retrieval tools.
+"""Lazy import hook that registers governed research-agent retrieval and answer gates.
 
 The hook covers three import orders without importing the retrieval stacks eagerly:
 
@@ -7,9 +7,9 @@ The hook covers three import orders without importing the retrieval stacks eager
 * a module currently executing is temporarily watched until its schema registry
   and ``SearchAgent`` class have all been assigned.
 
-The evidence-graph and bounded multi-hop integrations share this hook so an
-in-progress ``search_agent_legacy`` import needs only one temporary module-class
-watcher. Each integration remains independently idempotent and fail closed.
+The evidence-graph, bounded multi-hop and optional claim-entailment integrations share
+this hook so an in-progress ``search_agent_legacy`` import needs only one temporary
+module-class watcher. Each integration remains independently idempotent and fail closed.
 """
 
 from __future__ import annotations
@@ -31,6 +31,8 @@ _INTEGRATION_MARKERS = (
     "_evidence_graph_original_dispatch",
     "_multihop_agent_tool_installed",
     "_multihop_original_dispatch",
+    "_claim_entailment_agent_gate_installed",
+    "_claim_entailment_original_run",
 )
 
 
@@ -39,6 +41,9 @@ def _ready(module: ModuleType) -> bool:
 
 
 def _install(module: ModuleType) -> None:
+    from tools.claim_entailment_agent_integration import (
+        install_claim_entailment_agent_gate,
+    )
     from tools.evidence_graph_agent_integration import (
         install_evidence_graph_agent_tool,
     )
@@ -46,6 +51,7 @@ def _install(module: ModuleType) -> None:
 
     install_evidence_graph_agent_tool(module)
     install_multihop_agent_tool(module)
+    install_claim_entailment_agent_gate(module)
 
 
 def _disarm(module: ModuleType) -> None:
