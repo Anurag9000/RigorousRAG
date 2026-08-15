@@ -7,10 +7,10 @@ The hook covers three import orders without importing the retrieval stacks eager
 * a module currently executing is temporarily watched until its schema registry
   and ``SearchAgent`` class have all been assigned.
 
-The explicit governed tool registry, evidence-graph, bounded multi-hop and optional
-claim-entailment integrations share this hook so an in-progress ``search_agent_legacy``
-import needs only one temporary module-class watcher. Each integration remains
-independently idempotent and fail closed.
+The explicit governed tool registry, adaptive retrieval, evidence-graph, bounded
+multi-hop and optional claim-entailment integrations share this hook so an in-progress
+``search_agent_legacy`` import needs only one temporary module-class watcher. Each
+integration remains independently idempotent and fail closed.
 """
 
 from __future__ import annotations
@@ -23,13 +23,13 @@ from typing import Any
 
 _TARGET = "search_agent_legacy"
 _MARKER = "_rigorousrag_evidence_graph_agent_import_hook"
-_REQUIRED_ATTRIBUTES = frozenset(
-    {"TOOLS_SCHEMA", "_TOOL_PARAMETER_SCHEMAS", "SearchAgent"}
-)
+_REQUIRED_ATTRIBUTES = frozenset({"TOOLS_SCHEMA", "_TOOL_PARAMETER_SCHEMAS", "SearchAgent"})
 _ORIGINAL_MODULE_CLASS = "_evidence_graph_original_module_class"
 _INTEGRATION_MARKERS = (
     "_agent_tool_registry_bridge_installed",
     "_agent_tool_registry_original_dispatch",
+    "_adaptive_agent_tool_installed",
+    "_adaptive_original_dispatch",
     "_evidence_graph_agent_tool_installed",
     "_evidence_graph_original_dispatch",
     "_multihop_agent_tool_installed",
@@ -44,16 +44,14 @@ def _ready(module: ModuleType) -> bool:
 
 
 def _install(module: ModuleType) -> None:
+    from tools.adaptive_agent_integration import install_adaptive_agent_tool
     from tools.agent_tool_registry_integration import install_agent_tool_registry_bridge
-    from tools.claim_entailment_agent_integration import (
-        install_claim_entailment_agent_gate,
-    )
-    from tools.evidence_graph_agent_integration import (
-        install_evidence_graph_agent_tool,
-    )
+    from tools.claim_entailment_agent_integration import install_claim_entailment_agent_gate
+    from tools.evidence_graph_agent_integration import install_evidence_graph_agent_tool
     from tools.multihop_agent_integration import install_multihop_agent_tool
 
     install_agent_tool_registry_bridge(module)
+    install_adaptive_agent_tool(module)
     install_evidence_graph_agent_tool(module)
     install_multihop_agent_tool(module)
     install_claim_entailment_agent_gate(module)
@@ -86,9 +84,7 @@ def _arm_deferred_install(module: ModuleType) -> None:
     if isinstance(module, _DeferredEvidenceGraphModule):
         return
     if module.__class__ is not ModuleType:
-        raise RuntimeError(
-            "search_agent_legacy uses an unsupported custom module class."
-        )
+        raise RuntimeError("search_agent_legacy uses an unsupported custom module class.")
     ModuleType.__setattr__(module, _ORIGINAL_MODULE_CLASS, module.__class__)
     module.__class__ = _DeferredEvidenceGraphModule
     _install_if_ready(module)
@@ -105,9 +101,7 @@ class _EvidenceGraphAgentLoader(importlib.abc.Loader):
     def exec_module(self, module: ModuleType) -> None:
         execute = getattr(self._wrapped, "exec_module", None)
         if not callable(execute):
-            raise ImportError(
-                "search_agent_legacy loader cannot execute modules."
-            )
+            raise ImportError("search_agent_legacy loader cannot execute modules.")
         for name in _INTEGRATION_MARKERS:
             module.__dict__.pop(name, None)
         execute(module)
@@ -115,12 +109,7 @@ class _EvidenceGraphAgentLoader(importlib.abc.Loader):
 
 
 class _EvidenceGraphAgentFinder(importlib.abc.MetaPathFinder):
-    def find_spec(
-        self,
-        fullname: str,
-        path: Any = None,
-        target: ModuleType | None = None,
-    ) -> Any:
+    def find_spec(self, fullname: str, path: Any = None, target: ModuleType | None = None) -> Any:
         if fullname != _TARGET:
             return None
         spec = importlib.machinery.PathFinder.find_spec(fullname, path)
