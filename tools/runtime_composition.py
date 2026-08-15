@@ -3,7 +3,7 @@
 This module converts typed ``RuntimeConfig`` into explicit capability/domain selections.
 It does not dynamically import untrusted plugins, contact providers, download models or
 silently enable optional capabilities. Provider objects may be injected by trusted
-application code and are represented through runtime-health signals.
+application bootstrap code and are represented through runtime-health signals.
 """
 
 from __future__ import annotations
@@ -18,6 +18,7 @@ from tools.default_capability_registry import build_default_capability_registry
 from tools.default_domain_registry import build_default_domain_registry
 from tools.domain_adapter import DomainAdapterRegistry
 from tools.runtime_config import RuntimeConfig, apply_environment_overlays, runtime_config_from_mapping
+from tools.runtime_providers import runtime_providers
 
 _MAX_CONFIG_JSON_BYTES = 256_000
 
@@ -95,7 +96,12 @@ def build_runtime_composition(
 ) -> RuntimeComposition:
     env = os.environ if environ is None else environ
     selected_config = config or load_runtime_config(environ=env)
-    health = dict(runtime_health or {})
+
+    # Trusted injected provider bindings are the strongest default signal because they
+    # prove that an application object actually exists in this process. Environment
+    # flags remain useful for external wrappers and are only used when no binding has
+    # already supplied a capability state. Explicit ``runtime_health`` overrides both.
+    health: dict[str, Any] = dict(runtime_providers.capability_health())
     health.setdefault("nli.claim_entailment", _bool_env(env.get("RIGOROUSRAG_NLI_CONFIGURED")))
     health.setdefault(
         "retrieval.page_late_interaction",
@@ -124,6 +130,8 @@ def build_runtime_composition(
     )
     health.setdefault("queue.redis", _bool_env(env.get("RIGOROUSRAG_REDIS_CONFIGURED")))
     health.setdefault("secret.external", _bool_env(env.get("RIGOROUSRAG_SECRET_PROVIDER_CONFIGURED")))
+    if runtime_health:
+        health.update(dict(runtime_health))
 
     capabilities = build_default_capability_registry(runtime_health=health)
     domains = build_default_domain_registry()
