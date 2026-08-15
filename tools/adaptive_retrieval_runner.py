@@ -92,7 +92,11 @@ def _evidence_id(value: Any, attempt_index: int, item_index: int) -> str:
             "\x1f".join((doc_id, page_text, section, content)).encode("utf-8")
         ).hexdigest()
         return f"derived:{digest}"
-    return f"anonymous:{attempt_index}:{item_index}"
+    # Opaque evidence still needs stable de-duplication within this process. Object
+    # identity is deliberately used only as an ephemeral dictionary key: it avoids
+    # invoking hostile __str__/__repr__ implementations, collapses the same object
+    # returned by corrective attempts, and never escapes into persisted lineage.
+    return f"anonymous-object:{id(value):x}"
 
 
 def _evidence_score(value: Any) -> float:
