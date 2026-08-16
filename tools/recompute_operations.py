@@ -9,7 +9,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from tools.distributed_recompute import DistributedRecomputeBridge
-from tools.recompute_executor import ResearchRecomputeExecutor, requeue_failed_task
+from tools.recompute_executor import ResearchRecomputeExecutor
+from tools.recompute_ledger_ops import requeue_failed_recompute
 from tools.security import normalize_owner_id
 
 
@@ -79,21 +80,10 @@ def run_recompute_cycle(
                 "error_type": value.error_type,
             }
         )
-    return RecomputeCycleSummary(
-        owner,
-        len(values),
-        succeeded,
-        failed,
-        replacements,
-        tuple(rows),
-    )
+    return RecomputeCycleSummary(owner, len(values), succeeded, failed, replacements, tuple(rows))
 
 
-def publish_recompute_tasks(
-    bridge: DistributedRecomputeBridge,
-    *,
-    limit: int = 1000,
-) -> RecomputePublishSummary:
+def publish_recompute_tasks(bridge: DistributedRecomputeBridge, *, limit: int = 1000) -> RecomputePublishSummary:
     if not isinstance(bridge, DistributedRecomputeBridge):
         raise TypeError("bridge must be DistributedRecomputeBridge")
     message_ids = bridge.publish_ready(limit=_max_tasks(limit))
@@ -127,12 +117,11 @@ def run_distributed_recompute_cycle(
         if value.state not in counts:
             raise RuntimeError(f"unexpected distributed recompute state: {value.state}")
         counts[value.state] += 1
-        row: dict[str, object] = {
-            "task_id": value.task_id,
-            "state": value.state,
-        }
+        row: dict[str, object] = {"task_id": value.task_id, "state": value.state}
         if value.outcome is not None:
+            row["artifact_kind"] = value.outcome.task.artifact.kind
             row["success"] = value.outcome.success
+            row["replacement_id"] = value.outcome.replacement.resource_id if value.outcome.replacement else ""
             row["error_type"] = value.outcome.error_type
         rows.append(row)
     return DistributedRecomputeCycleSummary(
@@ -148,14 +137,10 @@ def run_distributed_recompute_cycle(
     )
 
 
-def retry_failed_recompute(
-    executor: ResearchRecomputeExecutor,
-    owner_id: str,
-    task_id: str,
-) -> bool:
+def retry_failed_recompute(executor: ResearchRecomputeExecutor, owner_id: str, task_id: str) -> bool:
     if not isinstance(executor, ResearchRecomputeExecutor):
         raise TypeError("executor must be ResearchRecomputeExecutor")
-    return requeue_failed_task(executor.invalidations, owner_id, task_id)
+    return requeue_failed_recompute(executor.invalidations, owner_id, task_id)
 
 
 __all__ = [
