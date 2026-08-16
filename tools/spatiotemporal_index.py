@@ -166,6 +166,13 @@ class SpatiotemporalIndex:
     def delete(self, record_id: str) -> None:
         del self._records[_text(record_id, "record_id", 256)]
 
+    def records(self, *, limit: int = 1000) -> tuple[SpatiotemporalRecord, ...]:
+        """Return a deterministic bounded snapshot for topology-only planners/backends."""
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100_000:
+            raise ValueError("limit is invalid")
+        rows = sorted(self._records.values(), key=lambda item: (item.source_id, item.record_id))
+        return tuple(rows[:limit])
+
     def search(
         self,
         query: SpatiotemporalQuery,
