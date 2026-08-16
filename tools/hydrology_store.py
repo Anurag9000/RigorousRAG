@@ -18,12 +18,13 @@ from tools.hydro_topology import HydroNetwork, HydroNode, HydroReach
 from tools.hydrology_domain import CRSRef, GeoPoint
 from tools.hydrology_evidence_compiler import EngineeringEvidenceObject, EngineeringEvidencePackage
 from tools.hydrology_projection import HydrologyEvidenceProjection, projection_from_payload, projection_payload
+from tools.hydrology_report import HydrologyEvidenceReport, report_from_payload, report_payload
 from tools.hydrology_retrieval import HydrologyQuerySpec, HydrologyRetrievalPlan, SelectedRecordTrace, TopologyTimeWindow
 from tools.security import normalize_owner_id
 from tools.spatiotemporal_index import SpatialEnvelope, SpatiotemporalRecord, TimeEnvelope
 
 _SCHEMA_VERSION = 1
-_KINDS = frozenset({"topology", "engineering_package", "retrieval_plan", "evidence_projection"})
+_KINDS = frozenset({"topology", "engineering_package", "retrieval_plan", "evidence_projection", "evidence_report"})
 _MAX_PAYLOAD_BYTES = 64 * 1024 * 1024
 
 
@@ -345,6 +346,8 @@ def artifact_fingerprint(kind: str, artifact: Any) -> str:
         return artifact.fingerprint
     if kind == "evidence_projection" and isinstance(artifact, HydrologyEvidenceProjection):
         return artifact.fingerprint
+    if kind == "evidence_report" and isinstance(artifact, HydrologyEvidenceReport):
+        return artifact.fingerprint
     raise TypeError("artifact type does not match hydrology kind")
 
 
@@ -357,6 +360,8 @@ def encode_artifact(kind: str, artifact: Any) -> Mapping[str, Any]:
         return plan_payload(artifact)
     if kind == "evidence_projection":
         return projection_payload(artifact)
+    if kind == "evidence_report":
+        return report_payload(artifact)
     raise ValueError("unsupported hydrology artifact kind")
 
 
@@ -369,6 +374,8 @@ def decode_artifact(kind: str, payload: Mapping[str, Any]) -> Any:
         return plan_from_payload(payload)
     if kind == "evidence_projection":
         return projection_from_payload(payload)
+    if kind == "evidence_report":
+        return report_from_payload(payload)
     raise ValueError("unsupported hydrology artifact kind")
 
 
