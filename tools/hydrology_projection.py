@@ -2,16 +2,18 @@
 
 A projection contains only authoritative record identities, scopes, topology bindings and
 selection reasons. It never fabricates narrative evidence or copies arbitrary source text.
+The public row codec is shared by projections, deterministic reports and future UI/export
+surfaces so CRS/time/topology parsing has one authority.
 """
 from __future__ import annotations
 
 import datetime as dt
 import hashlib
 import json
-import math
 from dataclasses import asdict, dataclass
 from typing import Any, Mapping
 
+from tools.hydrology_domain import CRSRef
 from tools.hydrology_evidence_compiler import EngineeringEvidencePackage
 from tools.hydrology_retrieval import HydrologyRetrievalPlan
 from tools.spatiotemporal_index import SpatialEnvelope, SpatiotemporalRecord
@@ -81,8 +83,6 @@ def _spatial_from_payload(value: Any) -> SpatialEnvelope | None:
         return None
     if not isinstance(value, Mapping) or not isinstance(value.get("crs"), Mapping):
         raise ValueError("projection spatial scope is invalid")
-    from tools.hydrology_domain import CRSRef
-
     crs = value["crs"]
     return SpatialEnvelope(
         CRSRef(str(crs["authority"]), str(crs["code"]), str(crs.get("axis_order", "xy"))),
@@ -130,6 +130,44 @@ class HydrologyEvidenceRow:
             raise ValueError("projection time range is invalid")
         object.__setattr__(self, "start_time", start)
         object.__setattr__(self, "end_time", end)
+
+
+def evidence_row_payload(row: HydrologyEvidenceRow) -> Mapping[str, Any]:
+    if not isinstance(row, HydrologyEvidenceRow):
+        raise TypeError("row must be HydrologyEvidenceRow")
+    return {
+        "record_id": row.record_id,
+        "source_id": row.source_id,
+        "content_sha256": row.content_sha256,
+        "variable": row.variable,
+        "modality": row.modality,
+        "scenario_id": row.scenario_id,
+        "topology_kind": row.topology_kind,
+        "topology_id": row.topology_id,
+        "selection_reasons": list(row.selection_reasons),
+        "spatial": _spatial_payload(row.spatial),
+        "start_time": row.start_time.isoformat() if row.start_time is not None else None,
+        "end_time": row.end_time.isoformat() if row.end_time is not None else None,
+    }
+
+
+def evidence_row_from_payload(value: Any) -> HydrologyEvidenceRow:
+    if not isinstance(value, Mapping):
+        raise ValueError("hydrology evidence row payload is invalid")
+    return HydrologyEvidenceRow(
+        record_id=str(value["record_id"]),
+        source_id=str(value["source_id"]),
+        content_sha256=str(value.get("content_sha256", "")),
+        variable=str(value.get("variable", "")),
+        modality=str(value["modality"]),
+        scenario_id=str(value.get("scenario_id", "")),
+        topology_kind=str(value["topology_kind"]),
+        topology_id=str(value["topology_id"]),
+        selection_reasons=tuple(value.get("selection_reasons") or ()),
+        spatial=_spatial_from_payload(value.get("spatial")),
+        start_time=_parse_time(value.get("start_time")),
+        end_time=_parse_time(value.get("end_time")),
+    )
 
 
 @dataclass(frozen=True)
@@ -197,14 +235,13 @@ def build_hydrology_projection(
         trace = traces.get(record_id)
         if record is None or trace is None:
             raise ValueError(f"retrieval plan references a record absent from the engineering package: {record_id}")
-        scenario_id = str(record.metadata.get("scenario_id", "")).strip()
         rows.append(HydrologyEvidenceRow(
             record_id=record.record_id,
             source_id=record.source_id,
             content_sha256=record.content_sha256,
             variable=record.variable,
             modality=record.modality,
-            scenario_id=scenario_id,
+            scenario_id=str(record.metadata.get("scenario_id", "")).strip(),
             topology_kind=trace.topology_kind,
             topology_id=trace.topology_id,
             selection_reasons=trace.reasons,
@@ -233,23 +270,7 @@ def projection_payload(projection: HydrologyEvidenceProjection) -> Mapping[str, 
         "topology_fingerprint": projection.topology_fingerprint,
         "plan_fingerprint": projection.plan_fingerprint,
         "index_fingerprint": projection.index_fingerprint,
-        "rows": [
-            {
-                "record_id": item.record_id,
-                "source_id": item.source_id,
-                "content_sha256": item.content_sha256,
-                "variable": item.variable,
-                "modality": item.modality,
-                "scenario_id": item.scenario_id,
-                "topology_kind": item.topology_kind,
-                "topology_id": item.topology_id,
-                "selection_reasons": list(item.selection_reasons),
-                "spatial": _spatial_payload(item.spatial),
-                "start_time": item.start_time.isoformat() if item.start_time is not None else None,
-                "end_time": item.end_time.isoformat() if item.end_time is not None else None,
-            }
-            for item in projection.rows
-        ],
+        "rows": [evidence_row_payload(item) for item in projection.rows],
         "package_diagnostics": list(projection.package_diagnostics),
         "plan_unresolved": list(projection.plan_unresolved),
         "fingerprint": projection.fingerprint,
@@ -259,26 +280,7 @@ def projection_payload(projection: HydrologyEvidenceProjection) -> Mapping[str, 
 def projection_from_payload(value: Any) -> HydrologyEvidenceProjection:
     if not isinstance(value, Mapping) or not isinstance(value.get("rows"), list):
         raise ValueError("hydrology projection payload is invalid")
-    rows = tuple(
-        HydrologyEvidenceRow(
-            record_id=str(item["record_id"]),
-            source_id=str(item["source_id"]),
-            content_sha256=str(item.get("content_sha256", "")),
-            variable=str(item.get("variable", "")),
-            modality=str(item["modality"]),
-            scenario_id=str(item.get("scenario_id", "")),
-            topology_kind=str(item["topology_kind"]),
-            topology_id=str(item["topology_id"]),
-            selection_reasons=tuple(item.get("selection_reasons") or ()),
-            spatial=_spatial_from_payload(item.get("spatial")),
-            start_time=_parse_time(item.get("start_time")),
-            end_time=_parse_time(item.get("end_time")),
-        )
-        for item in value["rows"]
-        if isinstance(item, Mapping)
-    )
-    if len(rows) != len(value["rows"]):
-        raise ValueError("hydrology projection contains non-object rows")
+    rows = tuple(evidence_row_from_payload(item) for item in value["rows"])
     projection = HydrologyEvidenceProjection(
         projection_id=str(value["projection_id"]),
         package_fingerprint=str(value["package_fingerprint"]),
@@ -299,6 +301,8 @@ __all__ = [
     "HydrologyEvidenceProjection",
     "HydrologyEvidenceRow",
     "build_hydrology_projection",
+    "evidence_row_from_payload",
+    "evidence_row_payload",
     "projection_from_payload",
     "projection_payload",
 ]
