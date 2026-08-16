@@ -61,10 +61,7 @@ capsules = ResearchCapsuleStore(root / "research_capsules.sqlite3")
 invalidations = DependencyInvalidationStore(root / "research_invalidation.sqlite3")
 replacements = ArtifactReplacementStore(root / "research_replacements.sqlite3")
 source_trust = SourceTrustStore(root / "source_trust.sqlite3")
-replay_recipes = build_replay_recipe_store(
-    root / "research_replay.sqlite3",
-    providers=runtime_providers,
-)
+replay_recipes = build_replay_recipe_store(root / "research_replay.sqlite3", providers=runtime_providers)
 app = base.app
 
 _base_new_agent = base._new_agent
@@ -149,11 +146,7 @@ def _append_missing_routes(router) -> None:
 
 def _ensure_governance_routes() -> None:
     if not _REQUIRED_GOVERNANCE_ROUTES.issubset(_route_paths()):
-        governance = build_control_router(
-            principal_dependency=base.get_principal,
-            review_store=reviews,
-            feedback_store=feedback,
-        )
+        governance = build_control_router(principal_dependency=base.get_principal, review_store=reviews, feedback_store=feedback)
         _append_missing_routes(governance)
     missing = _REQUIRED_GOVERNANCE_ROUTES.difference(_route_paths())
     if missing:
@@ -168,16 +161,10 @@ def _ensure_research_routes() -> None:
             capability_registry=composition.capabilities,
             domain_registry=composition.domains,
             access_resolver=access_resolver,
+            result_store=results,
         )
-        acl = build_project_acl_router(
-            principal_dependency=base.get_rate_limited_principal,
-            acl_store=project_acls,
-            access_resolver=access_resolver,
-        )
-        runtime = build_runtime_router(
-            principal_dependency=base.get_rate_limited_principal,
-            composition=composition,
-        )
+        acl = build_project_acl_router(principal_dependency=base.get_rate_limited_principal, acl_store=project_acls, access_resolver=access_resolver)
+        runtime = build_runtime_router(principal_dependency=base.get_rate_limited_principal, composition=composition)
         query = build_research_query_router(
             principal_dependency=base.get_rate_limited_principal,
             agent_factory=_production_agent,
@@ -203,11 +190,7 @@ def _ensure_research_routes() -> None:
             invalidation_store=invalidations,
             access_resolver=access_resolver,
         )
-        replay = build_replay_router(
-            principal_dependency=base.get_rate_limited_principal,
-            replay_recipe_store=replay_recipes,
-            access_resolver=access_resolver,
-        )
+        replay = build_replay_router(principal_dependency=base.get_rate_limited_principal, replay_recipe_store=replay_recipes, access_resolver=access_resolver)
         capsule = build_research_capsule_router(
             principal_dependency=base.get_rate_limited_principal,
             workspace_store=workspace,
@@ -218,30 +201,11 @@ def _ensure_research_routes() -> None:
             invalidation_store=invalidations,
             access_resolver=access_resolver,
         )
-        invalidation = build_invalidation_router(
-            principal_dependency=base.get_rate_limited_principal,
-            store=invalidations,
-        )
-        lineage = build_artifact_lineage_router(
-            principal_dependency=base.get_rate_limited_principal,
-            replacements=replacements,
-        )
-        trust = build_source_trust_router(
-            principal_dependency=base.get_rate_limited_principal,
-            store=source_trust,
-            invalidation_store=invalidations,
-        )
-        _append_missing_routes(research)
-        _append_missing_routes(acl)
-        _append_missing_routes(runtime)
-        _append_missing_routes(query)
-        _append_missing_routes(answer_history)
-        _append_missing_routes(report)
-        _append_missing_routes(replay)
-        _append_missing_routes(capsule)
-        _append_missing_routes(invalidation)
-        _append_missing_routes(lineage)
-        _append_missing_routes(trust)
+        invalidation = build_invalidation_router(principal_dependency=base.get_rate_limited_principal, store=invalidations)
+        lineage = build_artifact_lineage_router(principal_dependency=base.get_rate_limited_principal, replacements=replacements)
+        trust = build_source_trust_router(principal_dependency=base.get_rate_limited_principal, store=source_trust, invalidation_store=invalidations)
+        for router in (research, acl, runtime, query, answer_history, report, replay, capsule, invalidation, lineage, trust):
+            _append_missing_routes(router)
     missing = _REQUIRED_RESEARCH_ROUTES.difference(_route_paths())
     if missing:
         raise RuntimeError("Production research routes failed to mount: " + ", ".join(sorted(missing)))
