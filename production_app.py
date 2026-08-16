@@ -166,6 +166,12 @@ def _ensure_research_routes() -> None:
         runtime = build_runtime_router(
             principal_dependency=base.get_rate_limited_principal,
             composition=composition,
+            persistence_metadata={
+                "metadata_backend": metadata_backend,
+                "distributed_shared_state": metadata_backend == "postgres",
+                "encrypted_replay_configured": replay_recipes is not None,
+                "code_revision_configured": bool(code_revision),
+            },
         )
         query = build_research_query_router(
             principal_dependency=base.get_rate_limited_principal,
