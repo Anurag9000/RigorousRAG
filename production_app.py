@@ -15,6 +15,7 @@ from tools.postgres_workspace_store import PostgresResearchWorkspaceStore
 from tools.recompute_executor import ResearchRecomputeExecutor
 from tools.replay_api import build_replay_router
 from tools.replay_runtime import build_replay_recipe_store
+from tools.research_answer_history_api import build_research_answer_history_router
 from tools.research_api import build_research_router
 from tools.research_capsule_api import build_research_capsule_router
 from tools.research_capsule_store import ResearchCapsuleStore
@@ -106,6 +107,7 @@ _REQUIRED_RESEARCH_ROUTES = frozenset(
         "/research/query",
         "/research/results",
         "/research/results/{result_id}",
+        "/research/results/{result_id}/history",
         "/research/reports",
         "/research/reports/{report_id}",
         "/research/reports/{report_id}/markdown",
@@ -177,6 +179,11 @@ def _ensure_research_routes() -> None:
             invalidation_store=invalidations,
             replay_recipe_store=replay_recipes,
         )
+        answer_history = build_research_answer_history_router(
+            principal_dependency=base.get_rate_limited_principal,
+            result_store=results,
+            replacement_store=replacements,
+        )
         report = build_research_report_router(
             principal_dependency=base.get_rate_limited_principal,
             workspace_store=workspace,
@@ -213,6 +220,7 @@ def _ensure_research_routes() -> None:
         _append_missing_routes(research)
         _append_missing_routes(runtime)
         _append_missing_routes(query)
+        _append_missing_routes(answer_history)
         _append_missing_routes(report)
         _append_missing_routes(replay)
         _append_missing_routes(capsule)
