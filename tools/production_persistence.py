@@ -2,8 +2,9 @@
 
 The selected metadata backend is an all-or-nothing deployment boundary. This prevents a
 multi-replica Postgres workspace from accidentally pairing with node-local result, ACL,
-review, invalidation, trust, or replay ledgers. No driver or credential discovery occurs
-here: Postgres uses the already-injected ``postgres.connection_factory`` provider.
+review, invalidation, trust, replay, or hydrology ledgers. No driver or credential
+discovery occurs here: Postgres uses the already-injected ``postgres.connection_factory``
+provider.
 """
 
 from __future__ import annotations
@@ -15,6 +16,9 @@ from typing import Any
 from tools.artifact_replacements import ArtifactReplacementStore
 from tools.dependency_invalidation import DependencyInvalidationStore
 from tools.feedback_store import FeedbackStore
+from tools.hydrology_store import HydrologyArtifactStore
+from tools.hydrology_store_postgres import PostgresHydrologyArtifactStore
+from tools.hydrology_store_sqlite import SQLiteHydrologyArtifactStore
 from tools.postgres_governance_stores import PostgresFeedbackStore, PostgresReviewStore
 from tools.postgres_invalidation_store import PostgresDependencyInvalidationStore
 from tools.postgres_research_stores import (
@@ -52,6 +56,7 @@ class ProductionPersistence:
     replay_recipes: EncryptedReplayRecipeStore | None
     reviews: ReviewStore
     feedback: FeedbackStore
+    hydrology: HydrologyArtifactStore
 
 
 def _root(value: str | Path) -> Path:
@@ -103,6 +108,11 @@ def build_production_persistence(
             connection_factory,
             schema=postgres_schema,
         )
+        hydrology = PostgresHydrologyArtifactStore(
+            connection_factory,
+            schema=postgres_schema,
+        )
+        hydrology.initialize()
         replay_recipes = build_replay_recipe_store(
             selected_root / "research_replay.sqlite3",
             providers=providers,
@@ -131,6 +141,7 @@ def build_production_persistence(
             replay_recipes=replay_recipes,
             reviews=reviews,
             feedback=feedback,
+            hydrology=hydrology,
         )
 
     if backend == "sqlite":
@@ -159,6 +170,9 @@ def build_production_persistence(
             ),
             reviews=ReviewStore(selected_root / "reviews.sqlite3"),
             feedback=FeedbackStore(selected_root / "feedback.sqlite3"),
+            hydrology=SQLiteHydrologyArtifactStore(
+                selected_root / "research_hydrology.sqlite3"
+            ),
         )
 
     raise RuntimeError(f"unsupported production metadata backend: {backend}")
