@@ -14,7 +14,13 @@ from tools.models import AgentAnswer
 from tools.replay_recipe_store import EncryptedReplayRecipeStore
 from tools.research_access import ResearchAccessResolver
 from tools.research_dependencies import register_result_dependencies, stale_reasons
-from tools.research_result_provenance import finalize_answer_provenance, sha256_text
+from tools.research_result_provenance import (
+    bind_answer_to_session,
+    finalize_answer_provenance,
+    session_binding,
+    sha256_text,
+    turn_fingerprints,
+)
 from tools.research_result_store import ResearchResultStore, StoredResearchResult
 from tools.research_workspace import ResearchSession, ResearchTurn, append_turn
 from tools.runtime_composition import RuntimeComposition
@@ -38,13 +44,6 @@ def _owner(principal: Any) -> str:
     if not isinstance(value, str) or not value:
         raise HTTPException(status_code=401, detail="Authenticated owner identity is required.")
     return value
-
-
-def _maybe_sha(value: Any) -> str:
-    if not isinstance(value, str):
-        return ""
-    digest = value.strip().lower()
-    return digest if len(digest) == 64 and all(ch in "0123456789abcdef" for ch in digest) else ""
 
 
 def _result_payload(result: StoredResearchResult, *, owner_id: str | None = None, invalidation_store: DependencyInvalidationStore | None = None) -> Mapping[str, Any]:
@@ -112,7 +111,7 @@ def build_research_query_router(
                 if access_resolver is None:
                     session = workspace_store.get_session(actor, request.session_id)
                 else:
-                    session_access = access_resolver.session(actor, request.session_id, permission="session.write")
+                    session_access = access_resolver.session(actor, request.session_id, permission="research.execute")
                     session = session_access.session
                     storage_owner = session_access.storage_owner_id
                     shared = storage_owner != actor
@@ -128,7 +127,7 @@ def build_research_query_router(
                 raise HTTPException(status_code=409, detail="Research session changed; reload before querying.")
 
         try:
-            # The agent executes inside the authoritative project storage scope after ACL
+            # Execution occurs inside the authoritative project storage scope after ACL
             # authorization, so shared-project corpus access cannot drift into actor-local data.
             agent = agent_factory(storage_owner, request.model)
             answer = await _await_maybe(run_research_task(agent.run, request.query))
@@ -144,6 +143,8 @@ def build_research_query_router(
         model = str(getattr(agent, "model", request.model or ""))
         try:
             answer = finalize_answer_provenance(answer, composition, model=model, strategy=strategy)
+            if session is not None:
+                answer = bind_answer_to_session(answer, session)
             stored = result_store.put(storage_owner, query_sha256=query_sha256, answer=answer, strategy=strategy, model=model)
         except Exception as exc:
             raise HTTPException(status_code=503, detail="Research result persistence is unavailable.") from exc
@@ -151,15 +152,6 @@ def build_research_query_router(
         if invalidation_store is not None:
             try:
                 register_result_dependencies(invalidation_store, storage_owner, stored, composition=composition)
-                if session is not None:
-                    invalidation_store.register_dependencies(
-                        storage_owner,
-                        downstream=DependencyRef("result", stored.result_id),
-                        upstreams=(
-                            (DependencyRef("session", session.session_id), "created_in_session"),
-                            (DependencyRef("project", session.project_id), "created_in_project"),
-                        ),
-                    )
             except Exception as exc:
                 raise HTTPException(status_code=503, detail=("Research result was persisted, but dependency lineage could not be registered. " f"Result ID: {stored.result_id}")) from exc
 
@@ -180,17 +172,14 @@ def build_research_query_router(
 
         updated_session: ResearchSession | None = None
         if session is not None:
-            metadata = dict(answer.metadata or {})
-            plan_sha = _maybe_sha(metadata.get("plan_fingerprint") or metadata.get("plan_sha256"))
-            policy_sha = _maybe_sha(metadata.get("policy_fingerprint") or metadata.get("policy_sha256"))
-            if not policy_sha:
-                policy_id = composition.selected_capabilities.get("policy", "")
-                descriptor = composition.capabilities.active(policy_id) if policy_id else None
-                policy_sha = descriptor.fingerprint if descriptor is not None else ""
+            binding = session_binding(stored.metadata)
+            if binding is None or binding["session_id"] != session.session_id or binding["project_id"] != session.project_id:
+                raise HTTPException(status_code=500, detail=("Research result was persisted without its expected session provenance binding. " f"Result ID: {stored.result_id}"))
+            plan_sha, policy_sha = turn_fingerprints(stored.metadata)
             turn = ResearchTurn(
                 turn_id=f"turn_{uuid.uuid4().hex}",
-                query_sha256=query_sha256,
-                strategy=strategy,
+                query_sha256=stored.query_sha256,
+                strategy=stored.strategy,
                 result_sha256=stored.result_id,
                 citation_ids=stored.citation_ids,
                 plan_sha256=plan_sha,
@@ -201,9 +190,9 @@ def build_research_query_router(
                 updated_session = append_turn(session, turn)
                 workspace_store.put_session(updated_session, expected_fingerprint=request.expected_session_fingerprint.lower())
             except RuntimeError as exc:
-                raise HTTPException(status_code=409, detail=("Research result was persisted, but the session changed before the turn could be appended. " f"Result ID: {stored.result_id}")) from exc
+                raise HTTPException(status_code=409, detail=("Research result was persisted with immutable session provenance, but the session changed before the turn could be appended. " f"Result ID: {stored.result_id}")) from exc
             except Exception as exc:
-                raise HTTPException(status_code=503, detail=("Research result was persisted, but the session turn could not be appended. " f"Result ID: {stored.result_id}")) from exc
+                raise HTTPException(status_code=503, detail=("Research result was persisted with immutable session provenance, but the session turn could not be appended. " f"Result ID: {stored.result_id}")) from exc
 
         payload = dict(_result_payload(stored, owner_id=storage_owner, invalidation_store=invalidation_store))
         payload["session_id"] = updated_session.session_id if updated_session else None
@@ -226,15 +215,20 @@ def build_research_query_router(
                 if access_resolver is None:
                     session = workspace_store.get_session(actor, session_id)
                 else:
-                    access = access_resolver.session(actor, session_id, permission="session.read")
+                    access = access_resolver.session(actor, session_id, permission="result.read")
                     session = access.session
                     storage_owner = access.storage_owner_id
                 allowed_ids = _session_result_ids(session)
-                values = []
-                for result_id in list(reversed([turn.result_sha256 for turn in session.turns if turn.result_sha256]))[:limit]:
-                    if result_id in {item.result_id for item in values}:
+                values: list[StoredResearchResult] = []
+                seen: set[str] = set()
+                ordered_ids = [turn.result_sha256 for turn in reversed(session.turns) if turn.result_sha256]
+                for result_id in ordered_ids:
+                    if result_id in seen:
                         continue
+                    seen.add(result_id)
                     values.append(result_store.get(storage_owner, result_id))
+                    if len(values) >= limit:
+                        break
             else:
                 values = list(result_store.list(actor, limit=limit))
         except (KeyError, PermissionError) as exc:
@@ -264,7 +258,7 @@ def build_research_query_router(
                 if access_resolver is None:
                     session = workspace_store.get_session(actor, session_id)
                 else:
-                    access = access_resolver.session(actor, session_id, permission="session.read")
+                    access = access_resolver.session(actor, session_id, permission="result.read")
                     session = access.session
                     storage_owner = access.storage_owner_id
                 if result_id.lower() not in _session_result_ids(session):
