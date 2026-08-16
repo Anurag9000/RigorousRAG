@@ -1,9 +1,8 @@
-"""Owner-scoped replay recipe status and privacy controls.
+"""ACL-aware replay recipe status and privacy controls.
 
 This router deliberately does not expose replay plaintext and deliberately does not
 execute model/provider work. Encrypted recipe decryption remains an operator-side
-recomputation concern. Product callers may only inspect non-secret availability metadata
-or delete their own stored replay recipe.
+recomputation concern.
 """
 
 from __future__ import annotations
@@ -13,6 +12,7 @@ from typing import Any, Callable, Mapping
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 
 from tools.replay_recipe_store import EncryptedReplayRecipeStore, ReplayRecipeMetadata
+from tools.research_access import ResearchAccessResolver
 
 
 def _owner(principal: Any) -> str:
@@ -32,47 +32,84 @@ def _payload(item: ReplayRecipeMetadata) -> Mapping[str, Any]:
     }
 
 
+def _session_scope(
+    actor: str,
+    session_id: str | None,
+    *,
+    permission: str,
+    access_resolver: ResearchAccessResolver | None,
+) -> tuple[str, set[str] | None]:
+    if session_id is None:
+        return actor, None
+    if access_resolver is None:
+        raise HTTPException(status_code=409, detail="Session-scoped replay access is not configured.")
+    try:
+        access = access_resolver.session(actor, session_id, permission=permission)
+    except (KeyError, PermissionError) as exc:
+        raise HTTPException(status_code=404, detail="Research session not found.") from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    result_ids = {turn.result_sha256 for turn in access.session.turns if turn.result_sha256}
+    return access.storage_owner_id, result_ids
+
+
 def build_replay_router(
     *,
     principal_dependency: Callable[..., Any],
     replay_recipe_store: EncryptedReplayRecipeStore | None,
+    access_resolver: ResearchAccessResolver | None = None,
 ) -> APIRouter:
-    """Build non-executing replay status/privacy routes.
-
-    A null store is a supported deployment state: the status endpoint reports replay as
-    unconfigured while result generation remains hash-only. Per-result reads/deletes fail
-    closed rather than pretending an exact replay recipe exists.
-    """
+    """Build non-executing replay status/privacy routes."""
 
     if replay_recipe_store is not None and not isinstance(replay_recipe_store, EncryptedReplayRecipeStore):
         raise TypeError("replay_recipe_store must be EncryptedReplayRecipeStore or null")
+    if access_resolver is not None and not isinstance(access_resolver, ResearchAccessResolver):
+        raise TypeError("access_resolver must be ResearchAccessResolver or null")
 
     router = APIRouter(prefix="/research/replay", tags=["research-replay"])
 
     @router.get("")
     async def list_replay_recipes(
         limit: int = Query(default=100, ge=1, le=1000),
+        session_id: str | None = Query(default=None, min_length=1, max_length=256),
         principal: Any = Depends(principal_dependency),
     ) -> Mapping[str, Any]:
-        owner = _owner(principal)
+        actor = _owner(principal)
+        storage_owner, allowed_ids = _session_scope(
+            actor,
+            session_id,
+            permission="result.read",
+            access_resolver=access_resolver,
+        )
         if replay_recipe_store is None:
             return {"configured": False, "recipes": []}
         try:
-            values = replay_recipe_store.list_metadata(owner, limit=limit)
+            values = replay_recipe_store.list_metadata(storage_owner, limit=1000 if allowed_ids is not None else limit)
         except Exception as exc:
             raise HTTPException(status_code=503, detail="Replay recipe persistence is unavailable.") from exc
+        if allowed_ids is not None:
+            values = tuple(item for item in values if item.result_id in allowed_ids)[:limit]
         return {"configured": True, "recipes": [_payload(item) for item in values]}
 
     @router.get("/{result_id}")
     async def get_replay_recipe_status(
         result_id: str,
+        session_id: str | None = Query(default=None, min_length=1, max_length=256),
         principal: Any = Depends(principal_dependency),
     ) -> Mapping[str, Any]:
-        owner = _owner(principal)
+        actor = _owner(principal)
+        storage_owner, allowed_ids = _session_scope(
+            actor,
+            session_id,
+            permission="result.read",
+            access_resolver=access_resolver,
+        )
+        if allowed_ids is not None and result_id.lower() not in allowed_ids:
+            raise HTTPException(status_code=404, detail="Replay recipe not found.")
         if replay_recipe_store is None:
             raise HTTPException(status_code=409, detail="Encrypted replay is not configured for this deployment.")
         try:
-            item = replay_recipe_store.metadata(owner, result_id)
+            item = replay_recipe_store.metadata(storage_owner, result_id)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="Replay recipe not found.") from exc
         except ValueError as exc:
@@ -84,13 +121,22 @@ def build_replay_router(
     @router.delete("/{result_id}", status_code=204)
     async def delete_replay_recipe(
         result_id: str,
+        session_id: str | None = Query(default=None, min_length=1, max_length=256),
         principal: Any = Depends(principal_dependency),
     ) -> Response:
-        owner = _owner(principal)
+        actor = _owner(principal)
+        storage_owner, allowed_ids = _session_scope(
+            actor,
+            session_id,
+            permission="replay.manage",
+            access_resolver=access_resolver,
+        )
+        if allowed_ids is not None and result_id.lower() not in allowed_ids:
+            raise HTTPException(status_code=404, detail="Replay recipe not found.")
         if replay_recipe_store is None:
             raise HTTPException(status_code=409, detail="Encrypted replay is not configured for this deployment.")
         try:
-            deleted = replay_recipe_store.delete(owner, result_id)
+            deleted = replay_recipe_store.delete(storage_owner, result_id)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail="Research result ID is invalid.") from exc
         except Exception as exc:
