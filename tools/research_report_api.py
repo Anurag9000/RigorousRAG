@@ -13,6 +13,7 @@ from tools.research_access import ResearchAccessResolver
 from tools.research_dependencies import register_report_dependencies, stale_reasons
 from tools.research_report import ReportSection, ResearchReport, report_markdown
 from tools.research_report_store import ResearchReportStore, StoredResearchReport
+from tools.research_result_provenance import session_binding
 from tools.research_result_store import ResearchResultStore
 from tools.research_workspace import ResearchProject, ResearchSession
 
@@ -35,17 +36,7 @@ def _owner(principal: Any) -> str:
     return value
 
 
-def _session_contains_result(session: ResearchSession, result_id: str) -> bool:
-    target = result_id.lower()
-    return any(turn.result_sha256 == target for turn in session.turns)
-
-
-def _stored_payload(
-    stored: StoredResearchReport,
-    *,
-    owner_id: str | None = None,
-    invalidation_store: DependencyInvalidationStore | None = None,
-) -> Mapping[str, Any]:
+def _stored_payload(stored: StoredResearchReport, *, owner_id: str | None = None, invalidation_store: DependencyInvalidationStore | None = None) -> Mapping[str, Any]:
     report = stored.report
     stale = ()
     if owner_id is not None and invalidation_store is not None:
@@ -89,6 +80,7 @@ def build_research_report_router(
     async def create_report(request: CreateReportRequest, principal: Any = Depends(principal_dependency)) -> Mapping[str, Any]:
         actor = _owner(principal)
         storage_owner = actor
+        session: ResearchSession | None = None
         try:
             if access_resolver is None:
                 project = workspace_store.get_project(actor, request.project_id)
@@ -99,22 +91,18 @@ def build_research_report_router(
                 storage_owner = project_access.storage_owner_id
                 if storage_owner != actor and not request.session_id:
                     raise PermissionError("shared report creation requires an accessible source session")
-                session = None
                 if request.session_id:
                     session_access = access_resolver.session(actor, request.session_id, permission="report.write")
                     if session_access.storage_owner_id != storage_owner or session_access.session.project_id != project.project_id:
                         raise PermissionError("source session is outside the selected project")
                     session = session_access.session
-                if storage_owner != actor and (session is None or not _session_contains_result(session, request.result_id)):
-                    raise PermissionError("shared report source result is not bound to the accessible session")
-                if session is not None and not _session_contains_result(session, request.result_id):
-                    raise KeyError(request.result_id)
         except (KeyError, PermissionError) as exc:
-            raise HTTPException(status_code=404, detail="Research project, session, or result not found.") from exc
+            raise HTTPException(status_code=404, detail="Research project or session not found.") from exc
         except RuntimeError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         except Exception as exc:
             raise HTTPException(status_code=503, detail="Research workspace is unavailable.") from exc
+
         try:
             result = result_store.get(storage_owner, request.result_id)
         except KeyError as exc:
@@ -123,12 +111,20 @@ def build_research_report_router(
             raise HTTPException(status_code=400, detail="Research result ID is invalid.") from exc
         except Exception as exc:
             raise HTTPException(status_code=503, detail="Research result persistence is unavailable.") from exc
+
+        binding = session_binding(result.metadata)
+        if binding is None or binding["project_id"] != project.project_id:
+            raise HTTPException(status_code=409, detail="Research result is not authentically bound to the selected project.")
+        if session is not None and binding["session_id"] != session.session_id:
+            raise HTTPException(status_code=409, detail="Research result is bound to another session in this project.")
+
         if invalidation_store is not None:
             result_stale = stale_reasons(invalidation_store, storage_owner, DependencyRef("result", result.result_id))
             if result_stale:
                 raise HTTPException(status_code=409, detail="A new report cannot be derived from a stale research result; recompute or explicitly resolve its invalidation first.")
         if len(result.citations) > 100:
             raise HTTPException(status_code=409, detail="The authoritative result exceeds the current 100-citation report limit.")
+
         report = ResearchReport(
             title=project.title,
             question=project.research_question,
@@ -150,11 +146,7 @@ def build_research_report_router(
         return _stored_payload(stored, owner_id=storage_owner, invalidation_store=invalidation_store)
 
     @router.get("/reports")
-    async def list_reports(
-        project_id: str | None = Query(default=None, min_length=1, max_length=256),
-        limit: int = Query(default=100, ge=1, le=1000),
-        principal: Any = Depends(principal_dependency),
-    ) -> Mapping[str, Any]:
+    async def list_reports(project_id: str | None = Query(default=None, min_length=1, max_length=256), limit: int = Query(default=100, ge=1, le=1000), principal: Any = Depends(principal_dependency)) -> Mapping[str, Any]:
         actor = _owner(principal)
         storage_owner = actor
         try:
@@ -176,11 +168,7 @@ def build_research_report_router(
         return {"reports": rows}
 
     @router.get("/reports/{report_id}")
-    async def get_report(
-        report_id: str,
-        project_id: str | None = Query(default=None, min_length=1, max_length=256),
-        principal: Any = Depends(principal_dependency),
-    ) -> Mapping[str, Any]:
+    async def get_report(report_id: str, project_id: str | None = Query(default=None, min_length=1, max_length=256), principal: Any = Depends(principal_dependency)) -> Mapping[str, Any]:
         actor = _owner(principal)
         storage_owner = actor
         try:
@@ -201,11 +189,7 @@ def build_research_report_router(
             raise HTTPException(status_code=503, detail="Research report persistence is unavailable.") from exc
 
     @router.get("/reports/{report_id}/markdown", response_class=PlainTextResponse)
-    async def get_report_markdown(
-        report_id: str,
-        project_id: str | None = Query(default=None, min_length=1, max_length=256),
-        principal: Any = Depends(principal_dependency),
-    ) -> PlainTextResponse:
+    async def get_report_markdown(report_id: str, project_id: str | None = Query(default=None, min_length=1, max_length=256), principal: Any = Depends(principal_dependency)) -> PlainTextResponse:
         actor = _owner(principal)
         storage_owner = actor
         try:
