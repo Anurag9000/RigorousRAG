@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from tools.capability_registry import (
     CapabilityDescriptor,
@@ -33,9 +33,9 @@ def ensure_replay_capability(
         return existing
     descriptor = CapabilityDescriptor(
         capability_id=_REPLAY_CAPABILITY_ID,
-        version="1.0.0",
+        version="1.1.0",
         kind="storage",
-        provider="tools.replay_recipe_store.EncryptedReplayRecipeStore",
+        provider="tools.replay_runtime.build_replay_recipe_store",
         modalities=("text",),
         trust_level="local",
         resources=ResourceEnvelope(
@@ -62,8 +62,16 @@ def build_replay_recipe_store(
     path: str | Path,
     *,
     providers: RuntimeProviderRegistry | None = None,
+    metadata_backend: str = "sqlite",
+    connection_factory: Callable[[], Any] | None = None,
+    schema: str = "rigorousrag",
 ) -> EncryptedReplayRecipeStore | None:
-    """Build the encrypted replay store only when a healthy cipher was injected."""
+    """Build encrypted replay persistence without discovering credentials or drivers.
+
+    ``sqlite`` keeps the single-node reference behavior. ``postgres``/``postgresql`` uses
+    the caller-injected DB-API connection factory and stores only ciphertext/non-secret
+    metadata in the shared database; the cipher itself remains injected process state.
+    """
 
     provider_registry = providers or runtime_providers
     cipher: Any = provider_registry.get(_REPLAY_PROVIDER_ID)
@@ -71,7 +79,20 @@ def build_replay_recipe_store(
         return None
     if not provider_registry.healthy(_REPLAY_PROVIDER_ID):
         raise RuntimeError("configured replay cipher is unhealthy")
-    return EncryptedReplayRecipeStore(path, cipher=cipher)
+    backend = str(metadata_backend).strip().lower()
+    if backend == "sqlite":
+        return EncryptedReplayRecipeStore(path, cipher=cipher)
+    if backend in {"postgres", "postgresql"}:
+        if not callable(connection_factory):
+            raise RuntimeError("Postgres replay persistence requires a DB-API connection factory")
+        from tools.postgres_replay_store import PostgresEncryptedReplayRecipeStore
+
+        return PostgresEncryptedReplayRecipeStore(
+            connection_factory,
+            cipher=cipher,
+            schema=schema,
+        )
+    raise RuntimeError(f"unsupported replay metadata backend: {backend}")
 
 
 __all__ = [
