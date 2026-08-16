@@ -30,4 +30,5 @@
   loadExtension("/static/research_query.js", "research-query-persistence");
   loadExtension("/static/research.js", "research-workspace");
   loadExtension("/static/integrity.js", "research-integrity");
+  loadExtension("/static/hydrology.js", "research-hydrology");
 })();
