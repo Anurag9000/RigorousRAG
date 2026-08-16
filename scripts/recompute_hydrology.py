@@ -33,7 +33,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     from production_app import hydrology, hydrology_recipes, invalidations, replacements
     from tools.hydrology_recompute_executor import HydrologyRecomputeExecutor
-    from tools.recompute_executor import requeue_failed_task
+    from tools.recompute_ledger_ops import requeue_failed_recompute
 
     executor = HydrologyRecomputeExecutor(
         invalidations=invalidations,
@@ -43,25 +43,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     retried = None
     if args.retry_task:
-        retried = requeue_failed_task(invalidations, args.owner_id, args.retry_task)
+        retried = requeue_failed_recompute(invalidations, args.owner_id, args.retry_task)
         if args.retry_only:
-            print(
-                json.dumps(
-                    {
-                        "owner_id": args.owner_id,
-                        "task_id": args.retry_task,
-                        "requeued": retried,
-                    },
-                    sort_keys=True,
-                )
-            )
+            print(json.dumps({"owner_id": args.owner_id, "task_id": args.retry_task, "requeued": retried}, sort_keys=True))
             return 0 if retried else 2
 
-    values = executor.drain(
-        args.owner_id,
-        limit=args.max_tasks,
-        max_attempts=args.max_attempts,
-    )
+    values = executor.drain(args.owner_id, limit=args.max_tasks, max_attempts=args.max_attempts)
     failed = sum(1 for item in values if item.status != "completed")
     payload = {
         "owner_id": args.owner_id,
