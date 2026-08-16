@@ -13,7 +13,7 @@ from tools.hydrology_store import HydrologyArtifactEnvelope, HydrologyArtifactSu
 from tools.security import normalize_owner_id
 from tools.sql_control_plane import ConnectionFactory, CursorLike
 
-_KINDS = frozenset({"topology", "engineering_package", "retrieval_plan", "evidence_projection"})
+_KINDS = frozenset({"topology", "engineering_package", "retrieval_plan", "evidence_projection", "evidence_report"})
 
 
 def _text(value: Any, label: str, maximum: int = 500) -> str:
