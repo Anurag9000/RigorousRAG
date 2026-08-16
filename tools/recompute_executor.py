@@ -19,6 +19,7 @@ from tools.replay_recipe_store import EncryptedReplayRecipeStore
 from tools.research_dependencies import register_report_dependencies, register_result_dependencies, stale_reasons
 from tools.research_report import ReportSection, ResearchReport
 from tools.research_report_store import ResearchReportStore
+from tools.research_result_provenance import finalize_answer_provenance
 from tools.research_result_store import ResearchResultStore
 from tools.research_workspace import ResearchProject
 from tools.runtime_composition import RuntimeComposition
@@ -82,6 +83,12 @@ class ResearchRecomputeExecutor:
         if not isinstance(answer, AgentAnswer):
             raise RuntimeError("recomputed agent result is invalid")
         model = str(getattr(agent, "model", recipe.model))
+        answer = finalize_answer_provenance(
+            answer,
+            self.composition,
+            model=model,
+            strategy=recipe.strategy,
+        )
         new = self.results.put(
             owner_id,
             query_sha256=recipe.query_sha256,
