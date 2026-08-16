@@ -1,14 +1,16 @@
 """Version-transition decorator for governed hydrology artifact persistence.
 
 The inner store owns freshness checks and dependency registration. This decorator makes a
-successful current-generation transition invalidate the old fingerprint and queue only
-those downstream hydrology artifacts that have deterministic derivation recipes. Raw
-engineering packages are never automatically synthesized from a new topology/source.
+successful current-generation transition invalidate the old fingerprint, records an
+append-only old→new replacement, and queues only those downstream hydrology artifacts
+that have deterministic derivation recipes. Raw engineering packages are never
+automatically synthesized from a new topology/source.
 """
 from __future__ import annotations
 
 from typing import Any, Protocol, Sequence
 
+from tools.artifact_replacements import ArtifactReplacementStore
 from tools.dependency_invalidation import DependencyRef
 from tools.hydrology_store import HydrologyArtifactEnvelope, HydrologyArtifactStore, HydrologyArtifactSummary
 
@@ -36,11 +38,17 @@ class HydrologyInvalidationLedger(Protocol):
 
 
 class VersionedHydrologyArtifactStore(HydrologyArtifactStore):
-    def __init__(self, inner: HydrologyArtifactStore, ledger: HydrologyInvalidationLedger) -> None:
-        if inner is None or ledger is None:
-            raise ValueError("inner hydrology store and invalidation ledger are required")
+    def __init__(
+        self,
+        inner: HydrologyArtifactStore,
+        ledger: HydrologyInvalidationLedger,
+        replacements: ArtifactReplacementStore,
+    ) -> None:
+        if inner is None or ledger is None or replacements is None:
+            raise ValueError("inner hydrology store, invalidation ledger and replacement store are required")
         self._inner = inner
         self._ledger = ledger
+        self._replacements = replacements
 
     def get(self, owner_id: str, project_id: str, kind: str, logical_id: str, *, fingerprint: str | None = None) -> HydrologyArtifactEnvelope:
         return self._inner.get(owner_id, project_id, kind, logical_id, fingerprint=fingerprint)
@@ -59,13 +67,29 @@ class VersionedHydrologyArtifactStore(HydrologyArtifactStore):
         if previous is None or previous.fingerprint == stored.fingerprint:
             return stored
         dependency_kind = _KIND_TO_DEP[envelope.kind]
-        self._ledger.invalidate(
+        reason = f"hydrology {envelope.kind} generation replaced"
+        old = DependencyRef(dependency_kind, previous.fingerprint)
+        new = DependencyRef(dependency_kind, stored.fingerprint)
+        impact = self._ledger.invalidate(
             envelope.owner_id,
-            root=DependencyRef(dependency_kind, previous.fingerprint),
-            reason=f"hydrology {envelope.kind} generation replaced",
+            root=old,
+            reason=reason,
             event_type="hydrology_generation_replaced",
             replacement_id=stored.fingerprint,
             recomputable_kinds=_RECOMPUTABLE,
+        )
+        event_sha256 = str(getattr(impact, "event_sha256", ""))
+        if len(event_sha256) != 64:
+            raise RuntimeError(
+                f"hydrology generation {stored.fingerprint} was persisted and invalidated, "
+                "but the replacement event identity is unavailable"
+            )
+        self._replacements.put(
+            envelope.owner_id,
+            old=old,
+            new=new,
+            reason=reason,
+            triggering_event_sha256=event_sha256,
         )
         return stored
 
