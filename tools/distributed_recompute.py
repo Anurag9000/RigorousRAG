@@ -1,12 +1,12 @@
 """Durable transport handoff for owner-scoped research recomputation.
 
-The dependency invalidation database remains authoritative.  The queue is transport
+The dependency invalidation database remains authoritative. The queue is transport
 only and receives a single opaque ``task_id`` field: no query text, evidence, citation,
 artifact content, or tenant identifier is serialized into a message payload.
 
 A bridge instance is intentionally bound to exactly one normalized research owner and
-one queue namespace.  Workers re-claim the referenced task in the authoritative ledger
-before any handler runs.  Fresh competing claims are retried rather than acknowledged;
+one queue namespace. Workers re-claim the referenced task in the authoritative ledger
+before any handler runs. Fresh competing claims are retried rather than acknowledged;
 terminal duplicate deliveries are acknowledged as harmless no-ops.
 """
 
@@ -97,8 +97,8 @@ def claim_exact_recompute_task(
 ) -> ExactClaimDecision:
     """Atomically claim exactly ``task_id`` from the owner-scoped ledger.
 
-    A stale claim may be recovered after ``claim_timeout_seconds``.  The attempt counter
-    is incremented for every successful claim/recovery.  Exhausted queued/stale tasks
+    A stale claim may be recovered after ``claim_timeout_seconds``. The attempt counter
+    is incremented for every successful claim/recovery. Exhausted queued/stale tasks
     are transitioned to ``failed`` instead of remaining permanently unclaimable.
     """
 
@@ -148,8 +148,6 @@ def claim_exact_recompute_task(
             connection.commit()
             return ExactClaimDecision("exhausted", _task_from_row(failed))
 
-        # A queued row or an expired claim is claimed in this transaction.  The status
-        # predicate protects against future schema/state extensions as well as races.
         cursor = connection.execute(
             """UPDATE recompute_tasks
                SET status='claimed',attempts=attempts+1,claimed_at=?,completed_at=NULL,error_type=''
@@ -200,9 +198,17 @@ class DistributedRecomputeBridge:
             "claim_timeout_seconds",
         )
 
-    def _idempotency_key(self, task_id: str) -> str:
+    def _idempotency_key(self, task: RecomputeTask) -> str:
+        """Bind one transport handoff to one authoritative queued attempt epoch.
+
+        Repeated publication while a task remains queued at the same attempt count is
+        idempotent. An explicit retry of a failed task preserves the now-incremented
+        ledger attempt counter, producing a new handoff instead of resolving to the
+        already-acknowledged transport record from the previous execution.
+        """
+
         digest = hashlib.sha256(
-            f"{self.owner_id}\x1f{task_id}".encode("utf-8")
+            f"{self.owner_id}\x1f{task.task_id}\x1f{task.attempts}".encode("utf-8")
         ).hexdigest()
         return f"research-recompute:{digest}"
 
@@ -217,15 +223,13 @@ class DistributedRecomputeBridge:
             limit=limit,
         )
         message_ids: list[str] = []
-        # ``list_recompute`` is newest-first.  Publish oldest-first so backlogs retain
-        # the ledger's normal execution ordering.
         for task in reversed(tasks):
             if task.attempts >= self.max_attempts:
                 continue
             message_ids.append(
                 self.queue.enqueue(
                     {"task_id": task.task_id},
-                    idempotency_key=self._idempotency_key(task.task_id),
+                    idempotency_key=self._idempotency_key(task),
                 )
             )
         return tuple(message_ids)
@@ -262,8 +266,6 @@ class DistributedRecomputeBridge:
         try:
             task_id = self._task_id_from_message(message)
         except Exception:
-            # A malformed transport record is not executable.  Nack it so the queue's
-            # bounded retry/dead-letter policy preserves an operator-visible failure.
             self.queue.nack(message.receipt, retry_delay=retry_delay)
             return DistributedRecomputeResult("invalid")
 
@@ -275,8 +277,6 @@ class DistributedRecomputeBridge:
             claim_timeout_seconds=self.claim_timeout_seconds,
         )
         if decision.state == "busy":
-            # Never ack the sole durable handoff while another DB claim may merely be
-            # a crashed worker.  Redelivery after the claim timeout makes it recoverable.
             self.queue.nack(message.receipt, retry_delay=retry_delay)
             return DistributedRecomputeResult("busy", task_id)
         if decision.state in {"terminal", "exhausted"}:
@@ -290,9 +290,6 @@ class DistributedRecomputeBridge:
             return DistributedRecomputeResult("invalid", task_id)
 
         outcome = self.executor.execute_claimed(self.owner_id, task_id)
-        # Handler success/failure is already durably recorded in the authoritative
-        # ledger.  Settle this transport occurrence either way; explicit operator retry
-        # requeues a failed ledger task and ``publish_ready`` creates the next handoff.
         self.queue.ack(message.receipt)
         return DistributedRecomputeResult(
             "completed" if outcome.success else "failed",
