@@ -18,6 +18,7 @@ _ROLE_PERMISSIONS = {
             "result.read",
             "report.read",
             "capsule.read",
+            "hydrology.read",
         }
     ),
     "reviewer": frozenset(
@@ -27,6 +28,7 @@ _ROLE_PERMISSIONS = {
             "result.read",
             "report.read",
             "capsule.read",
+            "hydrology.read",
             "claim.review",
         }
     ),
@@ -42,6 +44,8 @@ _ROLE_PERMISSIONS = {
             "report.write",
             "capsule.read",
             "capsule.write",
+            "hydrology.read",
+            "hydrology.write",
             "claim.review",
         }
     ),
@@ -57,6 +61,8 @@ _ROLE_PERMISSIONS = {
             "report.write",
             "capsule.read",
             "capsule.write",
+            "hydrology.read",
+            "hydrology.write",
             "replay.manage",
             "claim.review",
             "acl.manage",
