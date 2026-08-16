@@ -187,11 +187,13 @@ def _ensure_research_routes() -> None:
             composition=composition,
             invalidation_store=invalidations,
             replay_recipe_store=replay_recipes,
+            access_resolver=access_resolver,
         )
         answer_history = build_research_answer_history_router(
             principal_dependency=base.get_rate_limited_principal,
             result_store=results,
             replacement_store=replacements,
+            access_resolver=access_resolver,
         )
         report = build_research_report_router(
             principal_dependency=base.get_rate_limited_principal,
@@ -199,10 +201,12 @@ def _ensure_research_routes() -> None:
             result_store=results,
             report_store=reports,
             invalidation_store=invalidations,
+            access_resolver=access_resolver,
         )
         replay = build_replay_router(
             principal_dependency=base.get_rate_limited_principal,
             replay_recipe_store=replay_recipes,
+            access_resolver=access_resolver,
         )
         capsule = build_research_capsule_router(
             principal_dependency=base.get_rate_limited_principal,
@@ -212,6 +216,7 @@ def _ensure_research_routes() -> None:
             code_revision=code_revision,
             replay_recipe_store=replay_recipes,
             invalidation_store=invalidations,
+            access_resolver=access_resolver,
         )
         invalidation = build_invalidation_router(
             principal_dependency=base.get_rate_limited_principal,
