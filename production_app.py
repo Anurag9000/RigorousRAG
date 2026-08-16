@@ -13,6 +13,7 @@ from tools.feedback_store import FeedbackStore
 from tools.invalidation_api import build_invalidation_router
 from tools.postgres_workspace_store import PostgresResearchWorkspaceStore
 from tools.recompute_executor import ResearchRecomputeExecutor
+from tools.replay_api import build_replay_router
 from tools.replay_runtime import build_replay_recipe_store
 from tools.research_api import build_research_router
 from tools.research_query_api import build_research_query_router
@@ -104,6 +105,8 @@ _REQUIRED_RESEARCH_ROUTES = frozenset(
         "/research/reports",
         "/research/reports/{report_id}",
         "/research/reports/{report_id}/markdown",
+        "/research/replay",
+        "/research/replay/{result_id}",
         "/research/source-status",
         "/research/source-status/{source_id}",
         "/research/source-trust",
@@ -174,6 +177,10 @@ def _ensure_research_routes() -> None:
             report_store=reports,
             invalidation_store=invalidations,
         )
+        replay = build_replay_router(
+            principal_dependency=base.get_rate_limited_principal,
+            replay_recipe_store=replay_recipes,
+        )
         invalidation = build_invalidation_router(
             principal_dependency=base.get_rate_limited_principal,
             store=invalidations,
@@ -191,6 +198,7 @@ def _ensure_research_routes() -> None:
         _append_missing_routes(runtime)
         _append_missing_routes(query)
         _append_missing_routes(report)
+        _append_missing_routes(replay)
         _append_missing_routes(invalidation)
         _append_missing_routes(lineage)
         _append_missing_routes(trust)
