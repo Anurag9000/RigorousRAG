@@ -12,9 +12,12 @@ from tools.dependency_invalidation import DependencyInvalidationStore
 from tools.feedback_store import FeedbackStore
 from tools.invalidation_api import build_invalidation_router
 from tools.postgres_workspace_store import PostgresResearchWorkspaceStore
+from tools.project_acl_api import build_project_acl_router
+from tools.project_acl_store import ProjectACLStore
 from tools.recompute_executor import ResearchRecomputeExecutor
 from tools.replay_api import build_replay_router
 from tools.replay_runtime import build_replay_recipe_store
+from tools.research_access import ResearchAccessResolver
 from tools.research_answer_history_api import build_research_answer_history_router
 from tools.research_api import build_research_router
 from tools.research_capsule_api import build_research_capsule_router
@@ -50,6 +53,8 @@ def _build_workspace_store():
 reviews = ReviewStore(root / "reviews.sqlite3")
 feedback = FeedbackStore(root / "feedback.sqlite3")
 workspace = _build_workspace_store()
+project_acls = ProjectACLStore(root / "research_project_acl.sqlite3")
+access_resolver = ResearchAccessResolver(workspace, project_acls)
 results = ResearchResultStore(root / "research_results.sqlite3")
 reports = ResearchReportStore(root / "research_reports.sqlite3")
 capsules = ResearchCapsuleStore(root / "research_capsules.sqlite3")
@@ -68,10 +73,6 @@ _base_new_agent = base._new_agent
 def _production_agent(owner_id: str, model=None):
     agent = _base_new_agent(owner_id, model)
     configured = configure_agent_runtime(agent, composition, providers=runtime_providers)
-    # Publication governance is request scoped but reads durable owner-scoped ledgers.
-    # The class-level gates are installed by the shared import hook; these bindings avoid
-    # process-global tenant state while giving every citation/claim decision the same
-    # authoritative source-status and reviewed-trust view.
     configured.source_status_store = invalidations
     configured.source_trust_store = source_trust
     return configured
@@ -99,6 +100,8 @@ _REQUIRED_RESEARCH_ROUTES = frozenset(
         "/research/projects",
         "/research/projects/{project_id}",
         "/research/projects/{project_id}/sessions",
+        "/research/projects/{project_id}/acl",
+        "/research/projects/{project_id}/acl/{principal_id}",
         "/research/sessions/{session_id}",
         "/research/sessions/{session_id}/turns",
         "/research/sessions/{session_id}/close",
@@ -164,6 +167,12 @@ def _ensure_research_routes() -> None:
             workspace_store=workspace,
             capability_registry=composition.capabilities,
             domain_registry=composition.domains,
+            access_resolver=access_resolver,
+        )
+        acl = build_project_acl_router(
+            principal_dependency=base.get_rate_limited_principal,
+            acl_store=project_acls,
+            access_resolver=access_resolver,
         )
         runtime = build_runtime_router(
             principal_dependency=base.get_rate_limited_principal,
@@ -218,6 +227,7 @@ def _ensure_research_routes() -> None:
             invalidation_store=invalidations,
         )
         _append_missing_routes(research)
+        _append_missing_routes(acl)
         _append_missing_routes(runtime)
         _append_missing_routes(query)
         _append_missing_routes(answer_history)
@@ -245,12 +255,14 @@ async def governance_no_store(request: Request, call_next):
 
 
 __all__ = [
+    "access_resolver",
     "app",
     "capsules",
     "code_revision",
     "composition",
     "feedback",
     "invalidations",
+    "project_acls",
     "recompute_executor",
     "replacements",
     "replay_recipes",
