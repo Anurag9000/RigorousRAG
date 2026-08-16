@@ -41,21 +41,31 @@ def _register_unique(
     upstreams.append((ref, relation))
 
 
+def _hydrology_dependency_identity(metadata: Mapping[str, Any]) -> tuple[str, str] | None:
+    if metadata.get("derived_evidence") is not True:
+        return None
+    artifact_kind = _safe_metadata_id(metadata.get("artifact_kind"), 64)
+    dependency_kind = _HYDROLOGY_CITATION_KINDS.get(artifact_kind)
+    if dependency_kind is None:
+        return None
+    fingerprint = _safe_metadata_id(metadata.get("artifact_fingerprint"), 64).lower()
+    if len(fingerprint) != 64 or any(ch not in "0123456789abcdef" for ch in fingerprint):
+        raise RuntimeError("server-derived hydrology evidence is missing an exact artifact fingerprint")
+    return dependency_kind, fingerprint
+
+
 def _register_hydrology_citation_dependency(
     upstreams: list[tuple[DependencyRef, str]],
     seen: set[tuple[str, str]],
     citation: Any,
 ) -> None:
     metadata = getattr(citation, "metadata", None)
-    if not isinstance(metadata, Mapping) or metadata.get("derived_evidence") is not True:
+    if not isinstance(metadata, Mapping):
         return
-    artifact_kind = _safe_metadata_id(metadata.get("artifact_kind"), 64)
-    dependency_kind = _HYDROLOGY_CITATION_KINDS.get(artifact_kind)
-    if dependency_kind is None:
+    identity = _hydrology_dependency_identity(metadata)
+    if identity is None:
         return
-    fingerprint = _safe_metadata_id(metadata.get("artifact_fingerprint"), 64).lower()
-    if len(fingerprint) != 64 or any(ch not in "0123456789abcdef" for ch in fingerprint):
-        return
+    dependency_kind, fingerprint = identity
     _register_unique(
         upstreams,
         seen,
@@ -158,8 +168,36 @@ def register_report_dependencies(store: DependencyInvalidationStore, owner_id: s
     store.register_dependencies(
         owner_id,
         downstream=DependencyRef("report", report.report_id),
-        upstreams=((DependencyRef("result", report.result_id), "derived_from_result"), (DependencyRef("project", report.project_id), "scoped_by_project")),
+        upstreams=(
+            (DependencyRef("result", report.result_id), "derived_from_result"),
+            (DependencyRef("project", report.project_id), "scoped_by_project"),
+        ),
     )
+
+
+def _register_capsule_hydrology_reference(
+    upstreams: list[tuple[DependencyRef, str]],
+    seen: set[tuple[str, str]],
+    reference: Any,
+) -> bool:
+    if not str(reference.ref_id).startswith("hydrology:"):
+        return False
+    if reference.kind != "generation":
+        raise RuntimeError("hydrology capsule reference must be a generation reference")
+    metadata = reference.metadata
+    if not isinstance(metadata, Mapping):
+        raise RuntimeError("hydrology capsule reference metadata is invalid")
+    artifact_kind = _safe_metadata_id(metadata.get("artifact_kind"), 64)
+    dependency_kind = _HYDROLOGY_CITATION_KINDS.get(artifact_kind)
+    if dependency_kind is None:
+        raise RuntimeError("hydrology capsule reference has an unsupported artifact kind")
+    _register_unique(
+        upstreams,
+        seen,
+        DependencyRef(dependency_kind, reference.content_sha256),
+        "captures_hydrology_generation",
+    )
+    return True
 
 
 def register_capsule_dependencies(store: DependencyInvalidationStore, owner_id: str, capsule: StoredResearchCapsule) -> None:
@@ -180,6 +218,8 @@ def register_capsule_dependencies(store: DependencyInvalidationStore, owner_id: 
     seen = {(item.kind, item.resource_id) for item, _ in upstreams}
 
     for reference in capsule.capsule.references:
+        if _register_capsule_hydrology_reference(upstreams, seen, reference):
+            continue
         if reference.ref_id == "runtime-config":
             _register_unique(upstreams, seen, DependencyRef("runtime_config", reference.content_sha256), "configured_with")
         elif reference.ref_id == "capability-registry":
