@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import inspect
 import uuid
 from typing import Any, Awaitable, Callable, Mapping, Protocol
@@ -11,9 +10,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from tools.dependency_invalidation import DependencyInvalidationStore, DependencyRef
-from tools.models import AgentAnswer, Citation
+from tools.models import AgentAnswer
 from tools.replay_recipe_store import EncryptedReplayRecipeStore
 from tools.research_dependencies import register_result_dependencies, stale_reasons
+from tools.research_result_provenance import finalize_answer_provenance, sha256_text
 from tools.research_result_store import ResearchResultStore, StoredResearchResult
 from tools.research_workspace import ResearchSession, ResearchTurn, append_turn
 from tools.runtime_composition import RuntimeComposition
@@ -39,65 +39,11 @@ def _owner(principal: Any) -> str:
     return value
 
 
-def _sha_text(value: str) -> str:
-    return hashlib.sha256(value.encode("utf-8")).hexdigest()
-
-
 def _maybe_sha(value: Any) -> str:
     if not isinstance(value, str):
         return ""
     digest = value.strip().lower()
     return digest if len(digest) == 64 and all(ch in "0123456789abcdef" for ch in digest) else ""
-
-
-def _bind_citation_content(citations: list[Citation]) -> list[Citation]:
-    """Attach a server-owned digest of the exact authoritative evidence passage.
-
-    URL/source identifiers are never hashed as a substitute for evidence content. A
-    citation without a quote/snippet therefore remains intentionally unaddressed and will
-    fail strict capsule replay preflight until a real content identity is available.
-    """
-
-    output: list[Citation] = []
-    for citation in citations:
-        copy = citation.model_copy(deep=True)
-        evidence = copy.quote or copy.snippet or ""
-        if evidence:
-            metadata = dict(copy.metadata or {})
-            metadata["evidence_sha256"] = _sha_text(evidence)
-            copy.metadata = metadata
-        output.append(copy)
-    return output
-
-
-def _runtime_binding(composition: RuntimeComposition, *, model: str, strategy: str) -> Mapping[str, Any]:
-    """Return server-owned immutable execution identities safe to persist with a result.
-
-    The model digest intentionally binds the provider/model *identifier string*, not
-    unverifiable remote weights. Capsules can therefore detect identifier drift while
-    still reporting that an external model artifact is not content-addressed locally.
-    """
-
-    selected: dict[str, Mapping[str, str]] = {}
-    for role, capability_id in sorted(composition.selected_capabilities.items()):
-        descriptor = composition.capabilities.active(capability_id)
-        if descriptor is None:
-            continue
-        selected[str(role)] = {
-            "capability_id": descriptor.capability_id,
-            "version": descriptor.version,
-            "fingerprint": descriptor.fingerprint,
-        }
-    return {
-        "schema_version": "1.0.0",
-        "runtime_config_sha256": composition.config.fingerprint,
-        "capability_registry_sha256": composition.capabilities.fingerprint,
-        "retrieval_strategy": strategy,
-        "model_identifier": model,
-        "model_identifier_sha256": _sha_text(model) if model else "",
-        "model_artifact_content_addressed": False,
-        "selected_capabilities": selected,
-    }
 
 
 def _result_payload(result: StoredResearchResult, *, owner_id: str | None = None, invalidation_store: DependencyInvalidationStore | None = None) -> Mapping[str, Any]:
@@ -173,18 +119,15 @@ def build_research_query_router(
         if not isinstance(answer, AgentAnswer):
             raise HTTPException(status_code=502, detail="Research agent returned an invalid result.")
 
-        query_sha256 = _sha_text(request.query)
+        query_sha256 = sha256_text(request.query)
         strategy = composition.config.retrieval.default_strategy
         model = str(getattr(agent, "model", request.model or ""))
-        result_metadata = dict(answer.metadata or {})
-        # Reserved provenance is server-owned. Agent/provider output may not override it.
-        result_metadata["_rigorousrag_runtime"] = dict(
-            _runtime_binding(composition, model=model, strategy=strategy)
-        )
-        bound_citations = _bind_citation_content(list(answer.citations or ()))
         try:
-            answer = answer.model_copy(
-                update={"metadata": result_metadata, "citations": bound_citations}
+            answer = finalize_answer_provenance(
+                answer,
+                composition,
+                model=model,
+                strategy=strategy,
             )
             stored = result_store.put(owner, query_sha256=query_sha256, answer=answer, strategy=strategy, model=model)
         except Exception as exc:
