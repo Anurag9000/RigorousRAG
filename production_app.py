@@ -7,6 +7,7 @@ from fastapi import Request
 from tools.agent_runtime import configure_agent_runtime
 from tools.artifact_lineage_api import build_artifact_lineage_router
 from tools.control_api import build_control_router
+from tools.hydrology_api import build_hydrology_router
 from tools.invalidation_api import build_invalidation_router
 from tools.production_persistence import build_production_persistence
 from tools.project_acl_api import build_project_acl_router
@@ -45,6 +46,7 @@ source_trust = persistence.source_trust
 replay_recipes = persistence.replay_recipes
 reviews = persistence.reviews
 feedback = persistence.feedback
+hydrology = persistence.hydrology
 access_resolver = ResearchAccessResolver(workspace, project_acls)
 app = base.app
 
@@ -83,6 +85,11 @@ _REQUIRED_RESEARCH_ROUTES = frozenset(
         "/research/projects/{project_id}/sessions",
         "/research/projects/{project_id}/acl",
         "/research/projects/{project_id}/acl/{principal_id}",
+        "/research/projects/{project_id}/hydrology/artifacts",
+        "/research/projects/{project_id}/hydrology/artifacts/{kind}/{logical_id}",
+        "/research/projects/{project_id}/hydrology/topologies/{topology_id}",
+        "/research/projects/{project_id}/hydrology/packages/{package_id}",
+        "/research/projects/{project_id}/hydrology/plans",
         "/research/sessions/{session_id}",
         "/research/sessions/{session_id}/turns",
         "/research/sessions/{session_id}/close",
@@ -235,6 +242,11 @@ def _ensure_research_routes() -> None:
             store=source_trust,
             invalidation_store=invalidations,
         )
+        hydrology_router = build_hydrology_router(
+            principal_dependency=base.get_rate_limited_principal,
+            store=hydrology,
+            access_resolver=access_resolver,
+        )
         for router in (
             research,
             acl,
@@ -248,6 +260,7 @@ def _ensure_research_routes() -> None:
             invalidation,
             lineage,
             trust,
+            hydrology_router,
         ):
             _append_missing_routes(router)
     missing = _REQUIRED_RESEARCH_ROUTES.difference(_route_paths())
@@ -276,6 +289,7 @@ __all__ = [
     "code_revision",
     "composition",
     "feedback",
+    "hydrology",
     "invalidations",
     "metadata_backend",
     "persistence",
