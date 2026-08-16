@@ -2,11 +2,13 @@
 from pathlib import Path
 import os
 
+import search_agent_legacy as agent_legacy
 import server as base
 from fastapi import Request
 from tools.agent_runtime import configure_agent_runtime
 from tools.artifact_lineage_api import build_artifact_lineage_router
 from tools.control_api import build_control_router
+from tools.hydrology_agent_tools import register_hydrology_agent_tools
 from tools.hydrology_api import build_hydrology_router
 from tools.hydrology_report_api import build_hydrology_report_router
 from tools.hydrology_status_api import build_hydrology_status_router
@@ -50,6 +52,12 @@ reviews = persistence.reviews
 feedback = persistence.feedback
 hydrology = persistence.hydrology
 access_resolver = ResearchAccessResolver(workspace, project_acls)
+register_hydrology_agent_tools(
+    agent_legacy,
+    store=hydrology,
+    access_resolver=access_resolver,
+    invalidation_store=invalidations,
+)
 app = base.app
 
 _base_new_agent = base._new_agent
