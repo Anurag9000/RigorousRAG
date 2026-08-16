@@ -12,7 +12,13 @@ from tools.research_result_store import StoredResearchResult
 from tools.research_workspace import ResearchProject, ResearchSession, ResearchTurn
 
 _RUNTIME_KEY = "_rigorousrag_runtime"
-_CITATION_DIGEST_KEYS = ("content_sha256", "evidence_sha256", "chunk_sha256", "document_sha256", "source_sha256")
+_CITATION_DIGEST_KEYS = (
+    "content_sha256",
+    "evidence_sha256",
+    "chunk_sha256",
+    "document_sha256",
+    "source_sha256",
+)
 
 
 def _sha(value: Any) -> str:
@@ -33,8 +39,15 @@ def _code_revision(value: Any) -> str:
     return revision
 
 
-def _turn_for_result(session: ResearchSession, result: StoredResearchResult) -> tuple[int, ResearchTurn] | None:
-    matches = [(index, turn) for index, turn in enumerate(session.turns) if turn.result_sha256 == result.result_id]
+def _turn_for_result(
+    session: ResearchSession,
+    result: StoredResearchResult,
+) -> tuple[int, ResearchTurn] | None:
+    matches = [
+        (index, turn)
+        for index, turn in enumerate(session.turns)
+        if turn.result_sha256 == result.result_id
+    ]
     if len(matches) != 1:
         return None
     index, turn = matches[0]
@@ -91,17 +104,16 @@ def assess_capsule(context: CapsuleBuildContext) -> CapsuleBuildAssessment:
         blockers.append("result_not_uniquely_bound_to_session_turn")
 
     result_session = session_binding(result.metadata)
+    execution_fingerprint = ""
     if result_session is None:
         blockers.append("result_session_provenance_missing")
     else:
+        execution_fingerprint = result_session["session_fingerprint_before"]
         if result_session["project_id"] != project.project_id:
             blockers.append("result_project_provenance_mismatch")
         if result_session["session_id"] != session.session_id:
             blockers.append("result_session_provenance_mismatch")
         if turn is not None:
-            # Reconstruct exactly the session state that existed before this turn. Later
-            # turns and a later close operation must not change the historical execution
-            # snapshot against which the immutable result was generated.
             prefix = ResearchSession(
                 owner_id=session.owner_id,
                 project_id=session.project_id,
@@ -110,7 +122,7 @@ def assess_capsule(context: CapsuleBuildContext) -> CapsuleBuildAssessment:
                 created_at=session.created_at,
                 closed_at=None,
             )
-            if result_session["session_fingerprint_before"] != prefix.fingerprint:
+            if execution_fingerprint != prefix.fingerprint:
                 blockers.append("result_session_snapshot_fingerprint_mismatch")
             if result_session["plan_sha256"] != _sha(turn.plan_sha256):
                 blockers.append("result_turn_plan_fingerprint_mismatch")
@@ -132,7 +144,7 @@ def assess_capsule(context: CapsuleBuildContext) -> CapsuleBuildAssessment:
         blockers.append("runtime_config_fingerprint_missing")
     if not capability_registry:
         blockers.append("capability_registry_fingerprint_missing")
-    if result.model and not model_identifier_sha:
+    if not model_identifier_sha:
         blockers.append("model_identifier_fingerprint_missing")
 
     selected = runtime.get("selected_capabilities") if isinstance(runtime, Mapping) else None
@@ -150,7 +162,11 @@ def assess_capsule(context: CapsuleBuildContext) -> CapsuleBuildAssessment:
         if not fingerprint or not capability_id:
             blockers.append(f"capability_binding_incomplete:{role}")
             continue
-        capability_bindings[str(role)] = {"capability_id": capability_id, "version": version, "fingerprint": fingerprint}
+        capability_bindings[str(role)] = {
+            "capability_id": capability_id,
+            "version": version,
+            "fingerprint": fingerprint,
+        }
 
     policy_sha = _sha(turn.policy_sha256) if turn is not None else ""
     if not policy_sha:
@@ -168,13 +184,21 @@ def assess_capsule(context: CapsuleBuildContext) -> CapsuleBuildAssessment:
             blockers.append(f"citation_content_fingerprint_missing:{index}")
 
     if result.model:
-        warnings.append("external_model_identifier_is_bound_but_model_weights_are_not_locally_content_addressed")
-    warnings.append("external_provider_execution_may_remain_nondeterministic_even_when_all_manifest_bindings_match")
+        warnings.append(
+            "external_model_identifier_is_bound_but_model_weights_are_not_locally_content_addressed"
+        )
+    warnings.append(
+        "external_provider_execution_may_remain_nondeterministic_even_when_all_manifest_bindings_match"
+    )
 
     bindings: dict[str, Any] = {
         "project_fingerprint": project.fingerprint,
-        "session_fingerprint": session.fingerprint,
-        "session_execution_fingerprint": result_session["session_fingerprint_before"] if result_session is not None else "",
+        # A replayable session identity is the immutable pre-execution snapshot. The live
+        # session may continue accumulating turns or later be closed without invalidating
+        # the historical run that this capsule describes.
+        "session_fingerprint": execution_fingerprint,
+        "session_current_fingerprint": session.fingerprint,
+        "session_execution_fingerprint": execution_fingerprint,
         "result_id": result.result_id,
         "query_sha256": result.query_sha256,
         "policy_sha256": policy_sha,
@@ -184,18 +208,32 @@ def assess_capsule(context: CapsuleBuildContext) -> CapsuleBuildAssessment:
         "model_identifier": result.model,
         "model_identifier_sha256": model_identifier_sha,
         "code_revision": revision,
-        "corpora": [{"corpus_id": corpus.corpus_id, "generation_sha256": corpus.generation_sha256, "retrieval_profile_sha256": corpus.retrieval_profile_sha256} for corpus in project.corpora],
+        "corpora": [
+            {
+                "corpus_id": corpus.corpus_id,
+                "generation_sha256": corpus.generation_sha256,
+                "retrieval_profile_sha256": corpus.retrieval_profile_sha256,
+            }
+            for corpus in project.corpora
+        ],
         "citation_content_sha256": citation_digests,
         "selected_capabilities": capability_bindings,
     }
     unique_blockers = tuple(dict.fromkeys(blockers))
-    return CapsuleBuildAssessment(manifest_ready=not unique_blockers, blockers=unique_blockers, warnings=tuple(dict.fromkeys(warnings)), bindings=bindings)
+    return CapsuleBuildAssessment(
+        manifest_ready=not unique_blockers,
+        blockers=unique_blockers,
+        warnings=tuple(dict.fromkeys(warnings)),
+        bindings=bindings,
+    )
 
 
 def build_capsule(context: CapsuleBuildContext) -> ResearchCapsule:
     assessment = assess_capsule(context)
     if not assessment.manifest_ready:
-        raise RuntimeError("research capsule bindings are incomplete: " + ", ".join(assessment.blockers))
+        raise RuntimeError(
+            "research capsule bindings are incomplete: " + ", ".join(assessment.blockers)
+        )
 
     project = context.project
     session = context.session
@@ -203,27 +241,81 @@ def build_capsule(context: CapsuleBuildContext) -> ResearchCapsule:
     bindings = assessment.bindings
     references: list[CapsuleReference] = [
         CapsuleReference("project", "other", project.fingerprint, version=project.project_id),
-        CapsuleReference("session", "other", session.fingerprint, version=session.session_id),
-        CapsuleReference("session-execution-snapshot", "other", str(bindings["session_execution_fingerprint"]), version=session.session_id),
+        CapsuleReference(
+            "session",
+            "other",
+            str(bindings["session_execution_fingerprint"]),
+            version=session.session_id,
+            metadata={"snapshot": "pre_execution"},
+        ),
         CapsuleReference("query", "query", result.query_sha256),
         CapsuleReference("result", "result", result.result_id),
-        CapsuleReference("runtime-config", "config", str(bindings["runtime_config_sha256"])),
-        CapsuleReference("capability-registry", "config", str(bindings["capability_registry_sha256"])),
-        CapsuleReference("model-identifier", "model", str(bindings["model_identifier_sha256"]), version=result.model, metadata={"binding": "provider_model_identifier", "weights_content_addressed": "false"}),
+        CapsuleReference(
+            "runtime-config", "config", str(bindings["runtime_config_sha256"])
+        ),
+        CapsuleReference(
+            "capability-registry", "config", str(bindings["capability_registry_sha256"])
+        ),
+        CapsuleReference(
+            "model-identifier",
+            "model",
+            str(bindings["model_identifier_sha256"]),
+            version=result.model,
+            metadata={
+                "binding": "provider_model_identifier",
+                "weights_content_addressed": "false",
+            },
+        ),
         CapsuleReference("policy", "policy", str(bindings["policy_sha256"])),
     ]
 
     for corpus in project.corpora:
-        references.append(CapsuleReference(f"corpus:{corpus.corpus_id}:generation", "generation", corpus.generation_sha256, version=corpus.corpus_id))
-        references.append(CapsuleReference(f"corpus:{corpus.corpus_id}:retrieval-profile", "config", corpus.retrieval_profile_sha256, version=corpus.corpus_id))
+        references.append(
+            CapsuleReference(
+                f"corpus:{corpus.corpus_id}:generation",
+                "generation",
+                corpus.generation_sha256,
+                version=corpus.corpus_id,
+            )
+        )
+        references.append(
+            CapsuleReference(
+                f"corpus:{corpus.corpus_id}:retrieval-profile",
+                "config",
+                corpus.retrieval_profile_sha256,
+                version=corpus.corpus_id,
+            )
+        )
 
     for role, raw in sorted(bindings["selected_capabilities"].items()):
-        references.append(CapsuleReference(f"capability:{role}", "other", str(raw["fingerprint"]), version=str(raw.get("version") or ""), metadata={"capability_id": str(raw["capability_id"]), "role": str(role)}))
+        references.append(
+            CapsuleReference(
+                f"capability:{role}",
+                "other",
+                str(raw["fingerprint"]),
+                version=str(raw.get("version") or ""),
+                metadata={
+                    "capability_id": str(raw["capability_id"]),
+                    "role": str(role),
+                },
+            )
+        )
 
-    for index, (citation_id, digest) in enumerate(zip(result.citation_ids, bindings["citation_content_sha256"])):
-        references.append(CapsuleReference(f"citation:{index}", "source", str(digest), metadata={"citation_id": citation_id}))
+    for index, (citation_id, digest) in enumerate(
+        zip(result.citation_ids, bindings["citation_content_sha256"])
+    ):
+        references.append(
+            CapsuleReference(
+                f"citation:{index}",
+                "source",
+                str(digest),
+                metadata={"citation_id": citation_id},
+            )
+        )
 
-    input_refs = tuple(ref.ref_id for ref in references if ref.ref_id not in {"result", "project", "session"})
+    input_refs = tuple(
+        ref.ref_id for ref in references if ref.ref_id not in {"result", "project"}
+    )
     step = ReplayStep(
         step_id="research-query",
         operation="research_query",
@@ -244,4 +336,9 @@ def build_capsule(context: CapsuleBuildContext) -> ResearchCapsule:
     )
 
 
-__all__ = ["CapsuleBuildAssessment", "CapsuleBuildContext", "assess_capsule", "build_capsule"]
+__all__ = [
+    "CapsuleBuildAssessment",
+    "CapsuleBuildContext",
+    "assess_capsule",
+    "build_capsule",
+]
