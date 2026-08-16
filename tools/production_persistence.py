@@ -22,6 +22,7 @@ from tools.hydrology_guarded_store import GuardedHydrologyArtifactStore
 from tools.hydrology_store import HydrologyArtifactStore
 from tools.hydrology_store_postgres import PostgresHydrologyArtifactStore
 from tools.hydrology_store_sqlite import SQLiteHydrologyArtifactStore
+from tools.hydrology_versioned_store import VersionedHydrologyArtifactStore
 from tools.postgres_governance_stores import PostgresFeedbackStore, PostgresReviewStore
 from tools.postgres_invalidation_store import PostgresDependencyInvalidationStore
 from tools.postgres_research_stores import (
@@ -69,6 +70,13 @@ def _root(value: str | Path) -> Path:
     return root
 
 
+def _governed_hydrology(raw: HydrologyArtifactStore, invalidations: DependencyInvalidationStore) -> HydrologyArtifactStore:
+    return VersionedHydrologyArtifactStore(
+        GuardedHydrologyArtifactStore(raw, invalidations),
+        invalidations,
+    )
+
+
 def build_production_persistence(
     root: str | Path,
     *,
@@ -90,7 +98,7 @@ def build_production_persistence(
         source_trust = PostgresSourceTrustStore(connection_factory, schema=postgres_schema)
         hydrology_raw = PostgresHydrologyArtifactStore(connection_factory, schema=postgres_schema)
         hydrology_raw.initialize()
-        hydrology = GuardedHydrologyArtifactStore(hydrology_raw, invalidations)
+        hydrology = _governed_hydrology(hydrology_raw, invalidations)
         hydrology_recipes = PostgresHydrologyDerivationStore(connection_factory, schema=postgres_schema)
         replay_recipes = build_replay_recipe_store(
             selected_root / "research_replay.sqlite3",
@@ -121,7 +129,7 @@ def build_production_persistence(
     if backend == "sqlite":
         invalidations = DependencyInvalidationStore(selected_root / "research_invalidation.sqlite3")
         hydrology_raw = SQLiteHydrologyArtifactStore(selected_root / "research_hydrology.sqlite3")
-        hydrology = GuardedHydrologyArtifactStore(hydrology_raw, invalidations)
+        hydrology = _governed_hydrology(hydrology_raw, invalidations)
         hydrology_recipes = HydrologyDerivationStore(selected_root / "research_hydrology_recipes.sqlite3")
         return ProductionPersistence(
             backend="sqlite",
