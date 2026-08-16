@@ -48,7 +48,12 @@
       body: JSON.stringify(researchBody),
     };
     const response = await wrappedFetch("/research/query", researchInit);
-    if (response.status === 404 || response.status === 405) {
+
+    // An active session is an explicit request for project-scoped execution. A 404 can
+    // mean the session/grant was revoked or hidden by authorization. Falling back to the
+    // legacy owner-local endpoint would silently change the data/authorization scope, so
+    // active research sessions always fail closed on the research response.
+    if (!session && (response.status === 404 || response.status === 405)) {
       return wrappedFetch(input, init);
     }
     if (response.ok) {
@@ -58,7 +63,12 @@
           if (typeof payload.result_id === "string") {
             sessionStorage.setItem(
               LAST_RESULT_KEY,
-              JSON.stringify({ result_id: payload.result_id, created_at: payload.created_at || Date.now() / 1000 }),
+              JSON.stringify({
+                result_id: payload.result_id,
+                session_id: session ? session.session_id : null,
+                project_id: session ? session.project_id || null : null,
+                created_at: payload.created_at || Date.now() / 1000,
+              }),
             );
           }
           if (session && typeof payload.session_fingerprint === "string" && /^[0-9a-f]{64}$/i.test(payload.session_fingerprint)) {
