@@ -50,6 +50,36 @@ def _maybe_sha(value: Any) -> str:
     return digest if len(digest) == 64 and all(ch in "0123456789abcdef" for ch in digest) else ""
 
 
+def _runtime_binding(composition: RuntimeComposition, *, model: str, strategy: str) -> Mapping[str, Any]:
+    """Return server-owned immutable execution identities safe to persist with a result.
+
+    The model digest intentionally binds the provider/model *identifier string*, not
+    unverifiable remote weights. Capsules can therefore detect identifier drift while
+    still reporting that an external model artifact is not content-addressed locally.
+    """
+
+    selected: dict[str, Mapping[str, str]] = {}
+    for role, capability_id in sorted(composition.selected_capabilities.items()):
+        descriptor = composition.capabilities.active(capability_id)
+        if descriptor is None:
+            continue
+        selected[str(role)] = {
+            "capability_id": descriptor.capability_id,
+            "version": descriptor.version,
+            "fingerprint": descriptor.fingerprint,
+        }
+    return {
+        "schema_version": "1.0.0",
+        "runtime_config_sha256": composition.config.fingerprint,
+        "capability_registry_sha256": composition.capabilities.fingerprint,
+        "retrieval_strategy": strategy,
+        "model_identifier": model,
+        "model_identifier_sha256": _sha_text(model) if model else "",
+        "model_artifact_content_addressed": False,
+        "selected_capabilities": selected,
+    }
+
+
 def _result_payload(result: StoredResearchResult, *, owner_id: str | None = None, invalidation_store: DependencyInvalidationStore | None = None) -> Mapping[str, Any]:
     stale = ()
     if owner_id is not None and invalidation_store is not None:
@@ -126,7 +156,13 @@ def build_research_query_router(
         query_sha256 = _sha_text(request.query)
         strategy = composition.config.retrieval.default_strategy
         model = str(getattr(agent, "model", request.model or ""))
+        result_metadata = dict(answer.metadata or {})
+        # Reserved provenance is server-owned. Agent/provider output may not override it.
+        result_metadata["_rigorousrag_runtime"] = dict(
+            _runtime_binding(composition, model=model, strategy=strategy)
+        )
         try:
+            answer = answer.model_copy(update={"metadata": result_metadata})
             stored = result_store.put(owner, query_sha256=query_sha256, answer=answer, strategy=strategy, model=model)
         except Exception as exc:
             raise HTTPException(status_code=503, detail="Research result persistence is unavailable.") from exc
