@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 from tools.dependency_invalidation import DependencyInvalidationStore, DependencyRef
 from tools.models import AgentAnswer
 from tools.replay_recipe_store import EncryptedReplayRecipeStore
+from tools.research_access import ResearchAccessResolver
 from tools.research_dependencies import register_result_dependencies, stale_reasons
 from tools.research_result_provenance import finalize_answer_provenance, sha256_text
 from tools.research_result_store import ResearchResultStore, StoredResearchResult
@@ -70,6 +71,10 @@ async def _await_maybe(value: Any) -> Any:
     return await value if inspect.isawaitable(value) else value
 
 
+def _session_result_ids(session: ResearchSession) -> set[str]:
+    return {turn.result_sha256 for turn in session.turns if turn.result_sha256}
+
+
 def build_research_query_router(
     *,
     principal_dependency: Callable[..., Any],
@@ -80,6 +85,7 @@ def build_research_query_router(
     composition: RuntimeComposition,
     invalidation_store: DependencyInvalidationStore | None = None,
     replay_recipe_store: EncryptedReplayRecipeStore | None = None,
+    access_resolver: ResearchAccessResolver | None = None,
 ) -> APIRouter:
     if not isinstance(result_store, ResearchResultStore):
         raise TypeError("result_store must be ResearchResultStore")
@@ -89,19 +95,31 @@ def build_research_query_router(
         raise TypeError("invalidation_store must be DependencyInvalidationStore or null")
     if replay_recipe_store is not None and not isinstance(replay_recipe_store, EncryptedReplayRecipeStore):
         raise TypeError("replay_recipe_store must be EncryptedReplayRecipeStore or null")
+    if access_resolver is not None and not isinstance(access_resolver, ResearchAccessResolver):
+        raise TypeError("access_resolver must be ResearchAccessResolver or null")
     router = APIRouter(prefix="/research", tags=["research-query"])
 
     @router.post("/query")
     async def run_research_query(request: ResearchQueryRequest, principal: Any = Depends(principal_dependency)) -> Mapping[str, Any]:
-        owner = _owner(principal)
+        actor = _owner(principal)
         if (request.session_id is None) != (request.expected_session_fingerprint is None):
             raise HTTPException(status_code=400, detail="session_id and expected_session_fingerprint must be supplied together.")
         session: ResearchSession | None = None
+        storage_owner = actor
+        shared = False
         if request.session_id is not None:
             try:
-                session = workspace_store.get_session(owner, request.session_id)
-            except KeyError as exc:
+                if access_resolver is None:
+                    session = workspace_store.get_session(actor, request.session_id)
+                else:
+                    session_access = access_resolver.session(actor, request.session_id, permission="session.write")
+                    session = session_access.session
+                    storage_owner = session_access.storage_owner_id
+                    shared = storage_owner != actor
+            except (KeyError, PermissionError) as exc:
                 raise HTTPException(status_code=404, detail="Research session not found.") from exc
+            except RuntimeError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
             except Exception as exc:
                 raise HTTPException(status_code=503, detail="Research workspace is unavailable.") from exc
             if session.closed_at is not None:
@@ -110,7 +128,9 @@ def build_research_query_router(
                 raise HTTPException(status_code=409, detail="Research session changed; reload before querying.")
 
         try:
-            agent = agent_factory(owner, request.model)
+            # The agent executes inside the authoritative project storage scope after ACL
+            # authorization, so shared-project corpus access cannot drift into actor-local data.
+            agent = agent_factory(storage_owner, request.model)
             answer = await _await_maybe(run_research_task(agent.run, request.query))
         except HTTPException:
             raise
@@ -123,22 +143,17 @@ def build_research_query_router(
         strategy = composition.config.retrieval.default_strategy
         model = str(getattr(agent, "model", request.model or ""))
         try:
-            answer = finalize_answer_provenance(
-                answer,
-                composition,
-                model=model,
-                strategy=strategy,
-            )
-            stored = result_store.put(owner, query_sha256=query_sha256, answer=answer, strategy=strategy, model=model)
+            answer = finalize_answer_provenance(answer, composition, model=model, strategy=strategy)
+            stored = result_store.put(storage_owner, query_sha256=query_sha256, answer=answer, strategy=strategy, model=model)
         except Exception as exc:
             raise HTTPException(status_code=503, detail="Research result persistence is unavailable.") from exc
 
         if invalidation_store is not None:
             try:
-                register_result_dependencies(invalidation_store, owner, stored, composition=composition)
+                register_result_dependencies(invalidation_store, storage_owner, stored, composition=composition)
                 if session is not None:
                     invalidation_store.register_dependencies(
-                        owner,
+                        storage_owner,
                         downstream=DependencyRef("result", stored.result_id),
                         upstreams=(
                             (DependencyRef("session", session.session_id), "created_in_session"),
@@ -146,16 +161,13 @@ def build_research_query_router(
                         ),
                     )
             except Exception as exc:
-                raise HTTPException(
-                    status_code=503,
-                    detail=("Research result was persisted, but dependency lineage could not be registered. " f"Result ID: {stored.result_id}"),
-                ) from exc
+                raise HTTPException(status_code=503, detail=("Research result was persisted, but dependency lineage could not be registered. " f"Result ID: {stored.result_id}")) from exc
 
         replay_stored = False
         if replay_recipe_store is not None:
             try:
                 replay_recipe_store.put(
-                    owner,
+                    storage_owner,
                     result_id=stored.result_id,
                     query_sha256=query_sha256,
                     query=request.query,
@@ -164,10 +176,7 @@ def build_research_query_router(
                 )
                 replay_stored = True
             except Exception as exc:
-                raise HTTPException(
-                    status_code=503,
-                    detail=("Research result was persisted, but its encrypted replay recipe could not be stored. " f"Result ID: {stored.result_id}"),
-                ) from exc
+                raise HTTPException(status_code=503, detail=("Research result was persisted, but its encrypted replay recipe could not be stored. " f"Result ID: {stored.result_id}")) from exc
 
         updated_session: ResearchSession | None = None
         if session is not None:
@@ -196,35 +205,78 @@ def build_research_query_router(
             except Exception as exc:
                 raise HTTPException(status_code=503, detail=("Research result was persisted, but the session turn could not be appended. " f"Result ID: {stored.result_id}")) from exc
 
-        payload = dict(_result_payload(stored, owner_id=owner, invalidation_store=invalidation_store))
+        payload = dict(_result_payload(stored, owner_id=storage_owner, invalidation_store=invalidation_store))
         payload["session_id"] = updated_session.session_id if updated_session else None
         payload["session_fingerprint"] = updated_session.fingerprint if updated_session else None
         payload["encrypted_replay_recipe"] = replay_stored
+        payload["shared_project"] = shared
         return payload
 
     @router.get("/results")
-    async def list_research_results(limit: int = Query(default=100, ge=1, le=1000), principal: Any = Depends(principal_dependency)) -> Mapping[str, Any]:
-        owner = _owner(principal)
+    async def list_research_results(
+        limit: int = Query(default=100, ge=1, le=1000),
+        session_id: str | None = Query(default=None, min_length=1, max_length=256),
+        principal: Any = Depends(principal_dependency),
+    ) -> Mapping[str, Any]:
+        actor = _owner(principal)
+        storage_owner = actor
+        allowed_ids: set[str] | None = None
         try:
-            values = result_store.list(owner, limit=limit)
+            if session_id is not None:
+                if access_resolver is None:
+                    session = workspace_store.get_session(actor, session_id)
+                else:
+                    access = access_resolver.session(actor, session_id, permission="session.read")
+                    session = access.session
+                    storage_owner = access.storage_owner_id
+                allowed_ids = _session_result_ids(session)
+                values = []
+                for result_id in list(reversed([turn.result_sha256 for turn in session.turns if turn.result_sha256]))[:limit]:
+                    if result_id in {item.result_id for item in values}:
+                        continue
+                    values.append(result_store.get(storage_owner, result_id))
+            else:
+                values = list(result_store.list(actor, limit=limit))
+        except (KeyError, PermissionError) as exc:
+            raise HTTPException(status_code=404, detail="Research session or result not found.") from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         except Exception as exc:
             raise HTTPException(status_code=503, detail="Research result persistence is unavailable.") from exc
         rows = []
         for item in values:
-            stale = stale_reasons(invalidation_store, owner, DependencyRef("result", item.result_id), maximum=20) if invalidation_store is not None else ()
+            if allowed_ids is not None and item.result_id not in allowed_ids:
+                continue
+            stale = stale_reasons(invalidation_store, storage_owner, DependencyRef("result", item.result_id), maximum=20) if invalidation_store is not None else ()
             rows.append({"result_id": item.result_id, "query_sha256": item.query_sha256, "strategy": item.strategy, "model": item.model, "created_at": item.created_at, "citation_count": len(item.citations), "stale": bool(stale), "stale_reasons": list(stale)})
         return {"results": rows}
 
     @router.get("/results/{result_id}")
-    async def get_research_result(result_id: str, principal: Any = Depends(principal_dependency)) -> Mapping[str, Any]:
-        owner = _owner(principal)
+    async def get_research_result(
+        result_id: str,
+        session_id: str | None = Query(default=None, min_length=1, max_length=256),
+        principal: Any = Depends(principal_dependency),
+    ) -> Mapping[str, Any]:
+        actor = _owner(principal)
+        storage_owner = actor
         try:
-            result = result_store.get(owner, result_id)
-            return _result_payload(result, owner_id=owner, invalidation_store=invalidation_store)
-        except KeyError as exc:
+            if session_id is not None:
+                if access_resolver is None:
+                    session = workspace_store.get_session(actor, session_id)
+                else:
+                    access = access_resolver.session(actor, session_id, permission="session.read")
+                    session = access.session
+                    storage_owner = access.storage_owner_id
+                if result_id.lower() not in _session_result_ids(session):
+                    raise KeyError(result_id)
+            result = result_store.get(storage_owner, result_id)
+            return _result_payload(result, owner_id=storage_owner, invalidation_store=invalidation_store)
+        except (KeyError, PermissionError) as exc:
             raise HTTPException(status_code=404, detail="Research result not found.") from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail="Research result ID is invalid.") from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         except Exception as exc:
             raise HTTPException(status_code=503, detail="Research result persistence is unavailable.") from exc
 
