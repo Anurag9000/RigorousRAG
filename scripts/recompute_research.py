@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Run one explicit bounded research recomputation operator action.
+"""Run one explicit bounded recomputation operator action.
 
 Modes:
-- ``local``: claim and execute directly from the authoritative invalidation ledger.
-- ``publish``: publish queued task identifiers to the configured durable transport.
-- ``worker``: consume a bounded number of durable handoffs and exact-claim each task.
+- ``local``: historical research result/report recomputation only.
+- ``publish``: publish all queued authoritative task identifiers to durable transport.
+- ``worker``: consume bounded handoffs and route claimed tasks by authoritative kind.
 
+Deterministic local hydrology drains are also available through ``recompute_hydrology.py``.
 The CLI never daemonizes or polls continuously. Distributed modes fail closed unless a
 durable transport is explicitly configured.
 """
@@ -25,28 +26,18 @@ def _parser() -> argparse.ArgumentParser:
         "--mode",
         choices=("local", "publish", "worker"),
         default="local",
-        help="Operator action. Defaults to the historical local execution mode.",
+        help="Operator action. Local remains research-only; distributed modes route all supported task kinds.",
     )
     parser.add_argument("--max-tasks", type=int, default=100, help="Maximum tasks/handoffs (1-10000).")
     parser.add_argument("--retry-task", default="", help="Requeue one failed authoritative task first.")
     parser.add_argument("--retry-only", action="store_true", help="Only requeue --retry-task; do not process work.")
     parser.add_argument("--worker-id", default="", help="Explicit worker identity required by --mode worker.")
-    parser.add_argument(
-        "--visibility-timeout",
-        type=float,
-        default=None,
-        help="Optional worker transport lease override in seconds.",
-    )
-    parser.add_argument(
-        "--busy-retry-delay",
-        type=float,
-        default=None,
-        help="Optional delay before a busy authoritative claim is transport-visible again.",
-    )
+    parser.add_argument("--visibility-timeout", type=float, default=None, help="Optional worker transport lease override in seconds.")
+    parser.add_argument("--busy-retry-delay", type=float, default=None, help="Optional delay before a busy authoritative claim is transport-visible again.")
     return parser
 
 
-def _distributed_bridge(args, invalidations, recompute_executor):
+def _distributed_bridge(args, invalidations, distributed_executor):
     from tools.distributed_recompute import DistributedRecomputeBridge
     from tools.recompute_queue_runtime import build_recompute_queue, load_recompute_transport_config
 
@@ -55,7 +46,7 @@ def _distributed_bridge(args, invalidations, recompute_executor):
     bridge = DistributedRecomputeBridge(
         owner_id=args.owner_id,
         invalidations=invalidations,
-        executor=recompute_executor,
+        executor=distributed_executor,
         queue=queue,
         max_attempts=config.ledger_max_attempts,
         claim_timeout_seconds=config.claim_timeout_seconds,
@@ -74,7 +65,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.mode == "worker" and args.retry_task and not args.retry_only:
         raise SystemExit("worker mode does not publish retries; use --mode publish with --retry-task first")
 
-    from production_app import invalidations, recompute_executor
+    from production_app import distributed_recompute_executor, invalidations, recompute_executor
     from tools.recompute_operations import (
         publish_recompute_tasks,
         retry_failed_recompute,
@@ -86,27 +77,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.retry_task:
         retried = retry_failed_recompute(recompute_executor, args.owner_id, args.retry_task)
         if args.retry_only:
-            print(
-                json.dumps(
-                    {
-                        "mode": args.mode,
-                        "owner_id": args.owner_id,
-                        "task_id": args.retry_task,
-                        "requeued": retried,
-                    },
-                    sort_keys=True,
-                )
-            )
+            print(json.dumps({"mode": args.mode, "owner_id": args.owner_id, "task_id": args.retry_task, "requeued": retried}, sort_keys=True))
             return 0 if retried else 2
 
     if args.mode == "local":
-        summary = run_recompute_cycle(
-            recompute_executor,
-            args.owner_id,
-            max_tasks=args.max_tasks,
-        )
+        summary = run_recompute_cycle(recompute_executor, args.owner_id, max_tasks=args.max_tasks)
         payload = {
             "mode": "local",
+            "scope": "research",
             "owner_id": summary.owner_id,
             "retried": retried,
             "attempted": summary.attempted,
@@ -119,36 +97,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0 if summary.failed == 0 else 3
 
     try:
-        bridge, config = _distributed_bridge(args, invalidations, recompute_executor)
+        bridge, config = _distributed_bridge(args, invalidations, distributed_recompute_executor)
     except (RuntimeError, TypeError, ValueError) as exc:
         raise SystemExit(str(exc)) from exc
 
     if args.mode == "publish":
         summary = publish_recompute_tasks(bridge, limit=args.max_tasks)
-        print(
-            json.dumps(
-                {
-                    "mode": "publish",
-                    "transport": config.backend,
-                    "owner_id": summary.owner_id,
-                    "retried": retried,
-                    "handoffs": summary.handoffs,
-                },
-                sort_keys=True,
-            )
-        )
+        print(json.dumps({"mode": "publish", "transport": config.backend, "owner_id": summary.owner_id, "retried": retried, "handoffs": summary.handoffs}, sort_keys=True))
         return 0
 
-    visibility = (
-        config.visibility_timeout_seconds
-        if args.visibility_timeout is None
-        else args.visibility_timeout
-    )
-    busy_delay = (
-        config.busy_retry_delay_seconds
-        if args.busy_retry_delay is None
-        else args.busy_retry_delay
-    )
+    visibility = config.visibility_timeout_seconds if args.visibility_timeout is None else args.visibility_timeout
+    busy_delay = config.busy_retry_delay_seconds if args.busy_retry_delay is None else args.busy_retry_delay
     try:
         summary = run_distributed_recompute_cycle(
             bridge,
@@ -161,6 +120,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         raise SystemExit(str(exc)) from exc
     payload = {
         "mode": "worker",
+        "scope": "routed",
         "transport": config.backend,
         "owner_id": summary.owner_id,
         "worker_id": summary.worker_id,
