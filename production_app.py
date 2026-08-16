@@ -22,6 +22,7 @@ from tools.research_answer_history_api import build_research_answer_history_rout
 from tools.research_api import build_research_router
 from tools.research_capsule_api import build_research_capsule_router
 from tools.research_capsule_store import ResearchCapsuleStore
+from tools.research_capsule_verification_api import build_research_capsule_verification_router
 from tools.research_query_api import build_research_query_router
 from tools.research_report_api import build_research_report_router
 from tools.research_report_store import ResearchReportStore
@@ -61,7 +62,9 @@ capsules = ResearchCapsuleStore(root / "research_capsules.sqlite3")
 invalidations = DependencyInvalidationStore(root / "research_invalidation.sqlite3")
 replacements = ArtifactReplacementStore(root / "research_replacements.sqlite3")
 source_trust = SourceTrustStore(root / "source_trust.sqlite3")
-replay_recipes = build_replay_recipe_store(root / "research_replay.sqlite3", providers=runtime_providers)
+replay_recipes = build_replay_recipe_store(
+    root / "research_replay.sqlite3", providers=runtime_providers
+)
 app = base.app
 
 _base_new_agent = base._new_agent
@@ -116,6 +119,7 @@ _REQUIRED_RESEARCH_ROUTES = frozenset(
         "/research/capsules",
         "/research/capsules/preflight",
         "/research/capsules/{capsule_id}",
+        "/research/capsules/{capsule_id}/verify",
         "/research/source-status",
         "/research/source-status/{source_id}",
         "/research/source-trust",
@@ -132,7 +136,11 @@ _REQUIRED_RESEARCH_ROUTES = frozenset(
 
 
 def _route_paths() -> set[str]:
-    return {path for route in app.routes if isinstance((path := getattr(route, "path", None)), str)}
+    return {
+        path
+        for route in app.routes
+        if isinstance((path := getattr(route, "path", None)), str)
+    }
 
 
 def _append_missing_routes(router) -> None:
@@ -146,11 +154,17 @@ def _append_missing_routes(router) -> None:
 
 def _ensure_governance_routes() -> None:
     if not _REQUIRED_GOVERNANCE_ROUTES.issubset(_route_paths()):
-        governance = build_control_router(principal_dependency=base.get_principal, review_store=reviews, feedback_store=feedback)
+        governance = build_control_router(
+            principal_dependency=base.get_principal,
+            review_store=reviews,
+            feedback_store=feedback,
+        )
         _append_missing_routes(governance)
     missing = _REQUIRED_GOVERNANCE_ROUTES.difference(_route_paths())
     if missing:
-        raise RuntimeError("Production governance routes failed to mount: " + ", ".join(sorted(missing)))
+        raise RuntimeError(
+            "Production governance routes failed to mount: " + ", ".join(sorted(missing))
+        )
 
 
 def _ensure_research_routes() -> None:
@@ -163,8 +177,15 @@ def _ensure_research_routes() -> None:
             access_resolver=access_resolver,
             result_store=results,
         )
-        acl = build_project_acl_router(principal_dependency=base.get_rate_limited_principal, acl_store=project_acls, access_resolver=access_resolver)
-        runtime = build_runtime_router(principal_dependency=base.get_rate_limited_principal, composition=composition)
+        acl = build_project_acl_router(
+            principal_dependency=base.get_rate_limited_principal,
+            acl_store=project_acls,
+            access_resolver=access_resolver,
+        )
+        runtime = build_runtime_router(
+            principal_dependency=base.get_rate_limited_principal,
+            composition=composition,
+        )
         query = build_research_query_router(
             principal_dependency=base.get_rate_limited_principal,
             agent_factory=_production_agent,
@@ -190,7 +211,11 @@ def _ensure_research_routes() -> None:
             invalidation_store=invalidations,
             access_resolver=access_resolver,
         )
-        replay = build_replay_router(principal_dependency=base.get_rate_limited_principal, replay_recipe_store=replay_recipes, access_resolver=access_resolver)
+        replay = build_replay_router(
+            principal_dependency=base.get_rate_limited_principal,
+            replay_recipe_store=replay_recipes,
+            access_resolver=access_resolver,
+        )
         capsule = build_research_capsule_router(
             principal_dependency=base.get_rate_limited_principal,
             workspace_store=workspace,
@@ -201,14 +226,47 @@ def _ensure_research_routes() -> None:
             invalidation_store=invalidations,
             access_resolver=access_resolver,
         )
-        invalidation = build_invalidation_router(principal_dependency=base.get_rate_limited_principal, store=invalidations)
-        lineage = build_artifact_lineage_router(principal_dependency=base.get_rate_limited_principal, replacements=replacements)
-        trust = build_source_trust_router(principal_dependency=base.get_rate_limited_principal, store=source_trust, invalidation_store=invalidations)
-        for router in (research, acl, runtime, query, answer_history, report, replay, capsule, invalidation, lineage, trust):
+        capsule_verification = build_research_capsule_verification_router(
+            principal_dependency=base.get_rate_limited_principal,
+            workspace_store=workspace,
+            result_store=results,
+            capsule_store=capsules,
+            code_revision=code_revision,
+            invalidation_store=invalidations,
+            access_resolver=access_resolver,
+        )
+        invalidation = build_invalidation_router(
+            principal_dependency=base.get_rate_limited_principal, store=invalidations
+        )
+        lineage = build_artifact_lineage_router(
+            principal_dependency=base.get_rate_limited_principal,
+            replacements=replacements,
+        )
+        trust = build_source_trust_router(
+            principal_dependency=base.get_rate_limited_principal,
+            store=source_trust,
+            invalidation_store=invalidations,
+        )
+        for router in (
+            research,
+            acl,
+            runtime,
+            query,
+            answer_history,
+            report,
+            replay,
+            capsule,
+            capsule_verification,
+            invalidation,
+            lineage,
+            trust,
+        ):
             _append_missing_routes(router)
     missing = _REQUIRED_RESEARCH_ROUTES.difference(_route_paths())
     if missing:
-        raise RuntimeError("Production research routes failed to mount: " + ", ".join(sorted(missing)))
+        raise RuntimeError(
+            "Production research routes failed to mount: " + ", ".join(sorted(missing))
+        )
 
 
 _ensure_governance_routes()
