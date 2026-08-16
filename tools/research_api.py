@@ -19,6 +19,8 @@ from pydantic import BaseModel, Field
 from tools.capability_registry import CapabilityRegistry
 from tools.domain_adapter import DomainAdapterRegistry
 from tools.research_access import ProjectAccess, ResearchAccessResolver, SessionAccess
+from tools.research_result_provenance import session_binding, turn_fingerprints
+from tools.research_result_store import ResearchResultStore
 from tools.research_workspace import CorpusBinding, ResearchProject, ResearchSession, ResearchTurn, append_turn
 
 
@@ -51,6 +53,13 @@ class CreateSessionRequest(BaseModel):
 
 
 class AppendTurnRequest(BaseModel):
+    """Recovery request whose provenance fields are verified, never trusted.
+
+    These fields remain in the wire contract for compatibility with older clients. The
+    durable result is authoritative; mismatches are rejected and the stored values are
+    used to construct the session turn.
+    """
+
     query_sha256: str = Field(..., min_length=64, max_length=64, pattern=r"^[0-9a-fA-F]{64}$")
     strategy: str = Field(..., min_length=1, max_length=64)
     result_sha256: str = Field(..., min_length=64, max_length=64, pattern=r"^[0-9a-fA-F]{64}$")
@@ -131,7 +140,10 @@ def build_research_router(
     capability_registry: CapabilityRegistry | None = None,
     domain_registry: DomainAdapterRegistry | None = None,
     access_resolver: ResearchAccessResolver | None = None,
+    result_store: ResearchResultStore | None = None,
 ) -> APIRouter:
+    if result_store is not None and not isinstance(result_store, ResearchResultStore):
+        raise TypeError("result_store must be ResearchResultStore or null")
     router = APIRouter(prefix="/research", tags=["research"])
 
     @router.get("/projects")
@@ -185,10 +197,7 @@ def build_research_router(
         return _project_payload(project, access)
 
     @router.get("/projects/{project_id}")
-    async def get_project(
-        project_id: str,
-        principal: Any = Depends(principal_dependency),
-    ) -> Mapping[str, Any]:
+    async def get_project(project_id: str, principal: Any = Depends(principal_dependency)) -> Mapping[str, Any]:
         actor = _principal_owner(principal)
         try:
             if access_resolver is None:
@@ -214,16 +223,8 @@ def build_research_router(
                 sessions = workspace_store.list_sessions(actor, project_id, limit=limit)
                 return {"sessions": [_session_payload(item) for item in sessions]}
             project_access = access_resolver.project(actor, project_id, permission="session.read")
-            sessions = workspace_store.list_sessions(
-                project_access.storage_owner_id,
-                project_access.project.project_id,
-                limit=limit,
-            )
-            return {
-                "sessions": [
-                    _session_payload(item, SessionAccess(project_access, item)) for item in sessions
-                ]
-            }
+            sessions = workspace_store.list_sessions(project_access.storage_owner_id, project_access.project.project_id, limit=limit)
+            return {"sessions": [_session_payload(item, SessionAccess(project_access, item)) for item in sessions]}
         except (KeyError, PermissionError) as exc:
             raise HTTPException(status_code=404, detail="Research project not found.") from exc
         except RuntimeError as exc:
@@ -247,11 +248,7 @@ def build_research_router(
                 project_access = access_resolver.project(actor, project_id, permission="session.write")
                 project = project_access.project
                 storage_owner = project_access.storage_owner_id
-            session = ResearchSession(
-                owner_id=storage_owner,
-                project_id=project.project_id,
-                session_id=request.session_id or f"session_{uuid.uuid4().hex}",
-            )
+            session = ResearchSession(owner_id=storage_owner, project_id=project.project_id, session_id=request.session_id or f"session_{uuid.uuid4().hex}")
             workspace_store.put_session(session)
         except (KeyError, PermissionError) as exc:
             raise HTTPException(status_code=404, detail="Research project not found.") from exc
@@ -265,10 +262,7 @@ def build_research_router(
         return _session_payload(session, access)
 
     @router.get("/sessions/{session_id}")
-    async def get_session(
-        session_id: str,
-        principal: Any = Depends(principal_dependency),
-    ) -> Mapping[str, Any]:
+    async def get_session(session_id: str, principal: Any = Depends(principal_dependency)) -> Mapping[str, Any]:
         actor = _principal_owner(principal)
         try:
             if access_resolver is None:
@@ -289,36 +283,73 @@ def build_research_router(
         principal: Any = Depends(principal_dependency),
     ) -> Mapping[str, Any]:
         actor = _principal_owner(principal)
+        if result_store is None:
+            raise HTTPException(status_code=409, detail="Verified manual turn recovery is not configured.")
         try:
             if access_resolver is None:
                 current = workspace_store.get_session(actor, session_id)
+                storage_owner = actor
                 session_access = None
             else:
                 session_access = access_resolver.session(actor, session_id, permission="session.write")
                 current = session_access.session
+                storage_owner = session_access.storage_owner_id
+            if current.closed_at is not None:
+                raise ValueError("cannot append to a closed research session")
+            if current.fingerprint != request.expected_session_fingerprint.lower():
+                raise RuntimeError("research session changed; reload before appending")
+
+            result = result_store.get(storage_owner, request.result_sha256)
+            binding = session_binding(result.metadata)
+            if binding is None:
+                raise RuntimeError("research result does not carry authenticated session provenance")
+            if binding["project_id"] != current.project_id or binding["session_id"] != current.session_id:
+                raise PermissionError("research result belongs to another project or session")
+
+            # A retry after a successful append is idempotent and never creates a second turn.
+            existing = [item for item in current.turns if item.result_sha256 == result.result_id]
+            if existing:
+                if len(existing) != 1 or existing[0].query_sha256 != result.query_sha256:
+                    raise RuntimeError("session contains conflicting provenance for this result")
+                return _session_payload(current, session_access)
+
+            # The result was bound against the pre-append snapshot. If that snapshot no
+            # longer matches, attaching it now would rewrite the execution context.
+            if binding["session_fingerprint_before"] != current.fingerprint:
+                raise RuntimeError("result was executed against an older session snapshot")
+
+            plan_sha, policy_sha = turn_fingerprints(result.metadata)
+            if request.query_sha256.lower() != result.query_sha256:
+                raise RuntimeError("client query fingerprint does not match the durable result")
+            if request.strategy.strip().lower() != result.strategy:
+                raise RuntimeError("client strategy does not match the durable result")
+            if tuple(request.citation_ids) != result.citation_ids:
+                raise RuntimeError("client citation identities do not match the durable result")
+            if request.plan_sha256 and request.plan_sha256.lower() != plan_sha:
+                raise RuntimeError("client plan fingerprint does not match the durable result")
+            if request.policy_sha256 and request.policy_sha256.lower() != policy_sha:
+                raise RuntimeError("client policy fingerprint does not match the durable result")
+
             turn = ResearchTurn(
                 turn_id=f"turn_{uuid.uuid4().hex}",
-                query_sha256=request.query_sha256.lower(),
-                strategy=request.strategy,
-                result_sha256=request.result_sha256.lower(),
-                citation_ids=tuple(request.citation_ids),
-                plan_sha256=request.plan_sha256.lower(),
-                policy_sha256=request.policy_sha256.lower(),
+                query_sha256=result.query_sha256,
+                strategy=result.strategy,
+                result_sha256=result.result_id,
+                citation_ids=result.citation_ids,
+                plan_sha256=plan_sha,
+                policy_sha256=policy_sha,
                 notes=request.notes,
             )
             updated = append_turn(current, turn)
-            workspace_store.put_session(
-                updated,
-                expected_fingerprint=request.expected_session_fingerprint.lower(),
-            )
+            workspace_store.put_session(updated, expected_fingerprint=request.expected_session_fingerprint.lower())
         except (KeyError, PermissionError) as exc:
-            raise HTTPException(status_code=404, detail="Research session not found.") from exc
+            raise HTTPException(status_code=404, detail="Research session or verified result not found.") from exc
         except RuntimeError as exc:
-            raise HTTPException(status_code=409, detail="Research session changed or is ambiguous; reload before appending.") from exc
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail="Research turn is invalid.") from exc
         except Exception as exc:
-            raise HTTPException(status_code=503, detail="Research workspace is unavailable.") from exc
+            raise HTTPException(status_code=503, detail="Research workspace or result persistence is unavailable.") from exc
         access = SessionAccess(session_access.project_access, updated) if session_access is not None else None
         return _session_payload(updated, access)
 
@@ -338,18 +369,8 @@ def build_research_router(
                 current = session_access.session
             if current.closed_at is not None:
                 return _session_payload(current, session_access)
-            updated = ResearchSession(
-                owner_id=current.owner_id,
-                project_id=current.project_id,
-                session_id=current.session_id,
-                turns=current.turns,
-                created_at=current.created_at,
-                closed_at=time.time(),
-            )
-            workspace_store.put_session(
-                updated,
-                expected_fingerprint=request.expected_session_fingerprint.lower(),
-            )
+            updated = ResearchSession(owner_id=current.owner_id, project_id=current.project_id, session_id=current.session_id, turns=current.turns, created_at=current.created_at, closed_at=time.time())
+            workspace_store.put_session(updated, expected_fingerprint=request.expected_session_fingerprint.lower())
         except (KeyError, PermissionError) as exc:
             raise HTTPException(status_code=404, detail="Research session not found.") from exc
         except RuntimeError as exc:
@@ -360,45 +381,18 @@ def build_research_router(
         return _session_payload(updated, access)
 
     @router.get("/capabilities")
-    async def capabilities(
-        principal: Any = Depends(principal_dependency),
-    ) -> Mapping[str, Any]:
+    async def capabilities(principal: Any = Depends(principal_dependency)) -> Mapping[str, Any]:
         _principal_owner(principal)
         capabilities_payload: list[Mapping[str, Any]] = []
         if capability_registry is not None:
             for descriptor in capability_registry.snapshot():
-                capabilities_payload.append(
-                    {
-                        "capability_id": descriptor.capability_id,
-                        "version": descriptor.version,
-                        "kind": descriptor.kind,
-                        "provider": descriptor.provider,
-                        "modalities": list(descriptor.modalities),
-                        "trust_level": descriptor.trust_level,
-                        "enabled": descriptor.enabled,
-                        "fingerprint": descriptor.fingerprint,
-                    }
-                )
+                capabilities_payload.append({"capability_id": descriptor.capability_id, "version": descriptor.version, "kind": descriptor.kind, "provider": descriptor.provider, "modalities": list(descriptor.modalities), "trust_level": descriptor.trust_level, "enabled": descriptor.enabled, "fingerprint": descriptor.fingerprint})
         domains_payload: list[Mapping[str, Any]] = []
         if domain_registry is not None:
             for descriptor in domain_registry.descriptors():
-                domains_payload.append(
-                    {
-                        "domain_id": descriptor.domain_id,
-                        "version": descriptor.version,
-                        "label": descriptor.label,
-                        "capabilities": list(descriptor.capabilities),
-                        "fingerprint": descriptor.fingerprint,
-                    }
-                )
-        fingerprint = hashlib.sha256(
-            repr((capabilities_payload, domains_payload)).encode("utf-8")
-        ).hexdigest()
-        return {
-            "capabilities": capabilities_payload,
-            "domains": domains_payload,
-            "fingerprint": fingerprint,
-        }
+                domains_payload.append({"domain_id": descriptor.domain_id, "version": descriptor.version, "label": descriptor.label, "capabilities": list(descriptor.capabilities), "fingerprint": descriptor.fingerprint})
+        fingerprint = hashlib.sha256(repr((capabilities_payload, domains_payload)).encode("utf-8")).hexdigest()
+        return {"capabilities": capabilities_payload, "domains": domains_payload, "fingerprint": fingerprint}
 
     return router
 
