@@ -89,13 +89,23 @@ def augment_capsule_with_hydrology(capsule: ResearchCapsule, result: Any) -> Res
 
 
 class HydrologyAwareCapsuleStore(ResearchCapsuleStore):
-    """Delegate persistence while enriching new manifests from immutable result citations."""
+    """Delegate persistence while enriching new manifests from immutable result citations.
+
+    ``__getattr__`` preserves backend-specific read-only attributes (for example a SQLite
+    path or Postgres schema) for operator/introspection code without constructing a second
+    persistence authority inside the decorator.
+    """
 
     def __init__(self, inner: ResearchCapsuleStore, results: ResearchResultStore) -> None:
         if inner is None or results is None:
             raise ValueError("capsule and result stores are required")
         self._inner = inner
         self._results = results
+
+    def __getattr__(self, name: str):
+        if name.startswith("__"):
+            raise AttributeError(name)
+        return getattr(self._inner, name)
 
     def put(
         self,
