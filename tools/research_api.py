@@ -1,8 +1,8 @@
-"""Owner-scoped research workspace API router.
+"""Owner/collaborator-scoped research workspace API router.
 
-The router exposes persistent project/session/turn state and capability/domain metadata.
-It stores only query/result fingerprints and citation IDs for turns, not raw retrieved
-private evidence.  Citation authority remains with the research agent/result pipeline.
+Projects and sessions remain physically partitioned by the project's immutable owner.
+When a collaboration resolver is configured, authenticated principals are translated to
+that authoritative storage scope only after an explicit ACL decision.
 """
 
 from __future__ import annotations
@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field
 
 from tools.capability_registry import CapabilityRegistry
 from tools.domain_adapter import DomainAdapterRegistry
+from tools.research_access import ProjectAccess, ResearchAccessResolver, SessionAccess
 from tools.research_workspace import CorpusBinding, ResearchProject, ResearchSession, ResearchTurn, append_turn
 
 
@@ -71,8 +72,8 @@ def _principal_owner(principal: Any) -> str:
     return owner
 
 
-def _project_payload(project: ResearchProject) -> Mapping[str, Any]:
-    return {
+def _project_payload(project: ResearchProject, access: ProjectAccess | None = None) -> Mapping[str, Any]:
+    payload: dict[str, Any] = {
         "project_id": project.project_id,
         "title": project.title,
         "research_question": project.research_question,
@@ -82,6 +83,13 @@ def _project_payload(project: ResearchProject) -> Mapping[str, Any]:
         "archived": project.archived,
         "fingerprint": project.fingerprint,
     }
+    if access is not None:
+        payload["access"] = {
+            "role": access.role,
+            "permissions": sorted(access.permissions),
+            "shared": access.actor_id != access.storage_owner_id,
+        }
+    return payload
 
 
 def _turn_payload(turn: ResearchTurn) -> Mapping[str, Any]:
@@ -98,8 +106,8 @@ def _turn_payload(turn: ResearchTurn) -> Mapping[str, Any]:
     }
 
 
-def _session_payload(session: ResearchSession) -> Mapping[str, Any]:
-    return {
+def _session_payload(session: ResearchSession, access: SessionAccess | None = None) -> Mapping[str, Any]:
+    payload: dict[str, Any] = {
         "project_id": session.project_id,
         "session_id": session.session_id,
         "turns": [_turn_payload(item) for item in session.turns],
@@ -107,6 +115,13 @@ def _session_payload(session: ResearchSession) -> Mapping[str, Any]:
         "closed_at": session.closed_at,
         "fingerprint": session.fingerprint,
     }
+    if access is not None:
+        payload["access"] = {
+            "role": access.project_access.role,
+            "permissions": sorted(access.project_access.permissions),
+            "shared": access.project_access.actor_id != access.project_access.storage_owner_id,
+        }
+    return payload
 
 
 def build_research_router(
@@ -115,6 +130,7 @@ def build_research_router(
     workspace_store: WorkspaceStore,
     capability_registry: CapabilityRegistry | None = None,
     domain_registry: DomainAdapterRegistry | None = None,
+    access_resolver: ResearchAccessResolver | None = None,
 ) -> APIRouter:
     router = APIRouter(prefix="/research", tags=["research"])
 
@@ -123,23 +139,26 @@ def build_research_router(
         limit: int = Query(default=100, ge=1, le=1000),
         principal: Any = Depends(principal_dependency),
     ) -> Mapping[str, Any]:
-        owner = _principal_owner(principal)
+        actor = _principal_owner(principal)
         try:
-            projects = workspace_store.list_projects(owner, limit=limit)
+            if access_resolver is None:
+                projects = workspace_store.list_projects(actor, limit=limit)
+                return {"projects": [_project_payload(item) for item in projects]}
+            accesses = access_resolver.list_projects(actor, limit=limit)
+            return {"projects": [_project_payload(item.project, item) for item in accesses]}
         except Exception as exc:
             raise HTTPException(status_code=503, detail="Research workspace is unavailable.") from exc
-        return {"projects": [_project_payload(item) for item in projects]}
 
     @router.post("/projects", status_code=201)
     async def create_project(
         request: CreateProjectRequest,
         principal: Any = Depends(principal_dependency),
     ) -> Mapping[str, Any]:
-        owner = _principal_owner(principal)
+        actor = _principal_owner(principal)
         project_id = request.project_id or f"project_{uuid.uuid4().hex}"
         try:
             project = ResearchProject(
-                owner_id=owner,
+                owner_id=actor,
                 project_id=project_id,
                 title=request.title,
                 research_question=request.research_question,
@@ -155,25 +174,33 @@ def build_research_router(
                 tags=tuple(request.tags),
             )
             workspace_store.create_project(project)
+            access = None
+            if access_resolver is not None:
+                access_resolver.acls.seed_owner(actor, project.project_id)
+                access = access_resolver.project(actor, project.project_id, permission="project.read")
         except ValueError as exc:
             raise HTTPException(status_code=400, detail="Research project is invalid.") from exc
         except Exception as exc:
             raise HTTPException(status_code=503, detail="Research workspace is unavailable.") from exc
-        return _project_payload(project)
+        return _project_payload(project, access)
 
     @router.get("/projects/{project_id}")
     async def get_project(
         project_id: str,
         principal: Any = Depends(principal_dependency),
     ) -> Mapping[str, Any]:
-        owner = _principal_owner(principal)
+        actor = _principal_owner(principal)
         try:
-            project = workspace_store.get_project(owner, project_id)
-        except KeyError as exc:
+            if access_resolver is None:
+                return _project_payload(workspace_store.get_project(actor, project_id))
+            access = access_resolver.project(actor, project_id, permission="project.read")
+            return _project_payload(access.project, access)
+        except (KeyError, PermissionError) as exc:
             raise HTTPException(status_code=404, detail="Research project not found.") from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         except Exception as exc:
             raise HTTPException(status_code=503, detail="Research workspace is unavailable.") from exc
-        return _project_payload(project)
 
     @router.get("/projects/{project_id}/sessions")
     async def list_sessions(
@@ -181,14 +208,28 @@ def build_research_router(
         limit: int = Query(default=100, ge=1, le=1000),
         principal: Any = Depends(principal_dependency),
     ) -> Mapping[str, Any]:
-        owner = _principal_owner(principal)
+        actor = _principal_owner(principal)
         try:
-            sessions = workspace_store.list_sessions(owner, project_id, limit=limit)
-        except KeyError as exc:
+            if access_resolver is None:
+                sessions = workspace_store.list_sessions(actor, project_id, limit=limit)
+                return {"sessions": [_session_payload(item) for item in sessions]}
+            project_access = access_resolver.project(actor, project_id, permission="session.read")
+            sessions = workspace_store.list_sessions(
+                project_access.storage_owner_id,
+                project_access.project.project_id,
+                limit=limit,
+            )
+            return {
+                "sessions": [
+                    _session_payload(item, SessionAccess(project_access, item)) for item in sessions
+                ]
+            }
+        except (KeyError, PermissionError) as exc:
             raise HTTPException(status_code=404, detail="Research project not found.") from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         except Exception as exc:
             raise HTTPException(status_code=503, detail="Research workspace is unavailable.") from exc
-        return {"sessions": [_session_payload(item) for item in sessions]}
 
     @router.post("/projects/{project_id}/sessions", status_code=201)
     async def create_session(
@@ -196,36 +237,50 @@ def build_research_router(
         request: CreateSessionRequest,
         principal: Any = Depends(principal_dependency),
     ) -> Mapping[str, Any]:
-        owner = _principal_owner(principal)
+        actor = _principal_owner(principal)
         try:
-            workspace_store.get_project(owner, project_id)
+            if access_resolver is None:
+                project = workspace_store.get_project(actor, project_id)
+                storage_owner = actor
+                project_access = None
+            else:
+                project_access = access_resolver.project(actor, project_id, permission="session.write")
+                project = project_access.project
+                storage_owner = project_access.storage_owner_id
             session = ResearchSession(
-                owner_id=owner,
-                project_id=project_id,
+                owner_id=storage_owner,
+                project_id=project.project_id,
                 session_id=request.session_id or f"session_{uuid.uuid4().hex}",
             )
             workspace_store.put_session(session)
-        except KeyError as exc:
+        except (KeyError, PermissionError) as exc:
             raise HTTPException(status_code=404, detail="Research project not found.") from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail="Research session is invalid.") from exc
         except Exception as exc:
             raise HTTPException(status_code=503, detail="Research workspace is unavailable.") from exc
-        return _session_payload(session)
+        access = SessionAccess(project_access, session) if project_access is not None else None
+        return _session_payload(session, access)
 
     @router.get("/sessions/{session_id}")
     async def get_session(
         session_id: str,
         principal: Any = Depends(principal_dependency),
     ) -> Mapping[str, Any]:
-        owner = _principal_owner(principal)
+        actor = _principal_owner(principal)
         try:
-            session = workspace_store.get_session(owner, session_id)
-        except KeyError as exc:
+            if access_resolver is None:
+                return _session_payload(workspace_store.get_session(actor, session_id))
+            access = access_resolver.session(actor, session_id, permission="session.read")
+            return _session_payload(access.session, access)
+        except (KeyError, PermissionError) as exc:
             raise HTTPException(status_code=404, detail="Research session not found.") from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         except Exception as exc:
             raise HTTPException(status_code=503, detail="Research workspace is unavailable.") from exc
-        return _session_payload(session)
 
     @router.post("/sessions/{session_id}/turns")
     async def append_session_turn(
@@ -233,9 +288,14 @@ def build_research_router(
         request: AppendTurnRequest,
         principal: Any = Depends(principal_dependency),
     ) -> Mapping[str, Any]:
-        owner = _principal_owner(principal)
+        actor = _principal_owner(principal)
         try:
-            current = workspace_store.get_session(owner, session_id)
+            if access_resolver is None:
+                current = workspace_store.get_session(actor, session_id)
+                session_access = None
+            else:
+                session_access = access_resolver.session(actor, session_id, permission="session.write")
+                current = session_access.session
             turn = ResearchTurn(
                 turn_id=f"turn_{uuid.uuid4().hex}",
                 query_sha256=request.query_sha256.lower(),
@@ -251,15 +311,16 @@ def build_research_router(
                 updated,
                 expected_fingerprint=request.expected_session_fingerprint.lower(),
             )
-        except KeyError as exc:
+        except (KeyError, PermissionError) as exc:
             raise HTTPException(status_code=404, detail="Research session not found.") from exc
         except RuntimeError as exc:
-            raise HTTPException(status_code=409, detail="Research session changed; reload before appending.") from exc
+            raise HTTPException(status_code=409, detail="Research session changed or is ambiguous; reload before appending.") from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail="Research turn is invalid.") from exc
         except Exception as exc:
             raise HTTPException(status_code=503, detail="Research workspace is unavailable.") from exc
-        return _session_payload(updated)
+        access = SessionAccess(session_access.project_access, updated) if session_access is not None else None
+        return _session_payload(updated, access)
 
     @router.post("/sessions/{session_id}/close")
     async def close_session(
@@ -267,11 +328,16 @@ def build_research_router(
         request: CloseSessionRequest,
         principal: Any = Depends(principal_dependency),
     ) -> Mapping[str, Any]:
-        owner = _principal_owner(principal)
+        actor = _principal_owner(principal)
         try:
-            current = workspace_store.get_session(owner, session_id)
+            if access_resolver is None:
+                current = workspace_store.get_session(actor, session_id)
+                session_access = None
+            else:
+                session_access = access_resolver.session(actor, session_id, permission="session.write")
+                current = session_access.session
             if current.closed_at is not None:
-                return _session_payload(current)
+                return _session_payload(current, session_access)
             updated = ResearchSession(
                 owner_id=current.owner_id,
                 project_id=current.project_id,
@@ -284,13 +350,14 @@ def build_research_router(
                 updated,
                 expected_fingerprint=request.expected_session_fingerprint.lower(),
             )
-        except KeyError as exc:
+        except (KeyError, PermissionError) as exc:
             raise HTTPException(status_code=404, detail="Research session not found.") from exc
         except RuntimeError as exc:
-            raise HTTPException(status_code=409, detail="Research session changed; reload before closing.") from exc
+            raise HTTPException(status_code=409, detail="Research session changed or is ambiguous; reload before closing.") from exc
         except Exception as exc:
             raise HTTPException(status_code=503, detail="Research workspace is unavailable.") from exc
-        return _session_payload(updated)
+        access = SessionAccess(session_access.project_access, updated) if session_access is not None else None
+        return _session_payload(updated, access)
 
     @router.get("/capabilities")
     async def capabilities(
