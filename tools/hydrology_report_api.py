@@ -40,13 +40,7 @@ def _access(resolver: ResearchAccessResolver, actor: str, project_id: str, permi
         raise HTTPException(status_code=503, detail="Research access control is unavailable.") from exc
 
 
-def _artifact(
-    store: HydrologyArtifactStore,
-    owner_id: str,
-    project_id: str,
-    kind: str,
-    logical_id: str,
-) -> HydrologyArtifactEnvelope:
+def _artifact(store: HydrologyArtifactStore, owner_id: str, project_id: str, kind: str, logical_id: str) -> HydrologyArtifactEnvelope:
     try:
         return store.get(owner_id, project_id, kind, logical_id)
     except KeyError as exc:
@@ -59,19 +53,7 @@ def _artifact(
         raise HTTPException(status_code=503, detail="Hydrology persistence is unavailable.") from exc
 
 
-def _optional_current(store: HydrologyArtifactStore, owner_id: str, project_id: str, kind: str, logical_id: str):
-    try:
-        return store.get(owner_id, project_id, kind, logical_id)
-    except KeyError:
-        return None
-
-
-def _stale(
-    invalidation_store: DependencyStore | None,
-    owner_id: str,
-    kind: str,
-    fingerprint: str,
-) -> tuple[Mapping[str, Any], ...]:
+def _stale(invalidation_store: DependencyStore | None, owner_id: str, kind: str, fingerprint: str) -> tuple[Mapping[str, Any], ...]:
     if invalidation_store is None:
         return ()
     try:
@@ -120,9 +102,11 @@ def build_hydrology_report_router(
         if projection_stale:
             raise HTTPException(
                 status_code=409,
-                detail={"message": "Hydrology projection is stale; rebuild it before creating a report.", "stale_reasons": list(projection_stale)},
+                detail={
+                    "message": "Hydrology projection is stale; rebuild it before creating a report.",
+                    "stale_reasons": list(projection_stale),
+                },
             )
-        previous = _optional_current(store, owner, project.project_id, "evidence_report", request.report_id)
         try:
             projection = decode_artifact("evidence_projection", projection_envelope.payload)
             report = build_hydrology_report(
@@ -142,35 +126,6 @@ def build_hydrology_report_router(
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         except Exception as exc:
             raise HTTPException(status_code=503, detail="Hydrology report persistence is unavailable.") from exc
-        try:
-            if invalidation_store is not None:
-                report_ref = DependencyRef("hydrology_report", stored.fingerprint)
-                invalidation_store.register_dependency(
-                    owner,
-                    upstream=DependencyRef("hydrology_projection", projection.fingerprint),
-                    downstream=report_ref,
-                    relation="hydrology_projection_report",
-                )
-                invalidation_store.register_dependency(
-                    owner,
-                    upstream=DependencyRef("project", project.project_id),
-                    downstream=report_ref,
-                    relation="hydrology_report_project_scope",
-                )
-                if previous is not None and previous.fingerprint != stored.fingerprint:
-                    invalidation_store.invalidate(
-                        owner,
-                        root=DependencyRef("hydrology_report", previous.fingerprint),
-                        reason="hydrology evidence report generation replaced",
-                        event_type="hydrology_generation_replaced",
-                        replacement_id=stored.fingerprint,
-                        recomputable_kinds=(),
-                    )
-        except Exception as exc:
-            raise HTTPException(
-                status_code=503,
-                detail=f"Hydrology report was persisted ({stored.fingerprint}), but dependency lineage could not be completed.",
-            ) from exc
         return {
             "project_id": project.project_id,
             "report_id": request.report_id,
