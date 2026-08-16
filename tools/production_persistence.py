@@ -16,6 +16,7 @@ from typing import Any
 from tools.artifact_replacements import ArtifactReplacementStore
 from tools.dependency_invalidation import DependencyInvalidationStore
 from tools.feedback_store import FeedbackStore
+from tools.hydrology_capsule_store import HydrologyAwareCapsuleStore
 from tools.hydrology_derivation_store import HydrologyDerivationStore
 from tools.hydrology_derivation_store_postgres import PostgresHydrologyDerivationStore
 from tools.hydrology_guarded_store import GuardedHydrologyArtifactStore
@@ -92,7 +93,8 @@ def build_production_persistence(
         project_acls = PostgresProjectACLStore(connection_factory, schema=postgres_schema)
         results = PostgresResearchResultStore(connection_factory, schema=postgres_schema)
         reports = PostgresResearchReportStore(connection_factory, schema=postgres_schema)
-        capsules = PostgresResearchCapsuleStore(connection_factory, schema=postgres_schema)
+        capsules_raw = PostgresResearchCapsuleStore(connection_factory, schema=postgres_schema)
+        capsules = HydrologyAwareCapsuleStore(capsules_raw, results)
         invalidations = PostgresDependencyInvalidationStore(connection_factory, schema=postgres_schema)
         replacements = PostgresArtifactReplacementStore(connection_factory, schema=postgres_schema)
         source_trust = PostgresSourceTrustStore(connection_factory, schema=postgres_schema)
@@ -128,6 +130,9 @@ def build_production_persistence(
 
     if backend == "sqlite":
         invalidations = DependencyInvalidationStore(selected_root / "research_invalidation.sqlite3")
+        results = ResearchResultStore(selected_root / "research_results.sqlite3")
+        capsules_raw = ResearchCapsuleStore(selected_root / "research_capsules.sqlite3")
+        capsules = HydrologyAwareCapsuleStore(capsules_raw, results)
         hydrology_raw = SQLiteHydrologyArtifactStore(selected_root / "research_hydrology.sqlite3")
         hydrology = _governed_hydrology(hydrology_raw, invalidations)
         hydrology_recipes = HydrologyDerivationStore(selected_root / "research_hydrology_recipes.sqlite3")
@@ -135,9 +140,9 @@ def build_production_persistence(
             backend="sqlite",
             workspace=SQLiteResearchWorkspaceStore(selected_root / "research_workspace.sqlite3"),
             project_acls=ProjectACLStore(selected_root / "research_project_acl.sqlite3"),
-            results=ResearchResultStore(selected_root / "research_results.sqlite3"),
+            results=results,
             reports=ResearchReportStore(selected_root / "research_reports.sqlite3"),
-            capsules=ResearchCapsuleStore(selected_root / "research_capsules.sqlite3"),
+            capsules=capsules,
             invalidations=invalidations,
             replacements=ArtifactReplacementStore(selected_root / "research_replacements.sqlite3"),
             source_trust=SourceTrustStore(selected_root / "source_trust.sqlite3"),
