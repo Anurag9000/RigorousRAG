@@ -16,13 +16,38 @@ def _owner(principal: Any) -> str:
     return value
 
 
+def _safe_persistence_metadata(value: Mapping[str, Any] | None) -> Mapping[str, Any]:
+    if value is None:
+        return {}
+    if not isinstance(value, Mapping) or len(value) > 32:
+        raise ValueError("persistence_metadata must be a bounded mapping")
+    output: dict[str, Any] = {}
+    for key, raw in value.items():
+        name = str(key).strip()
+        if not name or len(name) > 100:
+            raise ValueError("persistence metadata key is invalid")
+        if isinstance(raw, bool) or raw is None:
+            output[name] = raw
+        elif isinstance(raw, (int, float)) and not isinstance(raw, bool):
+            output[name] = raw
+        elif isinstance(raw, str):
+            if len(raw) > 500 or "\x00" in raw:
+                raise ValueError("persistence metadata value is invalid")
+            output[name] = raw
+        else:
+            raise ValueError("persistence metadata values must be scalar and non-secret")
+    return dict(sorted(output.items()))
+
+
 def build_runtime_router(
     *,
     principal_dependency: Callable[..., Any],
     composition: RuntimeComposition,
+    persistence_metadata: Mapping[str, Any] | None = None,
 ) -> APIRouter:
     if not isinstance(composition, RuntimeComposition):
         raise TypeError("composition must be RuntimeComposition")
+    persistence = _safe_persistence_metadata(persistence_metadata)
     router = APIRouter(prefix="/research", tags=["research-runtime"])
 
     @router.get("/runtime")
@@ -56,6 +81,7 @@ def build_runtime_router(
             "selected_capabilities": dict(sorted(composition.selected_capabilities.items())),
             "environment": composition.config.environment,
             "instance_id": composition.config.instance_id,
+            "persistence": persistence,
             "capabilities": capabilities,
             "domains": [
                 {
