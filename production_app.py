@@ -11,6 +11,15 @@ from tools.control_api import build_control_router
 from tools.dependency_invalidation import DependencyInvalidationStore
 from tools.feedback_store import FeedbackStore
 from tools.invalidation_api import build_invalidation_router
+from tools.postgres_invalidation_store import PostgresDependencyInvalidationStore
+from tools.postgres_research_stores import (
+    PostgresArtifactReplacementStore,
+    PostgresProjectACLStore,
+    PostgresResearchCapsuleStore,
+    PostgresResearchReportStore,
+    PostgresResearchResultStore,
+)
+from tools.postgres_source_trust_store import PostgresSourceTrustStore
 from tools.postgres_workspace_store import PostgresResearchWorkspaceStore
 from tools.project_acl_api import build_project_acl_router
 from tools.project_acl_store import ProjectACLStore
@@ -39,32 +48,116 @@ root = Path(os.environ.get("CLASSIC_STORAGE_DIR", "data")).resolve() / "governan
 root.mkdir(parents=True, exist_ok=True)
 composition = build_runtime_composition()
 code_revision = os.environ.get("RIGOROUSRAG_CODE_REVISION", "").strip()
+metadata_backend = composition.config.storage.metadata_backend.strip().lower()
+_POSTGRES_SCHEMA = "rigorousrag"
 
 
-def _build_workspace_store():
-    backend = composition.config.storage.metadata_backend
-    if backend in {"postgres", "postgresql"}:
+def _build_research_state():
+    """Construct one coherent research persistence boundary.
+
+    A Postgres deployment must not mix shared Workspace/session state with node-local ACL,
+    result, report, capsule, invalidation, replacement, trust or replay state. Conversely,
+    the SQLite path remains an intentionally single-node reference deployment. Review and
+    feedback governance stores are composed separately because they are not dependencies
+    of research execution/publication and can be migrated independently.
+    """
+
+    if metadata_backend in {"postgres", "postgresql"}:
         connection_factory = runtime_providers.require("postgres.connection_factory")
-        return PostgresResearchWorkspaceStore(connection_factory)
-    if backend == "sqlite":
-        return SQLiteResearchWorkspaceStore(root / "research_workspace.sqlite3")
-    raise RuntimeError(f"unsupported research workspace metadata backend: {backend}")
+        workspace_store = PostgresResearchWorkspaceStore(
+            connection_factory,
+            schema=_POSTGRES_SCHEMA,
+        )
+        acl_store = PostgresProjectACLStore(
+            connection_factory,
+            schema=_POSTGRES_SCHEMA,
+        )
+        result_store = PostgresResearchResultStore(
+            connection_factory,
+            schema=_POSTGRES_SCHEMA,
+        )
+        report_store = PostgresResearchReportStore(
+            connection_factory,
+            schema=_POSTGRES_SCHEMA,
+        )
+        capsule_store = PostgresResearchCapsuleStore(
+            connection_factory,
+            schema=_POSTGRES_SCHEMA,
+        )
+        invalidation_store = PostgresDependencyInvalidationStore(
+            connection_factory,
+            schema=_POSTGRES_SCHEMA,
+        )
+        replacement_store = PostgresArtifactReplacementStore(
+            connection_factory,
+            schema=_POSTGRES_SCHEMA,
+        )
+        trust_store = PostgresSourceTrustStore(
+            connection_factory,
+            schema=_POSTGRES_SCHEMA,
+        )
+        replay_store = build_replay_recipe_store(
+            root / "research_replay.sqlite3",
+            providers=runtime_providers,
+            metadata_backend=metadata_backend,
+            connection_factory=connection_factory,
+            schema=_POSTGRES_SCHEMA,
+        )
+        return (
+            workspace_store,
+            acl_store,
+            result_store,
+            report_store,
+            capsule_store,
+            invalidation_store,
+            replacement_store,
+            trust_store,
+            replay_store,
+        )
+    if metadata_backend == "sqlite":
+        workspace_store = SQLiteResearchWorkspaceStore(root / "research_workspace.sqlite3")
+        acl_store = ProjectACLStore(root / "research_project_acl.sqlite3")
+        result_store = ResearchResultStore(root / "research_results.sqlite3")
+        report_store = ResearchReportStore(root / "research_reports.sqlite3")
+        capsule_store = ResearchCapsuleStore(root / "research_capsules.sqlite3")
+        invalidation_store = DependencyInvalidationStore(root / "research_invalidation.sqlite3")
+        replacement_store = ArtifactReplacementStore(root / "research_replacements.sqlite3")
+        trust_store = SourceTrustStore(root / "source_trust.sqlite3")
+        replay_store = build_replay_recipe_store(
+            root / "research_replay.sqlite3",
+            providers=runtime_providers,
+            metadata_backend=metadata_backend,
+        )
+        return (
+            workspace_store,
+            acl_store,
+            result_store,
+            report_store,
+            capsule_store,
+            invalidation_store,
+            replacement_store,
+            trust_store,
+            replay_store,
+        )
+    raise RuntimeError(f"unsupported research metadata backend: {metadata_backend}")
 
 
+# Review/feedback governance is independent from the research execution authority set.
+# It remains on the established local stores until its own migration is completed.
 reviews = ReviewStore(root / "reviews.sqlite3")
 feedback = FeedbackStore(root / "feedback.sqlite3")
-workspace = _build_workspace_store()
-project_acls = ProjectACLStore(root / "research_project_acl.sqlite3")
+(
+    workspace,
+    project_acls,
+    results,
+    reports,
+    capsules,
+    invalidations,
+    replacements,
+    source_trust,
+    replay_recipes,
+) = _build_research_state()
 access_resolver = ResearchAccessResolver(workspace, project_acls)
-results = ResearchResultStore(root / "research_results.sqlite3")
-reports = ResearchReportStore(root / "research_reports.sqlite3")
-capsules = ResearchCapsuleStore(root / "research_capsules.sqlite3")
-invalidations = DependencyInvalidationStore(root / "research_invalidation.sqlite3")
-replacements = ArtifactReplacementStore(root / "research_replacements.sqlite3")
-source_trust = SourceTrustStore(root / "source_trust.sqlite3")
-replay_recipes = build_replay_recipe_store(
-    root / "research_replay.sqlite3", providers=runtime_providers
-)
 app = base.app
 
 _base_new_agent = base._new_agent
@@ -289,6 +382,7 @@ __all__ = [
     "composition",
     "feedback",
     "invalidations",
+    "metadata_backend",
     "project_acls",
     "recompute_executor",
     "replacements",
