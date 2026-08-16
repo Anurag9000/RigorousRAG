@@ -1,4 +1,4 @@
-"""Hardened API plus durable owner-scoped governance and research routes."""
+"""Hardened API plus durable governance and research routes."""
 from pathlib import Path
 import os
 
@@ -6,157 +6,45 @@ import server as base
 from fastapi import Request
 from tools.agent_runtime import configure_agent_runtime
 from tools.artifact_lineage_api import build_artifact_lineage_router
-from tools.artifact_replacements import ArtifactReplacementStore
 from tools.control_api import build_control_router
-from tools.dependency_invalidation import DependencyInvalidationStore
-from tools.feedback_store import FeedbackStore
 from tools.invalidation_api import build_invalidation_router
-from tools.postgres_invalidation_store import PostgresDependencyInvalidationStore
-from tools.postgres_research_stores import (
-    PostgresArtifactReplacementStore,
-    PostgresProjectACLStore,
-    PostgresResearchCapsuleStore,
-    PostgresResearchReportStore,
-    PostgresResearchResultStore,
-)
-from tools.postgres_source_trust_store import PostgresSourceTrustStore
-from tools.postgres_workspace_store import PostgresResearchWorkspaceStore
+from tools.production_persistence import build_production_persistence
 from tools.project_acl_api import build_project_acl_router
-from tools.project_acl_store import ProjectACLStore
 from tools.recompute_executor import ResearchRecomputeExecutor
 from tools.replay_api import build_replay_router
-from tools.replay_runtime import build_replay_recipe_store
 from tools.research_access import ResearchAccessResolver
 from tools.research_answer_history_api import build_research_answer_history_router
 from tools.research_api import build_research_router
 from tools.research_capsule_api import build_research_capsule_router
-from tools.research_capsule_store import ResearchCapsuleStore
 from tools.research_capsule_verification_api import build_research_capsule_verification_router
 from tools.research_query_api import build_research_query_router
 from tools.research_report_api import build_research_report_router
-from tools.research_report_store import ResearchReportStore
-from tools.research_result_store import ResearchResultStore
-from tools.research_workspace_sqlite import SQLiteResearchWorkspaceStore
-from tools.review_store import ReviewStore
 from tools.runtime_api import build_runtime_router
 from tools.runtime_composition import build_runtime_composition
 from tools.runtime_providers import runtime_providers
 from tools.source_trust_api import build_source_trust_router
-from tools.source_trust_store import SourceTrustStore
 
 root = Path(os.environ.get("CLASSIC_STORAGE_DIR", "data")).resolve() / "governance"
 root.mkdir(parents=True, exist_ok=True)
 composition = build_runtime_composition()
 code_revision = os.environ.get("RIGOROUSRAG_CODE_REVISION", "").strip()
-metadata_backend = composition.config.storage.metadata_backend.strip().lower()
-_POSTGRES_SCHEMA = "rigorousrag"
-
-
-def _build_research_state():
-    """Construct one coherent research persistence boundary.
-
-    A Postgres deployment must not mix shared Workspace/session state with node-local ACL,
-    result, report, capsule, invalidation, replacement, trust or replay state. Conversely,
-    the SQLite path remains an intentionally single-node reference deployment. Review and
-    feedback governance stores are composed separately because they are not dependencies
-    of research execution/publication and can be migrated independently.
-    """
-
-    if metadata_backend in {"postgres", "postgresql"}:
-        connection_factory = runtime_providers.require("postgres.connection_factory")
-        workspace_store = PostgresResearchWorkspaceStore(
-            connection_factory,
-            schema=_POSTGRES_SCHEMA,
-        )
-        acl_store = PostgresProjectACLStore(
-            connection_factory,
-            schema=_POSTGRES_SCHEMA,
-        )
-        result_store = PostgresResearchResultStore(
-            connection_factory,
-            schema=_POSTGRES_SCHEMA,
-        )
-        report_store = PostgresResearchReportStore(
-            connection_factory,
-            schema=_POSTGRES_SCHEMA,
-        )
-        capsule_store = PostgresResearchCapsuleStore(
-            connection_factory,
-            schema=_POSTGRES_SCHEMA,
-        )
-        invalidation_store = PostgresDependencyInvalidationStore(
-            connection_factory,
-            schema=_POSTGRES_SCHEMA,
-        )
-        replacement_store = PostgresArtifactReplacementStore(
-            connection_factory,
-            schema=_POSTGRES_SCHEMA,
-        )
-        trust_store = PostgresSourceTrustStore(
-            connection_factory,
-            schema=_POSTGRES_SCHEMA,
-        )
-        replay_store = build_replay_recipe_store(
-            root / "research_replay.sqlite3",
-            providers=runtime_providers,
-            metadata_backend=metadata_backend,
-            connection_factory=connection_factory,
-            schema=_POSTGRES_SCHEMA,
-        )
-        return (
-            workspace_store,
-            acl_store,
-            result_store,
-            report_store,
-            capsule_store,
-            invalidation_store,
-            replacement_store,
-            trust_store,
-            replay_store,
-        )
-    if metadata_backend == "sqlite":
-        workspace_store = SQLiteResearchWorkspaceStore(root / "research_workspace.sqlite3")
-        acl_store = ProjectACLStore(root / "research_project_acl.sqlite3")
-        result_store = ResearchResultStore(root / "research_results.sqlite3")
-        report_store = ResearchReportStore(root / "research_reports.sqlite3")
-        capsule_store = ResearchCapsuleStore(root / "research_capsules.sqlite3")
-        invalidation_store = DependencyInvalidationStore(root / "research_invalidation.sqlite3")
-        replacement_store = ArtifactReplacementStore(root / "research_replacements.sqlite3")
-        trust_store = SourceTrustStore(root / "source_trust.sqlite3")
-        replay_store = build_replay_recipe_store(
-            root / "research_replay.sqlite3",
-            providers=runtime_providers,
-            metadata_backend=metadata_backend,
-        )
-        return (
-            workspace_store,
-            acl_store,
-            result_store,
-            report_store,
-            capsule_store,
-            invalidation_store,
-            replacement_store,
-            trust_store,
-            replay_store,
-        )
-    raise RuntimeError(f"unsupported research metadata backend: {metadata_backend}")
-
-
-# Review/feedback governance is independent from the research execution authority set.
-# It remains on the established local stores until its own migration is completed.
-reviews = ReviewStore(root / "reviews.sqlite3")
-feedback = FeedbackStore(root / "feedback.sqlite3")
-(
-    workspace,
-    project_acls,
-    results,
-    reports,
-    capsules,
-    invalidations,
-    replacements,
-    source_trust,
-    replay_recipes,
-) = _build_research_state()
+persistence = build_production_persistence(
+    root,
+    metadata_backend=composition.config.storage.metadata_backend,
+    providers=runtime_providers,
+)
+metadata_backend = persistence.backend
+workspace = persistence.workspace
+project_acls = persistence.project_acls
+results = persistence.results
+reports = persistence.reports
+capsules = persistence.capsules
+invalidations = persistence.invalidations
+replacements = persistence.replacements
+source_trust = persistence.source_trust
+replay_recipes = persistence.replay_recipes
+reviews = persistence.reviews
+feedback = persistence.feedback
 access_resolver = ResearchAccessResolver(workspace, project_acls)
 app = base.app
 
@@ -329,7 +217,8 @@ def _ensure_research_routes() -> None:
             access_resolver=access_resolver,
         )
         invalidation = build_invalidation_router(
-            principal_dependency=base.get_rate_limited_principal, store=invalidations
+            principal_dependency=base.get_rate_limited_principal,
+            store=invalidations,
         )
         lineage = build_artifact_lineage_router(
             principal_dependency=base.get_rate_limited_principal,
@@ -383,6 +272,7 @@ __all__ = [
     "feedback",
     "invalidations",
     "metadata_backend",
+    "persistence",
     "project_acls",
     "recompute_executor",
     "replacements",
