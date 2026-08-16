@@ -1,8 +1,8 @@
 """Injected production-provider adapters without SDK installation or network setup.
 
-Applications provide already-configured SDK/client objects.  These adapters enforce the
+Applications provide already-configured SDK/client objects. These adapters enforce the
 RigorousRAG object/queue/secret contracts without importing or downloading provider
-packages themselves.  They intentionally avoid provider-specific credential discovery.
+packages themselves. They intentionally avoid provider-specific credential discovery.
 """
 
 from __future__ import annotations
@@ -13,13 +13,14 @@ import math
 import time
 import uuid
 from dataclasses import asdict
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 from tools.production_runtime import ObjectRecord, QueueLease, QueueMessage
 from tools.security import normalize_owner_id
 
 _MAX_OBJECT_BYTES = 2_000_000_000
 _MAX_QUEUE_BYTES = 1_000_000
+_NOT_FOUND_CODES = frozenset({"404", "NoSuchKey", "NotFound", "NoSuchObject", "NoSuchResource"})
 
 
 def _text(value: Any, label: str, maximum: int = 1000, *, allow_empty: bool = False) -> str:
@@ -39,22 +40,60 @@ def _json(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
 
 
+def _looks_not_found(error: Exception) -> bool:
+    """Recognize common provider-neutral 404 shapes without importing an SDK."""
+    status = getattr(error, "status_code", None)
+    try:
+        if status is not None and int(status) == 404:
+            return True
+    except (TypeError, ValueError):
+        pass
+    response = getattr(error, "response", None)
+    if not isinstance(response, Mapping):
+        return False
+    error_payload = response.get("Error")
+    if isinstance(error_payload, Mapping):
+        code = str(error_payload.get("Code", ""))
+        if code in _NOT_FOUND_CODES:
+            return True
+    metadata = response.get("ResponseMetadata")
+    if isinstance(metadata, Mapping):
+        try:
+            return int(metadata.get("HTTPStatusCode", 0)) == 404
+        except (TypeError, ValueError):
+            return False
+    return False
+
+
 class InjectedS3ObjectStore:
     """S3-compatible owner/version object store over an injected client.
 
     Required client methods are ``put_object``, ``get_object``, ``head_object`` and
-    ``delete_object``.  The adapter does not create buckets or discover credentials.
+    ``delete_object``. The adapter does not create buckets or discover credentials.
+    Provider-specific not-found exceptions are normalized to ``KeyError`` only when an
+    explicit predicate says so or the exception has a recognizable 404/NoSuchKey shape.
+    Every other provider failure propagates unchanged.
     """
 
-    def __init__(self, *, client: Any, bucket: str, prefix: str = "rigorousrag") -> None:
+    def __init__(
+        self,
+        *,
+        client: Any,
+        bucket: str,
+        prefix: str = "rigorousrag",
+        not_found_predicate: Callable[[Exception], bool] | None = None,
+    ) -> None:
         if client is None:
             raise ValueError("client must be supplied")
+        if not_found_predicate is not None and not callable(not_found_predicate):
+            raise TypeError("not_found_predicate must be callable or null")
         self.client = client
         self.bucket = _text(bucket, "bucket", 255)
         raw_prefix = _text(prefix, "prefix", 500).strip("/")
         if ".." in raw_prefix.split("/"):
             raise ValueError("prefix may not contain parent traversal")
         self.prefix = raw_prefix
+        self.not_found_predicate = not_found_predicate
 
     def _key(self, owner_id: str, object_id: str) -> str:
         owner = normalize_owner_id(owner_id)
@@ -62,6 +101,23 @@ class InjectedS3ObjectStore:
         if identifier.startswith("/") or ".." in identifier.split("/"):
             raise ValueError("object_id is not a safe relative identifier")
         return f"{self.prefix}/{owner}/{identifier}"
+
+    def _is_not_found(self, error: Exception) -> bool:
+        if self.not_found_predicate is not None:
+            try:
+                if bool(self.not_found_predicate(error)):
+                    return True
+            except Exception:
+                return False
+        return _looks_not_found(error)
+
+    def _provider_call(self, object_id: str, operation: Callable[[], Any]) -> Any:
+        try:
+            return operation()
+        except Exception as exc:
+            if self._is_not_found(exc):
+                raise KeyError(object_id) from exc
+            raise
 
     def put(self, owner_id: str, object_id: str, payload: bytes, *, content_type: str, metadata: Mapping[str, str] = {}) -> ObjectRecord:
         if not isinstance(payload, bytes) or len(payload) > _MAX_OBJECT_BYTES:
@@ -91,7 +147,7 @@ class InjectedS3ObjectStore:
             raise ValueError("integer ObjectRecord versions are opaque; use provider lifecycle/version IDs outside this generic contract")
         owner = normalize_owner_id(owner_id)
         key = self._key(owner, object_id)
-        response = self.client.get_object(Bucket=self.bucket, Key=key)
+        response = self._provider_call(object_id, lambda: self.client.get_object(Bucket=self.bucket, Key=key))
         body = response.get("Body") if isinstance(response, Mapping) else None
         if body is None or not hasattr(body, "read"):
             raise RuntimeError("object provider returned no readable body")
@@ -106,7 +162,10 @@ class InjectedS3ObjectStore:
 
     def head(self, owner_id: str, object_id: str) -> ObjectRecord:
         owner = normalize_owner_id(owner_id)
-        response = self.client.head_object(Bucket=self.bucket, Key=self._key(owner, object_id))
+        response = self._provider_call(
+            object_id,
+            lambda: self.client.head_object(Bucket=self.bucket, Key=self._key(owner, object_id)),
+        )
         if not isinstance(response, Mapping):
             raise RuntimeError("object provider returned invalid metadata")
         metadata = response.get("Metadata", {})
@@ -120,7 +179,10 @@ class InjectedS3ObjectStore:
 
     def delete(self, owner_id: str, object_id: str) -> ObjectRecord:
         current = self.head(owner_id, object_id)
-        self.client.delete_object(Bucket=self.bucket, Key=self._key(owner_id, object_id))
+        self._provider_call(
+            object_id,
+            lambda: self.client.delete_object(Bucket=self.bucket, Key=self._key(owner_id, object_id)),
+        )
         return ObjectRecord(current.owner_id, current.object_id, current.content_sha256, 0, current.content_type, current.version + 1, current.metadata, True)
 
 
