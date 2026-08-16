@@ -31,10 +31,7 @@
   }
 
   async function request(path, options = {}) {
-    const response = await fetch(path, {
-      ...options,
-      headers: authHeaders(options.headers || {}),
-    });
+    const response = await fetch(path, { ...options, headers: authHeaders(options.headers || {}) });
     const type = response.headers.get("content-type") || "";
     let payload = null;
     try {
@@ -61,8 +58,7 @@
 
   function selectedPermissions(statusPayload) {
     const raw = statusPayload && statusPayload.project && Array.isArray(statusPayload.project.permissions)
-      ? statusPayload.project.permissions
-      : [];
+      ? statusPayload.project.permissions : [];
     return new Set(raw.map((value) => String(value)));
   }
 
@@ -83,9 +79,7 @@
       throw new Error(detail || `Export failed with status ${response.status}.`);
     }
     const length = Number(response.headers.get("content-length") || "0");
-    if (Number.isFinite(length) && length > MAX_EXPORT_BYTES) {
-      throw new Error("Export exceeds the browser safety limit.");
-    }
+    if (Number.isFinite(length) && length > MAX_EXPORT_BYTES) throw new Error("Export exceeds the browser safety limit.");
     const blob = await response.blob();
     if (blob.size > MAX_EXPORT_BYTES) throw new Error("Export exceeds the browser safety limit.");
     const url = URL.createObjectURL(blob);
@@ -147,7 +141,7 @@
     pane.appendChild(node("h3", "Governed hydrology evidence"));
     pane.appendChild(node(
       "p",
-      "Inspect server-owned HEC/HMS topology, engineering packages, retrieval plans, evidence projections and deterministic reports. Browser code never parses local engineering files or decides artifact freshness.",
+      "Inspect server-owned HEC/HMS topology, engineering packages, replayable retrieval plans, evidence projections and deterministic reports. Browser code never parses local engineering files, decides freshness or executes recomputation.",
       "privacy-note",
     ));
 
@@ -171,7 +165,7 @@
     historyToggle.type = "checkbox";
     historyToggle.style.marginRight = ".35rem";
     historyLabel.appendChild(historyToggle);
-    historyLabel.appendChild(document.createTextNode("Show artifact history"));
+    historyLabel.appendChild(document.createTextNode("Show artifact history in list"));
     projectSection.appendChild(historyLabel);
     pane.appendChild(projectSection);
 
@@ -196,7 +190,6 @@
     detailSection.appendChild(detailActions);
     detailSection.appendChild(detailBody);
     pane.appendChild(detailSection);
-
     rightPanel.appendChild(pane);
 
     let currentStatus = null;
@@ -281,7 +274,10 @@
         const card = node("article", null, "doc-card");
         const head = node("div", null, "doc-card-head");
         head.appendChild(node("div", `${artifact.kind} · ${artifact.logical_id}`, "doc-title"));
-        head.appendChild(actionButton("Inspect", () => inspectArtifact(artifact)));
+        const actions = node("div", null, "doc-actions");
+        actions.appendChild(actionButton("Inspect", () => inspectArtifact(artifact)));
+        actions.appendChild(actionButton("History", () => inspectHistory(artifact)));
+        head.appendChild(actions);
         card.appendChild(head);
         const staleText = artifact.stale === true ? "STALE" : artifact.stale === false ? "current" : "freshness unknown";
         card.appendChild(node("div", `v${artifact.version} · ${artifact.is_current ? "current generation" : "historical"} · ${staleText}`, "meta"));
@@ -292,6 +288,23 @@
         }
         artifacts.appendChild(card);
       });
+    }
+
+    async function inspectHistory(artifact) {
+      const projectId = projectSelect.value;
+      if (!projectId) return;
+      detailSection.hidden = false;
+      clear(detailActions);
+      detailHeading.textContent = `${artifact.kind} · ${artifact.logical_id} · generation history`;
+      detailMeta.textContent = "Loading server-owned lifecycle history…";
+      detailBody.textContent = "";
+      try {
+        const payload = await request(`/research/projects/${encodeURIComponent(projectId)}/hydrology/artifacts/${encodeURIComponent(artifact.kind)}/${encodeURIComponent(artifact.logical_id)}/history?limit=500`);
+        detailMeta.textContent = `${payload.history_count || 0} generation${payload.history_count === 1 ? "" : "s"} · current ${payload.current_fingerprint || "none"}`;
+        detailBody.textContent = JSON.stringify(payload.history || [], null, 2);
+      } catch (error) {
+        detailMeta.textContent = `Could not load generation history: ${error.message}`;
+      }
     }
 
     async function inspectArtifact(artifact) {
@@ -320,21 +333,22 @@
       clear(detailActions);
       if (!currentStatus) return;
       const projectId = projectSelect.value;
+      detailActions.appendChild(actionButton("History", () => inspectHistory(artifact)));
       if (artifact.kind === "evidence_projection" && artifact.is_current && payload.stale === false && hasPermission(currentStatus, "report.write")) {
-        detailActions.appendChild(actionButton("Create report", async () => {
+        detailActions.appendChild(actionButton("Create replayable report", async () => {
           const proposed = `${artifact.logical_id}-report`;
           const reportId = window.prompt("Hydrology report ID", proposed);
           if (!reportId) return;
           try {
-            const created = await request(`/research/projects/${encodeURIComponent(projectId)}/hydrology/reports`, {
+            const created = await request(`/research/projects/${encodeURIComponent(projectId)}/hydrology/derive/reports`, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ report_id: reportId.trim(), projection_id: artifact.logical_id }),
             });
-            status.textContent = `Hydrology report ${created.report_id} created at fingerprint ${created.fingerprint}.`;
+            status.textContent = `Replayable hydrology report ${created.logical_id} created at ${created.fingerprint} with recipe ${created.recipe_sha256}.`;
             await loadStatus();
           } catch (error) {
-            status.textContent = `Could not create hydrology report: ${error.message}`;
+            status.textContent = `Could not create replayable hydrology report: ${error.message}`;
           }
         }, "btn small primary"));
       }
