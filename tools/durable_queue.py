@@ -13,6 +13,7 @@ rather than private source/evidence content.
 from __future__ import annotations
 
 import json
+import math
 import os
 import sqlite3
 import stat
@@ -81,8 +82,17 @@ def _positive_seconds(value: float, label: str) -> float:
     if isinstance(value, bool):
         raise ValueError(f"{label} must be positive.")
     result = float(value)
-    if result <= 0.0:
-        raise ValueError(f"{label} must be positive.")
+    if not math.isfinite(result) or result <= 0.0:
+        raise ValueError(f"{label} must be positive and finite.")
+    return result
+
+
+def _nonnegative_seconds(value: float, label: str) -> float:
+    if isinstance(value, bool):
+        raise ValueError(f"{label} must not be negative.")
+    result = float(value)
+    if not math.isfinite(result) or result < 0.0:
+        raise ValueError(f"{label} must be finite and not negative.")
     return result
 
 
@@ -240,9 +250,7 @@ class InMemoryDurableQueue:
         state.invisible_until = 0.0
 
     def nack(self, receipt: str, *, retry_delay: float = 0.0) -> None:
-        delay = float(retry_delay)
-        if delay < 0.0:
-            raise ValueError("retry_delay must not be negative.")
+        delay = _nonnegative_seconds(retry_delay, "retry_delay")
         state = self._by_receipt(receipt)
         state.receipt = None
         state.owner = None
@@ -310,7 +318,8 @@ class SQLiteDurableQueue:
     def _initialize(self) -> None:
         connection = self._connect()
         try:
-            connection.execute("BEGIN IMMEDIATE")
+            # sqlite3.executescript() may commit a pending transaction, so schema
+            # creation must precede the transaction that fences namespace bootstrap.
             connection.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS durable_queue_namespaces (
@@ -343,6 +352,7 @@ class SQLiteDurableQueue:
                   ON durable_queue_messages(namespace, receipt);
                 """
             )
+            connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
                 "SELECT schema_version,max_attempts FROM durable_queue_namespaces WHERE namespace=?",
                 (self.namespace,),
@@ -523,13 +533,17 @@ class SQLiteDurableQueue:
             try:
                 row = self._active_receipt_row(connection, receipt, now)
             except CoordinationError:
+                # _active_receipt_row may have reclaimed/dead-lettered an expired
+                # lease. Commit that authoritative transition before rejecting the
+                # stale receipt.
                 connection.commit()
                 raise
+            token = _identifier(receipt, "receipt")
             cursor = connection.execute(
                 """UPDATE durable_queue_messages
                    SET acked=1,receipt=NULL,owner=NULL,invisible_until=0,updated_at=?
                    WHERE sequence=? AND namespace=? AND receipt=?""",
-                (now, int(row["sequence"]), self.namespace, _identifier(receipt, "receipt")),
+                (now, int(row["sequence"]), self.namespace, token),
             )
             if cursor.rowcount != 1:
                 raise CoordinationError("receipt lost ownership before acknowledgement")
@@ -544,11 +558,7 @@ class SQLiteDurableQueue:
             connection.close()
 
     def nack(self, receipt: str, *, retry_delay: float = 0.0) -> None:
-        if isinstance(retry_delay, bool):
-            raise ValueError("retry_delay must not be negative.")
-        delay = float(retry_delay)
-        if delay < 0.0:
-            raise ValueError("retry_delay must not be negative.")
+        delay = _nonnegative_seconds(retry_delay, "retry_delay")
         now = self._clock()
         connection = self._connect()
         try:
