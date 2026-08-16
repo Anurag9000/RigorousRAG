@@ -15,6 +15,25 @@
     while (element.firstChild) element.removeChild(element.firstChild);
   }
 
+  function permissionSet(value) {
+    const raw = value && value.access && Array.isArray(value.access.permissions) ? value.access.permissions : [];
+    return new Set(raw.map((item) => String(item)));
+  }
+
+  function hasPermission(value, permission) {
+    const permissions = permissionSet(value);
+    return !value || !value.access || permissions.has(permission);
+  }
+
+  function params(values) {
+    const query = new URLSearchParams();
+    Object.entries(values).forEach(([key, value]) => {
+      if (value != null && value !== "") query.set(key, String(value));
+    });
+    const encoded = query.toString();
+    return encoded ? `?${encoded}` : "";
+  }
+
   async function request(path, options = {}) {
     const headers = { ...(options.headers || {}) };
     const key = sessionStorage.getItem(API_KEY_KEY) || "";
@@ -26,7 +45,8 @@
       payload = type.includes("application/json") ? await response.json() : await response.text();
     } catch { payload = null; }
     if (!response.ok) {
-      const detail = payload && typeof payload === "object" ? payload.detail : payload;
+      let detail = payload && typeof payload === "object" ? payload.detail : payload;
+      if (detail && typeof detail === "object") detail = detail.message || JSON.stringify(detail);
       const error = new Error(detail || `Request failed with status ${response.status}.`);
       error.status = response.status;
       throw error;
@@ -71,7 +91,7 @@
     pane.classList.add("active");
   }
 
-  function field(label, id, { multiline = false, placeholder = "" } = {}) {
+  function field(label, id, { multiline = false, placeholder = "", type = "text" } = {}) {
     const wrapper = document.createElement("div");
     wrapper.appendChild(node("label", label, "label"));
     const input = document.createElement(multiline ? "textarea" : "input");
@@ -79,9 +99,15 @@
     input.id = id;
     input.placeholder = placeholder;
     input.maxLength = multiline ? 20000 : 1000;
-    if (!multiline) input.type = "text";
+    if (!multiline) input.type = type;
     wrapper.appendChild(input);
     return wrapper;
+  }
+
+  function accessMeta(value) {
+    if (!value || !value.access) return "owner-local";
+    const role = String(value.access.role || "unknown");
+    return `${role}${value.access.shared ? " · shared" : " · owner"}`;
   }
 
   function projectCard(project, onOpen) {
@@ -95,8 +121,16 @@
     card.appendChild(head);
     card.appendChild(node("div", project.research_question || "", "summary"));
     card.appendChild(node("div", `Project ${project.project_id}`, "meta"));
+    card.appendChild(node("div", `Access ${accessMeta(project)}`, "meta"));
     card.appendChild(node("div", `Corpora ${(project.corpora || []).length} · ${(project.tags || []).join(", ") || "no tags"}`, "meta"));
     return card;
+  }
+
+  function actionButton(label, handler, className = "btn small") {
+    const button = node("button", label, className);
+    button.type = "button";
+    button.addEventListener("click", handler);
+    return button;
   }
 
   async function install() {
@@ -114,17 +148,15 @@
     const pane = node("section", null, "tool-pane");
     pane.id = "tool-workspace";
     pane.appendChild(node("h3", "Research workspace"));
-    pane.appendChild(node("p", "Persist projects, authoritative result IDs and server-owned citation fingerprints without copying private evidence into browser history.", "privacy-note"));
+    pane.appendChild(node("p", "Projects, sessions, result IDs, replay status, reports and reproducibility capsules stay server-authoritative. Private evidence and replay queries are not copied into browser history.", "privacy-note"));
 
     const activeBox = node("div", null, "section");
-    const activeLabel = node("div", "No active research session. Chat results will still be stored when the research API is available.", "meta");
-    const clearActive = node("button", "Use stateless research", "btn small");
-    clearActive.type = "button";
-    clearActive.style.marginTop = ".4rem";
-    clearActive.addEventListener("click", () => {
+    const activeLabel = node("div", "No active research session.", "meta");
+    const clearActive = actionButton("Use stateless research", () => {
       setActiveSession(null, null);
       renderActive();
     });
+    clearActive.style.marginTop = ".4rem";
     activeBox.appendChild(activeLabel);
     activeBox.appendChild(clearActive);
     pane.appendChild(activeBox);
@@ -140,8 +172,7 @@
     pane.appendChild(createBox);
 
     const toolbar = node("div", null, "section");
-    const refreshButton = node("button", "Refresh projects", "btn small");
-    refreshButton.type = "button";
+    const refreshButton = actionButton("Refresh projects", loadProjects);
     toolbar.appendChild(refreshButton);
     pane.appendChild(toolbar);
 
@@ -155,21 +186,58 @@
     sessionBox.hidden = true;
     const sessionHeading = node("h4", "Sessions");
     sessionBox.appendChild(sessionHeading);
-    const newSession = node("button", "New session", "btn small");
-    newSession.type = "button";
+    const newSession = actionButton("New session", createSession);
     sessionBox.appendChild(newSession);
     const sessions = node("div", null, "doc-list");
     sessions.style.padding = ".6rem 0 0";
     sessionBox.appendChild(sessions);
     pane.appendChild(sessionBox);
+
+    const aclBox = node("section", null, "section");
+    aclBox.hidden = true;
+    aclBox.appendChild(node("h4", "Project access"));
+    const aclList = node("div", null, "doc-list");
+    aclBox.appendChild(aclList);
+    const aclForm = node("div", null, "section");
+    aclForm.appendChild(field("Principal ID", "workspace-acl-principal", { placeholder: "collaborator identity" }));
+    const roleLabel = node("label", "Role", "label");
+    const roleSelect = document.createElement("select");
+    roleSelect.className = "field";
+    roleSelect.id = "workspace-acl-role";
+    ["viewer", "reviewer", "editor"].forEach((role) => {
+      const option = document.createElement("option");
+      option.value = role;
+      option.textContent = role;
+      roleSelect.appendChild(option);
+    });
+    aclForm.appendChild(roleLabel);
+    aclForm.appendChild(roleSelect);
+    aclForm.appendChild(field("Expires at (optional ISO timestamp)", "workspace-acl-expires", { placeholder: "2026-12-31T23:59:59Z" }));
+    const grantButton = actionButton("Grant / update access", grantAccess, "btn primary");
+    grantButton.style.marginTop = ".6rem";
+    aclForm.appendChild(grantButton);
+    aclBox.appendChild(aclForm);
+    pane.appendChild(aclBox);
+
+    const artifactBox = node("section", null, "section");
+    artifactBox.hidden = true;
+    const artifactHeading = node("h4", "Session evidence lifecycle");
+    artifactBox.appendChild(artifactHeading);
+    const artifactStatus = node("div", "", "meta");
+    artifactBox.appendChild(artifactStatus);
+    const artifacts = node("div", null, "doc-list");
+    artifactBox.appendChild(artifacts);
+    pane.appendChild(artifactBox);
+
     rightPanel.appendChild(pane);
 
     let activeProject = null;
+    let inspectedSession = null;
 
     function renderActive() {
       const current = activeSession();
       if (!current) {
-        activeLabel.textContent = "No active research session. Chat results will still be stored when the research API is available.";
+        activeLabel.textContent = "No active research session. Stateless research remains available.";
         clearActive.disabled = true;
         return;
       }
@@ -197,10 +265,14 @@
 
     async function loadSessions(project) {
       activeProject = project;
+      inspectedSession = null;
+      artifactBox.hidden = true;
       sessionBox.hidden = false;
       sessionHeading.textContent = `Sessions · ${project.title || project.project_id}`;
+      newSession.disabled = !hasPermission(project, "session.write");
       clear(sessions);
       sessions.appendChild(node("div", "Loading sessions…", "empty"));
+      await loadACL(project);
       try {
         const payload = await request(`/research/projects/${encodeURIComponent(project.project_id)}/sessions`);
         clear(sessions);
@@ -218,23 +290,22 @@
           const head = node("div", null, "doc-card-head");
           head.appendChild(node("div", session.session_id, "doc-title"));
           const actions = node("div", null, "doc-actions");
-          if (!session.closed_at) {
-            const use = node("button", "Use", "btn small");
-            use.type = "button";
-            use.addEventListener("click", () => {
+          const inspect = actionButton("Inspect", () => loadArtifacts(project, session));
+          actions.appendChild(inspect);
+          if (!session.closed_at && hasPermission(session, "research.execute")) {
+            actions.appendChild(actionButton("Use", () => {
               setActiveSession(session, project);
               renderActive();
               status.textContent = `Active session set to ${session.session_id}.`;
-            });
-            actions.appendChild(use);
-            const close = node("button", "Close", "btn small danger");
-            close.type = "button";
-            close.addEventListener("click", () => closeSession(session, project));
-            actions.appendChild(close);
+            }));
+          }
+          if (!session.closed_at && hasPermission(session, "session.write")) {
+            actions.appendChild(actionButton("Close", () => closeSession(session, project), "btn small danger"));
           }
           head.appendChild(actions);
           card.appendChild(head);
           card.appendChild(node("div", `${(session.turns || []).length} turns · ${session.closed_at ? "closed" : "open"}`, "meta"));
+          card.appendChild(node("div", `Access ${accessMeta(session)}`, "meta"));
           card.appendChild(node("div", `Fingerprint ${session.fingerprint}`, "meta"));
           sessions.appendChild(card);
         }
@@ -244,17 +315,214 @@
       }
     }
 
+    async function loadACL(project) {
+      const canManage = hasPermission(project, "acl.manage");
+      aclBox.hidden = !canManage;
+      if (!canManage) return;
+      clear(aclList);
+      aclList.appendChild(node("div", "Loading grants…", "empty"));
+      try {
+        const payload = await request(`/research/projects/${encodeURIComponent(project.project_id)}/acl`);
+        clear(aclList);
+        const grants = Array.isArray(payload.grants) ? payload.grants : [];
+        grants.forEach((grant) => {
+          const card = node("article", null, "doc-card");
+          const head = node("div", null, "doc-card-head");
+          head.appendChild(node("div", `${grant.principal_id} · ${grant.role}`, "doc-title"));
+          if (grant.role !== "owner") {
+            head.appendChild(actionButton("Revoke", async () => {
+              try {
+                await request(`/research/projects/${encodeURIComponent(project.project_id)}/acl/${encodeURIComponent(grant.principal_id)}`, { method: "DELETE" });
+                await loadACL(project);
+              } catch (error) {
+                status.textContent = `Could not revoke access: ${error.message}`;
+              }
+            }, "btn small danger"));
+          }
+          card.appendChild(head);
+          card.appendChild(node("div", `Permissions ${(grant.permissions || []).join(", ")}`, "meta"));
+          card.appendChild(node("div", grant.expires_at ? `Expires ${new Date(grant.expires_at * 1000).toISOString()}` : "No expiration", "meta"));
+          aclList.appendChild(card);
+        });
+      } catch (error) {
+        clear(aclList);
+        aclList.appendChild(node("div", `Could not load project grants: ${error.message}`, "empty"));
+      }
+    }
+
+    async function grantAccess() {
+      if (!activeProject) return;
+      const principal = document.getElementById("workspace-acl-principal").value.trim();
+      const role = document.getElementById("workspace-acl-role").value;
+      const expiresText = document.getElementById("workspace-acl-expires").value.trim();
+      if (!principal) {
+        status.textContent = "Principal ID is required.";
+        return;
+      }
+      let expiresAt = null;
+      if (expiresText) {
+        const milliseconds = Date.parse(expiresText);
+        if (!Number.isFinite(milliseconds)) {
+          status.textContent = "Expiration must be a valid ISO timestamp.";
+          return;
+        }
+        expiresAt = milliseconds / 1000;
+      }
+      try {
+        await request(`/research/projects/${encodeURIComponent(activeProject.project_id)}/acl`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ principal_id: principal, role, expires_at: expiresAt }),
+        });
+        document.getElementById("workspace-acl-principal").value = "";
+        document.getElementById("workspace-acl-expires").value = "";
+        await loadACL(activeProject);
+      } catch (error) {
+        status.textContent = `Could not grant access: ${error.message}`;
+      }
+    }
+
+    function resultCard(project, session, result, replayByResult, capsulesByResult, reportsByResult) {
+      const card = node("article", null, "doc-card");
+      const head = node("div", null, "doc-card-head");
+      head.appendChild(node("div", `Result ${String(result.result_id).slice(0, 12)}…`, "doc-title"));
+      const actions = node("div", null, "doc-actions");
+      actions.appendChild(actionButton("History", () => showHistory(session, result)));
+      if (hasPermission(session, "capsule.write")) {
+        actions.appendChild(actionButton("Capsule preflight", () => preflightCapsule(project, session, result)));
+        actions.appendChild(actionButton("Archive capsule", () => createCapsule(project, session, result)));
+      }
+      if (hasPermission(session, "report.write")) {
+        actions.appendChild(actionButton("Create report", () => createReport(project, session, result)));
+      }
+      head.appendChild(actions);
+      card.appendChild(head);
+      card.appendChild(node("div", `Strategy ${result.strategy || "unknown"} · model ${result.model || "unknown"}`, "meta"));
+      card.appendChild(node("div", `${result.citation_count || 0} citations · ${result.stale ? "STALE" : "current"}`, "meta"));
+      card.appendChild(node("div", `Replay recipe ${replayByResult.has(result.result_id) ? "available" : "not available"}`, "meta"));
+      card.appendChild(node("div", `Capsules ${(capsulesByResult.get(result.result_id) || []).length} · reports ${(reportsByResult.get(result.result_id) || []).length}`, "meta"));
+      return card;
+    }
+
+    async function loadArtifacts(project, session) {
+      inspectedSession = session;
+      artifactBox.hidden = false;
+      artifactHeading.textContent = `Session evidence lifecycle · ${session.session_id}`;
+      artifactStatus.textContent = "Loading results, replay status, reports and capsules…";
+      clear(artifacts);
+      try {
+        const [resultPayload, replayPayload, capsulePayload, reportPayload] = await Promise.all([
+          request(`/research/results${params({ session_id: session.session_id, limit: 100 })}`),
+          request(`/research/replay${params({ session_id: session.session_id, limit: 100 })}`),
+          request(`/research/capsules${params({ project_id: project.project_id, limit: 200 })}`),
+          request(`/research/reports${params({ project_id: project.project_id, limit: 200 })}`),
+        ]);
+        const results = Array.isArray(resultPayload.results) ? resultPayload.results : [];
+        const replayByResult = new Set((replayPayload.recipes || []).map((item) => item.result_id));
+        const capsulesByResult = new Map();
+        (capsulePayload.capsules || []).filter((item) => item.session_id === session.session_id).forEach((item) => {
+          const rows = capsulesByResult.get(item.result_id) || [];
+          rows.push(item);
+          capsulesByResult.set(item.result_id, rows);
+        });
+        const reportsByResult = new Map();
+        (reportPayload.reports || []).forEach((item) => {
+          const rows = reportsByResult.get(item.result_id) || [];
+          rows.push(item);
+          reportsByResult.set(item.result_id, rows);
+        });
+        results.forEach((result) => artifacts.appendChild(resultCard(project, session, result, replayByResult, capsulesByResult, reportsByResult)));
+        if (!results.length) artifacts.appendChild(node("div", "No finalized results are bound to this session yet.", "empty"));
+        artifactStatus.textContent = `${results.length} result${results.length === 1 ? "" : "s"} · ${(capsulePayload.capsules || []).length} project capsule${(capsulePayload.capsules || []).length === 1 ? "" : "s"} · ${(reportPayload.reports || []).length} project report${(reportPayload.reports || []).length === 1 ? "" : "s"}`;
+      } catch (error) {
+        artifactStatus.textContent = `Could not load session artifacts: ${error.message}`;
+      }
+    }
+
+    async function showHistory(session, result) {
+      try {
+        const payload = await request(`/research/results/${encodeURIComponent(result.result_id)}/history${params({ session_id: session.session_id })}`);
+        const transitions = Array.isArray(payload.transitions) ? payload.transitions : [];
+        artifactStatus.textContent = transitions.length
+          ? `Answer history: ${payload.version_count} versions; latest ${String(payload.current.result_id).slice(0, 12)}…; ${transitions.filter((item) => item.answer_changed).length} answer-text change(s).`
+          : "Answer history: this result has not been superseded.";
+      } catch (error) {
+        artifactStatus.textContent = `Could not load answer history: ${error.message}`;
+      }
+    }
+
+    async function preflightCapsule(project, session, result) {
+      try {
+        const payload = await request("/research/capsules/preflight", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ project_id: project.project_id, session_id: session.session_id, result_id: result.result_id, require_replay_ready: true }),
+        });
+        const blockers = [...(payload.blockers || []), ...(payload.replay_blockers || [])];
+        artifactStatus.textContent = `Capsule preflight: manifest ${payload.manifest_ready ? "ready" : "blocked"}; replay ${payload.replay_ready ? "ready" : "blocked"}${blockers.length ? ` · ${blockers.join(", ")}` : ""}.`;
+      } catch (error) {
+        artifactStatus.textContent = `Capsule preflight failed: ${error.message}`;
+      }
+    }
+
+    async function createCapsule(project, session, result) {
+      try {
+        const payload = await request("/research/capsules", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ project_id: project.project_id, session_id: session.session_id, result_id: result.result_id, require_replay_ready: false }),
+        });
+        artifactStatus.textContent = `Immutable capsule ${payload.capsule_id} created with fingerprint ${payload.fingerprint}.`;
+        await loadArtifacts(project, session);
+      } catch (error) {
+        artifactStatus.textContent = `Could not create capsule: ${error.message}`;
+      }
+    }
+
+    async function createReport(project, session, result) {
+      try {
+        const payload = await request("/research/reports", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ project_id: project.project_id, session_id: session.session_id, result_id: result.result_id }),
+        });
+        artifactStatus.textContent = `Report ${payload.report_id} created from authoritative result ${result.result_id}.`;
+        await loadArtifacts(project, session);
+      } catch (error) {
+        artifactStatus.textContent = `Could not create report: ${error.message}`;
+      }
+    }
+
     async function loadProjects() {
       status.textContent = "Loading projects…";
       clear(projects);
       try {
         const payload = await request("/research/projects?limit=200");
         const rows = Array.isArray(payload.projects) ? payload.projects : [];
-        for (const project of rows) projects.appendChild(projectCard(project, loadSessions));
+        rows.forEach((project) => projects.appendChild(projectCard(project, loadSessions)));
         if (!rows.length) projects.appendChild(node("div", "No research projects yet.", "empty"));
         status.textContent = `${rows.length} project${rows.length === 1 ? "" : "s"}`;
       } catch (error) {
         status.textContent = `Workspace unavailable: ${error.message}`;
+      }
+    }
+
+    async function createSession() {
+      if (!activeProject) return;
+      newSession.disabled = true;
+      try {
+        const created = await request(`/research/projects/${encodeURIComponent(activeProject.project_id)}/sessions`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({}),
+        });
+        if (hasPermission(created, "research.execute")) setActiveSession(created, activeProject);
+        renderActive();
+        await loadSessions(activeProject);
+      } catch (error) {
+        status.textContent = `Could not create session: ${error.message}`;
+      } finally {
+        newSession.disabled = !activeProject || !hasPermission(activeProject, "session.write");
       }
     }
 
@@ -263,7 +531,6 @@
       renderActive();
       loadProjects();
     });
-    refreshButton.addEventListener("click", loadProjects);
     createButton.addEventListener("click", async () => {
       const title = document.getElementById("workspace-title").value.trim();
       const researchQuestion = document.getElementById("workspace-question").value.trim();
@@ -287,24 +554,6 @@
         status.textContent = `Could not create project: ${error.message}`;
       } finally {
         createButton.disabled = false;
-      }
-    });
-    newSession.addEventListener("click", async () => {
-      if (!activeProject) return;
-      newSession.disabled = true;
-      try {
-        const created = await request(`/research/projects/${encodeURIComponent(activeProject.project_id)}/sessions`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({}),
-        });
-        setActiveSession(created, activeProject);
-        renderActive();
-        await loadSessions(activeProject);
-      } catch (error) {
-        status.textContent = `Could not create session: ${error.message}`;
-      } finally {
-        newSession.disabled = false;
       }
     });
 
