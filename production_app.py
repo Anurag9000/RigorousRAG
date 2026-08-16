@@ -10,6 +10,7 @@ from tools.artifact_lineage_api import build_artifact_lineage_router
 from tools.control_api import build_control_router
 from tools.hydrology_agent_tools import register_hydrology_agent_tools
 from tools.hydrology_api import build_hydrology_router
+from tools.hydrology_derivation_api import build_hydrology_derivation_router
 from tools.hydrology_report_api import build_hydrology_report_router
 from tools.hydrology_status_api import build_hydrology_status_router
 from tools.invalidation_api import build_invalidation_router
@@ -51,6 +52,7 @@ replay_recipes = persistence.replay_recipes
 reviews = persistence.reviews
 feedback = persistence.feedback
 hydrology = persistence.hydrology
+hydrology_recipes = persistence.hydrology_recipes
 access_resolver = ResearchAccessResolver(workspace, project_acls)
 register_hydrology_agent_tools(
     agent_legacy,
@@ -101,6 +103,10 @@ _REQUIRED_RESEARCH_ROUTES = frozenset(
         "/research/projects/{project_id}/hydrology/packages/{package_id}",
         "/research/projects/{project_id}/hydrology/plans",
         "/research/projects/{project_id}/hydrology/projections",
+        "/research/projects/{project_id}/hydrology/derivations",
+        "/research/projects/{project_id}/hydrology/derive/plans",
+        "/research/projects/{project_id}/hydrology/derive/projections",
+        "/research/projects/{project_id}/hydrology/derive/reports",
         "/research/projects/{project_id}/hydrology/reports",
         "/research/projects/{project_id}/hydrology/reports/{report_id}/markdown",
         "/research/projects/{project_id}/hydrology/reports/{report_id}/csv",
@@ -193,6 +199,7 @@ def _ensure_research_routes() -> None:
                 "metadata_backend": metadata_backend,
                 "distributed_shared_state": metadata_backend == "postgres",
                 "encrypted_replay_configured": replay_recipes is not None,
+                "hydrology_derivation_recipes": True,
                 "code_revision_configured": bool(code_revision),
             },
         )
@@ -264,6 +271,12 @@ def _ensure_research_routes() -> None:
             access_resolver=access_resolver,
             invalidation_store=invalidations,
         )
+        hydrology_derivation_router = build_hydrology_derivation_router(
+            principal_dependency=base.get_rate_limited_principal,
+            store=hydrology,
+            recipe_store=hydrology_recipes,
+            access_resolver=access_resolver,
+        )
         hydrology_report_router = build_hydrology_report_router(
             principal_dependency=base.get_rate_limited_principal,
             store=hydrology,
@@ -290,6 +303,7 @@ def _ensure_research_routes() -> None:
             lineage,
             trust,
             hydrology_router,
+            hydrology_derivation_router,
             hydrology_report_router,
             hydrology_status_router,
         ):
@@ -321,6 +335,7 @@ __all__ = [
     "composition",
     "feedback",
     "hydrology",
+    "hydrology_recipes",
     "invalidations",
     "metadata_backend",
     "persistence",
