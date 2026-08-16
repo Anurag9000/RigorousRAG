@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from tools.dependency_invalidation import DependencyInvalidationStore, DependencyRef
-from tools.models import AgentAnswer
+from tools.models import AgentAnswer, Citation
 from tools.replay_recipe_store import EncryptedReplayRecipeStore
 from tools.research_dependencies import register_result_dependencies, stale_reasons
 from tools.research_result_store import ResearchResultStore, StoredResearchResult
@@ -48,6 +48,26 @@ def _maybe_sha(value: Any) -> str:
         return ""
     digest = value.strip().lower()
     return digest if len(digest) == 64 and all(ch in "0123456789abcdef" for ch in digest) else ""
+
+
+def _bind_citation_content(citations: list[Citation]) -> list[Citation]:
+    """Attach a server-owned digest of the exact authoritative evidence passage.
+
+    URL/source identifiers are never hashed as a substitute for evidence content. A
+    citation without a quote/snippet therefore remains intentionally unaddressed and will
+    fail strict capsule replay preflight until a real content identity is available.
+    """
+
+    output: list[Citation] = []
+    for citation in citations:
+        copy = citation.model_copy(deep=True)
+        evidence = copy.quote or copy.snippet or ""
+        if evidence:
+            metadata = dict(copy.metadata or {})
+            metadata["evidence_sha256"] = _sha_text(evidence)
+            copy.metadata = metadata
+        output.append(copy)
+    return output
 
 
 def _runtime_binding(composition: RuntimeComposition, *, model: str, strategy: str) -> Mapping[str, Any]:
@@ -161,8 +181,11 @@ def build_research_query_router(
         result_metadata["_rigorousrag_runtime"] = dict(
             _runtime_binding(composition, model=model, strategy=strategy)
         )
+        bound_citations = _bind_citation_content(list(answer.citations or ()))
         try:
-            answer = answer.model_copy(update={"metadata": result_metadata})
+            answer = answer.model_copy(
+                update={"metadata": result_metadata, "citations": bound_citations}
+            )
             stored = result_store.put(owner, query_sha256=query_sha256, answer=answer, strategy=strategy, model=model)
         except Exception as exc:
             raise HTTPException(status_code=503, detail="Research result persistence is unavailable.") from exc
