@@ -8,6 +8,7 @@ from tools.agent_runtime import configure_agent_runtime
 from tools.artifact_lineage_api import build_artifact_lineage_router
 from tools.control_api import build_control_router
 from tools.hydrology_api import build_hydrology_router
+from tools.hydrology_report_api import build_hydrology_report_router
 from tools.invalidation_api import build_invalidation_router
 from tools.production_persistence import build_production_persistence
 from tools.project_acl_api import build_project_acl_router
@@ -91,6 +92,9 @@ _REQUIRED_RESEARCH_ROUTES = frozenset(
         "/research/projects/{project_id}/hydrology/packages/{package_id}",
         "/research/projects/{project_id}/hydrology/plans",
         "/research/projects/{project_id}/hydrology/projections",
+        "/research/projects/{project_id}/hydrology/reports",
+        "/research/projects/{project_id}/hydrology/reports/{report_id}/markdown",
+        "/research/projects/{project_id}/hydrology/reports/{report_id}/csv",
         "/research/sessions/{session_id}",
         "/research/sessions/{session_id}/turns",
         "/research/sessions/{session_id}/close",
@@ -249,6 +253,12 @@ def _ensure_research_routes() -> None:
             access_resolver=access_resolver,
             invalidation_store=invalidations,
         )
+        hydrology_report_router = build_hydrology_report_router(
+            principal_dependency=base.get_rate_limited_principal,
+            store=hydrology,
+            access_resolver=access_resolver,
+            invalidation_store=invalidations,
+        )
         for router in (
             research,
             acl,
@@ -263,6 +273,7 @@ def _ensure_research_routes() -> None:
             lineage,
             trust,
             hydrology_router,
+            hydrology_report_router,
         ):
             _append_missing_routes(router)
     missing = _REQUIRED_RESEARCH_ROUTES.difference(_route_paths())
