@@ -16,6 +16,7 @@ from typing import Any
 from tools.artifact_replacements import ArtifactReplacementStore
 from tools.dependency_invalidation import DependencyInvalidationStore
 from tools.feedback_store import FeedbackStore
+from tools.hydrology_guarded_store import GuardedHydrologyArtifactStore
 from tools.hydrology_store import HydrologyArtifactStore
 from tools.hydrology_store_postgres import PostgresHydrologyArtifactStore
 from tools.hydrology_store_sqlite import SQLiteHydrologyArtifactStore
@@ -108,11 +109,12 @@ def build_production_persistence(
             connection_factory,
             schema=postgres_schema,
         )
-        hydrology = PostgresHydrologyArtifactStore(
+        hydrology_raw = PostgresHydrologyArtifactStore(
             connection_factory,
             schema=postgres_schema,
         )
-        hydrology.initialize()
+        hydrology_raw.initialize()
+        hydrology = GuardedHydrologyArtifactStore(hydrology_raw, invalidations)
         replay_recipes = build_replay_recipe_store(
             selected_root / "research_replay.sqlite3",
             providers=providers,
@@ -145,6 +147,13 @@ def build_production_persistence(
         )
 
     if backend == "sqlite":
+        invalidations = DependencyInvalidationStore(
+            selected_root / "research_invalidation.sqlite3"
+        )
+        hydrology_raw = SQLiteHydrologyArtifactStore(
+            selected_root / "research_hydrology.sqlite3"
+        )
+        hydrology = GuardedHydrologyArtifactStore(hydrology_raw, invalidations)
         return ProductionPersistence(
             backend="sqlite",
             workspace=SQLiteResearchWorkspaceStore(
@@ -156,9 +165,7 @@ def build_production_persistence(
             results=ResearchResultStore(selected_root / "research_results.sqlite3"),
             reports=ResearchReportStore(selected_root / "research_reports.sqlite3"),
             capsules=ResearchCapsuleStore(selected_root / "research_capsules.sqlite3"),
-            invalidations=DependencyInvalidationStore(
-                selected_root / "research_invalidation.sqlite3"
-            ),
+            invalidations=invalidations,
             replacements=ArtifactReplacementStore(
                 selected_root / "research_replacements.sqlite3"
             ),
@@ -170,9 +177,7 @@ def build_production_persistence(
             ),
             reviews=ReviewStore(selected_root / "reviews.sqlite3"),
             feedback=FeedbackStore(selected_root / "feedback.sqlite3"),
-            hydrology=SQLiteHydrologyArtifactStore(
-                selected_root / "research_hydrology.sqlite3"
-            ),
+            hydrology=hydrology,
         )
 
     raise RuntimeError(f"unsupported production metadata backend: {backend}")
