@@ -11,6 +11,7 @@ from tools.control_api import build_control_router
 from tools.hydrology_agent_tools import register_hydrology_agent_tools
 from tools.hydrology_api import build_hydrology_router
 from tools.hydrology_derivation_api import build_hydrology_derivation_router
+from tools.hydrology_history_api import build_hydrology_history_router
 from tools.hydrology_recompute_executor import HydrologyRecomputeExecutor
 from tools.hydrology_report_api import build_hydrology_report_router
 from tools.hydrology_status_api import build_hydrology_status_router
@@ -77,9 +78,6 @@ def _production_agent(owner_id: str, model=None):
 
 base._new_agent = _production_agent
 
-# Recompute execution remains operator/worker-only. The public API exposes queue/stale
-# metadata but never triggers model/provider work. Deterministic hydrology recomputation
-# is routed through the same authoritative task ledger without model calls.
 research_recompute_executor = ProductionResearchRecomputeExecutor(
     invalidations=invalidations,
     replacements=replacements,
@@ -101,7 +99,6 @@ distributed_recompute_executor = RoutedRecomputeExecutor(
     research=research_recompute_executor,
     hydrology=hydrology_recompute_executor,
 )
-# Compatibility alias retained for existing local research-only operator callers.
 recompute_executor = research_recompute_executor
 
 _REQUIRED_GOVERNANCE_ROUTES = frozenset({"/reviews", "/reviews/claim", "/feedback"})
@@ -114,6 +111,7 @@ _REQUIRED_RESEARCH_ROUTES = frozenset(
         "/research/projects/{project_id}/acl/{principal_id}",
         "/research/projects/{project_id}/hydrology/artifacts",
         "/research/projects/{project_id}/hydrology/artifacts/{kind}/{logical_id}",
+        "/research/projects/{project_id}/hydrology/artifacts/{kind}/{logical_id}/history",
         "/research/projects/{project_id}/hydrology/topologies/{topology_id}",
         "/research/projects/{project_id}/hydrology/packages/{package_id}",
         "/research/projects/{project_id}/hydrology/plans",
@@ -161,11 +159,7 @@ _REQUIRED_RESEARCH_ROUTES = frozenset(
 
 
 def _route_paths() -> set[str]:
-    return {
-        path
-        for route in app.routes
-        if isinstance((path := getattr(route, "path", None)), str)
-    }
+    return {path for route in app.routes if isinstance((path := getattr(route, "path", None)), str)}
 
 
 def _append_missing_routes(router) -> None:
@@ -187,9 +181,7 @@ def _ensure_governance_routes() -> None:
         _append_missing_routes(governance)
     missing = _REQUIRED_GOVERNANCE_ROUTES.difference(_route_paths())
     if missing:
-        raise RuntimeError(
-            "Production governance routes failed to mount: " + ", ".join(sorted(missing))
-        )
+        raise RuntimeError("Production governance routes failed to mount: " + ", ".join(sorted(missing)))
 
 
 def _ensure_research_routes() -> None:
@@ -216,6 +208,7 @@ def _ensure_research_routes() -> None:
                 "encrypted_replay_configured": replay_recipes is not None,
                 "hydrology_derivation_recipes": True,
                 "hydrology_capsule_generation_verification": True,
+                "hydrology_generation_history": True,
                 "routed_recompute": True,
                 "code_revision_configured": bool(code_revision),
             },
@@ -283,8 +276,6 @@ def _ensure_research_routes() -> None:
             store=source_trust,
             invalidation_store=invalidations,
         )
-        # The governed hydrology store owns dependency registration and generation
-        # invalidation. Pass no route-level lifecycle store here to avoid duplicate events.
         hydrology_router = build_hydrology_router(
             principal_dependency=base.get_rate_limited_principal,
             store=hydrology,
@@ -296,6 +287,14 @@ def _ensure_research_routes() -> None:
             store=hydrology,
             recipe_store=hydrology_recipes,
             access_resolver=access_resolver,
+        )
+        hydrology_history_router = build_hydrology_history_router(
+            principal_dependency=base.get_rate_limited_principal,
+            store=hydrology,
+            recipe_store=hydrology_recipes,
+            access_resolver=access_resolver,
+            invalidation_store=invalidations,
+            replacement_store=replacements,
         )
         hydrology_report_router = build_hydrology_report_router(
             principal_dependency=base.get_rate_limited_principal,
@@ -324,15 +323,14 @@ def _ensure_research_routes() -> None:
             trust,
             hydrology_router,
             hydrology_derivation_router,
+            hydrology_history_router,
             hydrology_report_router,
             hydrology_status_router,
         ):
             _append_missing_routes(router)
     missing = _REQUIRED_RESEARCH_ROUTES.difference(_route_paths())
     if missing:
-        raise RuntimeError(
-            "Production research routes failed to mount: " + ", ".join(sorted(missing))
-        )
+        raise RuntimeError("Production research routes failed to mount: " + ", ".join(sorted(missing)))
 
 
 _ensure_governance_routes()
