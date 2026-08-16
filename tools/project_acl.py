@@ -11,16 +11,37 @@ from typing import Any
 from tools.security import normalize_owner_id
 
 _ROLE_PERMISSIONS = {
-    "viewer": frozenset({"project.read", "session.read", "report.read"}),
-    "reviewer": frozenset({"project.read", "session.read", "report.read", "claim.review"}),
+    "viewer": frozenset(
+        {
+            "project.read",
+            "session.read",
+            "result.read",
+            "report.read",
+            "capsule.read",
+        }
+    ),
+    "reviewer": frozenset(
+        {
+            "project.read",
+            "session.read",
+            "result.read",
+            "report.read",
+            "capsule.read",
+            "claim.review",
+        }
+    ),
     "editor": frozenset(
         {
             "project.read",
             "project.write",
             "session.read",
             "session.write",
+            "result.read",
+            "research.execute",
             "report.read",
             "report.write",
+            "capsule.read",
+            "capsule.write",
             "claim.review",
         }
     ),
@@ -30,8 +51,13 @@ _ROLE_PERMISSIONS = {
             "project.write",
             "session.read",
             "session.write",
+            "result.read",
+            "research.execute",
             "report.read",
             "report.write",
+            "capsule.read",
+            "capsule.write",
+            "replay.manage",
             "claim.review",
             "acl.manage",
             "project.delete",
