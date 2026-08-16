@@ -11,6 +11,11 @@ from tools.research_result_provenance import session_binding
 from tools.research_result_store import StoredResearchResult
 from tools.runtime_composition import RuntimeComposition
 
+_HYDROLOGY_CITATION_KINDS = {
+    "evidence_projection": "hydrology_projection",
+    "evidence_report": "hydrology_report",
+}
+
 
 def _safe_metadata_id(value: Any, maximum: int = 1000) -> str:
     if not isinstance(value, str):
@@ -36,6 +41,29 @@ def _register_unique(
     upstreams.append((ref, relation))
 
 
+def _register_hydrology_citation_dependency(
+    upstreams: list[tuple[DependencyRef, str]],
+    seen: set[tuple[str, str]],
+    citation: Any,
+) -> None:
+    metadata = getattr(citation, "metadata", None)
+    if not isinstance(metadata, Mapping) or metadata.get("derived_evidence") is not True:
+        return
+    artifact_kind = _safe_metadata_id(metadata.get("artifact_kind"), 64)
+    dependency_kind = _HYDROLOGY_CITATION_KINDS.get(artifact_kind)
+    if dependency_kind is None:
+        return
+    fingerprint = _safe_metadata_id(metadata.get("artifact_fingerprint"), 64).lower()
+    if len(fingerprint) != 64 or any(ch not in "0123456789abcdef" for ch in fingerprint):
+        return
+    _register_unique(
+        upstreams,
+        seen,
+        DependencyRef(dependency_kind, fingerprint),
+        "derived_from_hydrology_artifact",
+    )
+
+
 def register_result_dependencies(
     store: DependencyInvalidationStore,
     owner_id: str,
@@ -58,6 +86,7 @@ def register_result_dependencies(
         doc_id = _safe_metadata_id(citation.doc_id or "", 256)
         if doc_id:
             _register_unique(upstreams, seen, DependencyRef("document", doc_id), "retrieved_from")
+        _register_hydrology_citation_dependency(upstreams, seen, citation)
 
     model_id = _safe_metadata_id(result.model, 256)
     if model_id:
