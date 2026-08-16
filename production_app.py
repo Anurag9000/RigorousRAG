@@ -90,6 +90,7 @@ _REQUIRED_RESEARCH_ROUTES = frozenset(
         "/research/projects/{project_id}/hydrology/topologies/{topology_id}",
         "/research/projects/{project_id}/hydrology/packages/{package_id}",
         "/research/projects/{project_id}/hydrology/plans",
+        "/research/projects/{project_id}/hydrology/projections",
         "/research/sessions/{session_id}",
         "/research/sessions/{session_id}/turns",
         "/research/sessions/{session_id}/close",
@@ -246,6 +247,7 @@ def _ensure_research_routes() -> None:
             principal_dependency=base.get_rate_limited_principal,
             store=hydrology,
             access_resolver=access_resolver,
+            invalidation_store=invalidations,
         )
         for router in (
             research,
