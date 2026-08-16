@@ -1,10 +1,11 @@
-"""Dependency registration helpers for finalized research results and reports."""
+"""Dependency registration helpers for finalized research results, reports and capsules."""
 
 from __future__ import annotations
 
 from typing import Any, Mapping
 
 from tools.dependency_invalidation import DependencyInvalidationStore, DependencyRef
+from tools.research_capsule_store import StoredResearchCapsule
 from tools.research_report_store import StoredResearchReport
 from tools.research_result_store import StoredResearchResult
 from tools.runtime_composition import RuntimeComposition
@@ -164,6 +165,87 @@ def register_report_dependencies(
     )
 
 
+def register_capsule_dependencies(
+    store: DependencyInvalidationStore,
+    owner_id: str,
+    capsule: StoredResearchCapsule,
+) -> None:
+    """Attach an immutable capsule to the stale-artifact graph.
+
+    The result dependency is the primary transitive authority: source/model/policy changes
+    already flow into the result and therefore into its capsule. Direct immutable bindings
+    are also registered so operators can invalidate a code/config/generation identity even
+    when no result-level event has yet been recorded.
+    """
+
+    if not isinstance(store, DependencyInvalidationStore):
+        raise TypeError("store must be DependencyInvalidationStore")
+    if not isinstance(capsule, StoredResearchCapsule):
+        raise TypeError("capsule must be StoredResearchCapsule")
+
+    downstream = DependencyRef("capsule", capsule.capsule_id)
+    upstreams: list[tuple[DependencyRef, str]] = [
+        (DependencyRef("result", capsule.result_id), "captures_result"),
+        (DependencyRef("project", capsule.project_id), "scoped_by_project"),
+        (DependencyRef("session", capsule.session_id), "captures_session"),
+        (DependencyRef("code_revision", capsule.capsule.code_revision), "executed_code"),
+    ]
+    seen = {(item.kind, item.resource_id) for item, _ in upstreams}
+
+    for reference in capsule.capsule.references:
+        if reference.ref_id == "runtime-config":
+            _register_unique(
+                upstreams,
+                seen,
+                DependencyRef("runtime_config", reference.content_sha256),
+                "configured_with",
+            )
+        elif reference.ref_id == "capability-registry":
+            _register_unique(
+                upstreams,
+                seen,
+                DependencyRef("capability_registry", reference.content_sha256),
+                "resolved_with",
+            )
+        elif reference.kind == "generation":
+            _register_unique(
+                upstreams,
+                seen,
+                DependencyRef("index_generation", reference.content_sha256),
+                "captures_generation",
+            )
+        elif reference.kind == "policy":
+            _register_unique(
+                upstreams,
+                seen,
+                DependencyRef("policy", reference.content_sha256),
+                "captures_policy",
+            )
+        elif reference.ref_id.endswith(":retrieval-profile"):
+            _register_unique(
+                upstreams,
+                seen,
+                DependencyRef("retrieval_profile", reference.content_sha256),
+                "captures_retrieval_profile",
+            )
+        elif reference.ref_id == "model-identifier":
+            _register_unique(
+                upstreams,
+                seen,
+                DependencyRef("model_identity", reference.content_sha256),
+                "captures_model_identity",
+            )
+        elif reference.kind == "source":
+            _register_unique(
+                upstreams,
+                seen,
+                DependencyRef("evidence_content", reference.content_sha256),
+                "captures_evidence_content",
+            )
+
+    store.register_dependencies(owner_id, downstream=downstream, upstreams=tuple(upstreams))
+
+
 def stale_reasons(
     store: DependencyInvalidationStore,
     owner_id: str,
@@ -192,6 +274,7 @@ def stale_reasons(
 
 
 __all__ = [
+    "register_capsule_dependencies",
     "register_report_dependencies",
     "register_result_dependencies",
     "stale_reasons",
