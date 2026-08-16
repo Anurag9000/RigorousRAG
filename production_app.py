@@ -215,6 +215,7 @@ def _ensure_research_routes() -> None:
                 "distributed_shared_state": metadata_backend == "postgres",
                 "encrypted_replay_configured": replay_recipes is not None,
                 "hydrology_derivation_recipes": True,
+                "hydrology_capsule_generation_verification": True,
                 "routed_recompute": True,
                 "code_revision_configured": bool(code_revision),
             },
@@ -267,6 +268,7 @@ def _ensure_research_routes() -> None:
             code_revision=code_revision,
             invalidation_store=invalidations,
             access_resolver=access_resolver,
+            hydrology_store=hydrology,
         )
         invalidation = build_invalidation_router(
             principal_dependency=base.get_rate_limited_principal,
@@ -281,11 +283,13 @@ def _ensure_research_routes() -> None:
             store=source_trust,
             invalidation_store=invalidations,
         )
+        # The governed hydrology store owns dependency registration and generation
+        # invalidation. Pass no route-level lifecycle store here to avoid duplicate events.
         hydrology_router = build_hydrology_router(
             principal_dependency=base.get_rate_limited_principal,
             store=hydrology,
             access_resolver=access_resolver,
-            invalidation_store=invalidations,
+            invalidation_store=None,
         )
         hydrology_derivation_router = build_hydrology_derivation_router(
             principal_dependency=base.get_rate_limited_principal,
