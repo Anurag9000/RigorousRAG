@@ -11,12 +11,13 @@ from tools.control_api import build_control_router
 from tools.hydrology_agent_tools import register_hydrology_agent_tools
 from tools.hydrology_api import build_hydrology_router
 from tools.hydrology_derivation_api import build_hydrology_derivation_router
+from tools.hydrology_recompute_executor import HydrologyRecomputeExecutor
 from tools.hydrology_report_api import build_hydrology_report_router
 from tools.hydrology_status_api import build_hydrology_status_router
 from tools.invalidation_api import build_invalidation_router
 from tools.production_persistence import build_production_persistence
+from tools.production_recompute_executor import ProductionResearchRecomputeExecutor
 from tools.project_acl_api import build_project_acl_router
-from tools.recompute_executor import ResearchRecomputeExecutor
 from tools.replay_api import build_replay_router
 from tools.research_access import ResearchAccessResolver
 from tools.research_answer_history_api import build_research_answer_history_router
@@ -25,6 +26,7 @@ from tools.research_capsule_api import build_research_capsule_router
 from tools.research_capsule_verification_api import build_research_capsule_verification_router
 from tools.research_query_api import build_research_query_router
 from tools.research_report_api import build_research_report_router
+from tools.routed_recompute_executor import RoutedRecomputeExecutor
 from tools.runtime_api import build_runtime_router
 from tools.runtime_composition import build_runtime_composition
 from tools.runtime_providers import runtime_providers
@@ -75,10 +77,10 @@ def _production_agent(owner_id: str, model=None):
 
 base._new_agent = _production_agent
 
-# Deliberately not mounted as a public HTTP action: recomputation can incur model/provider
-# cost and is an operator/deployment-worker responsibility. The queue state remains
-# owner-visible through /research/recompute.
-recompute_executor = ResearchRecomputeExecutor(
+# Recompute execution remains operator/worker-only. The public API exposes queue/stale
+# metadata but never triggers model/provider work. Deterministic hydrology recomputation
+# is routed through the same authoritative task ledger without model calls.
+research_recompute_executor = ProductionResearchRecomputeExecutor(
     invalidations=invalidations,
     replacements=replacements,
     results=results,
@@ -88,6 +90,19 @@ recompute_executor = ResearchRecomputeExecutor(
     agent_factory=_production_agent,
     replay_recipes=replay_recipes,
 )
+hydrology_recompute_executor = HydrologyRecomputeExecutor(
+    invalidations=invalidations,
+    replacements=replacements,
+    store=hydrology,
+    recipes=hydrology_recipes,
+)
+distributed_recompute_executor = RoutedRecomputeExecutor(
+    invalidations=invalidations,
+    research=research_recompute_executor,
+    hydrology=hydrology_recompute_executor,
+)
+# Compatibility alias retained for existing local research-only operator callers.
+recompute_executor = research_recompute_executor
 
 _REQUIRED_GOVERNANCE_ROUTES = frozenset({"/reviews", "/reviews/claim", "/feedback"})
 _REQUIRED_RESEARCH_ROUTES = frozenset(
@@ -200,6 +215,7 @@ def _ensure_research_routes() -> None:
                 "distributed_shared_state": metadata_backend == "postgres",
                 "encrypted_replay_configured": replay_recipes is not None,
                 "hydrology_derivation_recipes": True,
+                "routed_recompute": True,
                 "code_revision_configured": bool(code_revision),
             },
         )
@@ -333,9 +349,11 @@ __all__ = [
     "capsules",
     "code_revision",
     "composition",
+    "distributed_recompute_executor",
     "feedback",
     "hydrology",
     "hydrology_recipes",
+    "hydrology_recompute_executor",
     "invalidations",
     "metadata_backend",
     "persistence",
@@ -344,6 +362,7 @@ __all__ = [
     "replacements",
     "replay_recipes",
     "reports",
+    "research_recompute_executor",
     "results",
     "reviews",
     "source_trust",
