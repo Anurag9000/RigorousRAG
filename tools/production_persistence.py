@@ -71,10 +71,15 @@ def _root(value: str | Path) -> Path:
     return root
 
 
-def _governed_hydrology(raw: HydrologyArtifactStore, invalidations: DependencyInvalidationStore) -> HydrologyArtifactStore:
+def _governed_hydrology(
+    raw: HydrologyArtifactStore,
+    invalidations: DependencyInvalidationStore,
+    replacements: ArtifactReplacementStore,
+) -> HydrologyArtifactStore:
     return VersionedHydrologyArtifactStore(
         GuardedHydrologyArtifactStore(raw, invalidations),
         invalidations,
+        replacements,
     )
 
 
@@ -100,7 +105,7 @@ def build_production_persistence(
         source_trust = PostgresSourceTrustStore(connection_factory, schema=postgres_schema)
         hydrology_raw = PostgresHydrologyArtifactStore(connection_factory, schema=postgres_schema)
         hydrology_raw.initialize()
-        hydrology = _governed_hydrology(hydrology_raw, invalidations)
+        hydrology = _governed_hydrology(hydrology_raw, invalidations, replacements)
         hydrology_recipes = PostgresHydrologyDerivationStore(connection_factory, schema=postgres_schema)
         replay_recipes = build_replay_recipe_store(
             selected_root / "research_replay.sqlite3",
@@ -130,11 +135,12 @@ def build_production_persistence(
 
     if backend == "sqlite":
         invalidations = DependencyInvalidationStore(selected_root / "research_invalidation.sqlite3")
+        replacements = ArtifactReplacementStore(selected_root / "research_replacements.sqlite3")
         results = ResearchResultStore(selected_root / "research_results.sqlite3")
         capsules_raw = ResearchCapsuleStore(selected_root / "research_capsules.sqlite3")
         capsules = HydrologyAwareCapsuleStore(capsules_raw, results)
         hydrology_raw = SQLiteHydrologyArtifactStore(selected_root / "research_hydrology.sqlite3")
-        hydrology = _governed_hydrology(hydrology_raw, invalidations)
+        hydrology = _governed_hydrology(hydrology_raw, invalidations, replacements)
         hydrology_recipes = HydrologyDerivationStore(selected_root / "research_hydrology_recipes.sqlite3")
         return ProductionPersistence(
             backend="sqlite",
@@ -144,7 +150,7 @@ def build_production_persistence(
             reports=ResearchReportStore(selected_root / "research_reports.sqlite3"),
             capsules=capsules,
             invalidations=invalidations,
-            replacements=ArtifactReplacementStore(selected_root / "research_replacements.sqlite3"),
+            replacements=replacements,
             source_trust=SourceTrustStore(selected_root / "source_trust.sqlite3"),
             replay_recipes=build_replay_recipe_store(
                 selected_root / "research_replay.sqlite3",
