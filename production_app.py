@@ -16,6 +16,8 @@ from tools.recompute_executor import ResearchRecomputeExecutor
 from tools.replay_api import build_replay_router
 from tools.replay_runtime import build_replay_recipe_store
 from tools.research_api import build_research_router
+from tools.research_capsule_api import build_research_capsule_router
+from tools.research_capsule_store import ResearchCapsuleStore
 from tools.research_query_api import build_research_query_router
 from tools.research_report_api import build_research_report_router
 from tools.research_report_store import ResearchReportStore
@@ -31,6 +33,7 @@ from tools.source_trust_store import SourceTrustStore
 root = Path(os.environ.get("CLASSIC_STORAGE_DIR", "data")).resolve() / "governance"
 root.mkdir(parents=True, exist_ok=True)
 composition = build_runtime_composition()
+code_revision = os.environ.get("RIGOROUSRAG_CODE_REVISION", "").strip()
 
 
 def _build_workspace_store():
@@ -48,6 +51,7 @@ feedback = FeedbackStore(root / "feedback.sqlite3")
 workspace = _build_workspace_store()
 results = ResearchResultStore(root / "research_results.sqlite3")
 reports = ResearchReportStore(root / "research_reports.sqlite3")
+capsules = ResearchCapsuleStore(root / "research_capsules.sqlite3")
 invalidations = DependencyInvalidationStore(root / "research_invalidation.sqlite3")
 replacements = ArtifactReplacementStore(root / "research_replacements.sqlite3")
 source_trust = SourceTrustStore(root / "source_trust.sqlite3")
@@ -107,6 +111,9 @@ _REQUIRED_RESEARCH_ROUTES = frozenset(
         "/research/reports/{report_id}/markdown",
         "/research/replay",
         "/research/replay/{result_id}",
+        "/research/capsules",
+        "/research/capsules/preflight",
+        "/research/capsules/{capsule_id}",
         "/research/source-status",
         "/research/source-status/{source_id}",
         "/research/source-trust",
@@ -181,6 +188,15 @@ def _ensure_research_routes() -> None:
             principal_dependency=base.get_rate_limited_principal,
             replay_recipe_store=replay_recipes,
         )
+        capsule = build_research_capsule_router(
+            principal_dependency=base.get_rate_limited_principal,
+            workspace_store=workspace,
+            result_store=results,
+            capsule_store=capsules,
+            code_revision=code_revision,
+            replay_recipe_store=replay_recipes,
+            invalidation_store=invalidations,
+        )
         invalidation = build_invalidation_router(
             principal_dependency=base.get_rate_limited_principal,
             store=invalidations,
@@ -199,6 +215,7 @@ def _ensure_research_routes() -> None:
         _append_missing_routes(query)
         _append_missing_routes(report)
         _append_missing_routes(replay)
+        _append_missing_routes(capsule)
         _append_missing_routes(invalidation)
         _append_missing_routes(lineage)
         _append_missing_routes(trust)
@@ -221,6 +238,8 @@ async def governance_no_store(request: Request, call_next):
 
 __all__ = [
     "app",
+    "capsules",
+    "code_revision",
     "composition",
     "feedback",
     "invalidations",
