@@ -7,6 +7,7 @@ from typing import Any, Mapping
 from tools.dependency_invalidation import DependencyInvalidationStore, DependencyRef
 from tools.research_capsule_store import StoredResearchCapsule
 from tools.research_report_store import StoredResearchReport
+from tools.research_result_provenance import session_binding
 from tools.research_result_store import StoredResearchResult
 from tools.runtime_composition import RuntimeComposition
 
@@ -66,27 +67,23 @@ def register_result_dependencies(
     if selected_policy:
         descriptor = composition.capabilities.active(selected_policy)
         if descriptor is not None:
-            _register_unique(
-                upstreams,
-                seen,
-                DependencyRef("policy", descriptor.fingerprint),
-                "routed_with",
-            )
+            _register_unique(upstreams, seen, DependencyRef("policy", descriptor.fingerprint), "routed_with")
 
-    _register_unique(
-        upstreams,
-        seen,
-        DependencyRef("runtime_config", composition.config.fingerprint),
-        "configured_with",
-    )
-    _register_unique(
-        upstreams,
-        seen,
-        DependencyRef("capability_registry", composition.capabilities.fingerprint),
-        "resolved_with",
-    )
+    _register_unique(upstreams, seen, DependencyRef("runtime_config", composition.config.fingerprint), "configured_with")
+    _register_unique(upstreams, seen, DependencyRef("capability_registry", composition.capabilities.fingerprint), "resolved_with")
 
     metadata: Mapping[str, Any] = result.metadata
+    binding = session_binding(metadata)
+    if binding is not None:
+        _register_unique(upstreams, seen, DependencyRef("project", binding["project_id"]), "created_in_project")
+        _register_unique(upstreams, seen, DependencyRef("session", binding["session_id"]), "created_in_session")
+        _register_unique(
+            upstreams,
+            seen,
+            DependencyRef("session_snapshot", binding["session_fingerprint_before"]),
+            "executed_against_session_snapshot",
+        )
+
     for key in (
         "generation_id",
         "generation_fingerprint",
@@ -96,15 +93,8 @@ def register_result_dependencies(
     ):
         value = _safe_metadata_id(metadata.get(key), 256)
         if value:
-            _register_unique(
-                upstreams,
-                seen,
-                DependencyRef("index_generation", value),
-                "retrieved_from_generation",
-            )
-    plan = _safe_metadata_id(
-        metadata.get("plan_fingerprint") or metadata.get("plan_sha256"), 256
-    )
+            _register_unique(upstreams, seen, DependencyRef("index_generation", value), "retrieved_from_generation")
+    plan = _safe_metadata_id(metadata.get("plan_fingerprint") or metadata.get("plan_sha256"), 256)
     if plan:
         _register_unique(upstreams, seen, DependencyRef("plan", plan), "executed_plan")
 
@@ -112,45 +102,26 @@ def register_result_dependencies(
     if isinstance(admissibility, Mapping):
         policy_sha = _safe_metadata_id(admissibility.get("policy_sha256"), 64)
         if len(policy_sha) == 64:
-            _register_unique(
-                upstreams,
-                seen,
-                DependencyRef("admissibility_policy", policy_sha),
-                "published_under_admissibility_policy",
-            )
+            _register_unique(upstreams, seen, DependencyRef("admissibility_policy", policy_sha), "published_under_admissibility_policy")
         revision_ids = admissibility.get("trust_revision_ids", ())
         if isinstance(revision_ids, (list, tuple)):
             for raw_revision in revision_ids[:100]:
                 revision_id = _safe_metadata_id(raw_revision, 64)
                 if len(revision_id) != 64:
                     continue
-                _register_unique(
-                    upstreams,
-                    seen,
-                    DependencyRef("source_trust_revision", revision_id),
-                    "admitted_under_source_review",
-                )
+                _register_unique(upstreams, seen, DependencyRef("source_trust_revision", revision_id), "admitted_under_source_review")
         evaluated_source_ids = admissibility.get("evaluated_source_ids", ())
         if isinstance(evaluated_source_ids, (list, tuple)):
             for raw_source in evaluated_source_ids[:100]:
                 source_id = _safe_metadata_id(raw_source, 1000)
                 if not source_id:
                     continue
-                _register_unique(
-                    upstreams,
-                    seen,
-                    DependencyRef("source_trust_subject", source_id),
-                    "evaluated_for_admissibility",
-                )
+                _register_unique(upstreams, seen, DependencyRef("source_trust_subject", source_id), "evaluated_for_admissibility")
 
     store.register_dependencies(owner_id, downstream=downstream, upstreams=tuple(upstreams))
 
 
-def register_report_dependencies(
-    store: DependencyInvalidationStore,
-    owner_id: str,
-    report: StoredResearchReport,
-) -> None:
+def register_report_dependencies(store: DependencyInvalidationStore, owner_id: str, report: StoredResearchReport) -> None:
     if not isinstance(store, DependencyInvalidationStore):
         raise TypeError("store must be DependencyInvalidationStore")
     if not isinstance(report, StoredResearchReport):
@@ -158,25 +129,12 @@ def register_report_dependencies(
     store.register_dependencies(
         owner_id,
         downstream=DependencyRef("report", report.report_id),
-        upstreams=(
-            (DependencyRef("result", report.result_id), "derived_from_result"),
-            (DependencyRef("project", report.project_id), "scoped_by_project"),
-        ),
+        upstreams=((DependencyRef("result", report.result_id), "derived_from_result"), (DependencyRef("project", report.project_id), "scoped_by_project")),
     )
 
 
-def register_capsule_dependencies(
-    store: DependencyInvalidationStore,
-    owner_id: str,
-    capsule: StoredResearchCapsule,
-) -> None:
-    """Attach an immutable capsule to the stale-artifact graph.
-
-    The result dependency is the primary transitive authority: source/model/policy changes
-    already flow into the result and therefore into its capsule. Direct immutable bindings
-    are also registered so operators can invalidate a code/config/generation identity even
-    when no result-level event has yet been recorded.
-    """
+def register_capsule_dependencies(store: DependencyInvalidationStore, owner_id: str, capsule: StoredResearchCapsule) -> None:
+    """Attach an immutable capsule to the stale-artifact graph."""
 
     if not isinstance(store, DependencyInvalidationStore):
         raise TypeError("store must be DependencyInvalidationStore")
@@ -194,65 +152,24 @@ def register_capsule_dependencies(
 
     for reference in capsule.capsule.references:
         if reference.ref_id == "runtime-config":
-            _register_unique(
-                upstreams,
-                seen,
-                DependencyRef("runtime_config", reference.content_sha256),
-                "configured_with",
-            )
+            _register_unique(upstreams, seen, DependencyRef("runtime_config", reference.content_sha256), "configured_with")
         elif reference.ref_id == "capability-registry":
-            _register_unique(
-                upstreams,
-                seen,
-                DependencyRef("capability_registry", reference.content_sha256),
-                "resolved_with",
-            )
+            _register_unique(upstreams, seen, DependencyRef("capability_registry", reference.content_sha256), "resolved_with")
         elif reference.kind == "generation":
-            _register_unique(
-                upstreams,
-                seen,
-                DependencyRef("index_generation", reference.content_sha256),
-                "captures_generation",
-            )
+            _register_unique(upstreams, seen, DependencyRef("index_generation", reference.content_sha256), "captures_generation")
         elif reference.kind == "policy":
-            _register_unique(
-                upstreams,
-                seen,
-                DependencyRef("policy", reference.content_sha256),
-                "captures_policy",
-            )
+            _register_unique(upstreams, seen, DependencyRef("policy", reference.content_sha256), "captures_policy")
         elif reference.ref_id.endswith(":retrieval-profile"):
-            _register_unique(
-                upstreams,
-                seen,
-                DependencyRef("retrieval_profile", reference.content_sha256),
-                "captures_retrieval_profile",
-            )
+            _register_unique(upstreams, seen, DependencyRef("retrieval_profile", reference.content_sha256), "captures_retrieval_profile")
         elif reference.ref_id == "model-identifier":
-            _register_unique(
-                upstreams,
-                seen,
-                DependencyRef("model_identity", reference.content_sha256),
-                "captures_model_identity",
-            )
+            _register_unique(upstreams, seen, DependencyRef("model_identity", reference.content_sha256), "captures_model_identity")
         elif reference.kind == "source":
-            _register_unique(
-                upstreams,
-                seen,
-                DependencyRef("evidence_content", reference.content_sha256),
-                "captures_evidence_content",
-            )
+            _register_unique(upstreams, seen, DependencyRef("evidence_content", reference.content_sha256), "captures_evidence_content")
 
     store.register_dependencies(owner_id, downstream=downstream, upstreams=tuple(upstreams))
 
 
-def stale_reasons(
-    store: DependencyInvalidationStore,
-    owner_id: str,
-    artifact: DependencyRef,
-    *,
-    maximum: int = 100,
-) -> tuple[Mapping[str, Any], ...]:
+def stale_reasons(store: DependencyInvalidationStore, owner_id: str, artifact: DependencyRef, *, maximum: int = 100) -> tuple[Mapping[str, Any], ...]:
     if not 1 <= maximum <= 1000:
         raise ValueError("maximum is invalid")
     rows = store.list_stale(owner_id, kind=artifact.kind, limit=10_000)
@@ -260,22 +177,10 @@ def stale_reasons(
     for row in rows:
         if row.artifact != artifact:
             continue
-        output.append(
-            {
-                "event_sha256": row.triggering_event_sha256,
-                "reason": row.reason,
-                "stale_at": row.stale_at,
-                "replacement_id": row.replacement_id,
-            }
-        )
+        output.append({"event_sha256": row.triggering_event_sha256, "reason": row.reason, "stale_at": row.stale_at, "replacement_id": row.replacement_id})
         if len(output) >= maximum:
             break
     return tuple(output)
 
 
-__all__ = [
-    "register_capsule_dependencies",
-    "register_report_dependencies",
-    "register_result_dependencies",
-    "stale_reasons",
-]
+__all__ = ["register_capsule_dependencies", "register_report_dependencies", "register_result_dependencies", "stale_reasons"]
