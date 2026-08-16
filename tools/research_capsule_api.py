@@ -18,7 +18,7 @@ from tools.dependency_invalidation import DependencyInvalidationStore, Dependenc
 from tools.replay_recipe_store import EncryptedReplayRecipeStore
 from tools.research_capsule_builder import CapsuleBuildContext, assess_capsule, build_capsule
 from tools.research_capsule_store import ResearchCapsuleStore, StoredResearchCapsule
-from tools.research_dependencies import stale_reasons
+from tools.research_dependencies import register_capsule_dependencies, stale_reasons
 from tools.research_result_store import ResearchResultStore
 from tools.research_workspace import ResearchProject, ResearchSession
 
@@ -130,8 +130,21 @@ def _preflight_payload(
     }
 
 
-def _stored_payload(stored: StoredResearchCapsule) -> Mapping[str, Any]:
+def _stored_payload(
+    stored: StoredResearchCapsule,
+    *,
+    owner_id: str | None = None,
+    invalidation_store: DependencyInvalidationStore | None = None,
+) -> Mapping[str, Any]:
     capsule = stored.capsule
+    stale = ()
+    if owner_id is not None and invalidation_store is not None:
+        stale = stale_reasons(
+            invalidation_store,
+            owner_id,
+            DependencyRef("capsule", capsule.capsule_id),
+            maximum=100,
+        )
     return {
         "capsule_id": capsule.capsule_id,
         "fingerprint": capsule.fingerprint,
@@ -147,6 +160,8 @@ def _stored_payload(stored: StoredResearchCapsule) -> Mapping[str, Any]:
         "replay_steps": [asdict(item) for item in capsule.replay_steps],
         "notes": list(capsule.notes),
         "replayability": dict(capsule.replayability()),
+        "stale": bool(stale),
+        "stale_reasons": list(stale),
     }
 
 
@@ -238,7 +253,20 @@ def build_research_capsule_router(
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         except Exception as exc:
             raise HTTPException(status_code=503, detail="Research capsule persistence is unavailable.") from exc
-        payload = dict(_stored_payload(stored))
+        if invalidation_store is not None:
+            try:
+                register_capsule_dependencies(invalidation_store, owner, stored)
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=503,
+                    detail=(
+                        "Research capsule was persisted, but dependency lineage could not be registered. "
+                        f"Capsule ID: {stored.capsule_id}"
+                    ),
+                ) from exc
+        payload = dict(
+            _stored_payload(stored, owner_id=owner, invalidation_store=invalidation_store)
+        )
         payload["preflight"] = preflight
         return payload
 
@@ -256,8 +284,19 @@ def build_research_capsule_router(
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except Exception as exc:
             raise HTTPException(status_code=503, detail="Research capsule persistence is unavailable.") from exc
-        return {
-            "capsules": [
+        rows = []
+        for item in values:
+            stale = (
+                stale_reasons(
+                    invalidation_store,
+                    owner,
+                    DependencyRef("capsule", item.capsule_id),
+                    maximum=20,
+                )
+                if invalidation_store is not None
+                else ()
+            )
+            rows.append(
                 {
                     "capsule_id": item.capsule_id,
                     "fingerprint": item.fingerprint,
@@ -266,10 +305,11 @@ def build_research_capsule_router(
                     "result_id": item.result_id,
                     "supersedes_capsule_id": item.supersedes_capsule_id or None,
                     "created_at": item.created_at,
+                    "stale": bool(stale),
+                    "stale_reasons": list(stale),
                 }
-                for item in values
-            ]
-        }
+            )
+        return {"capsules": rows}
 
     @router.get("/{capsule_id}")
     async def get_capsule(
@@ -285,7 +325,7 @@ def build_research_capsule_router(
             raise HTTPException(status_code=400, detail="Research capsule ID is invalid.") from exc
         except Exception as exc:
             raise HTTPException(status_code=503, detail="Research capsule persistence is unavailable.") from exc
-        return _stored_payload(stored)
+        return _stored_payload(stored, owner_id=owner, invalidation_store=invalidation_store)
 
     return router
 
