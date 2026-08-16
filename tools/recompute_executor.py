@@ -19,7 +19,7 @@ from tools.replay_recipe_store import EncryptedReplayRecipeStore
 from tools.research_dependencies import register_report_dependencies, register_result_dependencies, stale_reasons
 from tools.research_report import ReportSection, ResearchReport
 from tools.research_report_store import ResearchReportStore
-from tools.research_result_provenance import finalize_answer_provenance
+from tools.research_result_provenance import carry_session_binding, finalize_answer_provenance
 from tools.research_result_store import ResearchResultStore
 from tools.research_workspace import ResearchProject
 from tools.runtime_composition import RuntimeComposition
@@ -83,12 +83,12 @@ class ResearchRecomputeExecutor:
         if not isinstance(answer, AgentAnswer):
             raise RuntimeError("recomputed agent result is invalid")
         model = str(getattr(agent, "model", recipe.model))
-        answer = finalize_answer_provenance(
-            answer,
-            self.composition,
-            model=model,
-            strategy=recipe.strategy,
-        )
+        answer = finalize_answer_provenance(answer, self.composition, model=model, strategy=recipe.strategy)
+        # Recompute changes result/runtime/evidence identity but not the authenticated
+        # project/session in which the original result was created. Preserve that binding
+        # explicitly so replacement results remain inside the same authorization and
+        # dependency scope rather than becoming owner-global artifacts.
+        answer = carry_session_binding(answer, old.metadata)
         new = self.results.put(
             owner_id,
             query_sha256=recipe.query_sha256,
@@ -96,12 +96,7 @@ class ResearchRecomputeExecutor:
             strategy=recipe.strategy,
             model=model,
         )
-        register_result_dependencies(
-            self.invalidations,
-            owner_id,
-            new,
-            composition=self.composition,
-        )
+        register_result_dependencies(self.invalidations, owner_id, new, composition=self.composition)
         self.replay_recipes.put(
             owner_id,
             result_id=new.result_id,
@@ -142,27 +137,14 @@ class ResearchRecomputeExecutor:
             title=title,
             question=question,
             search_strategy=result.strategy,
-            sections=(
-                ReportSection(
-                    heading="Synthesis",
-                    body=result.answer,
-                    citation_ids=result.citation_ids,
-                ),
-            ),
-            # Never copy derived analysis that may have depended on invalidated evidence.
-            # Dedicated matrix/conflict/limitation handlers may repopulate these later.
+            sections=(ReportSection(heading="Synthesis", body=result.answer, citation_ids=result.citation_ids),),
             evidence_matrix=(),
             citations=result.citations,
             conflicts=(),
             limitations=(),
             warnings=tuple(warnings),
         )
-        new = self.reports.put(
-            owner_id,
-            result_id=result.result_id,
-            project_id=old.project_id,
-            report=rebuilt,
-        )
+        new = self.reports.put(owner_id, result_id=result.result_id, project_id=old.project_id, report=rebuilt)
         register_report_dependencies(self.invalidations, owner_id, new)
         return DependencyRef("report", new.report_id)
 
@@ -176,12 +158,7 @@ class ResearchRecomputeExecutor:
             raise RecomputeBlocked(f"no recompute handler is registered for {task.artifact.kind}")
         return handler
 
-    def _complete(
-        self,
-        owner_id: str,
-        task: RecomputeTask,
-        replacement: DependencyRef | None,
-    ) -> RecomputeOutcome:
+    def _complete(self, owner_id: str, task: RecomputeTask, replacement: DependencyRef | None) -> RecomputeOutcome:
         old = task.artifact
         if replacement is not None:
             if not isinstance(replacement, DependencyRef):
@@ -233,12 +210,7 @@ class ResearchRecomputeExecutor:
         )
 
     def execute_claimed(self, owner_id: str, task_id: str) -> RecomputeOutcome:
-        """Execute exactly one already-claimed authoritative recompute task.
-
-        Distributed transports pass only a task identifier.  This method reloads the
-        task from the owner-scoped ledger before invoking any handler so callers cannot
-        forge artifact identity, event lineage, reason text, or claim state.
-        """
+        """Execute exactly one already-claimed authoritative recompute task."""
 
         owner = normalize_owner_id(owner_id)
         task = self._load_claimed_task(owner, task_id)
@@ -247,13 +219,7 @@ class ResearchRecomputeExecutor:
             return self._complete(owner, task, replacement)
         except Exception as exc:
             error_type = type(exc).__name__[:200]
-            self.invalidations.finish_recompute(
-                owner,
-                task.task_id,
-                success=False,
-                error_type=error_type,
-                acknowledge_stale=False,
-            )
+            self.invalidations.finish_recompute(owner, task.task_id, success=False, error_type=error_type, acknowledge_stale=False)
             return RecomputeOutcome(task, False, None, error_type)
 
     def process_one(self, owner_id: str, *, kinds: tuple[str, ...] = ()) -> RecomputeOutcome | None:
@@ -268,7 +234,6 @@ class ResearchRecomputeExecutor:
             raise ValueError("max_tasks is invalid")
         owner = normalize_owner_id(owner_id)
         output: list[RecomputeOutcome] = []
-        # Upstream result replacements must exist before downstream reports are rebuilt.
         phases = (("result",), ("report",), tuple(sorted(self.custom_handlers)))
         for kinds in phases:
             if not kinds:
@@ -283,11 +248,7 @@ class ResearchRecomputeExecutor:
         return tuple(output)
 
 
-def requeue_failed_task(
-    store: DependencyInvalidationStore,
-    owner_id: str,
-    task_id: str,
-) -> bool:
+def requeue_failed_task(store: DependencyInvalidationStore, owner_id: str, task_id: str) -> bool:
     """Explicit operator retry for a failed recomputation task."""
 
     owner = normalize_owner_id(owner_id)
@@ -307,9 +268,4 @@ def requeue_failed_task(
         connection.close()
 
 
-__all__ = [
-    "RecomputeBlocked",
-    "RecomputeOutcome",
-    "ResearchRecomputeExecutor",
-    "requeue_failed_task",
-]
+__all__ = ["RecomputeBlocked", "RecomputeOutcome", "ResearchRecomputeExecutor", "requeue_failed_task"]
