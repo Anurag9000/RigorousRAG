@@ -83,6 +83,24 @@ class ReplayRecipe:
     created_at: float
 
 
+@dataclass(frozen=True)
+class ReplayRecipeMetadata:
+    """Non-secret recipe metadata safe to expose to the owning principal.
+
+    The encrypted query and ciphertext digest deliberately do not appear here. This lets
+    product/API surfaces communicate replay availability and privacy state without ever
+    decrypting the stored query merely to render a status page.
+    """
+
+    owner_id: str
+    result_id: str
+    query_sha256: str
+    model: str
+    strategy: str
+    key_id: str
+    created_at: float
+
+
 class EncryptedReplayRecipeStore:
     def __init__(self, path: str | Path, *, cipher: ReplayCipher) -> None:
         if cipher is None or not callable(getattr(cipher, "seal", None)) or not callable(getattr(cipher, "open", None)):
@@ -123,6 +141,18 @@ class EncryptedReplayRecipeStore:
                   ON replay_recipes(owner_id, query_sha256, created_at DESC);
                 """
             )
+
+    @staticmethod
+    def _metadata_from_row(owner_id: str, row: sqlite3.Row) -> ReplayRecipeMetadata:
+        return ReplayRecipeMetadata(
+            owner_id=owner_id,
+            result_id=_sha(str(row["result_id"]), "result_id"),
+            query_sha256=_sha(str(row["query_sha256"]), "query_sha256"),
+            model=str(row["model"]),
+            strategy=str(row["strategy"]),
+            key_id=str(row["key_id"]),
+            created_at=float(row["created_at"]),
+        )
 
     def put(
         self,
@@ -168,6 +198,36 @@ class EncryptedReplayRecipeStore:
                    VALUES(?,?,?,?,?,?,?,?,?)""",
                 (owner, result, query_digest, sqlite3.Binary(ciphertext), model_value, strategy_value, self.key_id, ciphertext_sha, created_at),
             )
+
+    def metadata(self, owner_id: str, result_id: str) -> ReplayRecipeMetadata:
+        """Read owner-scoped replay metadata without decrypting the query."""
+
+        owner = normalize_owner_id(owner_id)
+        result = _sha(result_id, "result_id")
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT result_id,query_sha256,model,strategy,key_id,created_at
+                   FROM replay_recipes WHERE owner_id=? AND result_id=?""",
+                (owner, result),
+            ).fetchone()
+        if row is None:
+            raise KeyError(result)
+        return self._metadata_from_row(owner, row)
+
+    def list_metadata(self, owner_id: str, *, limit: int = 100) -> tuple[ReplayRecipeMetadata, ...]:
+        """List recent recipes for one owner without decrypting any stored query."""
+
+        owner = normalize_owner_id(owner_id)
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 1000:
+            raise ValueError("limit is invalid")
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT result_id,query_sha256,model,strategy,key_id,created_at
+                   FROM replay_recipes WHERE owner_id=?
+                   ORDER BY created_at DESC,result_id LIMIT ?""",
+                (owner, limit),
+            ).fetchall()
+        return tuple(self._metadata_from_row(owner, row) for row in rows)
 
     def get(self, owner_id: str, result_id: str) -> ReplayRecipe:
         owner = normalize_owner_id(owner_id)
@@ -216,4 +276,9 @@ class EncryptedReplayRecipeStore:
         return bool(cursor.rowcount)
 
 
-__all__ = ["EncryptedReplayRecipeStore", "ReplayCipher", "ReplayRecipe"]
+__all__ = [
+    "EncryptedReplayRecipeStore",
+    "ReplayCipher",
+    "ReplayRecipe",
+    "ReplayRecipeMetadata",
+]
