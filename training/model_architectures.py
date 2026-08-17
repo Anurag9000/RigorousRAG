@@ -480,7 +480,7 @@ class ColBERTEncoder(_ModuleBase):
     ) -> Any:
         """All-pairs query/document MaxSim matrix, shaped ``[Q, D]``."""
 
-        similarity = torch.einsum("qtd,dsk->qdts", query_embeddings, document_embeddings)
+        similarity = torch.einsum("qte,dse->qdts", query_embeddings, document_embeddings)
         similarity = similarity.masked_fill(~document_mask[None, :, None, :], torch.finfo(similarity.dtype).min)
         maxima = similarity.max(dim=-1).values
         maxima = torch.where(query_mask[:, None, :], maxima, torch.zeros_like(maxima))
