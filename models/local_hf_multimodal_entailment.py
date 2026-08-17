@@ -1,7 +1,7 @@
 """Verified-local Hugging Face image+text entailment adapter.
 
 The adapter targets reviewed multimodal sequence-classification checkpoints whose logits
-can be mapped explicitly to entailment/neutral/contradiction.  It never chooses model
+can be mapped explicitly to entailment/neutral/contradiction. It never chooses model
 names, revisions or labels heuristically: the caller supplies a verified local artifact
 binding, immutable semantic model identity and an exact class-index mapping.
 """
@@ -13,11 +13,8 @@ import io
 from dataclasses import dataclass
 from typing import Any, Mapping
 
-from evaluation.multimodal_support import (
-    MultimodalEvidence,
-    MultimodalSupportScore,
-)
-from evaluation.semantic_support import ModelIdentity, SemanticLabel, SemanticProbabilities
+from evaluation.multimodal_support import MultimodalEvidence, MultimodalSupportScore
+from evaluation.semantic_support import ModelIdentity, SemanticProbabilities
 from models.local_hf_adapters import LocalArtifactBinding
 
 _MAX_PIXELS = 100_000_000
@@ -29,6 +26,21 @@ def _positive_int(value: Any, label: str, maximum: int) -> int:
     return value
 
 
+def _non_negative_index(value: Any, label: str, maximum: int = 999_999) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= maximum:
+        raise ValueError(f"{label} must be a non-negative bounded integer")
+    return value
+
+
+def _bounded_text(value: Any, label: str, maximum: int) -> str:
+    if not isinstance(value, str):
+        raise ValueError(f"{label} must be a string")
+    selected = value.strip()
+    if not selected or len(selected) > maximum or "\x00" in selected:
+        raise ValueError(f"{label} is invalid")
+    return selected
+
+
 @dataclass(frozen=True)
 class MultimodalLabelMapping:
     entailment_index: int
@@ -36,11 +48,11 @@ class MultimodalLabelMapping:
     contradiction_index: int
 
     def __post_init__(self) -> None:
-        values = tuple(_positive_int(value + 1, "class index", 1_000_000) - 1 for value in (
-            self.entailment_index,
-            self.neutral_index,
-            self.contradiction_index,
-        ))
+        values = (
+            _non_negative_index(self.entailment_index, "entailment_index"),
+            _non_negative_index(self.neutral_index, "neutral_index"),
+            _non_negative_index(self.contradiction_index, "contradiction_index"),
+        )
         if len(set(values)) != 3:
             raise ValueError("semantic class indices must be unique")
         object.__setattr__(self, "entailment_index", values[0])
@@ -79,9 +91,7 @@ class LocalHFMultimodalEntailmentScorer:
         self.binding = binding
         self._model_identity = model_identity
         self.label_mapping = label_mapping
-        self.device_name = str(device).strip().lower()
-        if not self.device_name:
-            raise ValueError("device must be non-empty")
+        self.device_name = _bounded_text(device, "device", 128).lower()
         self.max_text_tokens = _positive_int(max_text_tokens, "max_text_tokens", 1_000_000)
         self.max_pixels = _positive_int(max_pixels, "max_pixels", _MAX_PIXELS)
         self._processor: Any | None = None
@@ -102,7 +112,10 @@ class LocalHFMultimodalEntailmentScorer:
             selected = self.device_name
             if selected == "auto":
                 selected = "cuda" if torch.cuda.is_available() else "cpu"
-            self._device = torch.device(selected)
+            try:
+                self._device = torch.device(selected)
+            except Exception as exc:
+                raise ValueError("device is not a valid PyTorch device") from exc
             if self._device.type == "cuda" and not torch.cuda.is_available():
                 raise RuntimeError("CUDA requested for multimodal entailment but unavailable")
         if self._processor is None:
@@ -124,6 +137,8 @@ class LocalHFMultimodalEntailmentScorer:
         return torch, self._processor, self._model, self._device
 
     def _decode_image(self, value: bytes) -> Any:
+        if not isinstance(value, bytes) or not value:
+            raise ValueError("visual evidence image must be non-empty bytes")
         try:
             from PIL import Image
         except Exception as exc:  # pragma: no cover - optional image dependency.
@@ -141,23 +156,19 @@ class LocalHFMultimodalEntailmentScorer:
             raise RuntimeError("visual evidence image could not be decoded") from exc
 
     def _render_text(self, claim_text: str, evidence: MultimodalEvidence) -> str:
-        selected = claim_text.strip()
-        if not selected:
-            raise ValueError("claim_text must be non-empty")
+        selected = _bounded_text(claim_text, "claim_text", 100_000)
         if evidence.evidence_text is None:
             return selected
-        # The text supplement is explicit evidence, not hidden OCR.  Delimiters make
-        # the model input reproducible and prevent accidental claim/evidence inversion.
         return f"Claim: {selected}\nEvidence text: {evidence.evidence_text}"
 
     def score(self, claim_id: str, claim_text: str, evidence: MultimodalEvidence) -> MultimodalSupportScore:
         if not isinstance(evidence, MultimodalEvidence):
             raise ValueError("evidence must be MultimodalEvidence")
-        if not isinstance(claim_id, str) or not claim_id.strip():
-            raise ValueError("claim_id must be non-empty")
+        selected_claim_id = _bounded_text(claim_id, "claim_id", 1_000)
+        selected_claim = _bounded_text(claim_text, "claim_text", 100_000)
         torch, processor, model, device = self._load()
         image = self._decode_image(evidence.image_bytes)
-        rendered = self._render_text(claim_text, evidence)
+        rendered = self._render_text(selected_claim, evidence)
         try:
             encoded = processor(
                 images=image,
@@ -190,8 +201,8 @@ class LocalHFMultimodalEntailmentScorer:
         if evidence.evidence_text is not None:
             evidence_text_sha = hashlib.sha256(evidence.evidence_text.encode("utf-8")).hexdigest()
         return MultimodalSupportScore(
-            claim_id=claim_id.strip(),
-            claim_sha256=hashlib.sha256(claim_text.strip().encode("utf-8")).hexdigest(),
+            claim_id=selected_claim_id,
+            claim_sha256=hashlib.sha256(selected_claim.encode("utf-8")).hexdigest(),
             anchor=evidence.anchor,
             probabilities=semantic,
             model=self.model_identity,
