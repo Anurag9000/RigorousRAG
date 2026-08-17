@@ -27,6 +27,7 @@ from tools.research_capsule_api import build_research_capsule_router
 from tools.research_capsule_verification_api import build_research_capsule_verification_router
 from tools.research_query_api import build_research_query_router
 from tools.research_report_api import build_research_report_router
+from tools.review_attestation_api import build_review_attestation_router
 from tools.routed_recompute_executor import RoutedRecomputeExecutor
 from tools.runtime_api import build_runtime_router
 from tools.runtime_composition import build_runtime_composition
@@ -53,6 +54,7 @@ replacements = persistence.replacements
 source_trust = persistence.source_trust
 replay_recipes = persistence.replay_recipes
 reviews = persistence.reviews
+review_attestations = persistence.review_attestations
 feedback = persistence.feedback
 hydrology = persistence.hydrology
 hydrology_recipes = persistence.hydrology_recipes
@@ -101,7 +103,17 @@ distributed_recompute_executor = RoutedRecomputeExecutor(
 )
 recompute_executor = research_recompute_executor
 
-_REQUIRED_GOVERNANCE_ROUTES = frozenset({"/reviews", "/reviews/claim", "/feedback"})
+_REQUIRED_GOVERNANCE_ROUTES = frozenset(
+    {
+        "/reviews",
+        "/reviews/claim",
+        "/reviews/{request_id}/attest",
+        "/reviews/{request_id}/attestations",
+        "/reviews/{request_id}/attestations/{attestation_id}",
+        "/reviews/{request_id}/attestations/{attestation_id}/verify",
+        "/feedback",
+    }
+)
 _REQUIRED_RESEARCH_ROUTES = frozenset(
     {
         "/research/projects",
@@ -178,7 +190,14 @@ def _ensure_governance_routes() -> None:
             review_store=reviews,
             feedback_store=feedback,
         )
+        attestation = build_review_attestation_router(
+            principal_dependency=base.get_principal,
+            review_store=reviews,
+            attestation_store=review_attestations,
+            providers=runtime_providers,
+        )
         _append_missing_routes(governance)
+        _append_missing_routes(attestation)
     missing = _REQUIRED_GOVERNANCE_ROUTES.difference(_route_paths())
     if missing:
         raise RuntimeError("Production governance routes failed to mount: " + ", ".join(sorted(missing)))
@@ -366,6 +385,7 @@ __all__ = [
     "reports",
     "research_recompute_executor",
     "results",
+    "review_attestations",
     "reviews",
     "source_trust",
     "workspace",
