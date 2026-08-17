@@ -2,9 +2,9 @@
 
 The selected metadata backend is an all-or-nothing deployment boundary. This prevents a
 multi-replica Postgres workspace from accidentally pairing with node-local result, ACL,
-review, invalidation, trust, replay, or hydrology ledgers. No driver or credential
-discovery occurs here: Postgres uses the already-injected ``postgres.connection_factory``
-provider.
+review, review-attestation, invalidation, trust, replay, or hydrology ledgers. No driver
+or credential discovery occurs here: Postgres uses the already-injected
+``postgres.connection_factory`` provider.
 """
 
 from __future__ import annotations
@@ -33,6 +33,7 @@ from tools.postgres_research_stores import (
     PostgresResearchReportStore,
     PostgresResearchResultStore,
 )
+from tools.postgres_review_attestation_store import PostgresReviewAttestationStore
 from tools.postgres_source_trust_store import PostgresSourceTrustStore
 from tools.postgres_workspace_store import PostgresResearchWorkspaceStore
 from tools.project_acl_store import ProjectACLStore
@@ -42,6 +43,7 @@ from tools.research_capsule_store import ResearchCapsuleStore
 from tools.research_report_store import ResearchReportStore
 from tools.research_result_store import ResearchResultStore
 from tools.research_workspace_sqlite import SQLiteResearchWorkspaceStore
+from tools.review_attestation_store import ReviewAttestationStore
 from tools.review_store import ReviewStore
 from tools.runtime_providers import RuntimeProviderRegistry
 from tools.source_trust_store import SourceTrustStore
@@ -60,6 +62,7 @@ class ProductionPersistence:
     source_trust: SourceTrustStore
     replay_recipes: EncryptedReplayRecipeStore | None
     reviews: ReviewStore
+    review_attestations: ReviewAttestationStore
     feedback: FeedbackStore
     hydrology: HydrologyArtifactStore
     hydrology_recipes: Any
@@ -115,6 +118,7 @@ def build_production_persistence(
             schema=postgres_schema,
         )
         reviews = PostgresReviewStore(connection_factory, schema=postgres_schema)
+        review_attestations = PostgresReviewAttestationStore(connection_factory, schema=postgres_schema)
         feedback = PostgresFeedbackStore(connection_factory, schema=postgres_schema)
         return ProductionPersistence(
             backend="postgres",
@@ -128,6 +132,7 @@ def build_production_persistence(
             source_trust=source_trust,
             replay_recipes=replay_recipes,
             reviews=reviews,
+            review_attestations=review_attestations,
             feedback=feedback,
             hydrology=hydrology,
             hydrology_recipes=hydrology_recipes,
@@ -158,6 +163,7 @@ def build_production_persistence(
                 metadata_backend="sqlite",
             ),
             reviews=ReviewStore(selected_root / "reviews.sqlite3"),
+            review_attestations=ReviewAttestationStore(selected_root / "review_attestations.sqlite3"),
             feedback=FeedbackStore(selected_root / "feedback.sqlite3"),
             hydrology=hydrology,
             hydrology_recipes=hydrology_recipes,
