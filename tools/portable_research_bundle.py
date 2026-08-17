@@ -19,7 +19,9 @@ from tools.manifest_attestation import ManifestAttestation, ManifestSigner, atte
 
 _MAX_ENTRIES = 100_000
 _MAX_EMBEDDED_BYTES = 512 * 1024 * 1024
+_MAX_ARCHIVE_BYTES = 1024 * 1024 * 1024
 _FIXED_ZIP_TIME = (1980, 1, 1, 0, 0, 0)
+_RESERVED_PATHS = frozenset({"manifest.json", "attestation.json"})
 
 
 def _text(value: Any, label: str, maximum: int = 2000, *, allow_empty: bool = False) -> str:
@@ -88,7 +90,10 @@ class PortableBundleEntry:
         if disposition == "embedded":
             if not archive_path or reference_id:
                 raise ValueError("embedded entry requires archive_path and no reference_id")
-            object.__setattr__(self, "archive_path", _safe_archive_path(archive_path))
+            safe_path = _safe_archive_path(archive_path)
+            if safe_path in _RESERVED_PATHS:
+                raise ValueError("embedded entry may not use a reserved archive path")
+            object.__setattr__(self, "archive_path", safe_path)
             object.__setattr__(self, "reference_id", "")
         else:
             if not reference_id or archive_path:
@@ -146,6 +151,27 @@ class PortableResearchBundle:
     attestation: ManifestAttestation | None = None
 
 
+@dataclass(frozen=True)
+class PortableBundleVerification:
+    manifest_matches: bool
+    embedded_entries: Mapping[str, bool]
+    unexpected_paths: tuple[str, ...]
+    unsafe_paths: tuple[str, ...]
+    duplicate_paths: tuple[str, ...]
+    archive_sha256: str
+    archive_size_bytes: int
+
+    @property
+    def valid(self) -> bool:
+        return (
+            self.manifest_matches
+            and all(self.embedded_entries.values())
+            and not self.unexpected_paths
+            and not self.unsafe_paths
+            and not self.duplicate_paths
+        )
+
+
 class PortableBundleBuilder:
     def __init__(
         self,
@@ -165,6 +191,7 @@ class PortableBundleBuilder:
         self._report_ids = tuple(report_ids)
         self._entries: dict[str, PortableBundleEntry] = {}
         self._embedded: dict[str, bytes] = {}
+        self._embedded_bytes = 0
 
     def add_embedded(
         self,
@@ -181,13 +208,13 @@ class PortableBundleBuilder:
             raise TypeError("data must be bytes")
         if len(self._entries) >= _MAX_ENTRIES:
             raise ValueError("bundle entry limit exceeded")
-        if sum(len(item) for item in self._embedded.values()) + len(data) > _MAX_EMBEDDED_BYTES:
+        if self._embedded_bytes + len(data) > _MAX_EMBEDDED_BYTES:
             raise ValueError("embedded bundle byte limit exceeded")
         selected_id = _text(entry_id, "entry_id", 500)
         if selected_id in self._entries:
             raise ValueError("duplicate entry_id")
         selected_path = _safe_archive_path(archive_path)
-        if selected_path in self._embedded or selected_path in {"manifest.json", "attestation.json"}:
+        if selected_path in self._embedded or selected_path in _RESERVED_PATHS:
             raise ValueError("duplicate or reserved archive_path")
         entry = PortableBundleEntry(
             entry_id=selected_id,
@@ -202,6 +229,7 @@ class PortableBundleBuilder:
         )
         self._entries[selected_id] = entry
         self._embedded[selected_path] = bytes(data)
+        self._embedded_bytes += len(data)
         return entry
 
     def add_reference(
@@ -276,6 +304,8 @@ class PortableBundleBuilder:
                 attestation_info.external_attr = 0o600 << 16
                 archive.writestr(attestation_info, _canonical(asdict(attestation)))
         data = buffer.getvalue()
+        if len(data) > _MAX_ARCHIVE_BYTES:
+            raise ValueError("portable bundle archive exceeds the byte limit")
         result = PortableResearchBundle(
             manifest=manifest,
             archive_sha256=hashlib.sha256(data).hexdigest(),
@@ -285,31 +315,71 @@ class PortableBundleBuilder:
         return result, data
 
 
-def verify_embedded_entries(manifest: PortableResearchBundleManifest, archive_bytes: bytes) -> Mapping[str, bool]:
+def verify_bundle_archive(manifest: PortableResearchBundleManifest, archive_bytes: bytes) -> PortableBundleVerification:
     if not isinstance(manifest, PortableResearchBundleManifest) or not isinstance(archive_bytes, bytes):
         raise TypeError("manifest/archive types are invalid")
-    output: dict[str, bool] = {}
+    if len(archive_bytes) > _MAX_ARCHIVE_BYTES:
+        raise ValueError("portable bundle archive exceeds the byte limit")
+    embedded = {item.archive_path: item for item in manifest.entries if item.disposition == "embedded"}
+    output: dict[str, bool] = {item.entry_id: False for item in embedded.values()}
+    expected_paths = set(embedded) | {"manifest.json", "attestation.json"}
+    unexpected: list[str] = []
+    unsafe: list[str] = []
+    duplicates: list[str] = []
+    manifest_matches = False
     with zipfile.ZipFile(io.BytesIO(archive_bytes), mode="r") as archive:
-        names = set(archive.namelist())
-        for entry in manifest.entries:
-            if entry.disposition != "embedded":
+        infos = archive.infolist()
+        if len(infos) > _MAX_ENTRIES + len(_RESERVED_PATHS):
+            raise ValueError("portable bundle contains too many archive entries")
+        seen: set[str] = set()
+        for info in infos:
+            raw_name = info.filename
+            try:
+                safe_name = _safe_archive_path(raw_name)
+            except ValueError:
+                unsafe.append(raw_name)
                 continue
-            if entry.archive_path not in names:
-                output[entry.entry_id] = False
+            if safe_name in seen:
+                duplicates.append(safe_name)
                 continue
-            info = archive.getinfo(entry.archive_path)
+            seen.add(safe_name)
+            if safe_name not in expected_paths:
+                unexpected.append(safe_name)
+            if info.file_size > _MAX_EMBEDDED_BYTES:
+                continue
+            if safe_name == "manifest.json":
+                payload = archive.read(info)
+                manifest_matches = payload == canonical_manifest_bytes(asdict(manifest))
+                continue
+            entry = embedded.get(safe_name)
+            if entry is None:
+                continue
             if info.file_size != entry.size_bytes:
-                output[entry.entry_id] = False
                 continue
-            data = archive.read(entry.archive_path)
+            data = archive.read(info)
             output[entry.entry_id] = hashlib.sha256(data).hexdigest() == entry.content_sha256
-    return output
+    return PortableBundleVerification(
+        manifest_matches=manifest_matches,
+        embedded_entries=output,
+        unexpected_paths=tuple(sorted(set(unexpected))),
+        unsafe_paths=tuple(sorted(set(unsafe))),
+        duplicate_paths=tuple(sorted(set(duplicates))),
+        archive_sha256=hashlib.sha256(archive_bytes).hexdigest(),
+        archive_size_bytes=len(archive_bytes),
+    )
+
+
+def verify_embedded_entries(manifest: PortableResearchBundleManifest, archive_bytes: bytes) -> Mapping[str, bool]:
+    """Compatibility projection for callers that only need per-entry content checks."""
+    return verify_bundle_archive(manifest, archive_bytes).embedded_entries
 
 
 __all__ = [
     "PortableBundleBuilder",
     "PortableBundleEntry",
+    "PortableBundleVerification",
     "PortableResearchBundle",
     "PortableResearchBundleManifest",
+    "verify_bundle_archive",
     "verify_embedded_entries",
 ]
