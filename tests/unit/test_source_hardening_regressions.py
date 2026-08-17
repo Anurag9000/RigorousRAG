@@ -6,12 +6,47 @@ import pytest
 
 from evaluation.expert_adjudication import ExpertAdjudicationStore, LabelSchema
 from models.local_hf_multimodal_entailment import MultimodalLabelMapping
-from orchestration.continual_adaptation import SQLiteContinualWorkflowStore
-from tests.unit.test_continual_adaptation import spec as continual_spec
+from orchestration.continual_adaptation import ContinualWorkflowSpec, SQLiteContinualWorkflowStore
+from tools.feedback_promotion import FeedbackBatchManifest
+from tools.index_drift import IndexAdaptationDecision
+from tools.training_lineage import TrainingRequest
 
 
 def sha(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def continual_spec() -> ContinualWorkflowSpec:
+    return ContinualWorkflowSpec(
+        owner_id="alice",
+        baseline_version="retriever-v1",
+        candidate_version="retriever-v2",
+        drift_evidence_sha256=sha("drift"),
+        adaptation_policy_sha256=sha("adaptation-policy"),
+        adaptation_decision=IndexAdaptationDecision(
+            "shadow_rebuild",
+            ("distribution_shift_detected",),
+        ),
+        training_request=TrainingRequest(
+            run_id="continual-run-1",
+            parent_artifact_sha256=sha("baseline-artifact"),
+            dataset_sha256=sha("training-dataset"),
+            code_revision="0123456789abcdef0123456789abcdef01234567",
+            seed=7,
+            config={"epochs": 3, "objective": "contrastive"},
+        ),
+        feedback_batch=FeedbackBatchManifest(
+            owner_id="alice",
+            batch_id=sha("feedback-batch"),
+            example_count=100,
+            positive_weight=70.0,
+            negative_weight=30.0,
+            neutral_weight=0.0,
+            subject_count=80,
+            event_fingerprint=sha("events"),
+        ),
+        benchmark_contract_sha256=sha("benchmark-contract"),
+    )
 
 
 def test_multimodal_label_mapping_rejects_non_integer_boolean_and_negative_indices() -> None:
