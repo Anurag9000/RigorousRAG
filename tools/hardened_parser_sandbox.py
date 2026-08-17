@@ -12,7 +12,7 @@ import json
 import math
 import re
 from dataclasses import asdict, dataclass
-from typing import Any, Mapping, Protocol, Sequence
+from typing import Any, Mapping, Protocol
 
 _IMAGE_DIGEST_RE = re.compile(r"^[A-Za-z0-9._:/-]+@sha256:[0-9a-f]{64}$")
 
@@ -36,6 +36,13 @@ def _positive(value: Any, label: str, maximum: float) -> float:
     if not math.isfinite(parsed) or parsed <= 0 or parsed > maximum:
         raise ValueError(f"{label} is invalid")
     return parsed
+
+
+def _digest(value: Any, label: str) -> str:
+    selected = _text(value, label, 64).lower()
+    if len(selected) != 64 or any(ch not in "0123456789abcdef" for ch in selected):
+        raise ValueError(f"{label} must be SHA-256")
+    return selected
 
 
 def _canonical(value: Any) -> bytes:
@@ -125,16 +132,10 @@ class HardenedParserRequest:
         object.__setattr__(self, "request_id", _text(self.request_id, "request_id", 500))
         object.__setattr__(self, "owner_id", _text(self.owner_id, "owner_id", 256))
         object.__setattr__(self, "input_object_reference", _text(self.input_object_reference, "input_object_reference", 2000))
-        digest = _text(self.input_sha256, "input_sha256", 64).lower()
-        if len(digest) != 64 or any(ch not in "0123456789abcdef" for ch in digest):
-            raise ValueError("input_sha256 must be SHA-256")
-        object.__setattr__(self, "input_sha256", digest)
+        object.__setattr__(self, "input_sha256", _digest(self.input_sha256, "input_sha256"))
         object.__setattr__(self, "filename", _text(self.filename, "filename", 500))
         object.__setattr__(self, "media_type", _text(self.media_type, "media_type", 256).lower())
-        profile = _text(self.profile_fingerprint, "profile_fingerprint", 64).lower()
-        if len(profile) != 64 or any(ch not in "0123456789abcdef" for ch in profile):
-            raise ValueError("profile_fingerprint must be SHA-256")
-        object.__setattr__(self, "profile_fingerprint", profile)
+        object.__setattr__(self, "profile_fingerprint", _digest(self.profile_fingerprint, "profile_fingerprint"))
 
 
 @dataclass(frozen=True)
@@ -145,6 +146,15 @@ class HardenedParserResult:
     output_size_bytes: int
     executor_id: str
     sandbox_receipt_fingerprint: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "request_id", _text(self.request_id, "request_id", 500))
+        object.__setattr__(self, "output_object_reference", _text(self.output_object_reference, "output_object_reference", 2000))
+        object.__setattr__(self, "output_sha256", _digest(self.output_sha256, "output_sha256"))
+        if isinstance(self.output_size_bytes, bool) or not isinstance(self.output_size_bytes, int) or self.output_size_bytes < 0 or self.output_size_bytes > 2_000_000_000:
+            raise ValueError("output_size_bytes is invalid")
+        object.__setattr__(self, "executor_id", _text(self.executor_id, "executor_id", 500))
+        object.__setattr__(self, "sandbox_receipt_fingerprint", _digest(self.sandbox_receipt_fingerprint, "sandbox_receipt_fingerprint"))
 
 
 class HardenedParserExecutor(Protocol):
@@ -218,7 +228,10 @@ def build_kubernetes_parser_job(
     }
     if profile.require_apparmor:
         selected_apparmor = _text(apparmor_profile, "apparmor_profile", 256)
-        container_security["appArmorProfile"] = {"type": "RuntimeDefault" if selected_apparmor == "runtime/default" else "Localhost", "localhostProfile": None if selected_apparmor == "runtime/default" else selected_apparmor}
+        if selected_apparmor == "runtime/default":
+            container_security["appArmorProfile"] = {"type": "RuntimeDefault"}
+        else:
+            container_security["appArmorProfile"] = {"type": "Localhost", "localhostProfile": selected_apparmor}
     pod_spec: dict[str, Any] = {
         "restartPolicy": "Never",
         "automountServiceAccountToken": False,
