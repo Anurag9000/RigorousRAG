@@ -112,14 +112,11 @@ class FederatedSearchRequest:
         if isinstance(self.max_results, bool) or not isinstance(self.max_results, int) or not 1 <= self.max_results <= _MAX_RESULTS_PER_PROVIDER:
             raise ValueError("max_results is invalid")
         object.__setattr__(self, "modalities", tuple(sorted(set(_text(item, "modality", 64).lower() for item in self.modalities))))
-        # query_payload is deliberately opaque to this module. It may be plaintext, encrypted,
-        # tokenized, or a provider-specific private-query envelope chosen by the caller.
         object.__setattr__(self, "query_payload", _text(self.query_payload, "query_payload", 100_000, allow_empty=True))
 
     @property
     def fingerprint(self) -> str:
         payload = asdict(self)
-        # The opaque payload is represented by digest so request fingerprints do not expose it.
         payload["query_payload"] = hashlib.sha256(self.query_payload.encode("utf-8")).hexdigest()
         return hashlib.sha256(_canonical(payload)).hexdigest()
 
@@ -245,8 +242,12 @@ def merge_federated_responses(
 ) -> FederatedMergeResult:
     if not isinstance(request, FederatedSearchRequest):
         raise TypeError("request must be FederatedSearchRequest")
-    if len(responses) > _MAX_PROVIDERS or any(not isinstance(item, FederatedSearchResponse) for item in responses):
+    response_items = tuple(responses)
+    if len(response_items) > _MAX_PROVIDERS or any(not isinstance(item, FederatedSearchResponse) for item in response_items):
         raise ValueError("responses are invalid")
+    expected_items = tuple(expected_collections)
+    if len(expected_items) > _MAX_PROVIDERS or any(not isinstance(item, FederatedCollection) for item in expected_items):
+        raise ValueError("expected_collections contain an invalid value")
     if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= _MAX_TOTAL_RESULTS:
         raise ValueError("limit is invalid")
     if isinstance(max_per_provider, bool) or not isinstance(max_per_provider, int) or not 1 <= max_per_provider <= _MAX_RESULTS_PER_PROVIDER:
@@ -263,26 +264,27 @@ def merge_federated_responses(
             raise ValueError("provider weights must be positive")
         normalized_weights[selected_provider] = weight
 
-    expected_by_key = {
-        (item.provider_id, item.collection_id): item
-        for item in expected_collections
-        if isinstance(item, FederatedCollection)
-    }
-    if len(expected_by_key) != len(tuple(expected_collections)):
-        raise ValueError("expected_collections contain invalid or duplicate values")
+    expected_by_key = {(item.provider_id, item.collection_id): item for item in expected_items}
+    if len(expected_by_key) != len(expected_items):
+        raise ValueError("expected_collections contain duplicate provider/collection identities")
     seen_keys: set[tuple[str, str]] = set()
     merged: list[FederatedMergedHit] = []
     warnings: list[str] = []
-    for response in responses:
+    for response in response_items:
         if response.request_fingerprint != request.fingerprint:
             raise ValueError("response request fingerprint does not match request")
         collection = response.collection
         key = (collection.provider_id, collection.collection_id)
         if key in seen_keys:
             raise ValueError("duplicate response for provider collection")
+        if expected_by_key and key not in expected_by_key:
+            raise ValueError("response came from a provider collection that was not authorized for this request")
         seen_keys.add(key)
         if collection.disclosure_policy_fingerprint != request.disclosure_policy_fingerprint:
             raise ValueError("collection disclosure policy does not match request policy")
+        expected = expected_by_key.get(key)
+        if expected is not None and expected.collection_fingerprint != collection.collection_fingerprint:
+            raise ValueError("response collection fingerprint differs from the authorized collection generation")
         weight = normalized_weights.get(collection.provider_id, 1.0)
         count = 0
         for handle in response.handles:
@@ -304,6 +306,7 @@ def merge_federated_responses(
         warnings.extend(f"{collection.provider_id}:{collection.collection_id}:{item}" for item in response.warnings)
 
     merged.sort(key=lambda item: (-item.fused_score, item.handle.provider_id, item.handle.collection_id, item.provider_rank, item.global_evidence_id))
+    effective_limit = min(limit, request.max_results)
     deduped: list[FederatedMergedHit] = []
     seen_global: set[str] = set()
     for item in merged:
@@ -311,7 +314,7 @@ def merge_federated_responses(
             continue
         seen_global.add(item.global_evidence_id)
         deduped.append(item)
-        if len(deduped) >= limit:
+        if len(deduped) >= effective_limit:
             break
 
     missing_keys = sorted(set(expected_by_key) - seen_keys)
