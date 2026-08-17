@@ -192,6 +192,8 @@ def reciprocal_rank_fuse(
         entries = ranked_lists[list_id]
         if len(entries) > _MAX_CANDIDATES:
             raise ValueError("input ranked list is too large")
+        if any(not isinstance(candidate, RetrievalCandidate) for candidate in entries):
+            raise ValueError("ranked lists must contain RetrievalCandidate values")
         accepted = [candidate for candidate in entries if candidate_filter is None or candidate_filter.accepts(candidate)]
         accepted.sort(key=lambda candidate: (candidate.rank, candidate.candidate_id))
         for local_rank, candidate in enumerate(accepted[: policy.max_per_input_list], start=1):
@@ -206,14 +208,15 @@ def reciprocal_rank_fuse(
                 identity,
                 {"candidate": candidate, "score": 0.0, "best_rank": local_rank, "contributions": []},
             )
+            previous_best_rank = state["best_rank"]
+            current = state["candidate"]
+            if (local_rank, candidate.candidate_id) < (previous_best_rank, current.candidate_id):
+                state["candidate"] = candidate
+            state["best_rank"] = min(previous_best_rank, local_rank)
             state["score"] += contribution
-            state["best_rank"] = min(state["best_rank"], local_rank)
             state["contributions"].append(
                 FusionContribution(candidate.corpus_id, candidate.retriever_id, local_rank, weight, contribution)
             )
-            current = state["candidate"]
-            if (local_rank, candidate.candidate_id) < (state["best_rank"], current.candidate_id):
-                state["candidate"] = candidate
     fused = [
         FusedCandidate(
             candidate=state["candidate"],
