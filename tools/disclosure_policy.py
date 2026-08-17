@@ -9,7 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import asdict, dataclass
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping
 
 _MAX_RULES = 2000
 _MAX_DEPTH = 32
@@ -51,6 +51,15 @@ def _matches(pattern: str, path: str) -> bool:
     return all(left == "*" or left == right for left, right in zip(expected, actual))
 
 
+def _prefix_matches(pattern: str, path: str) -> bool:
+    """Return whether ``path`` can be a parent of some value matched by ``pattern``."""
+    expected = _segments(pattern)
+    actual = _segments(path)
+    if len(expected) <= len(actual):
+        return False
+    return all(left == "*" or left == right for left, right in zip(expected[: len(actual)], actual))
+
+
 @dataclass(frozen=True)
 class DisclosureRule:
     field_path: str
@@ -73,6 +82,15 @@ class DisclosureRule:
 
     def applies(self, *, path: str, role: str, purpose: str) -> bool:
         if not _matches(self.field_path, path):
+            return False
+        if self.roles and role not in self.roles:
+            return False
+        if self.purposes and purpose not in self.purposes:
+            return False
+        return True
+
+    def may_match_descendant(self, *, path: str, role: str, purpose: str) -> bool:
+        if not _prefix_matches(self.field_path, path):
             return False
         if self.roles and role not in self.roles:
             return False
@@ -126,6 +144,16 @@ class DisclosurePolicy:
         winner = matched[0]
         return winner.effect, winner.reason or f"rule:{winner.field_path}"
 
+    def has_allowed_descendant(self, *, path: str, role: str, purpose: str) -> bool:
+        selected_path = _path(path)
+        selected_role = _text(role, "role", 128).lower()
+        selected_purpose = _text(purpose, "purpose", 128).lower()
+        return any(
+            item.effect == "allow"
+            and item.may_match_descendant(path=selected_path, role=selected_role, purpose=selected_purpose)
+            for item in self.rules
+        )
+
 
 @dataclass(frozen=True)
 class DisclosureTraceEntry:
@@ -172,7 +200,7 @@ def project_disclosure(
     trace: list[DisclosureTraceEntry] = []
     counter = 0
 
-    def walk(current: Any, prefix: str, depth: int) -> Any:
+    def walk(current: Any, prefix: str, depth: int) -> tuple[Any, bool]:
         nonlocal counter
         if depth > _MAX_DEPTH:
             raise ValueError("disclosure payload exceeds maximum depth")
@@ -187,8 +215,20 @@ def project_disclosure(
                 effect, reason = policy.decide(path=path, role=selected_role, purpose=selected_purpose)
                 trace.append(DisclosureTraceEntry(path, effect, reason))
                 if effect == "allow":
-                    output[key] = walk(child, path, depth + 1)
-            return output
+                    projected, _ = walk(child, path, depth + 1)
+                    output[key] = projected
+                    continue
+                # A default-denied container may still contain a specifically allowed child.
+                # An explicit deny rule is a hard subtree stop and is never bypassed.
+                if reason == "default" and isinstance(child, (Mapping, list, tuple)) and policy.has_allowed_descendant(
+                    path=path,
+                    role=selected_role,
+                    purpose=selected_purpose,
+                ):
+                    projected, has_value = walk(child, path, depth + 1)
+                    if has_value:
+                        output[key] = projected
+            return output, bool(output)
         if isinstance(current, (list, tuple)):
             output_items: list[Any] = []
             for index, child in enumerate(current):
@@ -199,11 +239,21 @@ def project_disclosure(
                 effect, reason = policy.decide(path=path, role=selected_role, purpose=selected_purpose)
                 trace.append(DisclosureTraceEntry(path, effect, reason))
                 if effect == "allow":
-                    output_items.append(walk(child, path, depth + 1))
-            return output_items
-        return current
+                    projected, _ = walk(child, path, depth + 1)
+                    output_items.append(projected)
+                    continue
+                if reason == "default" and isinstance(child, (Mapping, list, tuple)) and policy.has_allowed_descendant(
+                    path=path,
+                    role=selected_role,
+                    purpose=selected_purpose,
+                ):
+                    projected, has_value = walk(child, path, depth + 1)
+                    if has_value:
+                        output_items.append(projected)
+            return output_items, bool(output_items)
+        return current, True
 
-    projected = walk(dict(value), "", 0)
+    projected, _ = walk(dict(value), "", 0)
     allowed = sum(1 for item in trace if item.effect == "allow")
     denied = len(trace) - allowed
     return DisclosureProjection(
