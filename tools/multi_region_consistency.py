@@ -143,7 +143,8 @@ class FailoverEvaluation:
     reasons: tuple[str, ...]
     missing_generation_parity: tuple[str, ...]
     commit_lag: int
-    observation_age_seconds: float
+    source_observation_age_seconds: float
+    candidate_observation_age_seconds: float
     required_next_fencing_epoch: int
     policy_fingerprint: str
     source_state_fingerprint: str
@@ -170,14 +171,26 @@ def evaluate_failover(
         raise ValueError("observed_primary_leases contain an invalid value")
 
     reasons: list[str] = []
+    if source.observed_at > selected_now:
+        reasons.append("source_replication_observation_is_future_dated")
+        source_age = 0.0
+    else:
+        source_age = selected_now - source.observed_at
+    if candidate.observed_at > selected_now:
+        reasons.append("candidate_replication_observation_is_future_dated")
+        candidate_age = 0.0
+    else:
+        candidate_age = selected_now - candidate.observed_at
+    if source_age > policy.max_observation_age_seconds:
+        reasons.append("source_replication_observation_is_stale")
+    if candidate_age > policy.max_observation_age_seconds:
+        reasons.append("candidate_replication_observation_is_stale")
+
     commit_lag = max(0, source.commit_sequence - candidate.commit_sequence)
     if candidate.commit_sequence > source.commit_sequence:
         reasons.append("candidate_commit_sequence_is_ahead_of_source; operator review required")
     if commit_lag > policy.max_commit_lag:
         reasons.append(f"commit_lag_exceeds_policy:{commit_lag}>{policy.max_commit_lag}")
-    observation_age = max(0.0, selected_now - candidate.observed_at)
-    if observation_age > policy.max_observation_age_seconds:
-        reasons.append("candidate_replication_observation_is_stale")
 
     missing: list[str] = []
     for kind in policy.require_generation_parity:
@@ -198,14 +211,13 @@ def evaluate_failover(
     if len(candidate_active) > 1:
         reasons.append("multiple_active_candidate_primary_leases_observed")
     required_epoch = (max(epochs) + 1) if epochs else 1
-    # Even an eligible candidate must acquire a *new* externally fenced lease at this epoch
-    # or greater before becoming writable; this evaluator never grants that lease itself.
     payload = {
         "candidate_region": candidate.region_id,
         "reasons": reasons,
         "missing_generation_parity": missing,
         "commit_lag": commit_lag,
-        "observation_age_seconds": observation_age,
+        "source_observation_age_seconds": source_age,
+        "candidate_observation_age_seconds": candidate_age,
         "required_next_fencing_epoch": required_epoch,
         "policy": policy.fingerprint,
         "source": source.state_fingerprint,
@@ -217,7 +229,8 @@ def evaluate_failover(
         reasons=tuple(reasons),
         missing_generation_parity=tuple(missing),
         commit_lag=commit_lag,
-        observation_age_seconds=observation_age,
+        source_observation_age_seconds=source_age,
+        candidate_observation_age_seconds=candidate_age,
         required_next_fencing_epoch=required_epoch,
         policy_fingerprint=policy.fingerprint,
         source_state_fingerprint=source.state_fingerprint,
@@ -237,12 +250,15 @@ def verify_writable_region(
         raise TypeError("state/lease types are invalid")
     if isinstance(expected_minimum_epoch, bool) or not isinstance(expected_minimum_epoch, int) or expected_minimum_epoch < 1:
         raise ValueError("expected_minimum_epoch is invalid")
+    selected_now = _finite(now, "now")
     reasons: list[str] = []
+    if state.observed_at > selected_now:
+        reasons.append("regional_state_observation_is_future_dated")
     if state.region_id != lease.region_id:
         reasons.append("lease_region_does_not_match_state")
     if lease.fencing_epoch < expected_minimum_epoch:
         reasons.append("lease_fencing_epoch_is_stale")
-    if not lease.active_at(now):
+    if not lease.active_at(selected_now):
         reasons.append("primary_lease_is_not_active")
     return not reasons, tuple(reasons)
 
