@@ -1,10 +1,9 @@
 """Executable staged PyTorch training engine for RigorousRAG learned components.
 
-The engine is deliberately library-style: nothing runs on import.  When explicitly
-invoked it supports deterministic seeding, CPU/CUDA/MPS selection, fp32/bf16/fp16
-mixed precision, gradient accumulation/clipping, AdamW, warmup + linear/cosine
-scheduling, optional DDP wrapping, hard-negative refresh hooks, evaluation/early
-stopping, stage-boundary checkpoints and exact mid-stage resume.
+Nothing runs on import. Explicit execution supports deterministic seeding, CPU/CUDA/MPS,
+fp32/bf16/fp16 mixed precision, gradient accumulation/clipping, AdamW, warmup and
+linear/cosine scheduling, optional DDP, evaluation/early stopping, hard-negative refresh,
+content-addressed checkpoints and exact stage-aware resume.
 """
 
 from __future__ import annotations
@@ -24,19 +23,9 @@ except Exception:  # pragma: no cover - optional training dependency.
     dist = None  # type: ignore[assignment]
     nn = None  # type: ignore[assignment]
 
-from training.checkpointing import (
-    CheckpointManager,
-    TrainerCursor,
-    TrainerState,
-    canonical_digest,
-)
-from training.torch_losses import (
-    SparsePenaltyWeights,
-    TensorLossBreakdown,
-    in_batch_info_nce,
-    listnet_loss,
-    sparse_retrieval_objective,
-)
+from training.checkpoint_control import inspect_trainer_state, set_checkpoint_pointer
+from training.checkpointing import CheckpointManager, TrainerCursor, TrainerState, canonical_digest
+from training.torch_losses import SparsePenaltyWeights, in_batch_info_nce, listnet_loss, sparse_retrieval_objective
 
 
 def _require_torch() -> None:
@@ -117,6 +106,10 @@ def move_to_device(value: Any, device: Any) -> Any:
     return value
 
 
+def _module(model: Any) -> Any:
+    return model.module if hasattr(model, "module") else model
+
+
 @dataclass(frozen=True)
 class TrainingStageSpec:
     name: str
@@ -132,11 +125,7 @@ class TrainingStageSpec:
     def __post_init__(self) -> None:
         if not isinstance(self.name, str) or not self.name.strip():
             raise ValueError("stage name is required")
-        for name, minimum in (
-            ("max_optimizer_steps", 1),
-            ("warmup_steps", 0),
-            ("checkpoint_every_steps", 1),
-        ):
+        for name, minimum in (("max_optimizer_steps", 1), ("warmup_steps", 0), ("checkpoint_every_steps", 1)):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
                 raise ValueError(f"{name} is invalid")
@@ -176,11 +165,7 @@ class TrainerConfig:
         if not isinstance(self.run_id, str) or not self.run_id.strip():
             raise ValueError("run_id is required")
         object.__setattr__(self, "source_commit", _git_commit(self.source_commit))
-        object.__setattr__(
-            self,
-            "dataset_manifest_digest",
-            _sha256(self.dataset_manifest_digest, "dataset_manifest_digest"),
-        )
+        object.__setattr__(self, "dataset_manifest_digest", _sha256(self.dataset_manifest_digest, "dataset_manifest_digest"))
         if not isinstance(self.model_architecture, str) or not self.model_architecture.strip():
             raise ValueError("model_architecture is required")
         if not self.stages or any(not isinstance(stage, TrainingStageSpec) for stage in self.stages):
@@ -232,14 +217,15 @@ class StageRuntime:
 
 
 class DenseContrastiveStep:
+    """DDP-safe dense step: all trainable computation enters via module ``forward``."""
+
     def __init__(self, *, temperature: float = 0.05, label_smoothing: float = 0.0) -> None:
         self.temperature = float(temperature)
         self.label_smoothing = float(label_smoothing)
 
     def __call__(self, model: Any, batch: Mapping[str, Any]) -> StepResult:
-        query = model.encode_queries(batch["query_inputs"])
-        documents = model.encode_documents(batch["document_inputs"])
-        scores = query @ documents.transpose(0, 1)
+        queries, documents = model(batch["query_inputs"], batch["document_inputs"])
+        scores = queries @ documents.transpose(0, 1)
         mask = batch.get("false_negative_mask")
         if mask is not None:
             scores = scores.masked_fill(mask.to(device=scores.device), torch.finfo(scores.dtype).min)
@@ -277,7 +263,7 @@ class SparseContrastiveStep:
         student_logits = teacher_logits = None
         if teacher is not None:
             teacher = teacher.to(device=scores.device, dtype=scores.dtype)
-            if torch.isfinite(teacher).all():
+            if teacher.shape == scores.shape and torch.isfinite(teacher).all():
                 student_logits, teacher_logits = scores, teacher
         result = sparse_retrieval_objective(
             scores,
@@ -310,7 +296,8 @@ class ColBERTContrastiveStep:
     def __call__(self, model: Any, batch: Mapping[str, Any]) -> StepResult:
         query_embeddings, query_mask = model(**batch["query_inputs"])
         document_embeddings, document_mask = model(**batch["document_inputs"])
-        scores = model.score_matrix(query_embeddings, query_mask, document_embeddings, document_mask)
+        scorer = type(_module(model)).score_matrix
+        scores = scorer(query_embeddings, query_mask, document_embeddings, document_mask)
         false_negative = batch.get("false_negative_mask")
         if false_negative is not None:
             scores = scores.masked_fill(false_negative.to(device=scores.device), torch.finfo(scores.dtype).min)
@@ -323,15 +310,31 @@ class ListwiseCrossEncoderStep:
         self.temperature = float(temperature)
 
     def __call__(self, model: Any, batch: Mapping[str, Any]) -> StepResult:
-        scores = model.cross_encoder(**batch["pair_inputs"]) if hasattr(model, "cross_encoder") else model(**batch["pair_inputs"])
-        relevance = batch["relevance"].to(device=scores.device, dtype=scores.dtype)
+        module = _module(model)
+        relevance = batch["relevance"]
         losses: list[Any] = []
-        offset = 0
-        for size in batch["group_sizes"]:
-            group_scores = scores[offset : offset + size].unsqueeze(0)
-            group_relevance = relevance[offset : offset + size].unsqueeze(0)
-            losses.append(listnet_loss(group_scores, group_relevance, temperature=self.temperature))
-            offset += size
+        if hasattr(module, "cross_encoder"):
+            grouped_scores = model(group_sizes=batch["group_sizes"], **batch["pair_inputs"])
+            offset = 0
+            for scores, size in zip(grouped_scores, batch["group_sizes"]):
+                group_relevance = relevance[offset : offset + size].to(device=scores.device, dtype=scores.dtype).unsqueeze(0)
+                losses.append(listnet_loss(scores.unsqueeze(0), group_relevance, temperature=self.temperature))
+                offset += size
+        else:
+            scores = model(**batch["pair_inputs"])
+            relevance = relevance.to(device=scores.device, dtype=scores.dtype)
+            offset = 0
+            for size in batch["group_sizes"]:
+                losses.append(
+                    listnet_loss(
+                        scores[offset : offset + size].unsqueeze(0),
+                        relevance[offset : offset + size].unsqueeze(0),
+                        temperature=self.temperature,
+                    )
+                )
+                offset += size
+        if not losses:
+            raise ValueError("listwise training batch contains no candidate groups")
         loss = torch.stack(losses).mean()
         return StepResult(loss, {"listwise_loss": float(loss.detach().cpu())})
 
@@ -343,15 +346,18 @@ def build_adamw(model: Any, *, learning_rate: float, weight_decay: float = 0.01)
     for name, parameter in model.named_parameters():
         if not parameter.requires_grad:
             continue
-        if name.endswith("bias") or "layernorm" in name.casefold() or "layer_norm" in name.casefold():
+        lowered = name.casefold()
+        if name.endswith("bias") or "layernorm" in lowered or "layer_norm" in lowered:
             no_decay.append(parameter)
         else:
             decay.append(parameter)
-    groups = [
-        {"params": decay, "weight_decay": float(weight_decay)},
-        {"params": no_decay, "weight_decay": 0.0},
-    ]
-    return torch.optim.AdamW(groups, lr=float(learning_rate))
+    return torch.optim.AdamW(
+        [
+            {"params": decay, "weight_decay": float(weight_decay)},
+            {"params": no_decay, "weight_decay": 0.0},
+        ],
+        lr=float(learning_rate),
+    )
 
 
 def build_stage_scheduler(optimizer: Any, stage: TrainingStageSpec) -> Any:
@@ -362,8 +368,8 @@ def build_stage_scheduler(optimizer: Any, stage: TrainingStageSpec) -> Any:
             return max(1e-12, (step + 1) / stage.warmup_steps)
         if stage.scheduler == "constant":
             return 1.0
-        progress_denominator = max(1, stage.max_optimizer_steps - stage.warmup_steps)
-        progress = min(1.0, max(0.0, (step - stage.warmup_steps) / progress_denominator))
+        denominator = max(1, stage.max_optimizer_steps - stage.warmup_steps)
+        progress = min(1.0, max(0.0, (step - stage.warmup_steps) / denominator))
         if stage.scheduler == "linear":
             return max(0.0, 1.0 - progress)
         return 0.5 * (1.0 + math.cos(math.pi * progress))
@@ -397,10 +403,7 @@ def maybe_wrap_ddp(model: Any, config: TrainerConfig, device: Any) -> Any:
             output_device=local_rank,
             find_unused_parameters=config.find_unused_parameters,
         )
-    return torch.nn.parallel.DistributedDataParallel(
-        model,
-        find_unused_parameters=config.find_unused_parameters,
-    )
+    return torch.nn.parallel.DistributedDataParallel(model, find_unused_parameters=config.find_unused_parameters)
 
 
 @dataclass(frozen=True)
@@ -415,12 +418,7 @@ class TrainingSummary:
 
 
 class TorchTrainingEngine:
-    def __init__(
-        self,
-        model: Any,
-        config: TrainerConfig,
-        checkpoint_manager: CheckpointManager,
-    ) -> None:
+    def __init__(self, model: Any, config: TrainerConfig, checkpoint_manager: CheckpointManager) -> None:
         _require_torch()
         if not isinstance(config, TrainerConfig):
             raise ValueError("config must be TrainerConfig")
@@ -436,7 +434,10 @@ class TorchTrainingEngine:
             weight_decay=config.stages[0].weight_decay,
         )
         scaler_enabled = config.precision == "fp16" and self.device.type == "cuda"
-        self.scaler = torch.amp.GradScaler("cuda", enabled=scaler_enabled) if hasattr(torch, "amp") else torch.cuda.amp.GradScaler(enabled=scaler_enabled)
+        if hasattr(torch, "amp") and hasattr(torch.amp, "GradScaler"):
+            self.scaler = torch.amp.GradScaler("cuda", enabled=scaler_enabled)
+        else:
+            self.scaler = torch.cuda.amp.GradScaler(enabled=scaler_enabled)
         self.scheduler: Any | None = None
         self.parent_checkpoint_digest: str | None = None
 
@@ -504,9 +505,7 @@ class TorchTrainingEngine:
         if best is None:
             return True
         delta = self.config.early_stopping_min_delta
-        if self.config.early_stopping_mode == "max":
-            return value > best + delta
-        return value < best - delta
+        return value > best + delta if self.config.early_stopping_mode == "max" else value < best - delta
 
     def fit(
         self,
@@ -522,27 +521,29 @@ class TorchTrainingEngine:
         if any(not isinstance(runtime, StageRuntime) for runtime in stage_runtimes):
             raise ValueError("stage_runtimes contains an invalid runtime")
 
-        cursor = TrainerCursor(0, 0, 0, 0, 0, 0, 0)
-        state = TrainerState(self.config.run_id, cursor)
-        resume_pending = resume_checkpoint_digest
-        latest_digest: str | None = None
+        state = TrainerState(self.config.run_id, TrainerCursor(0, 0, 0, 0, 0, 0, 0))
+        resume_stage_index: int | None = None
+        if resume_checkpoint_digest is not None:
+            inspected = inspect_trainer_state(self.checkpoints, resume_checkpoint_digest)
+            if inspected.run_id != self.config.run_id:
+                raise ValueError("resume checkpoint run_id differs from TrainerConfig")
+            if inspected.cursor.stage_index >= len(self.config.stages):
+                raise ValueError("resume checkpoint stage lies outside configured stages")
+            state = inspected
+            resume_stage_index = inspected.cursor.stage_index
+
+        total_optimizer_steps = sum(
+            stage.max_optimizer_steps for stage in self.config.stages[: (resume_stage_index or 0)]
+        ) + (state.cursor.optimizer_step if resume_stage_index is not None else 0)
+        latest_digest: str | None = resume_checkpoint_digest
         stopped_early = False
-        completed_stages = 0
+        completed_stages = resume_stage_index or 0
 
         for stage_index, (stage, runtime) in enumerate(zip(self.config.stages, stage_runtimes)):
-            if stage_index < state.cursor.stage_index:
-                completed_stages += 1
+            if resume_stage_index is not None and stage_index < resume_stage_index:
                 continue
-            self._set_stage_optimizer(stage)
-            if resume_pending is not None:
-                state = self._resume(resume_pending, runtime)
-                resume_pending = None
-                if state.cursor.stage_index != stage_index:
-                    if state.cursor.stage_index > stage_index:
-                        completed_stages += 1
-                        continue
-                    raise ValueError("resume checkpoint stage index is behind current orchestration stage")
-            elif stage_index != state.cursor.stage_index:
+
+            if resume_stage_index is None and stage_index != state.cursor.stage_index:
                 state = TrainerState(
                     run_id=self.config.run_id,
                     cursor=TrainerCursor(
@@ -556,9 +557,15 @@ class TorchTrainingEngine:
                     ),
                     best_metric=state.best_metric,
                     best_checkpoint_digest=state.best_checkpoint_digest,
-                    early_stopping_bad_steps=state.early_stopping_bad_steps,
+                    early_stopping_bad_steps=0,
                     stage_name=stage.name,
                 )
+
+            self._set_stage_optimizer(stage)
+            if resume_checkpoint_digest is not None and stage_index == resume_stage_index:
+                state = self._resume(resume_checkpoint_digest, runtime)
+                resume_checkpoint_digest = None
+                resume_stage_index = None
 
             self.model.train()
             self.optimizer.zero_grad(set_to_none=True)
@@ -575,7 +582,7 @@ class TorchTrainingEngine:
                     with _autocast(self.device, self.config.precision):
                         step_result = runtime.step(self.model, batch)
                         loss = step_result.loss
-                        if loss.ndim != 0 or not torch.isfinite(loss):
+                        if loss.ndim != 0 or not bool(torch.isfinite(loss).item()):
                             raise RuntimeError("training step produced a non-finite or non-scalar loss")
                         scaled_loss = loss / self.config.gradient_accumulation_steps
                     if self.scaler.is_enabled():
@@ -609,7 +616,8 @@ class TorchTrainingEngine:
                                 "event": "microbatch",
                                 "stage": stage.name,
                                 "global_step": global_step,
-                                "optimizer_step": stage_optimizer_step,
+                                "stage_optimizer_step": stage_optimizer_step,
+                                "total_optimizer_steps": total_optimizer_steps,
                                 "loss": float(loss.detach().cpu()),
                                 **step_result.metrics,
                             }
@@ -631,6 +639,7 @@ class TorchTrainingEngine:
                         self.scheduler.step()
                     accumulation = 0
                     stage_optimizer_step += 1
+                    total_optimizer_steps += 1
                     state = TrainerState(
                         run_id=self.config.run_id,
                         cursor=TrainerCursor(
@@ -677,6 +686,7 @@ class TorchTrainingEngine:
                                 )
                                 best_candidate = self._checkpoint(state, runtime, stage_boundary=False, metrics=metrics)
                                 if best_candidate is not None:
+                                    set_checkpoint_pointer(self.checkpoints, "best", best_candidate)
                                     state = TrainerState(
                                         run_id=state.run_id,
                                         cursor=state.cursor,
@@ -694,25 +704,14 @@ class TorchTrainingEngine:
                                     early_stopping_bad_steps=state.early_stopping_bad_steps + 1,
                                     stage_name=state.stage_name,
                                 )
-                                if (
-                                    self.config.early_stopping_patience is not None
-                                    and state.early_stopping_bad_steps >= self.config.early_stopping_patience
-                                ):
+                                if self.config.early_stopping_patience is not None and state.early_stopping_bad_steps >= self.config.early_stopping_patience:
                                     stopped_early = True
 
                     if stage_optimizer_step % stage.checkpoint_every_steps == 0:
                         latest_digest = self._checkpoint(state, runtime, stage_boundary=False, metrics=metrics)
 
-                    if (
-                        hard_negative_refresh is not None
-                        and stage.hard_negative_refresh_every_steps is not None
-                        and stage_optimizer_step % stage.hard_negative_refresh_every_steps == 0
-                    ):
-                        hard_negative_refresh(
-                            self.model,
-                            stage_index=stage_index,
-                            optimizer_step=stage_optimizer_step,
-                        )
+                    if hard_negative_refresh is not None and stage.hard_negative_refresh_every_steps is not None and stage_optimizer_step % stage.hard_negative_refresh_every_steps == 0:
+                        hard_negative_refresh(self.model, stage_index=stage_index, optimizer_step=stage_optimizer_step)
 
                     if stopped_early or stage_optimizer_step >= stage.max_optimizer_steps:
                         break
@@ -741,7 +740,7 @@ class TorchTrainingEngine:
                 )
 
             latest_digest = self._checkpoint(state, runtime, stage_boundary=True)
-            completed_stages += 1
+            completed_stages = max(completed_stages, stage_index + 1)
             if stopped_early:
                 break
             if stage_index + 1 < len(self.config.stages):
@@ -765,7 +764,7 @@ class TorchTrainingEngine:
         return TrainingSummary(
             stopped_early=stopped_early,
             completed_stages=completed_stages,
-            optimizer_steps=state.cursor.optimizer_step,
+            optimizer_steps=total_optimizer_steps,
             global_steps=state.cursor.global_step,
             latest_checkpoint_digest=latest_digest,
             best_metric=state.best_metric,
