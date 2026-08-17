@@ -1,20 +1,8 @@
 """Framework-neutral training objectives and resumable plans for learned retrieval.
 
-This module intentionally does *not* import a model framework or download weights.  It
-owns the reproducible mathematics and state contracts that are otherwise easy to lose
-inside a one-off training script:
-
-* SPLADE/uniCOIL-style contrastive objectives with sparse FLOPS/L1 regularisation;
-* ColBERT-style in-batch contrastive and optional teacher-distillation objectives;
-* cross-encoder pairwise and listwise reranker objectives;
-* hard-negative curriculum metadata;
-* immutable training plans and stage boundaries; and
-* content-addressed checkpoint manifests with strict resume compatibility checks.
-
-A PyTorch/JAX/Transformers adapter can implement ``TrainingBackend`` and feed the scalar
-loss terms back into its autograd graph.  The pure-Python helpers remain useful for
-reference calculations, dry planning, audit reports and compatibility validation.
-No dataset or model execution occurs merely by importing this module.
+This module owns reproducible reference mathematics and immutable training/checkpoint
+contracts without importing a model framework. The executable PyTorch architectures,
+losses, data pipeline and trainer live under :mod:`training`.
 """
 
 from __future__ import annotations
@@ -27,13 +15,14 @@ import tempfile
 from dataclasses import asdict, dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Protocol, Sequence
+from typing import Any, Mapping, Protocol, Sequence
 
 _EPS = 1e-12
 _MAX_BATCH = 65_536
 _MAX_CANDIDATES = 65_536
 _MAX_TERMS = 1_000_000
 _MANIFEST_VERSION = 1
+_HEX = frozenset("0123456789abcdef")
 
 
 def _finite(value: Any, label: str) -> float:
@@ -75,8 +64,17 @@ def _identifier(value: Any, label: str, maximum: int = 500) -> str:
 
 def _digest(value: Any, label: str) -> str:
     result = _identifier(value, label, 128).lower()
-    if len(result) != 64 or any(character not in "0123456789abcdef" for character in result):
+    if len(result) != 64 or any(character not in _HEX for character in result):
         raise ValueError(f"{label} must be a lowercase SHA-256 hex digest")
+    return result
+
+
+def _git_commit(value: Any, label: str = "source_commit") -> str:
+    """Validate a full Git object ID without conflating it with a SHA-256 data digest."""
+
+    result = _identifier(value, label, 64).lower()
+    if len(result) not in {40, 64} or any(character not in _HEX for character in result):
+        raise ValueError(f"{label} must be a full 40- or 64-character hexadecimal Git object id")
     return result
 
 
@@ -85,8 +83,6 @@ def _canonical_json(value: Any) -> bytes:
 
 
 def sha256_json(value: Any) -> str:
-    """Return the SHA-256 digest of a canonical JSON-compatible object."""
-
     return hashlib.sha256(_canonical_json(value)).hexdigest()
 
 
@@ -152,8 +148,11 @@ class ObjectiveConfig:
         object.__setattr__(self, "margin", _nonnegative(self.margin, "margin", 1e6))
         if not isinstance(self.sparse, SparseRegularization):
             raise ValueError("sparse must be SparseRegularization")
-        weight = _nonnegative(self.distillation_weight, "distillation_weight", 1_000.0)
-        object.__setattr__(self, "distillation_weight", weight)
+        object.__setattr__(
+            self,
+            "distillation_weight",
+            _nonnegative(self.distillation_weight, "distillation_weight", 1_000.0),
+        )
         object.__setattr__(
             self,
             "teacher_temperature",
@@ -181,8 +180,7 @@ class LossBreakdown:
             "document_flops",
             "distillation",
         ):
-            value = _nonnegative(getattr(self, name), name, 1e30)
-            object.__setattr__(self, name, value)
+            object.__setattr__(self, name, _nonnegative(getattr(self, name), name, 1e30))
 
 
 def in_batch_contrastive_loss(
@@ -191,8 +189,6 @@ def in_batch_contrastive_loss(
     *,
     temperature: float = 1.0,
 ) -> float:
-    """Mean InfoNCE/cross-entropy loss for query-by-candidate score rows."""
-
     if not score_rows or len(score_rows) > _MAX_BATCH:
         raise ValueError("score_rows must be a non-empty bounded batch")
     if len(positive_indices) != len(score_rows):
@@ -216,8 +212,6 @@ def pairwise_softplus_loss(
     *,
     margin: float = 0.0,
 ) -> float:
-    """Stable pairwise logistic loss: softplus(margin - positive + negative)."""
-
     if not positive_scores or len(positive_scores) != len(negative_scores):
         raise ValueError("positive_scores and negative_scores must align")
     if len(positive_scores) > _MAX_BATCH:
@@ -236,8 +230,6 @@ def listwise_cross_entropy(
     *,
     temperature: float = 1.0,
 ) -> float:
-    """Cross entropy between model softmax and normalized graded relevance targets."""
-
     if not logits or len(logits) != len(relevance) or len(logits) > _MAX_CANDIDATES:
         raise ValueError("logits and relevance must be aligned bounded sequences")
     model = _softmax([_finite(value, "logit") for value in logits], temperature)
@@ -255,8 +247,6 @@ def distillation_kl(
     *,
     temperature: float = 1.0,
 ) -> float:
-    """Temperature-scaled KL(teacher || student), including the conventional T^2 factor."""
-
     if not student_logits or len(student_logits) != len(teacher_logits):
         raise ValueError("student and teacher logits must align")
     selected_temperature = _positive(temperature, "temperature", 1_000.0)
@@ -270,12 +260,6 @@ def distillation_kl(
 
 
 def sparse_activation_penalties(batch_weights: Sequence[Mapping[str, Any]]) -> tuple[float, float]:
-    """Return mean L1 activation and SPLADE FLOPS regularizer for sparse expansions.
-
-    FLOPS follows the common SPLADE proxy: for each vocabulary term, square its mean
-    activation over the batch and sum across terms.
-    """
-
     if not batch_weights or len(batch_weights) > _MAX_BATCH:
         raise ValueError("batch_weights must be a non-empty bounded batch")
     term_sums: dict[str, float] = {}
@@ -291,9 +275,7 @@ def sparse_activation_penalties(batch_weights: Sequence[Mapping[str, Any]]) -> t
             term_sums[term] = term_sums.get(term, 0.0) + value
         l1_total += row_l1
     count = float(len(batch_weights))
-    mean_l1 = l1_total / count
-    flops = sum((total / count) ** 2 for total in term_sums.values())
-    return mean_l1, flops
+    return l1_total / count, sum((total / count) ** 2 for total in term_sums.values())
 
 
 def sparse_retriever_loss(
@@ -306,8 +288,6 @@ def sparse_retriever_loss(
     student_logits: Sequence[Any] | None = None,
     teacher_logits: Sequence[Any] | None = None,
 ) -> LossBreakdown:
-    """Compose SPLADE/uniCOIL retrieval, sparsity and optional distillation losses."""
-
     if config.architecture not in {RetrieverArchitecture.SPLADE, RetrieverArchitecture.UNICOIL}:
         raise ValueError("sparse_retriever_loss requires a sparse architecture")
     retrieval = in_batch_contrastive_loss(score_rows, positive_indices, temperature=config.temperature)
@@ -317,11 +297,7 @@ def sparse_retriever_loss(
     if student_logits is not None or teacher_logits is not None:
         if student_logits is None or teacher_logits is None:
             raise ValueError("both student_logits and teacher_logits are required for distillation")
-        distillation = distillation_kl(
-            student_logits,
-            teacher_logits,
-            temperature=config.teacher_temperature,
-        )
+        distillation = distillation_kl(student_logits, teacher_logits, temperature=config.teacher_temperature)
     sparse = config.sparse
     total = (
         retrieval
@@ -350,8 +326,6 @@ def late_interaction_loss(
     student_logits: Sequence[Any] | None = None,
     teacher_logits: Sequence[Any] | None = None,
 ) -> LossBreakdown:
-    """ColBERT/dense in-batch retrieval loss with optional teacher distillation."""
-
     if config.architecture not in {RetrieverArchitecture.COLBERT, RetrieverArchitecture.DENSE_BIENCODER}:
         raise ValueError("late_interaction_loss requires ColBERT or dense bi-encoder architecture")
     retrieval = in_batch_contrastive_loss(score_rows, positive_indices, temperature=config.temperature)
@@ -426,11 +400,7 @@ class TrainingPlan:
         if not isinstance(self.architecture, RetrieverArchitecture):
             object.__setattr__(self, "architecture", RetrieverArchitecture(self.architecture))
         object.__setattr__(self, "base_model", _identifier(self.base_model, "base_model", 1_000))
-        object.__setattr__(
-            self,
-            "dataset_manifest_digest",
-            _digest(self.dataset_manifest_digest, "dataset_manifest_digest"),
-        )
+        object.__setattr__(self, "dataset_manifest_digest", _digest(self.dataset_manifest_digest, "dataset_manifest_digest"))
         if not self.stages or len(self.stages) > 100:
             raise ValueError("stages must be a non-empty bounded tuple")
         if any(stage.objective.architecture != self.architecture for stage in self.stages):
@@ -483,7 +453,6 @@ class CheckpointManifest:
         for name in (
             "dataset_manifest_digest",
             "training_config_digest",
-            "source_commit",
             "model_artifact_digest",
             "optimizer_artifact_digest",
             "scheduler_artifact_digest",
@@ -491,12 +460,9 @@ class CheckpointManifest:
             "data_cursor_digest",
         ):
             object.__setattr__(self, name, _digest(getattr(self, name), name))
+        object.__setattr__(self, "source_commit", _git_commit(self.source_commit))
         if self.parent_checkpoint_digest is not None:
-            object.__setattr__(
-                self,
-                "parent_checkpoint_digest",
-                _digest(self.parent_checkpoint_digest, "parent_checkpoint_digest"),
-            )
+            object.__setattr__(self, "parent_checkpoint_digest", _digest(self.parent_checkpoint_digest, "parent_checkpoint_digest"))
         if not isinstance(self.cursor, TrainingCursor):
             raise ValueError("cursor must be TrainingCursor")
         if self.version != _MANIFEST_VERSION:
@@ -512,8 +478,6 @@ class CheckpointManifest:
         return sha256_json(self.canonical_dict())
 
     def assert_resume_compatible(self, plan: TrainingPlan, source_commit: str) -> None:
-        """Reject accidental resume across model, data, config, architecture or code changes."""
-
         if self.run_id != plan.run_id:
             raise ValueError("checkpoint run_id does not match training plan")
         if self.architecture != plan.architecture:
@@ -524,15 +488,13 @@ class CheckpointManifest:
             raise ValueError("checkpoint dataset manifest does not match training plan")
         if self.training_config_digest != plan.config_digest:
             raise ValueError("checkpoint training configuration does not match training plan")
-        if self.source_commit != _digest(source_commit, "source_commit"):
+        if self.source_commit != _git_commit(source_commit):
             raise ValueError("checkpoint source commit does not match requested resume commit")
         if self.cursor.stage_index >= len(plan.stages):
             raise ValueError("checkpoint stage is outside the training plan")
 
 
 class TrainingBackend(Protocol):
-    """Framework adapter used by an execution script, not by repository import."""
-
     def train_step(self, batch: Any, *, stage: TrainingStage) -> Mapping[str, float]: ...
 
     def snapshot_artifacts(self) -> Mapping[str, str]: ...
@@ -543,8 +505,6 @@ class CheckpointSink(Protocol):
 
 
 class JsonCheckpointSink:
-    """Atomically persist checkpoint manifests; heavy tensor artifacts stay provider-owned."""
-
     def __init__(self, root: str | os.PathLike[str]) -> None:
         self.root = Path(root).expanduser().resolve()
         self.root.mkdir(parents=True, exist_ok=True)
@@ -556,8 +516,7 @@ class JsonCheckpointSink:
         destination = self.root / f"{digest}.json"
         payload = _canonical_json(manifest.canonical_dict()) + b"\n"
         if destination.exists():
-            existing = destination.read_bytes()
-            if existing != payload:
+            if destination.read_bytes() != payload:
                 raise RuntimeError("content-addressed checkpoint manifest collision")
             return digest
         descriptor, temporary_name = tempfile.mkstemp(prefix=".checkpoint-", suffix=".tmp", dir=self.root)
@@ -567,14 +526,6 @@ class JsonCheckpointSink:
                 handle.flush()
                 os.fsync(handle.fileno())
             os.replace(temporary_name, destination)
-            try:
-                directory_descriptor = os.open(self.root, os.O_RDONLY)
-                try:
-                    os.fsync(directory_descriptor)
-                finally:
-                    os.close(directory_descriptor)
-            except OSError:
-                pass
         finally:
             if os.path.exists(temporary_name):
                 os.unlink(temporary_name)
@@ -589,8 +540,6 @@ def build_default_training_plan(
     dataset_manifest_digest: str,
     seed: int = 0,
 ) -> TrainingPlan:
-    """Build a conservative two-stage plan that must be explicitly executed elsewhere."""
-
     selected = RetrieverArchitecture(architecture)
     sparse = SparseRegularization(
         query_l1=1e-5 if selected in {RetrieverArchitecture.SPLADE, RetrieverArchitecture.UNICOIL} else 0.0,
