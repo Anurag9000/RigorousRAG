@@ -1,7 +1,7 @@
 """Repository-owned repeated experiment, shadow comparison and ablation orchestration.
 
 The orchestration source is complete but inert until a caller supplies benchmark runners
-and examples.  It gives later real-stack execution one deterministic contract for:
+and examples. It gives later real-stack execution one deterministic contract for:
 
 * current-vs-shadow paired runs across explicit seeds/repetitions;
 * exact query-order and dataset-manifest binding;
@@ -24,6 +24,7 @@ from typing import Any, Callable, Mapping, Protocol, Sequence
 
 _MAX_EXAMPLES = 10_000_000
 _MAX_RUNS = 100_000
+_HEX = frozenset("0123456789abcdef")
 
 
 def _identifier(value: Any, label: str, maximum: int = 2_000) -> str:
@@ -47,6 +48,22 @@ def _finite(value: Any, label: str) -> float:
     return result
 
 
+def _sha256(value: Any, label: str) -> str:
+    digest = _identifier(value, label, 64).lower()
+    if len(digest) != 64 or any(ch not in _HEX for ch in digest):
+        raise ValueError(f"{label} must be SHA-256")
+    return digest
+
+
+def _git_commit_id(value: Any, label: str = "source_commit") -> str:
+    """Accept native SHA-1 or SHA-256 Git object IDs without conflating them with data digests."""
+
+    commit = _identifier(value, label, 64).lower()
+    if len(commit) not in {40, 64} or any(ch not in _HEX for ch in commit):
+        raise ValueError(f"{label} must be a 40- or 64-character hexadecimal Git commit id")
+    return commit
+
+
 def canonical_digest(value: Any) -> str:
     encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
@@ -66,10 +83,7 @@ class BenchmarkExample:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "query_id", _identifier(self.query_id, "query_id"))
-        digest = _identifier(self.payload_digest, "payload_digest", 64).lower()
-        if len(digest) != 64 or any(ch not in "0123456789abcdef" for ch in digest):
-            raise ValueError("payload_digest must be SHA-256")
-        object.__setattr__(self, "payload_digest", digest)
+        object.__setattr__(self, "payload_digest", _sha256(self.payload_digest, "payload_digest"))
         if self.group_id is not None:
             object.__setattr__(self, "group_id", _identifier(self.group_id, "group_id"))
 
@@ -131,13 +145,9 @@ class BenchmarkOutput:
             "metrics",
             {_identifier(key, "metric", 300): _finite(value, "metric value") for key, value in self.metrics.items()},
         )
-        for name in ("output_digest", "trace_digest"):
-            value = getattr(self, name)
-            if value is not None:
-                digest = _identifier(value, name, 64).lower()
-                if len(digest) != 64 or any(ch not in "0123456789abcdef" for ch in digest):
-                    raise ValueError(f"{name} must be SHA-256")
-                object.__setattr__(self, name, digest)
+        object.__setattr__(self, "output_digest", _sha256(self.output_digest, "output_digest"))
+        if self.trace_digest is not None:
+            object.__setattr__(self, "trace_digest", _sha256(self.trace_digest, "trace_digest"))
         if not isinstance(self.resources, ResourceObservation):
             raise ValueError("resources must be ResourceObservation")
 
@@ -159,7 +169,7 @@ class ResourceObserver(Protocol):
 
 
 class WallClockObserver:
-    """Minimal measured wall-clock observer; optional and only active when explicitly invoked."""
+    """Minimal measured wall-clock observer; only active when explicitly invoked."""
 
     def begin(self) -> int:
         return time.perf_counter_ns()
@@ -181,10 +191,11 @@ class ExperimentSchedule:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "experiment_id", _identifier(self.experiment_id, "experiment_id"))
-        digest = _identifier(self.dataset_manifest_digest, "dataset_manifest_digest", 64).lower()
-        if len(digest) != 64 or any(ch not in "0123456789abcdef" for ch in digest):
-            raise ValueError("dataset_manifest_digest must be SHA-256")
-        object.__setattr__(self, "dataset_manifest_digest", digest)
+        object.__setattr__(
+            self,
+            "dataset_manifest_digest",
+            _sha256(self.dataset_manifest_digest, "dataset_manifest_digest"),
+        )
         if not self.seeds or len(self.seeds) > _MAX_RUNS:
             raise ValueError("seeds must be non-empty and bounded")
         if any(isinstance(seed, bool) or not isinstance(seed, int) or not 0 <= seed <= 2**63 - 1 for seed in self.seeds):
@@ -208,6 +219,12 @@ class RunIdentity:
     seed: int
     repetition: int
 
+    def __post_init__(self) -> None:
+        if isinstance(self.seed, bool) or not isinstance(self.seed, int) or not 0 <= self.seed <= 2**63 - 1:
+            raise ValueError("seed must be a non-negative 63-bit integer")
+        if isinstance(self.repetition, bool) or not isinstance(self.repetition, int) or self.repetition < 0:
+            raise ValueError("repetition must be a non-negative integer")
+
 
 @dataclass(frozen=True)
 class StackRun:
@@ -217,6 +234,22 @@ class StackRun:
     identity: RunIdentity
     outputs: tuple[BenchmarkOutput, ...]
     error_type: str | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.role, StackRole):
+            object.__setattr__(self, "role", StackRole(self.role))
+        object.__setattr__(self, "stack_id", _identifier(self.stack_id, "stack_id"))
+        object.__setattr__(
+            self,
+            "stack_manifest_digest",
+            _sha256(self.stack_manifest_digest, "stack_manifest_digest"),
+        )
+        if not isinstance(self.identity, RunIdentity):
+            raise ValueError("identity must be RunIdentity")
+        if len(self.outputs) > _MAX_EXAMPLES or any(not isinstance(output, BenchmarkOutput) for output in self.outputs):
+            raise ValueError("outputs must be bounded BenchmarkOutput records")
+        if self.error_type is not None:
+            object.__setattr__(self, "error_type", _identifier(self.error_type, "error_type", 500))
 
     @property
     def digest(self) -> str:
@@ -231,6 +264,13 @@ class PairedExperimentSeries:
     shadow_runs: tuple[StackRun, ...]
 
     def __post_init__(self) -> None:
+        if not isinstance(self.schedule, ExperimentSchedule):
+            raise ValueError("schedule must be ExperimentSchedule")
+        object.__setattr__(
+            self,
+            "query_contract_digest",
+            _sha256(self.query_contract_digest, "query_contract_digest"),
+        )
         if len(self.current_runs) != len(self.shadow_runs):
             raise ValueError("current and shadow run counts differ")
         for current, shadow in zip(self.current_runs, self.shadow_runs):
@@ -255,13 +295,6 @@ def query_contract_digest(examples: Sequence[BenchmarkExample]) -> str:
     return canonical_digest([asdict(example) for example in examples])
 
 
-def _validate_stack_digest(value: str, label: str) -> str:
-    digest = _identifier(value, label, 64).lower()
-    if len(digest) != 64 or any(ch not in "0123456789abcdef" for ch in digest):
-        raise ValueError(f"{label} must be SHA-256")
-    return digest
-
-
 def execute_stack_run(
     runner: BenchmarkRunner,
     examples: Sequence[BenchmarkExample],
@@ -273,7 +306,7 @@ def execute_stack_run(
     """Execute one explicitly requested stack run while enforcing query-order contracts."""
 
     stack_id = _identifier(runner.stack_id, "stack_id")
-    manifest = _validate_stack_digest(runner.stack_manifest_digest, "stack_manifest_digest")
+    manifest = _sha256(runner.stack_manifest_digest, "stack_manifest_digest")
     outputs: list[BenchmarkOutput] = []
     for example in examples:
         observer = observer_factory() if observer_factory is not None else None
@@ -373,8 +406,17 @@ class HistoricalRegressionBaseline:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "baseline_id", _identifier(self.baseline_id, "baseline_id"))
-        for name in ("source_commit", "dataset_manifest_digest", "stack_manifest_digest"):
-            object.__setattr__(self, name, _validate_stack_digest(getattr(self, name), name))
+        object.__setattr__(self, "source_commit", _git_commit_id(self.source_commit))
+        object.__setattr__(
+            self,
+            "dataset_manifest_digest",
+            _sha256(self.dataset_manifest_digest, "dataset_manifest_digest"),
+        )
+        object.__setattr__(
+            self,
+            "stack_manifest_digest",
+            _sha256(self.stack_manifest_digest, "stack_manifest_digest"),
+        )
         if not self.metric_means or not isinstance(self.metric_means, Mapping):
             raise ValueError("metric_means must be non-empty")
         means = {_identifier(key, "metric", 300): _finite(value, "metric mean") for key, value in self.metric_means.items()}
