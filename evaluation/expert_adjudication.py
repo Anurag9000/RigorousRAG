@@ -1,10 +1,10 @@
 """Durable expert adjudication and privacy-safe gold-label production.
 
-``evaluation.expert_review`` measures agreement on already-collected reviews.  This
-module owns the operational lifecycle: immutable evidence-bound cases, independent
-review/adjudicator claims, monotonic fencing, append-only judgments and corrections,
-quorum/conflict escalation, immutable resolutions, correction rounds, and digest-only
-gold exports.  Raw query/document/evidence/rationale content is never stored here.
+``evaluation.expert_review`` measures agreement on collected reviews. This module owns
+the operational lifecycle: immutable evidence-bound cases, independent reviewer and
+adjudicator claims, monotonic fencing, append-only judgments/corrections, quorum and
+conflict escalation, immutable resolutions, correction rounds, and digest-only gold
+exports. Raw query/document/evidence/rationale content is never stored here.
 """
 
 from __future__ import annotations
@@ -32,36 +32,36 @@ _MAX_EXPORT_RECORDS = 1_000_000
 def _text(value: Any, label: str, maximum: int = 1_000) -> str:
     if not isinstance(value, str):
         raise ValueError(f"{label} must be a string")
-    result = value.strip()
-    if not result or len(result) > maximum or any(ord(ch) < 32 or ord(ch) == 127 for ch in result):
+    selected = value.strip()
+    if not selected or len(selected) > maximum or any(ord(ch) < 32 or ord(ch) == 127 for ch in selected):
         raise ValueError(f"{label} is invalid")
-    return result
+    return selected
 
 
 def _sha(value: Any, label: str) -> str:
-    result = _text(value, label, 64).lower()
-    if len(result) != 64 or any(ch not in _HEX for ch in result):
+    selected = _text(value, label, 64).lower()
+    if len(selected) != 64 or any(ch not in _HEX for ch in selected):
         raise ValueError(f"{label} must be SHA-256")
-    return result
+    return selected
 
 
 def _time(value: Any, label: str) -> float:
     if isinstance(value, bool):
         raise ValueError(f"{label} must be finite and non-negative")
     try:
-        result = float(value)
+        selected = float(value)
     except (TypeError, ValueError, OverflowError) as exc:
         raise ValueError(f"{label} must be finite and non-negative") from exc
-    if not math.isfinite(result) or result < 0:
+    if not math.isfinite(selected) or selected < 0:
         raise ValueError(f"{label} must be finite and non-negative")
-    return result
+    return selected
 
 
 def _unit(value: Any, label: str) -> float:
-    result = _time(value, label)
-    if result > 1.0:
+    selected = _time(value, label)
+    if selected > 1.0:
         raise ValueError(f"{label} must be between zero and one")
-    return result
+    return selected
 
 
 def _canonical(value: Any) -> bytes:
@@ -271,13 +271,13 @@ class GoldLabelManifest:
     def __post_init__(self) -> None:
         object.__setattr__(self, "owner_id", normalize_owner_id(self.owner_id))
         object.__setattr__(self, "task_id", _text(self.task_id, "task_id", 300))
-        if not self.records or len(self.records) > _MAX_EXPORT_RECORDS or len({r.item_sha256 for r in self.records}) != len(self.records):
+        if not self.records or len(self.records) > _MAX_EXPORT_RECORDS or len({value.item_sha256 for value in self.records}) != len(self.records):
             raise ValueError("gold manifest requires bounded unique current items")
         object.__setattr__(self, "manifest_sha256", _sha(self.manifest_sha256, "manifest_sha256"))
 
 
 class ExpertAdjudicationStore:
-    """SQLite append-only judgment journal with case CAS and reviewer fencing."""
+    """SQLite append-only judgment journal with case CAS and atomically fenced commits."""
 
     _CASE_COLUMNS = "case_id,owner_id,item_sha256,evidence_json,schema_json,schema_sha256,round_number,parent_case_id,reopen_reason_sha256,state,revision,created_at,updated_at"
     _JUDGMENT_COLUMNS = "judgment_id,case_id,reviewer_id,role,reviewer_revision,label,confidence,rationale_sha256,supersedes_judgment_id,submitted_at"
@@ -380,23 +380,27 @@ class ExpertAdjudicationStore:
                 if row is not None and row[1] is not None and float(row[1]) > instant:
                     raise RuntimeError("reviewer already has a live claim")
                 token = 1 if row is None else int(row[0]) + 1
+                expiry = instant + lease
                 if row is None:
-                    self._connection.execute("INSERT INTO review_claim VALUES(?,?,?,?,?)", (case_id, reviewer, role, token, instant + lease))
+                    self._connection.execute("INSERT INTO review_claim VALUES(?,?,?,?,?)", (case_id, reviewer, role, token, expiry))
                 else:
-                    self._connection.execute("UPDATE review_claim SET fencing_token=?,expires_at=? WHERE case_id=? AND reviewer_id=? AND role=?", (token, instant + lease, case_id, reviewer, role))
+                    self._connection.execute("UPDATE review_claim SET fencing_token=?,expires_at=? WHERE case_id=? AND reviewer_id=? AND role=?", (token, expiry, case_id, reviewer, role))
                 self._connection.execute("COMMIT")
-                return ReviewClaim(case_id, reviewer, role, token, instant + lease)
+                return ReviewClaim(case_id, reviewer, role, token, expiry)
             except Exception:
                 if self._connection.in_transaction:
                     self._connection.execute("ROLLBACK")
                 raise
 
+    def _assert_claim_locked(self, claim: ReviewClaim, instant: float) -> None:
+        row = self._connection.execute("SELECT fencing_token,expires_at FROM review_claim WHERE case_id=? AND reviewer_id=? AND role=?", (claim.case_id, claim.reviewer_id, claim.role)).fetchone()
+        if row is None or int(row[0]) != claim.fencing_token or row[1] is None or float(row[1]) <= instant:
+            raise RuntimeError("review claim is expired or fenced")
+
     def _assert_claim(self, claim: ReviewClaim, now: float) -> None:
         instant = _time(now, "now")
         with self._lock:
-            row = self._connection.execute("SELECT fencing_token,expires_at FROM review_claim WHERE case_id=? AND reviewer_id=? AND role=?", (claim.case_id, claim.reviewer_id, claim.role)).fetchone()
-        if row is None or int(row[0]) != claim.fencing_token or row[1] is None or float(row[1]) <= instant:
-            raise RuntimeError("review claim is expired or fenced")
+            self._assert_claim_locked(claim, instant)
 
     def judgments(self, case_id: str) -> tuple[ExpertJudgment, ...]:
         selected = _sha(case_id, "case_id")
@@ -420,11 +424,13 @@ class ExpertAdjudicationStore:
         supersedes = None if supersedes_judgment_id is None else _sha(supersedes_judgment_id, "supersedes_judgment_id")
         if isinstance(expected_case_revision, bool) or not isinstance(expected_case_revision, int) or expected_case_revision < 0:
             raise ValueError("expected_case_revision is invalid")
-        self._assert_claim(claim, instant)
         opposite = "adjudicator" if claim.role == "reviewer" else "reviewer"
         with self._lock:
             self._connection.execute("BEGIN IMMEDIATE")
             try:
+                # Claim token, case revision and judgment append are verified in one
+                # write transaction. A lease takeover cannot land in between them.
+                self._assert_claim_locked(claim, instant)
                 case = self._case_locked(claim.case_id)
                 if case is None or case.state == "resolved":
                     raise ValueError("judgment requires an unresolved case")
@@ -460,12 +466,14 @@ class ExpertAdjudicationStore:
 
     @staticmethod
     def _active_digest(values: Sequence[ExpertJudgment]) -> str:
-        return _digest({"contract": "rigorousrag-active-expert-judgments-v1", "judgments": [{"judgment_id": v.judgment_id, "reviewer_id": v.reviewer_id, "role": v.role, "reviewer_revision": v.reviewer_revision, "label": v.label, "confidence": v.confidence, "rationale_sha256": v.rationale_sha256} for v in values]})
+        return _digest({"contract": "rigorousrag-active-expert-judgments-v1", "judgments": [{"judgment_id": value.judgment_id, "reviewer_id": value.reviewer_id, "role": value.role, "reviewer_revision": value.reviewer_revision, "label": value.label, "confidence": value.confidence, "rationale_sha256": value.rationale_sha256} for value in values]})
 
     def reconcile_case(self, case_id: str, *, policy: AdjudicationPolicy, expected_case_revision: int, now: float) -> CaseRecord:
         case_id, instant = _sha(case_id, "case_id"), _time(now, "now")
         if not isinstance(policy, AdjudicationPolicy):
             raise ValueError("policy must be AdjudicationPolicy")
+        if isinstance(expected_case_revision, bool) or not isinstance(expected_case_revision, int) or expected_case_revision < 0:
+            raise ValueError("expected_case_revision is invalid")
         with self._lock:
             self._connection.execute("BEGIN IMMEDIATE")
             try:
@@ -487,7 +495,7 @@ class ExpertAdjudicationStore:
                 active = tuple(sorted(latest.values(), key=lambda value: (value.role, value.reviewer_id)))
                 reviewers = [value for value in active if value.role == "reviewer"]
                 adjudicators = [value for value in active if value.role == "adjudicator"]
-                if {v.reviewer_id for v in reviewers} & {v.reviewer_id for v in adjudicators}:
+                if {value.reviewer_id for value in reviewers} & {value.reviewer_id for value in adjudicators}:
                     raise RuntimeError("reviewer/adjudicator identities overlap")
                 new_state, resolution_label, method = "open", None, None
                 if len(reviewers) >= policy.minimum_independent_reviews:
@@ -559,8 +567,9 @@ class ExpertAdjudicationStore:
 
     def build_gold_manifest(self, *, owner_id: str, task_id: str) -> GoldLabelManifest:
         owner, task = normalize_owner_id(owner_id), _text(task_id, "task_id", 300)
+        selected_columns = "c." + self._CASE_COLUMNS.replace(",", ",c.")
         with self._lock:
-            rows = self._connection.execute(f"SELECT c.{self._CASE_COLUMNS.replace(',', ',c.')} FROM adjudication_case c JOIN (SELECT item_sha256,MAX(round_number) AS round_number FROM adjudication_case WHERE owner_id=? GROUP BY item_sha256) latest ON c.item_sha256=latest.item_sha256 AND c.round_number=latest.round_number WHERE c.owner_id=? ORDER BY c.item_sha256", (owner, owner)).fetchall()
+            rows = self._connection.execute(f"SELECT {selected_columns} FROM adjudication_case c JOIN (SELECT item_sha256,MAX(round_number) AS round_number FROM adjudication_case WHERE owner_id=? GROUP BY item_sha256) latest ON c.item_sha256=latest.item_sha256 AND c.round_number=latest.round_number WHERE c.owner_id=? ORDER BY c.item_sha256", (owner, owner)).fetchall()
         records: list[GoldLabelRecord] = []
         for row in rows:
             case = self._case(row)
