@@ -215,10 +215,14 @@ class RotatingManifestKeyring(ManifestVerifier):
         if key is None:
             return False
         now = _time(self._clock(), "clock")
-        # Historical verification remains allowed after not_after when the key is explicitly
-        # retained as verification_only. Disabled keys fail closed.
         descriptor = key.descriptor
         if descriptor.state == "disabled" or now < descriptor.not_before:
+            return False
+        # Once a key's active validity interval ends, verification is accepted only if an
+        # operator has explicitly retained that key as verification_only. This prevents an
+        # expired key accidentally left in active state from remaining trusted forever while
+        # still allowing deliberate historical verification after rotation.
+        if descriptor.not_after and now >= descriptor.not_after and descriptor.state != "verification_only":
             return False
         try:
             return bool(key.verify_callable(payload, signature))
