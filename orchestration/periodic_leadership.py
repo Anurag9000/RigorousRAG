@@ -182,12 +182,19 @@ def deterministic_jitter_seconds(job_id: str, interval_anchor: datetime, maximum
 
 
 def next_due_time(spec: PeriodicJobSpec, latest: JobRunRecord | None, *, now: datetime) -> datetime:
+    """Return the next stable due time.
+
+    A job with no durable run history is due immediately.  Applying jitter to ``now``
+    for a never-run job would move its deadline forward on every scheduler poll and can
+    starve it forever.  Jitter is therefore applied only after a durable run anchor
+    exists; subsequent schedules remain deterministic across competing processes.
+    """
+
     instant = _utc(now, "now")
     if latest is None:
-        anchor = instant
-    else:
-        anchor = latest.completed_at or latest.started_at
-        anchor = _utc(anchor, "latest run anchor") + timedelta(seconds=spec.interval_seconds)
+        return instant
+    anchor = latest.completed_at or latest.started_at
+    anchor = _utc(anchor, "latest run anchor") + timedelta(seconds=spec.interval_seconds)
     jitter = deterministic_jitter_seconds(spec.job_id, anchor, spec.jitter_seconds)
     return anchor + timedelta(seconds=jitter)
 
