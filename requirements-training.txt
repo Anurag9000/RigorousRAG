@@ -1,0 +1,8 @@
+# Optional learned-retrieval / scientific-model execution dependencies.
+# Nothing in the production runtime imports these packages implicitly.
+# Install this file only when running local training or local HF scientific adapters.
+-r requirements.txt
+
+torch>=2.2
+transformers>=4.40
+safetensors>=0.4
