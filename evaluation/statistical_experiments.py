@@ -13,7 +13,7 @@ from __future__ import annotations
 import math
 import random
 import statistics
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Mapping, Sequence
 
@@ -117,7 +117,7 @@ class MetricComparison:
     candidate_mean: float
     raw_delta: float
     improvement: float
-    paired_effect: float
+    paired_effect: float | None
     p_value: float
     adjusted_p_value: float | None = None
     ci_lower_improvement: float | None = None
@@ -132,10 +132,11 @@ class MetricComparison:
             "candidate_mean",
             "raw_delta",
             "improvement",
-            "paired_effect",
             "p_value",
         ):
             object.__setattr__(self, name, _finite(getattr(self, name), name))
+        if self.paired_effect is not None:
+            object.__setattr__(self, "paired_effect", _finite(self.paired_effect, "paired_effect"))
         _probability(self.p_value, "p_value")
         if self.adjusted_p_value is not None:
             object.__setattr__(
@@ -260,18 +261,17 @@ def paired_permutation_test(
     return PermutationResult(observed, p_value, alternative, resamples, seed)
 
 
-def paired_standardized_effect(baseline: Sequence[Any], candidate: Sequence[Any]) -> float:
-    """Cohen's dz: mean paired difference divided by SD of paired differences."""
+def paired_standardized_effect(baseline: Sequence[Any], candidate: Sequence[Any]) -> float | None:
+    """Return Cohen's dz, or ``None`` when the paired SD is undefined or exactly zero."""
 
     left, right = _paired(baseline, candidate)
     differences = [candidate_value - baseline_value for baseline_value, candidate_value in zip(left, right)]
-    mean = statistics.fmean(differences)
     if len(differences) < 2:
-        return math.inf if mean > 0 else (-math.inf if mean < 0 else 0.0)
+        return None
     deviation = statistics.stdev(differences)
     if deviation == 0.0:
-        return math.inf if mean > 0 else (-math.inf if mean < 0 else 0.0)
-    return mean / deviation
+        return None
+    return statistics.fmean(differences) / deviation
 
 
 def holm_adjust(p_values: Mapping[str, Any]) -> dict[str, float]:
@@ -336,7 +336,8 @@ def compare_metric(
     )
     raw_delta = bootstrap.mean_difference
     sign = 1.0 if selected_direction == MetricDirection.HIGHER_IS_BETTER else -1.0
-    paired_effect = paired_standardized_effect(baseline, candidate) * sign
+    raw_effect = paired_standardized_effect(baseline, candidate)
+    paired_effect = None if raw_effect is None else raw_effect * sign
     return MetricComparison(
         metric=metric,
         direction=selected_direction,
