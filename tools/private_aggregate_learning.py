@@ -4,6 +4,10 @@ A production secure-aggregation implementation is injected through ``SecureAggre
 and operates on opaque participant payloads. The included ``LocalReferenceAggregator`` is
 intentionally labeled cleartext and is useful only for deterministic local/offline workflows;
 it does not provide MPC, homomorphic encryption, or protection from the aggregator.
+
+``included_commitments`` always contains the fingerprint of the complete participant
+commitment (pseudonym + payload + sample count + schema), never the payload hash alone.
+That keeps two participants with identical updates distinct without exposing their identity.
 """
 from __future__ import annotations
 
@@ -11,7 +15,7 @@ import hashlib
 import json
 import math
 from dataclasses import asdict, dataclass
-from typing import Any, Callable, Mapping, Protocol, Sequence
+from typing import Any, Mapping, Protocol, Sequence
 
 _MAX_DIMENSIONS = 100_000
 _MAX_PARTICIPANTS = 1_000_000
@@ -111,6 +115,10 @@ class ParticipantCommitment:
             raise ValueError("sample_count is invalid")
         object.__setattr__(self, "feature_schema_sha256", _sha(self.feature_schema_sha256, "feature_schema_sha256"))
 
+    @property
+    def identity_fingerprint(self) -> str:
+        return hashlib.sha256(_canonical(asdict(self))).hexdigest()
+
 
 @dataclass(frozen=True)
 class BoundedContribution:
@@ -136,7 +144,10 @@ class ProviderAggregateResult:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "values", _vector(self.values, "values"))
-        object.__setattr__(self, "included_commitments", tuple(sorted(set(_sha(item, "included_commitment") for item in self.included_commitments))))
+        commitments = tuple(_sha(item, "included_commitment") for item in self.included_commitments)
+        if len(set(commitments)) != len(commitments):
+            raise ValueError("included_commitments contain duplicates")
+        object.__setattr__(self, "included_commitments", tuple(sorted(commitments)))
         object.__setattr__(self, "aggregate_proof_fingerprint", _sha(self.aggregate_proof_fingerprint, "aggregate_proof_fingerprint"))
         object.__setattr__(self, "provider_id", _text(self.provider_id, "provider_id", 500))
         if not isinstance(self.privacy_metadata, Mapping):
@@ -254,7 +265,7 @@ class LocalReferenceAggregator:
                 raise RuntimeError("noise provider changed aggregate dimensionality")
             dp_applied = True
             dp_provider_id = provider_id
-        commitments = tuple(sorted(item.commitment.payload_sha256 for item in contributions))
+        commitments = tuple(sorted(item.commitment.identity_fingerprint for item in contributions))
         proof_payload = {
             "spec": spec.fingerprint,
             "commitments": commitments,
@@ -299,15 +310,21 @@ def validate_provider_result(
 ) -> AggregateLearningResult:
     if not isinstance(spec, AggregateRoundSpec) or not isinstance(result, ProviderAggregateResult):
         raise TypeError("spec/result types are invalid")
-    if len(commitments) < spec.minimum_cohort_size:
-        raise ValueError("minimum cohort size is not satisfied")
-    known = {item.payload_sha256: item for item in commitments}
     if any(not isinstance(item, ParticipantCommitment) for item in commitments):
         raise ValueError("commitments contain an invalid value")
+    if len(commitments) < spec.minimum_cohort_size:
+        raise ValueError("minimum cohort size is not satisfied")
     if any(item.feature_schema_sha256 != spec.feature_schema_sha256 for item in commitments):
         raise ValueError("commitment feature schema does not match round")
+    identities = [item.identity_fingerprint for item in commitments]
+    if len(set(identities)) != len(identities):
+        raise ValueError("duplicate participant commitment identity in aggregate round")
+    pseudonyms = [item.participant_pseudonym_sha256 for item in commitments]
+    if len(set(pseudonyms)) != len(pseudonyms):
+        raise ValueError("duplicate participant pseudonym in aggregate round")
+    known = {item.identity_fingerprint: item for item in commitments}
     if not set(result.included_commitments).issubset(known):
-        raise ValueError("provider result references an unknown commitment")
+        raise ValueError("provider result references an unknown participant commitment")
     if len(result.included_commitments) < spec.minimum_cohort_size:
         raise ValueError("provider result does not satisfy minimum cohort size")
     total_samples = sum(known[item].sample_count for item in result.included_commitments)
