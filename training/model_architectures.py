@@ -1,21 +1,8 @@
 """Executable neural architectures for learned retrieval and reranking.
 
-This module contains the actual tensor-level model implementations that the earlier
-framework-neutral contracts intentionally omitted.  It is still safe for source-only
-work: importing it does not download weights, and every Hugging Face loader defaults to
-``local_files_only=True`` and ``trust_remote_code=False``.
-
-Architectures implemented here:
-
-* tied or untied dense bi-encoder with CLS/mean/last-token pooling and projection;
-* SPLADE-style masked-LM sparse expansion ``max(log(1 + relu(logits)))``;
-* uniCOIL-style contextual token weighting and vocabulary aggregation;
-* ColBERT-style projected token embeddings and MaxSim scoring;
-* cross-encoder scalar reranker; and
-* grouped listwise reranker over cross-encoder pair scores.
-
-The classes require PyTorch only when instantiated.  Transformers is required only when
-calling the ``from_local_pretrained`` constructors.  There is no implicit network path.
+Importing this module never downloads weights. Hugging Face constructors default to
+``local_files_only=True`` and ``trust_remote_code=False``. The models are ordinary
+``torch.nn.Module`` objects so they can be trained directly or wrapped by DDP/FSDP.
 """
 
 from __future__ import annotations
@@ -24,11 +11,11 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Mapping, Sequence
 
-try:  # Optional training dependency; production runtime need not install torch.
+try:
     import torch
     import torch.nn as nn
     import torch.nn.functional as F
-except Exception:  # pragma: no cover - dependency absence is handled at instantiation.
+except Exception:  # pragma: no cover - optional training dependency boundary.
     torch = None  # type: ignore[assignment]
     nn = None  # type: ignore[assignment]
     F = None  # type: ignore[assignment]
@@ -53,10 +40,8 @@ def _require_torch() -> None:
 def _require_transformers() -> tuple[Any, Any, Any]:
     try:
         from transformers import AutoModel, AutoModelForMaskedLM, AutoModelForSequenceClassification
-    except Exception as exc:  # pragma: no cover - optional dependency boundary.
-        raise RuntimeError(
-            "local pretrained loading requires transformers; install the optional training dependencies"
-        ) from exc
+    except Exception as exc:  # pragma: no cover
+        raise RuntimeError("local pretrained loading requires transformers") from exc
     return AutoModel, AutoModelForMaskedLM, AutoModelForSequenceClassification
 
 
@@ -129,8 +114,6 @@ class EncoderConfig:
 
 
 class DenseEncoder(_ModuleBase):
-    """Transformer encoder + pooling + optional projection + optional L2 normalization."""
-
     def __init__(self, backbone: Any, config: EncoderConfig = EncoderConfig()) -> None:
         _require_torch()
         super().__init__()
@@ -181,7 +164,7 @@ class DenseEncoder(_ModuleBase):
 
 
 class DenseBiEncoder(_ModuleBase):
-    """Query/document bi-encoder supporting tied or independent towers."""
+    """Query/document bi-encoder with a DDP-safe ordinary ``forward`` entrypoint."""
 
     def __init__(self, query_encoder: DenseEncoder, document_encoder: DenseEncoder | None = None) -> None:
         _require_torch()
@@ -235,9 +218,15 @@ class DenseBiEncoder(_ModuleBase):
     def encode_documents(self, batch: Mapping[str, Any]) -> Any:
         return self.document_encoder(**dict(batch))
 
+    def forward(
+        self,
+        query_batch: Mapping[str, Any],
+        document_batch: Mapping[str, Any],
+    ) -> tuple[Any, Any]:
+        return self.encode_queries(query_batch), self.encode_documents(document_batch)
+
     def score_matrix(self, query_batch: Mapping[str, Any], document_batch: Mapping[str, Any]) -> Any:
-        queries = self.encode_queries(query_batch)
-        documents = self.encode_documents(document_batch)
+        queries, documents = self(query_batch, document_batch)
         return queries @ documents.transpose(0, 1)
 
 
@@ -255,8 +244,6 @@ class SpladeConfig:
 
 
 class SpladeEncoder(_ModuleBase):
-    """SPLADE-style sparse vocabulary expansion over masked-LM logits."""
-
     def __init__(self, masked_lm: Any, config: SpladeConfig = SpladeConfig()) -> None:
         _require_torch()
         super().__init__()
@@ -293,17 +280,14 @@ class SpladeEncoder(_ModuleBase):
         if logits is None:
             raise ValueError("masked-LM output does not expose logits")
         activations = torch.log1p(torch.relu(logits))
-        token_mask = attention_mask.to(dtype=activations.dtype).unsqueeze(-1)
-        activations = activations * token_mask
+        activations = activations * attention_mask.to(dtype=activations.dtype).unsqueeze(-1)
         if self.splade_config.mask_special_token_ids:
             allowed = torch.ones(self.vocab_size, dtype=activations.dtype, device=activations.device)
             special = torch.tensor(self.splade_config.mask_special_token_ids, dtype=torch.long, device=activations.device)
             special = special[(special >= 0) & (special < self.vocab_size)]
             allowed.index_fill_(0, special, 0.0)
             activations = activations * allowed.view(1, 1, -1)
-        if self.splade_config.aggregation == "sum":
-            return activations.sum(dim=1)
-        return activations.max(dim=1).values
+        return activations.sum(dim=1) if self.splade_config.aggregation == "sum" else activations.max(dim=1).values
 
     @staticmethod
     def score_matrix(query_weights: Any, document_weights: Any) -> Any:
@@ -327,8 +311,6 @@ class UniCOILConfig:
 
 
 class UniCOILEncoder(_ModuleBase):
-    """Contextual token weighting with aggregation into vocabulary coordinates."""
-
     def __init__(self, backbone: Any, config: UniCOILConfig = UniCOILConfig()) -> None:
         _require_torch()
         super().__init__()
@@ -361,29 +343,23 @@ class UniCOILEncoder(_ModuleBase):
         return cls(backbone, config)
 
     def forward(self, input_ids: Any, attention_mask: Any, **model_kwargs: Any) -> Any:
-        hidden = _last_hidden_state(
-            self.backbone(input_ids=input_ids, attention_mask=attention_mask, **model_kwargs)
-        )
+        hidden = _last_hidden_state(self.backbone(input_ids=input_ids, attention_mask=attention_mask, **model_kwargs))
         token_weights = self.token_scorer(hidden).squeeze(-1)
         if self.unicoil_config.nonnegative:
             token_weights = torch.relu(token_weights)
         valid = attention_mask.to(dtype=torch.bool)
-        if self.unicoil_config.exclude_token_ids:
-            for token_id in self.unicoil_config.exclude_token_ids:
-                valid = valid & input_ids.ne(token_id)
+        for token_id in self.unicoil_config.exclude_token_ids:
+            valid = valid & input_ids.ne(token_id)
         weights = torch.where(valid, token_weights, torch.zeros_like(token_weights))
         batch_size = input_ids.size(0)
+        output = torch.zeros(batch_size, self.vocab_size, dtype=weights.dtype, device=weights.device)
         if self.unicoil_config.aggregation == "sum":
-            output = torch.zeros(batch_size, self.vocab_size, dtype=weights.dtype, device=weights.device)
             output.scatter_add_(1, input_ids.clamp(0, self.vocab_size - 1), weights)
             return output
-        # Max aggregation, implemented without relying on scatter_reduce availability.
-        output = torch.zeros(batch_size, self.vocab_size, dtype=weights.dtype, device=weights.device)
         for row in range(batch_size):
             row_ids = input_ids[row]
             row_weights = weights[row]
-            unique_ids = torch.unique(row_ids[valid[row]])
-            for token_id in unique_ids:
+            for token_id in torch.unique(row_ids[valid[row]]):
                 positions = (row_ids == token_id) & valid[row]
                 output[row, token_id] = row_weights[positions].max()
         return output
@@ -410,8 +386,6 @@ class ColBERTConfig:
 
 
 class ColBERTEncoder(_ModuleBase):
-    """Projected token encoder plus exact MaxSim late interaction."""
-
     def __init__(self, backbone: Any, config: ColBERTConfig = ColBERTConfig()) -> None:
         _require_torch()
         super().__init__()
@@ -445,9 +419,7 @@ class ColBERTEncoder(_ModuleBase):
         return cls(backbone, config)
 
     def forward(self, input_ids: Any, attention_mask: Any, **model_kwargs: Any) -> tuple[Any, Any]:
-        hidden = _last_hidden_state(
-            self.backbone(input_ids=input_ids, attention_mask=attention_mask, **model_kwargs)
-        )
+        hidden = _last_hidden_state(self.backbone(input_ids=input_ids, attention_mask=attention_mask, **model_kwargs))
         embeddings = self.projection(self.dropout(hidden))
         if self.colbert_config.normalize:
             embeddings = F.normalize(embeddings, p=2, dim=-1)
@@ -463,9 +435,7 @@ class ColBERTEncoder(_ModuleBase):
         document_embeddings: Any,
         document_mask: Any,
     ) -> Any:
-        """Score aligned query/document batches with ColBERT MaxSim."""
-
-        similarity = torch.einsum("bqd,bkd->bqk", query_embeddings, document_embeddings)
+        similarity = torch.einsum("bqe,bke->bqk", query_embeddings, document_embeddings)
         similarity = similarity.masked_fill(~document_mask[:, None, :], torch.finfo(similarity.dtype).min)
         maxima = similarity.max(dim=-1).values
         maxima = torch.where(query_mask, maxima, torch.zeros_like(maxima))
@@ -478,8 +448,6 @@ class ColBERTEncoder(_ModuleBase):
         document_embeddings: Any,
         document_mask: Any,
     ) -> Any:
-        """All-pairs query/document MaxSim matrix, shaped ``[Q, D]``."""
-
         similarity = torch.einsum("qte,dse->qdts", query_embeddings, document_embeddings)
         similarity = similarity.masked_fill(~document_mask[None, :, None, :], torch.finfo(similarity.dtype).min)
         maxima = similarity.max(dim=-1).values
@@ -488,8 +456,6 @@ class ColBERTEncoder(_ModuleBase):
 
 
 class CrossEncoderReranker(_ModuleBase):
-    """Scalar sequence-pair reranker backed by a sequence-classification model."""
-
     def __init__(self, model: Any, *, score_index: int = 0) -> None:
         _require_torch()
         super().__init__()
@@ -538,8 +504,6 @@ class CrossEncoderReranker(_ModuleBase):
 
 
 class ListwiseReranker(_ModuleBase):
-    """Cross-encoder scorer with explicit grouped-list reconstruction."""
-
     def __init__(self, cross_encoder: CrossEncoderReranker) -> None:
         _require_torch()
         super().__init__()
