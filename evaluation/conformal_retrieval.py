@@ -1,7 +1,7 @@
 """Finite-sample conformal calibration for retrieval support and abstention.
 
 This module adds a distribution-free uncertainty layer around already-produced retrieval
-scores.  It does not train or invoke a retriever.  Calibration examples supply a scalar
+scores. It does not train or invoke a retriever. Calibration examples supply a scalar
 nonconformity score for the best known supporting candidate; the resulting finite-sample
 quantile can be used to form support sets or force abstention when no candidate clears
 the calibrated threshold.
@@ -169,8 +169,10 @@ def fit_split_conformal_threshold(
 ) -> ConformalThreshold:
     """Fit the finite-sample split-conformal upper quantile.
 
-    Uses rank ``ceil((n+1)*(1-alpha))``, clipped to ``n``.  Supplying the same sorted
-    scores and manifest inputs is deterministic.
+    The finite threshold uses rank ``ceil((n+1)*(1-alpha))``.  If this rank would be
+    ``n+1``, the requested alpha is not supportable by a finite threshold from the
+    supplied sample, so the function fails closed instead of clipping and overstating
+    the nominal guarantee.
     """
 
     if not nonconformity_scores or len(nonconformity_scores) > _MAX_CALIBRATION:
@@ -180,7 +182,13 @@ def fit_split_conformal_threshold(
         raise ValueError("alpha must be strictly between zero and one")
     values = sorted(_finite(value, "nonconformity score") for value in nonconformity_scores)
     n = len(values)
-    rank = min(n, int(math.ceil((n + 1) * (1.0 - selected_alpha))))
+    rank = int(math.ceil((n + 1) * (1.0 - selected_alpha)))
+    if rank > n:
+        minimum_alpha = 1.0 / (n + 1)
+        raise ValueError(
+            f"calibration sample of size {n} cannot provide a finite split-conformal threshold "
+            f"for alpha={selected_alpha:.12g}; use alpha >= {minimum_alpha:.12g} or more calibration examples"
+        )
     manifest = ConformalCalibrationManifest(
         calibration_id=calibration_id,
         dataset_manifest_digest=dataset_manifest_digest,
