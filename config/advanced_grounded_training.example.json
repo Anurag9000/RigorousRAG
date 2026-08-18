@@ -1,0 +1,79 @@
+{
+  "schema": "rigorousrag-advanced-training-config/v1",
+  "kind": "grounded_generation",
+  "run_id": "grounded-rag-example-v1",
+  "source_commit": "REPLACE_WITH_FULL_GIT_COMMIT",
+  "dataset_manifest_sha256": "REPLACE_WITH_64_HEX_DATASET_MANIFEST_SHA256",
+  "base_model": {
+    "path": "/absolute/local/path/to/causal-or-seq2seq-model",
+    "sha256": "REPLACE_WITH_64_HEX_LOCAL_MODEL_TREE_SHA256",
+    "kind": "causal_lm"
+  },
+  "tokenizer": {
+    "path": "/absolute/local/path/to/tokenizer",
+    "sha256": "REPLACE_WITH_64_HEX_LOCAL_TOKENIZER_TREE_SHA256",
+    "kind": "tokenizer"
+  },
+  "architecture": {
+    "hidden_size": 768,
+    "attribution_size": 256
+  },
+  "curriculum": {
+    "include_preference": true,
+    "stages": {
+      "supervised": {"max_steps": 10000, "checkpoint_every_steps": 1000, "learning_rate": 0.00002},
+      "attribution": {"max_steps": 6000, "checkpoint_every_steps": 500, "learning_rate": 0.0001},
+      "grounding": {"max_steps": 8000, "checkpoint_every_steps": 500, "learning_rate": 0.0001},
+      "reflection": {"max_steps": 5000, "checkpoint_every_steps": 500, "learning_rate": 0.0001},
+      "preference": {"max_steps": 5000, "checkpoint_every_steps": 500, "learning_rate": 0.000005},
+      "joint": {"max_steps": 8000, "checkpoint_every_steps": 500, "learning_rate": 0.00001}
+    }
+  },
+  "execution": {
+    "train_batch_size": 4,
+    "validation_batch_size": 4,
+    "device": "auto",
+    "precision": "bf16",
+    "gradient_accumulation_steps": 4,
+    "max_grad_norm": 1.0,
+    "seed": 17,
+    "deterministic_algorithms": false,
+    "ddp": false,
+    "weight_decay": 0.01,
+    "scheduler": "linear",
+    "warmup_steps": 500,
+    "evaluate_every_steps": 500,
+    "early_stopping_patience": 5,
+    "early_stopping_min_delta": 0.0
+  },
+  "collator": {
+    "sequence_max_length": 2048,
+    "evidence_max_length": 512,
+    "evidence_limit": 32,
+    "claim_limit": 64,
+    "ignore_index": -100,
+    "pad_to_multiple_of": 8
+  },
+  "train_split": {
+    "path": "/absolute/local/path/to/grounded-train.jsonl",
+    "sha256": "REPLACE_WITH_64_HEX_TRAIN_JSONL_SHA256",
+    "split_name": "train"
+  },
+  "validation_split": {
+    "path": "/absolute/local/path/to/grounded-validation.jsonl",
+    "sha256": "REPLACE_WITH_64_HEX_VALIDATION_JSONL_SHA256",
+    "split_name": "validation"
+  },
+  "checkpoint_root": "/absolute/local/path/to/checkpoints/grounded-rag",
+  "reference_cache": {
+    "root": "/absolute/local/path/to/reference-policy-cache",
+    "identity": {
+      "cache_kind": "grounded_reference_policy",
+      "producer_sha256": "REPLACE_WITH_64_HEX_REFERENCE_MODEL_SHA256",
+      "tokenizer_sha256": "REPLACE_WITH_64_HEX_LOCAL_TOKENIZER_TREE_SHA256",
+      "dataset_manifest_sha256": "REPLACE_WITH_64_HEX_DATASET_MANIFEST_SHA256",
+      "source_commit": "REPLACE_WITH_FULL_GIT_COMMIT",
+      "config_sha256": "REPLACE_WITH_64_HEX_REFERENCE_MATERIALIZATION_CONFIG_SHA256"
+    }
+  }
+}
