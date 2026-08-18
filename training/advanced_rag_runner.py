@@ -33,15 +33,12 @@ from training.advanced_rag_steps import (
     dynamic_plan_to_trainer_config,
     grounded_plan_to_trainer_config,
 )
-from training.advanced_rag_strict import (
-    StrictDynamicRagEpisodeCollator,
-    StrictDynamicRetrievalPolicyStep,
-    StrictGroundedGenerationCollator,
-)
+from training.advanced_rag_strict import StrictDynamicRagEpisodeCollator, StrictDynamicRetrievalPolicyStep
 from training.checkpointing import CheckpointManager
 from training.data_pipeline import ResumableDeterministicSampler
 from training.dynamic_retrieval_policy import DynamicPolicyTrainingPlan
 from training.grounded_generation import GroundedTrainingPlan
+from training.grounded_supervision_pipeline import CompleteGroundedGenerationCollator
 from training.torch_engine import StageRuntime, TorchTrainingEngine, TrainerConfig, TrainingSummary
 
 
@@ -175,15 +172,24 @@ class AdvancedTrainingRunResult:
 
 
 class GroundedGeneratorTrainingRunner:
-    def __init__(self, *, plan: GroundedTrainingPlan, base_model: Any, tokenizer: Any, train_split: LocalTrainingSplit, validation_split: LocalTrainingSplit, checkpoint_root: str | Path, execution: TrainingExecutionConfig = TrainingExecutionConfig(), collator_config: GroundedCollatorConfig = GroundedCollatorConfig(), retriever_model: Any | None = None, teacher_cache: TensorCacheProvider | None = None, retriever_batch_builder: RetrieverBatchBuilder | None = None, trainability: Mapping[str, ParameterTrainabilityPolicy] | None = None) -> None:
+    def __init__(self, *, plan: GroundedTrainingPlan, base_model: Any, tokenizer: Any, train_split: LocalTrainingSplit, validation_split: LocalTrainingSplit, checkpoint_root: str | Path, execution: TrainingExecutionConfig = TrainingExecutionConfig(), collator_config: GroundedCollatorConfig = GroundedCollatorConfig(), retriever_model: Any | None = None, teacher_cache: TensorCacheProvider | None = None, reference_cache: TensorCacheProvider | None = None, retriever_batch_builder: RetrieverBatchBuilder | None = None, trainability: Mapping[str, ParameterTrainabilityPolicy] | None = None) -> None:
         _require_torch()
         if not isinstance(plan, GroundedTrainingPlan):
             raise ValueError("plan must be GroundedTrainingPlan")
         self.plan, self.base_model, self.tokenizer = plan, base_model, tokenizer
         self.train_split, self.validation_split = train_split, validation_split
         self.checkpoint_root, self.execution, self.collator_config = checkpoint_root, execution, collator_config
-        self.retriever_model, self.teacher_cache, self.retriever_batch_builder = retriever_model, teacher_cache, retriever_batch_builder
+        self.retriever_model, self.teacher_cache, self.reference_cache, self.retriever_batch_builder = retriever_model, teacher_cache, reference_cache, retriever_batch_builder
         self.trainability = dict(trainability or {})
+
+    def _collator(self) -> CompleteGroundedGenerationCollator:
+        return CompleteGroundedGenerationCollator(
+            self.tokenizer,
+            self.collator_config,
+            teacher_cache=self.teacher_cache,
+            reference_cache=self.reference_cache,
+            retriever_batch_builder=self.retriever_batch_builder,
+        )
 
     def run(self, *, resume_checkpoint_digest: str | None = None, event_sink: Any | None = None) -> AdvancedTrainingRunResult:
         train_dataset = ManifestBoundAdvancedJsonlDataset(self.train_split.path, expected_sha256=self.train_split.content_sha256, dataset_manifest_sha256=self.plan.dataset_manifest_sha256, split_name=self.train_split.split_name, record_kind="grounded_generation", expected_record_count=self.train_split.expected_record_count)
@@ -194,12 +200,12 @@ class GroundedGeneratorTrainingRunner:
         runtimes, validation_steps = [], []
         for stage_index, stage in enumerate(self.plan.stages):
             sampler = ResumableDeterministicSampler(len(train_dataset), seed=self.execution.seed + stage_index, shuffle=True)
-            collator = StrictGroundedGenerationCollator(self.tokenizer, self.collator_config, teacher_cache=self.teacher_cache, retriever_batch_builder=self.retriever_batch_builder)
+            collator = self._collator()
             step = GroundedGenerationStep(GroundedStepConfig(stage.objective))
             validation_steps.append(GroundedGenerationStep(GroundedStepConfig(stage.objective)))
             wrapped = _TrainabilityStep(step, self.trainability.get(stage.name, ParameterTrainabilityPolicy()))
             runtimes.append(StageRuntime(dataloader=_loader(train_dataset, sampler, collator, batch_size=self.execution.train_batch_size, execution=self.execution), step=wrapped, sampler=sampler, collator=collator))
-        validation_collator = StrictGroundedGenerationCollator(self.tokenizer, self.collator_config, teacher_cache=self.teacher_cache, retriever_batch_builder=self.retriever_batch_builder)
+        validation_collator = self._collator()
         validation_loader = _loader(validation_dataset, None, validation_collator, batch_size=self.execution.validation_batch_size, execution=self.execution)
         evaluator = GroundedValidationEvaluator(validation_loader, validation_steps, ValidationLimits(self.execution.validation_maximum_batches))
         engine = TorchTrainingEngine(model, trainer_config, CheckpointManager(self.checkpoint_root))
