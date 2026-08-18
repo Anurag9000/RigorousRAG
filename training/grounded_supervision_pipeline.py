@@ -1,7 +1,9 @@
 """Concrete cached preference and generator-retriever coupling for grounded RAG training."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+import hashlib
+import json
+from dataclasses import asdict, dataclass
 from typing import Any, Mapping, Sequence
 
 try:
@@ -12,12 +14,24 @@ except Exception:  # pragma: no cover
     nn = None  # type: ignore[assignment]
 
 from training.advanced_rag_data import GroundedGenerationExample, TensorCacheProvider
+from training.advanced_rag_identity import provider_identity_sha256
 from training.advanced_rag_strict import StrictGroundedGenerationCollator
 
 
 def _require_torch() -> None:
     if torch is None:
         raise RuntimeError("grounded supervision pipeline requires optional PyTorch")
+
+
+def _sha(value: Any, label: str) -> str:
+    selected = str(value).strip().lower()
+    if len(selected) != 64 or any(ch not in "0123456789abcdef" for ch in selected):
+        raise ValueError(f"{label} must be SHA-256")
+    return selected
+
+
+def _digest(value: Any) -> str:
+    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode("utf-8")).hexdigest()
 
 
 class CompleteGroundedGenerationCollator(StrictGroundedGenerationCollator):
@@ -71,17 +85,34 @@ class RetrieverCouplingConfig:
         if isinstance(self.positive_label_index, bool) or not isinstance(self.positive_label_index, int) or self.positive_label_index < 0:
             raise ValueError("positive_label_index must be non-negative")
 
+    @property
+    def config_sha256(self) -> str:
+        return _digest({"schema": "rigorousrag-retriever-coupling-config/v1", **asdict(self)})
+
 
 class CachedDocumentUtilityRetrieverBatchBuilder:
     """Build [B,D,L] query/evidence pairs and generator-derived document utilities.
 
     Each cache entry is keyed by ``example.retriever_cache_key`` (or ``example_id`` as a
     deterministic fallback) and contains ``document_lm_log_likelihood`` aligned to the
-    example's evidence order. The cache identity separately binds the generator/tokenizer/
-    dataset that produced those scores.
+    example's evidence order. The builder's contract binds tokenizer, utility-cache and
+    collation configuration identities for exact checkpoint/resume lineage.
     """
-    def __init__(self, tokenizer: Any, utility_cache: TensorCacheProvider, config: RetrieverCouplingConfig = RetrieverCouplingConfig()) -> None:
+    def __init__(self, tokenizer: Any, utility_cache: TensorCacheProvider, *, tokenizer_sha256: str, config: RetrieverCouplingConfig = RetrieverCouplingConfig()) -> None:
         self.tokenizer, self.utility_cache, self.config = tokenizer, utility_cache, config
+        self.tokenizer_sha256 = _sha(tokenizer_sha256, "tokenizer_sha256")
+        self.utility_cache_sha256 = provider_identity_sha256(utility_cache, label="retriever utility cache")
+        if self.utility_cache_sha256 is None:
+            raise ValueError("retriever utility cache requires a content identity")
+
+    @property
+    def contract_sha256(self) -> str:
+        return _digest({
+            "schema": "rigorousrag-cached-document-utility-builder/v1",
+            "tokenizer_sha256": self.tokenizer_sha256,
+            "utility_cache_sha256": self.utility_cache_sha256,
+            "config_sha256": self.config.config_sha256,
+        })
 
     def __call__(self, examples: Sequence[GroundedGenerationExample]) -> Mapping[str, Any]:
         _require_torch()
