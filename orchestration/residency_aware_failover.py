@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
 from orchestration.multi_region_authority import (
@@ -76,6 +76,39 @@ class ResidencyAwareAuthorityDecision:
         }
 
 
+def _policy_filtered_observations(
+    observations: Sequence[RegionHealthObservation],
+    *,
+    eligible_regions: set[str],
+) -> tuple[RegionHealthObservation, ...]:
+    """Preserve health evidence identity while making forbidden regions unavailable."""
+
+    rows = tuple(observations)
+    if not rows or any(not isinstance(value, RegionHealthObservation) for value in rows):
+        raise ValueError("observations must be a non-empty RegionHealthObservation sequence")
+    seen: set[str] = set()
+    filtered: list[RegionHealthObservation] = []
+    for value in rows:
+        if value.region_id in seen:
+            raise ValueError("region observations must have unique region ids")
+        seen.add(value.region_id)
+        if value.region_id in eligible_regions:
+            filtered.append(value)
+        else:
+            filtered.append(
+                RegionHealthObservation(
+                    region_id=value.region_id,
+                    observed_at=value.observed_at,
+                    ready_for_reads=False,
+                    ready_for_writes=False,
+                    replication_lag_seconds=value.replication_lag_seconds,
+                    recovery_point_at=value.recovery_point_at,
+                    evidence_sha256=value.evidence_sha256,
+                )
+            )
+    return tuple(filtered)
+
+
 def decide_residency_aware_region_authority(
     *,
     owner_id: str,
@@ -91,11 +124,11 @@ def decide_residency_aware_region_authority(
 ) -> ResidencyAwareAuthorityDecision:
     """Fail closed on residency before applying health/RPO failover selection.
 
-    All regions present in the failover policy require an explicit descriptor. Health
-    observations for residency-ineligible regions are omitted from the base authority
-    decision, making those regions unavailable regardless of apparent runtime health. If
-    the current authority itself becomes residency-ineligible, the wrapper authorizes a
-    safe return to a healthy eligible primary without requiring automatic failback.
+    All regions present in the failover policy require an explicit descriptor. A health
+    observation for a residency-ineligible region remains part of the evidence set but is
+    converted to an unavailable policy view before failover selection. If the current
+    authority itself becomes residency-ineligible, the wrapper authorizes a safe return
+    to a healthy eligible primary without requiring automatic failback.
     """
 
     if not isinstance(failover_policy, MultiRegionFailoverPolicy):
@@ -128,7 +161,7 @@ def decide_residency_aware_region_authority(
         for region_id in sorted(known)
     )
     eligible = {value.region_id for value in residency if value.eligible}
-    filtered = tuple(value for value in observations if value.region_id in eligible)
+    filtered = _policy_filtered_observations(observations, eligible_regions=eligible)
     selected_current = None if current_region is None else _text(current_region, "current_region")
     residency_forced_exit = selected_current is not None and selected_current not in eligible
     authority = decide_region_authority(
