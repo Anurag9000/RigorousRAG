@@ -387,10 +387,15 @@ class SQLiteResidencyPolicyStore:
                 if expected_revision is None or expected_revision != current_revision:
                     raise RuntimeError("residency policy promotion CAS failed")
                 if current["policy_sha256"] == policy.policy_sha256:
-                    record = self.current(owner_id=owner, service_id=service)
-                    if record is None:
-                        raise RuntimeError("current residency policy disappeared")
-                    return record
+                    row = connection.execute(
+                        """SELECT policy_json,promoted_at FROM residency_policy_history
+                           WHERE owner_id=? AND service_id=? AND revision=?""",
+                        (owner, service, current_revision),
+                    ).fetchone()
+                    if row is None:
+                        raise RuntimeError("current residency policy history is missing")
+                    current_policy = self._decode_policy(row["policy_json"], policy.policy_sha256)
+                    return ResidencyPolicyRecord(owner, service, current_revision, current_policy, float(row["promoted_at"]))
                 revision = current_revision + 1
             connection.execute(
                 "INSERT INTO residency_policy_history(owner_id,service_id,revision,policy_sha256,policy_json,promoted_at) VALUES(?,?,?,?,?,?)",
