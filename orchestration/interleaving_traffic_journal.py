@@ -20,6 +20,13 @@ def _text(value: str, label: str, maximum: int = 500) -> str:
     return selected
 
 
+def _sha(value: str, label: str) -> str:
+    selected = _text(value, label, 64).lower()
+    if len(selected) != 64 or any(ch not in "0123456789abcdef" for ch in selected):
+        raise ValueError(f"{label} must be SHA-256")
+    return selected
+
+
 def _time(value: float) -> float:
     if isinstance(value, bool):
         raise ValueError("now must be finite and non-negative")
@@ -114,7 +121,7 @@ class SQLiteInterleavingTrafficJournal:
     ) -> str | None:
         owner = _text(owner_id, "owner_id")
         group = _text(exclusion_group_id, "exclusion_group_id")
-        unit = _text(randomization_unit_sha256, "randomization_unit_sha256", 64).lower()
+        unit = _sha(randomization_unit_sha256, "randomization_unit_sha256")
         with self._connect() as connection:
             row = connection.execute(
                 """SELECT spec_sha256 FROM interleaving_assignments
