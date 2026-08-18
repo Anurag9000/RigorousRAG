@@ -244,17 +244,27 @@ def decide_retrieved_content_trust(
     materialization: RetrievedEvidenceMaterialization,
     *,
     policy: RetrievedContentTrustPolicy = RetrievedContentTrustPolicy(),
-    signals: Sequence[InjectionSignal] | None = None,
+    additional_signals: Sequence[InjectionSignal] = (),
 ) -> RetrievedContentTrustDecision:
+    """Evaluate trust without permitting callers to suppress native inspection signals."""
+
     if not isinstance(materialization, RetrievedEvidenceMaterialization):
         raise ValueError("materialization must be RetrievedEvidenceMaterialization")
     if not isinstance(policy, RetrievedContentTrustPolicy):
         raise ValueError("policy must be RetrievedContentTrustPolicy")
-    selected = inspect_injection_signals(materialization) if signals is None else tuple(signals)
-    if len(selected) > _MAX_SIGNALS or any(not isinstance(value, InjectionSignal) for value in selected):
-        raise ValueError("signals must be a bounded InjectionSignal sequence")
-    if len({value.signal_sha256 for value in selected}) != len(selected):
-        raise ValueError("signals contain duplicate identities")
+    extras = tuple(additional_signals)
+    if any(not isinstance(value, InjectionSignal) for value in extras):
+        raise ValueError("additional_signals contains invalid values")
+    native = inspect_injection_signals(materialization)
+    by_digest = {value.signal_sha256: value for value in native}
+    for value in extras:
+        existing = by_digest.get(value.signal_sha256)
+        if existing is not None and existing != value:
+            raise ValueError("conflicting signal identity")
+        by_digest[value.signal_sha256] = value
+    selected = tuple(sorted(by_digest.values(), key=lambda value: (value.signal_type, value.signal_sha256)))
+    if len(selected) > _MAX_SIGNALS:
+        raise ValueError("signals exceed the bounded signal limit")
 
     reasons: list[str] = []
     maximum = max((value.severity for value in selected), default=0.0)
@@ -279,7 +289,7 @@ def decide_retrieved_content_trust(
         "evidence_identity_sha256": materialization.identity.identity_sha256,
         "policy_sha256": policy.policy_sha256,
         "action": action,
-        "signal_sha256s": tuple(sorted(value.signal_sha256 for value in selected)),
+        "signal_sha256s": tuple(value.signal_sha256 for value in selected),
         "reason_codes": tuple(sorted(set(reasons))),
     }
     return RetrievedContentTrustDecision(**payload, decision_sha256=_digest(payload))
