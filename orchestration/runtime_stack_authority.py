@@ -49,6 +49,7 @@ _EVIDENCE_KINDS = frozenset(
     }
 )
 _HEX = frozenset("0123456789abcdef")
+_MAX_DECISION_TTL_SECONDS = 30 * 24 * 60 * 60
 
 
 def _canonical(value: Any) -> bytes:
@@ -91,6 +92,13 @@ def _time(value: Any, label: str) -> float:
         raise ValueError(f"{label} must be finite and non-negative") from exc
     if not math.isfinite(selected) or selected < 0.0:
         raise ValueError(f"{label} must be finite and non-negative")
+    return selected
+
+
+def _positive_float(value: Any, label: str, *, maximum: float | None = None) -> float:
+    selected = _time(value, label)
+    if selected <= 0.0 or (maximum is not None and selected > maximum):
+        raise ValueError(f"{label} must be positive" + (f" and <= {maximum}" if maximum is not None else ""))
     return selected
 
 
@@ -184,22 +192,26 @@ class RuntimeStackArtifact:
         compatibility_sha256: str,
         source_revision: str,
     ) -> "RuntimeStackArtifact":
+        selected = tuple(components)
+        if not selected or any(not isinstance(value, RuntimeComponent) for value in selected):
+            raise ValueError("components must contain RuntimeComponent values")
+        ordered = tuple(sorted(selected, key=lambda value: (value.kind, value.component_id)))
         payload = {
             "schema": "rigorousrag-runtime-stack/v1",
-            "stack_id": stack_id,
-            "components": [asdict(value) for value in sorted(tuple(components), key=lambda value: (value.kind, value.component_id))],
-            "retrieval_contract_sha256": retrieval_contract_sha256,
-            "generation_contract_sha256": generation_contract_sha256,
-            "compatibility_sha256": compatibility_sha256,
-            "source_revision": source_revision,
+            "stack_id": _text(stack_id, "stack_id", 500),
+            "components": [asdict(value) for value in ordered],
+            "retrieval_contract_sha256": _sha(retrieval_contract_sha256, "retrieval_contract_sha256"),
+            "generation_contract_sha256": _sha(generation_contract_sha256, "generation_contract_sha256"),
+            "compatibility_sha256": _sha(compatibility_sha256, "compatibility_sha256"),
+            "source_revision": _git_revision(source_revision),
         }
         return cls(
-            stack_id=stack_id,
-            components=tuple(components),
-            retrieval_contract_sha256=retrieval_contract_sha256,
-            generation_contract_sha256=generation_contract_sha256,
-            compatibility_sha256=compatibility_sha256,
-            source_revision=source_revision,
+            stack_id=payload["stack_id"],
+            components=ordered,
+            retrieval_contract_sha256=payload["retrieval_contract_sha256"],
+            generation_contract_sha256=payload["generation_contract_sha256"],
+            compatibility_sha256=payload["compatibility_sha256"],
+            source_revision=payload["source_revision"],
             stack_sha256=_digest(payload),
         )
 
@@ -230,7 +242,7 @@ class RuntimePromotionEvidence:
 
     def current_at(self, now: float) -> bool:
         instant = _time(now, "now")
-        return instant >= self.valid_from and (self.expires_at is None or instant < self.expires_at)
+        return self.valid_from <= instant and (self.expires_at is None or instant < self.expires_at)
 
 
 @dataclass(frozen=True)
@@ -238,6 +250,7 @@ class RuntimePromotionPolicy:
     policy_id: str
     required_evidence_kinds: tuple[str, ...]
     require_compatibility_digest_match: bool = True
+    decision_ttl_seconds: float = 3600.0
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "policy_id", _text(self.policy_id, "policy_id", 300))
@@ -247,10 +260,15 @@ class RuntimePromotionPolicy:
         object.__setattr__(self, "required_evidence_kinds", kinds)
         if not isinstance(self.require_compatibility_digest_match, bool):
             raise ValueError("require_compatibility_digest_match must be boolean")
+        object.__setattr__(
+            self,
+            "decision_ttl_seconds",
+            _positive_float(self.decision_ttl_seconds, "decision_ttl_seconds", maximum=_MAX_DECISION_TTL_SECONDS),
+        )
 
     @property
     def policy_sha256(self) -> str:
-        return _digest({"schema": "rigorousrag-runtime-promotion-policy/v1", **asdict(self)})
+        return _digest({"schema": "rigorousrag-runtime-promotion-policy/v2", **asdict(self)})
 
 
 @dataclass(frozen=True)
@@ -261,6 +279,7 @@ class RuntimePromotionDecision:
     eligible: bool
     reason_codes: tuple[str, ...]
     decided_at: float
+    valid_until: float
     decision_sha256: str
 
     def __post_init__(self) -> None:
@@ -278,7 +297,12 @@ class RuntimePromotionDecision:
         if not self.eligible and not reasons:
             raise ValueError("ineligible promotion decision requires reason codes")
         object.__setattr__(self, "reason_codes", reasons)
-        object.__setattr__(self, "decided_at", _time(self.decided_at, "decided_at"))
+        decided = _time(self.decided_at, "decided_at")
+        valid_until = _time(self.valid_until, "valid_until")
+        if valid_until <= decided:
+            raise ValueError("valid_until must be later than decided_at")
+        object.__setattr__(self, "decided_at", decided)
+        object.__setattr__(self, "valid_until", valid_until)
         expected = _digest(self._payload())
         provided = _sha(self.decision_sha256, "decision_sha256")
         if expected != provided:
@@ -287,14 +311,19 @@ class RuntimePromotionDecision:
 
     def _payload(self) -> dict[str, Any]:
         return {
-            "schema": "rigorousrag-runtime-promotion-decision/v1",
+            "schema": "rigorousrag-runtime-promotion-decision/v2",
             "stack_sha256": self.stack_sha256,
             "policy_sha256": self.policy_sha256,
             "evidence_row_sha256s": self.evidence_row_sha256s,
             "eligible": self.eligible,
             "reason_codes": self.reason_codes,
             "decided_at": self.decided_at,
+            "valid_until": self.valid_until,
         }
+
+    def current_at(self, now: float) -> bool:
+        instant = _time(now, "now")
+        return self.decided_at <= instant < self.valid_until
 
 
 def decide_runtime_promotion(
@@ -331,7 +360,6 @@ def decide_runtime_promotion(
         selected_rows.append((kind, value.row_sha256))
         if not value.current_at(instant):
             reasons.append(f"stale_or_not_yet_valid_evidence:{kind}")
-    # Extra evidence is kept in the decision lineage even when not policy-required.
     for kind, value in sorted(by_kind.items()):
         if kind not in policy.required_evidence_kinds:
             selected_rows.append((kind, value.row_sha256))
@@ -342,13 +370,14 @@ def decide_runtime_promotion(
             reasons.append("runtime_stack_compatibility_mismatch")
 
     payload = {
-        "schema": "rigorousrag-runtime-promotion-decision/v1",
+        "schema": "rigorousrag-runtime-promotion-decision/v2",
         "stack_sha256": stack.stack_sha256,
         "policy_sha256": policy.policy_sha256,
         "evidence_row_sha256s": tuple(sorted(selected_rows)),
         "eligible": not reasons,
         "reason_codes": tuple(sorted(set(reasons))),
         "decided_at": instant,
+        "valid_until": instant + policy.decision_ttl_seconds,
     }
     return RuntimePromotionDecision(**payload, decision_sha256=_digest(payload))
 
@@ -548,6 +577,8 @@ class SQLiteRuntimeStackAuthorityStore:
         if expected_authority_revision is not None:
             _positive_int(expected_authority_revision, "expected_authority_revision", allow_zero=True)
         timestamp = _time(now, "now")
+        if not decision.current_at(timestamp):
+            raise ValueError("runtime promotion decision is stale or not yet valid")
         encoded = self._stack_json(stack)
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -578,10 +609,11 @@ class SQLiteRuntimeStackAuthorityStore:
                     (owner, service, domain, record.stack_sha256, revision, fence, record.action, record.authority_evidence_sha256, timestamp),
                 )
             else:
+                current = self._record(row)
                 changed = connection.execute(
                     """UPDATE runtime_stack_authority SET stack_sha256=?,authority_revision=?,fencing_token=?,action=?,authority_evidence_sha256=?,updated_at=?
                        WHERE owner_id=? AND service_id=? AND domain_id=? AND authority_revision=? AND fencing_token=?""",
-                    (record.stack_sha256, revision, fence, record.action, record.authority_evidence_sha256, timestamp, owner, service, domain, expected_authority_revision, self._record(row).fencing_token),
+                    (record.stack_sha256, revision, fence, record.action, record.authority_evidence_sha256, timestamp, owner, service, domain, expected_authority_revision, current.fencing_token),
                 ).rowcount
                 if changed != 1:
                     raise RuntimeError("runtime stack promotion lost CAS race")
@@ -596,12 +628,16 @@ class SQLiteRuntimeStackAuthorityStore:
         request: RuntimeRollbackRequest,
         *,
         expected_authority_revision: int,
+        current_compatibility_sha256: str,
         now: float,
     ) -> RuntimeAuthorityRecord:
         if not isinstance(request, RuntimeRollbackRequest):
             raise ValueError("request must be RuntimeRollbackRequest")
         expected = _positive_int(expected_authority_revision, "expected_authority_revision")
+        compatibility = _sha(current_compatibility_sha256, "current_compatibility_sha256")
         timestamp = _time(now, "now")
+        if request.requested_at > timestamp:
+            raise ValueError("rollback request is future-dated")
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
@@ -622,8 +658,12 @@ class SQLiteRuntimeStackAuthorityStore:
             target = self._record(target_row)
             if target.authority_revision >= current.authority_revision:
                 raise ValueError("rollback target must be a prior authority revision")
-            if connection.execute("SELECT 1 FROM runtime_stack_registry WHERE stack_sha256=?", (target.stack_sha256,)).fetchone() is None:
+            registered = connection.execute("SELECT stack_json FROM runtime_stack_registry WHERE stack_sha256=?", (target.stack_sha256,)).fetchone()
+            if registered is None:
                 raise RuntimeError("rollback target stack is missing from the immutable registry")
+            target_stack = self._decode_stack(registered["stack_json"], target.stack_sha256)
+            if target_stack.compatibility_sha256 != compatibility:
+                raise ValueError("rollback target stack is incompatible with the current serving environment")
             revision, fence = current.authority_revision + 1, current.fencing_token + 1
             record = RuntimeAuthorityRecord(
                 request.owner_id,
