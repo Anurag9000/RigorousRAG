@@ -1,0 +1,86 @@
+{
+  "schema": "rigorousrag-advanced-training-config/v1",
+  "kind": "dynamic_rag_policy",
+  "run_id": "dynamic-rag-example-v1",
+  "source_commit": "REPLACE_WITH_FULL_GIT_COMMIT",
+  "dataset_manifest_sha256": "REPLACE_WITH_64_HEX_DATASET_MANIFEST_SHA256",
+  "generator": {
+    "path": "/absolute/local/path/to/generator-model",
+    "sha256": "REPLACE_WITH_64_HEX_GENERATOR_TREE_SHA256",
+    "kind": "causal_lm"
+  },
+  "tokenizer": {
+    "path": "/absolute/local/path/to/tokenizer",
+    "sha256": "REPLACE_WITH_64_HEX_TOKENIZER_TREE_SHA256",
+    "kind": "tokenizer"
+  },
+  "architecture": {
+    "hidden_size": 128,
+    "context_hidden_size": 768,
+    "need_projection_size": 128
+  },
+  "budget": {
+    "max_generation_tokens": 2048,
+    "max_retrievals": 6,
+    "max_verifications": 3,
+    "min_tokens_before_retrieval": 8,
+    "min_tokens_before_stop": 1,
+    "max_consecutive_retrievals": 2
+  },
+  "retrieval_stack_sha256": "REPLACE_WITH_64_HEX_RETRIEVAL_STACK_SHA256",
+  "curriculum": {
+    "include_need_selection": true,
+    "stages": {
+      "imitation": {"max_steps": 8000, "checkpoint_every_steps": 500, "learning_rate": 0.0003},
+      "need_selection": {"max_steps": 6000, "checkpoint_every_steps": 500, "learning_rate": 0.0002},
+      "value": {"max_steps": 6000, "checkpoint_every_steps": 500, "learning_rate": 0.0002},
+      "off_policy": {"max_steps": 8000, "checkpoint_every_steps": 500, "learning_rate": 0.0001},
+      "cost_aware": {"max_steps": 5000, "checkpoint_every_steps": 500, "learning_rate": 0.0001},
+      "joint": {"max_steps": 8000, "checkpoint_every_steps": 500, "learning_rate": 0.00005}
+    }
+  },
+  "execution": {
+    "train_batch_size": 32,
+    "validation_batch_size": 64,
+    "device": "auto",
+    "precision": "bf16",
+    "gradient_accumulation_steps": 1,
+    "max_grad_norm": 1.0,
+    "seed": 17,
+    "deterministic_algorithms": false,
+    "ddp": false,
+    "weight_decay": 0.01,
+    "scheduler": "linear",
+    "warmup_steps": 300,
+    "evaluate_every_steps": 500,
+    "early_stopping_patience": 5,
+    "early_stopping_min_delta": 0.0
+  },
+  "collator": {
+    "context_max_length": 2048,
+    "ignore_index": -100,
+    "pad_to_multiple_of": 8
+  },
+  "train_split": {
+    "path": "/absolute/local/path/to/dynamic-rag-train.jsonl",
+    "sha256": "REPLACE_WITH_64_HEX_TRAIN_JSONL_SHA256",
+    "split_name": "train"
+  },
+  "validation_split": {
+    "path": "/absolute/local/path/to/dynamic-rag-validation.jsonl",
+    "sha256": "REPLACE_WITH_64_HEX_VALIDATION_JSONL_SHA256",
+    "split_name": "validation"
+  },
+  "checkpoint_root": "/absolute/local/path/to/checkpoints/dynamic-rag",
+  "hidden_state_cache": {
+    "root": "/absolute/local/path/to/generator-hidden-state-cache",
+    "identity": {
+      "cache_kind": "dynamic_generator_hidden_states",
+      "producer_sha256": "REPLACE_WITH_64_HEX_GENERATOR_TREE_SHA256",
+      "tokenizer_sha256": "REPLACE_WITH_64_HEX_TOKENIZER_TREE_SHA256",
+      "dataset_manifest_sha256": "REPLACE_WITH_64_HEX_DATASET_MANIFEST_SHA256",
+      "source_commit": "REPLACE_WITH_FULL_GIT_COMMIT",
+      "config_sha256": "REPLACE_WITH_64_HEX_HIDDEN_STATE_MATERIALIZATION_CONFIG_SHA256"
+    }
+  }
+}
