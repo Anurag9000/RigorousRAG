@@ -26,16 +26,22 @@ def _device(model: Any) -> Any:
         raise ValueError("validation model exposes no parameters") from exc
 
 
-def _safe_mean(total: float, count: int, label: str) -> float:
-    if count <= 0:
-        raise ValueError(f"validation produced no observations for {label}")
-    result = total / count
-    if not math.isfinite(result):
-        raise ValueError(f"validation metric {label} is non-finite")
-    return result
+def _stage_primary(stage_index: int, loss: float) -> float:
+    """Comparable max-mode primary metric with an isolated namespace per stage.
+
+    The generic trainer intentionally carries its best metric through a multi-stage run.
+    Curricula optimize different objective mixtures, so raw losses are not comparable across
+    stage boundaries. Mapping each finite loss to ``[-1,0]`` with ``-tanh(loss)`` and adding
+    ``2*stage_index`` guarantees the first finite evaluation of a later stage establishes a
+    new stage-local baseline while preserving normal improvement ordering inside that stage.
+    """
+    selected = float(loss)
+    if not math.isfinite(selected):
+        raise ValueError("validation loss must be finite")
+    return 2.0 * stage_index - math.tanh(max(0.0, selected))
 
 
-def _masked_accuracy(logits: Any, targets: Any, mask: Any | None = None) -> tuple[float, int]:
+def _masked_accuracy(logits: Any, targets: Any, mask: Any | None = None) -> tuple[int, int]:
     _require_torch()
     if mask is None:
         mask = torch.ones_like(targets, dtype=torch.bool)
@@ -43,10 +49,10 @@ def _masked_accuracy(logits: Any, targets: Any, mask: Any | None = None) -> tupl
         mask = mask.to(dtype=torch.bool)
     count = int(mask.sum().item())
     if count == 0:
-        return 0.0, 0
+        return 0, 0
     prediction = (logits >= 0).to(dtype=targets.dtype)
-    correct = ((prediction == targets) & mask).sum().item()
-    return float(correct), count
+    correct = int(((prediction == targets) & mask).sum().item())
+    return correct, count
 
 
 @dataclass(frozen=True)
@@ -97,11 +103,11 @@ class GroundedValidationEvaluator:
                     prediction = outputs["citation_logits"].argmax(dim=-1)
                     citation_correct += int(((prediction == targets) & mask).sum().item()); citation_count += count
             if "support_logits" in outputs:
-                correct, count = _masked_accuracy(outputs["support_logits"], batch["support_targets"], batch.get("claim_mask")); support_correct += int(correct); support_count += count
+                correct, count = _masked_accuracy(outputs["support_logits"], batch["support_targets"], batch.get("claim_mask")); support_correct += correct; support_count += count
             if "contradiction_logits" in outputs:
-                correct, count = _masked_accuracy(outputs["contradiction_logits"], batch["contradiction_targets"], batch.get("claim_mask")); contradiction_correct += int(correct); contradiction_count += count
+                correct, count = _masked_accuracy(outputs["contradiction_logits"], batch["contradiction_targets"], batch.get("claim_mask")); contradiction_correct += correct; contradiction_count += count
             if "abstention_logits" in outputs:
-                correct, count = _masked_accuracy(outputs["abstention_logits"], batch["abstention_targets"]); abstention_correct += int(correct); abstention_count += count
+                correct, count = _masked_accuracy(outputs["abstention_logits"], batch["abstention_targets"]); abstention_correct += correct; abstention_count += count
             if "reflection_logits" in outputs:
                 targets = batch["reflection_targets"]
                 mask = targets.ne(step.config.ignore_index)
@@ -112,7 +118,7 @@ class GroundedValidationEvaluator:
             raise ValueError("grounded validation dataloader produced no batches")
         metrics = {f"validation_{key}": value / batches for key, value in totals.items()}
         if "validation_grounded_total" in metrics:
-            metrics["validation_primary"] = -metrics["validation_grounded_total"]
+            metrics["validation_primary"] = _stage_primary(stage_index, metrics["validation_grounded_total"])
         if citation_count: metrics["validation_citation_accuracy"] = citation_correct / citation_count
         if support_count: metrics["validation_support_accuracy"] = support_correct / support_count
         if contradiction_count: metrics["validation_contradiction_accuracy"] = contradiction_correct / contradiction_count
@@ -120,6 +126,7 @@ class GroundedValidationEvaluator:
         if reflection_count: metrics["validation_reflection_accuracy"] = reflection_correct / reflection_count
         metrics["validation_batches"] = float(batches)
         metrics["validation_optimizer_step"] = float(optimizer_step)
+        metrics["validation_stage_index"] = float(stage_index)
         return metrics
 
 
@@ -168,12 +175,13 @@ class DynamicPolicyValidationEvaluator:
             raise ValueError("dynamic validation dataloader produced no batches")
         metrics = {f"validation_{key}": value / batches for key, value in totals.items()}
         if "validation_dynamic_total" in metrics:
-            metrics["validation_primary"] = -metrics["validation_dynamic_total"]
+            metrics["validation_primary"] = _stage_primary(stage_index, metrics["validation_dynamic_total"])
         if action_count: metrics["validation_action_accuracy"] = action_correct / action_count
         if value_count: metrics["validation_value_mae"] = value_absolute_error / value_count
         if need_count: metrics["validation_need_token_accuracy"] = need_correct / need_count
         metrics["validation_batches"] = float(batches)
         metrics["validation_optimizer_step"] = float(optimizer_step)
+        metrics["validation_stage_index"] = float(stage_index)
         return metrics
 
 
