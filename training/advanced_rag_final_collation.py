@@ -26,7 +26,7 @@ def _require_torch() -> None:
         raise RuntimeError("final advanced RAG collation requires optional PyTorch")
 
 
-def _teacher_batch(examples: Sequence[GroundedGenerationExample], cache: TensorCacheProvider, labels: Any) -> Any:
+def _teacher_batch(examples: Sequence[GroundedGenerationExample], cache: TensorCacheProvider, labels: Any, *, ignore_index: int) -> Any:
     _require_torch()
     tensors = []
     vocabulary = None
@@ -45,7 +45,7 @@ def _teacher_batch(examples: Sequence[GroundedGenerationExample], cache: TensorC
             vocabulary = int(tensor.size(1))
         elif vocabulary != int(tensor.size(1)):
             raise ValueError("teacher cache vocabulary width differs across batch")
-        active = torch.nonzero(labels[row].ne(-100), as_tuple=False).flatten()
+        active = torch.nonzero(labels[row].ne(int(ignore_index)), as_tuple=False).flatten()
         if active.numel() and int(active.max().item()) >= tensor.size(0):
             raise ValueError("teacher cache is shorter than a supervised target position")
         tensors.append(tensor)
@@ -67,7 +67,7 @@ class FinalCausalGroundedCollator(CompleteGroundedGenerationCollator):
     def __call__(self, examples: Sequence[GroundedGenerationExample]) -> dict[str, Any]:
         batch = super().__call__(examples)
         if self.final_teacher_cache is not None:
-            batch["teacher_token_logits"] = _teacher_batch(examples, self.final_teacher_cache, batch["labels"])
+            batch["teacher_token_logits"] = _teacher_batch(examples, self.final_teacher_cache, batch["labels"], ignore_index=self.config.ignore_index)
         return batch
 
 
@@ -80,7 +80,7 @@ class FinalSeq2SeqGroundedCollator(Seq2SeqGroundedGenerationCollator):
     def __call__(self, examples: Sequence[GroundedGenerationExample]) -> dict[str, Any]:
         batch = super().__call__(examples)
         if self.final_teacher_cache is not None:
-            batch["teacher_token_logits"] = _teacher_batch(examples, self.final_teacher_cache, batch["labels"])
+            batch["teacher_token_logits"] = _teacher_batch(examples, self.final_teacher_cache, batch["labels"], ignore_index=self.config.ignore_index)
         return batch
 
 
