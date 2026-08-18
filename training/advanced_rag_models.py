@@ -1,15 +1,10 @@
 """Executable PyTorch model composition for grounded and dynamic RAG training.
 
-This module supplies architecture glue, not pretrained weights.  It composes:
-
-* an injected Hugging-Face-like causal/seq2seq language model with RigorousRAG's
-  claim/evidence attribution, support, contradiction, abstention and reflection heads; and
-* the generation-time dynamic retrieval controller with the information-need token selector.
-
-No Transformers import, model download or device allocation occurs on import.  Callers own
-exact admitted model/tokenizer artifacts and feed them into these wrappers explicitly.
+This module supplies architecture glue, not pretrained weights. It composes an injected
+causal/seq2seq language model with grounded auxiliary heads and the dynamic retrieval
+policy/value/information-need models. No model download or device allocation occurs on
+import; exact admitted model artifacts are injected by callers.
 """
-
 from __future__ import annotations
 
 from typing import Any, Mapping
@@ -17,15 +12,11 @@ from typing import Any, Mapping
 try:
     import torch
     import torch.nn as nn
-except Exception:  # pragma: no cover - optional dependency boundary.
+except Exception:  # pragma: no cover
     torch = None  # type: ignore[assignment]
     nn = None  # type: ignore[assignment]
 
-from training.dynamic_retrieval_policy import (
-    DynamicPolicyArchitecture,
-    DynamicRetrievalController,
-    InformationNeedSelector,
-)
+from training.dynamic_retrieval_policy import DynamicPolicyArchitecture, DynamicRetrievalController, InformationNeedSelector
 from training.grounded_generation import GroundedAuxiliaryHeads, GroundedGenerationArchitectureConfig
 
 
@@ -73,6 +64,7 @@ def _gather_positions(hidden: Any, indices: Any, *, label: str) -> Any:
 
 
 def _masked_mean(hidden: Any, mask: Any | None) -> Any:
+    """Mean-pool visible tokens; all-padding rows intentionally map to the zero vector."""
     _require_torch()
     if hidden.ndim != 3:
         raise ValueError("hidden states must have shape [B,T,H]")
@@ -81,9 +73,7 @@ def _masked_mean(hidden: Any, mask: Any | None) -> Any:
     if mask.shape != hidden.shape[:2]:
         raise ValueError("attention mask must align with hidden states")
     weights = mask.to(device=hidden.device, dtype=hidden.dtype)
-    denominator = weights.sum(dim=1, keepdim=True)
-    if torch.any(denominator <= 0):
-        raise ValueError("every pooled evidence item requires at least one visible token")
+    denominator = weights.sum(dim=1, keepdim=True).clamp_min(1.0)
     return (hidden * weights.unsqueeze(-1)).sum(dim=1) / denominator
 
 
@@ -92,24 +82,12 @@ if nn is not None:
     class GroundedGeneratorTrainingModule(nn.Module):
         """Injected base LM plus claim/evidence grounded auxiliary heads.
 
-        ``base_model`` is expected to accept Hugging-Face-style keyword inputs and honor
-        ``output_hidden_states=True`` and ``return_dict=True``.  It is deliberately injected
-        so the repository does not choose or download a mutable model revision.
-
-        Evidence inputs use shape ``[B,E,L]``.  They are flattened through the same base LM
-        and mean pooled with their attention masks, preserving a fully differentiable path
-        when the base model is trainable.  Claim representations come from caller-supplied
-        token indices in the answer sequence; no free-form claim segmentation is guessed by
-        the model wrapper.
+        Evidence inputs use ``[B,E,L]``. Variable evidence counts are represented by
+        all-zero attention masks on padded evidence slots. Those slots are safely passed
+        through the base model with one temporary visible pad position, pooled back to zero,
+        and masked out of citation logits so padding can never win citation attribution.
         """
-
-        def __init__(
-            self,
-            *,
-            base_model: nn.Module,
-            config: GroundedGenerationArchitectureConfig,
-            retriever_model: nn.Module | None = None,
-        ) -> None:
+        def __init__(self, *, base_model: nn.Module, config: GroundedGenerationArchitectureConfig, retriever_model: nn.Module | None = None) -> None:
             super().__init__()
             if not isinstance(base_model, nn.Module):
                 raise ValueError("base_model must be an nn.Module")
@@ -128,20 +106,7 @@ if nn is not None:
             selected["return_dict"] = True
             return _lm_logits_and_hidden(self.base_model(**selected))
 
-        def forward(
-            self,
-            *,
-            input_ids: Any,
-            attention_mask: Any | None,
-            claim_token_indices: Any,
-            generation_token_index: Any,
-            evidence_input_ids: Any,
-            evidence_attention_mask: Any | None = None,
-            chosen_inputs: Mapping[str, Any] | None = None,
-            rejected_inputs: Mapping[str, Any] | None = None,
-            retriever_inputs: Mapping[str, Any] | None = None,
-            **extra_lm_inputs: Any,
-        ) -> Mapping[str, Any]:
+        def forward(self, *, input_ids: Any, attention_mask: Any | None, claim_token_indices: Any, generation_token_index: Any, evidence_input_ids: Any, evidence_attention_mask: Any | None = None, chosen_inputs: Mapping[str, Any] | None = None, rejected_inputs: Mapping[str, Any] | None = None, retriever_inputs: Mapping[str, Any] | None = None, **extra_lm_inputs: Any) -> Mapping[str, Any]:
             answer_inputs = {"input_ids": input_ids, "attention_mask": attention_mask, **extra_lm_inputs}
             token_logits, hidden = self._run_lm(**answer_inputs)
             if hidden.size(-1) != self.config.hidden_size:
@@ -158,13 +123,23 @@ if nn is not None:
                 raise ValueError("evidence inputs must align with answer batch and contain evidence")
             flat_ids = evidence_input_ids.reshape(batch * evidence_count, sequence)
             flat_mask = None
+            slot_mask = torch.ones((batch, evidence_count), dtype=torch.bool, device=evidence_input_ids.device)
+            safe_mask = None
             if evidence_attention_mask is not None:
                 if evidence_attention_mask.shape != evidence_input_ids.shape:
                     raise ValueError("evidence_attention_mask must match evidence_input_ids")
                 flat_mask = evidence_attention_mask.reshape(batch * evidence_count, sequence)
-            _, evidence_hidden_tokens = self._run_lm(input_ids=flat_ids, attention_mask=flat_mask)
+                slot_mask = evidence_attention_mask.to(dtype=torch.bool).any(dim=-1)
+                safe_mask = flat_mask.clone()
+                empty = ~safe_mask.to(dtype=torch.bool).any(dim=-1)
+                if torch.any(empty):
+                    safe_mask[empty, 0] = 1
+            _, evidence_hidden_tokens = self._run_lm(input_ids=flat_ids, attention_mask=safe_mask if safe_mask is not None else flat_mask)
             evidence_hidden = _masked_mean(evidence_hidden_tokens, flat_mask).reshape(batch, evidence_count, -1)
             auxiliary = dict(self.auxiliary(claim_hidden, evidence_hidden, generation_hidden))
+            citation_logits = auxiliary["citation_logits"]
+            auxiliary["citation_logits"] = citation_logits.masked_fill(~slot_mask.unsqueeze(1), torch.finfo(citation_logits.dtype).min)
+            auxiliary["evidence_slot_mask"] = slot_mask
             auxiliary["token_logits"] = token_logits
 
             if (chosen_inputs is None) != (rejected_inputs is None):
@@ -191,7 +166,6 @@ if nn is not None:
 
     class DynamicRagPolicyModel(nn.Module):
         """Policy/value controller plus information-need token selector."""
-
         def __init__(self, config: DynamicPolicyArchitecture) -> None:
             super().__init__()
             if not isinstance(config, DynamicPolicyArchitecture):
@@ -200,14 +174,7 @@ if nn is not None:
             self.controller = DynamicRetrievalController(config)
             self.need_selector = InformationNeedSelector(config)
 
-        def forward(
-            self,
-            *,
-            features: Any,
-            token_hidden: Any | None = None,
-            state_hidden: Any | None = None,
-            attention_mask: Any | None = None,
-        ) -> Mapping[str, Any]:
+        def forward(self, *, features: Any, token_hidden: Any | None = None, state_hidden: Any | None = None, attention_mask: Any | None = None) -> Mapping[str, Any]:
             result = dict(self.controller(features))
             if token_hidden is None and state_hidden is None:
                 return result
@@ -217,7 +184,6 @@ if nn is not None:
             return result
 
 else:
-
     class GroundedGeneratorTrainingModule:  # type: ignore[no-redef]
         def __init__(self, *_: Any, **__: Any) -> None:
             _require_torch()
