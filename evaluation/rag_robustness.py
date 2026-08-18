@@ -1,17 +1,8 @@
 """Digest-bound RAG poisoning/robustness evaluation and defensive risk signals.
 
-RigorousRAG already treats retrieved text as untrusted data and prevents retrieved evidence
-from acquiring tool/message authority.  That boundary is necessary but does not measure a
-different failure mode: adversarial or low-integrity documents can still manipulate ranking,
-source consensus, citations, or answer content while remaining ordinary evidence data.
-
-This module adds source-only evaluation and conservative defense contracts for that threat
-surface.  It intentionally does **not** generate poisoning payloads or implement an attack.
-Instead it binds externally supplied clean/attacked benchmark pairs by digest and measures
-retrieval/citation/answer compromise, clean utility retention, contradiction change,
-abstention behavior, duplicate/source concentration, and independent-support diversity.
-
-No benchmark is downloaded or executed by importing this module.
+The module measures externally supplied matched clean/attacked cases and provides
+conservative candidate-set defenses.  It never generates poisoning payloads or performs an
+attack.  No dataset, model, retriever or network resource is loaded on import.
 """
 
 from __future__ import annotations
@@ -29,13 +20,7 @@ _MAX_CANDIDATES = 1_000_000
 
 
 def _canonical(value: Any) -> bytes:
-    return json.dumps(
-        value,
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=False,
-        allow_nan=False,
-    ).encode("utf-8")
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode("utf-8")
 
 
 def _digest(value: Any) -> str:
@@ -46,16 +31,14 @@ def _identifier(value: Any, label: str, maximum: int = 500) -> str:
     if not isinstance(value, str):
         raise ValueError(f"{label} must be a string")
     selected = value.strip()
-    if not selected or len(selected) > maximum:
-        raise ValueError(f"{label} is empty or too long")
-    if any(ord(character) < 32 or ord(character) == 127 for character in selected):
-        raise ValueError(f"{label} contains control characters")
+    if not selected or len(selected) > maximum or any(ord(ch) < 32 or ord(ch) == 127 for ch in selected):
+        raise ValueError(f"{label} is invalid")
     return selected
 
 
 def _sha256(value: Any, label: str) -> str:
     selected = _identifier(value, label, 64).lower()
-    if len(selected) != 64 or any(character not in _HEX for character in selected):
+    if len(selected) != 64 or any(ch not in _HEX for ch in selected):
         raise ValueError(f"{label} must be a lowercase SHA-256 digest")
     return selected
 
@@ -83,6 +66,33 @@ def _bounded_int(value: Any, label: str, minimum: int, maximum: int) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or not minimum <= value <= maximum:
         raise ValueError(f"{label} must be an integer between {minimum} and {maximum}")
     return value
+
+
+def _rate(values: Sequence[bool]) -> float:
+    if not values:
+        raise ValueError("rate requires observations")
+    return sum(bool(value) for value in values) / len(values)
+
+
+def _mean(values: Sequence[float]) -> float:
+    if not values:
+        raise ValueError("mean requires observations")
+    return sum(values) / len(values)
+
+
+def _support_retention(clean: float, attacked: float) -> float:
+    """Fraction of clean support retained, with a zero-baseline non-degradation rule.
+
+    When the clean support score is zero, there is no positive support to lose.  Any
+    non-negative attacked score therefore retains all of the clean support rather than being
+    incorrectly counted as total degradation.
+    """
+
+    clean_value = _unit(clean, "clean support")
+    attacked_value = _unit(attacked, "attacked support")
+    if clean_value == 0.0:
+        return 1.0
+    return min(1.0, attacked_value / clean_value)
 
 
 class RagAttackKind(str, Enum):
@@ -132,12 +142,9 @@ class RobustnessCaseBinding:
 
     @property
     def case_sha256(self) -> str:
-        return _digest(
-            {
-                "schema": "rigorousrag-robustness-case/v1",
-                **{**asdict(self), "attack_kind": self.attack_kind.value},
-            }
-        )
+        payload = asdict(self)
+        payload["attack_kind"] = self.attack_kind.value
+        return _digest({"schema": "rigorousrag-robustness-case/v1", **payload})
 
 
 @dataclass(frozen=True)
@@ -165,26 +172,16 @@ class MatchedRobustnessObservation:
         if not isinstance(self.binding, RobustnessCaseBinding):
             raise ValueError("binding must be RobustnessCaseBinding")
         for name in (
-            "clean_retrieval_success",
-            "attacked_retrieval_success",
-            "clean_answer_supported",
-            "attacked_answer_supported",
-            "clean_abstained",
-            "attacked_abstained",
-            "attack_target_retrieved",
-            "attack_target_cited",
-            "attack_changed_answer",
+            "clean_retrieval_success", "attacked_retrieval_success", "clean_answer_supported",
+            "attacked_answer_supported", "clean_abstained", "attacked_abstained",
+            "attack_target_retrieved", "attack_target_cited", "attack_changed_answer",
         ):
             if not isinstance(getattr(self, name), bool):
                 raise ValueError(f"{name} must be boolean")
         for name in (
-            "clean_support_score",
-            "attacked_support_score",
-            "clean_contradiction_score",
-            "attacked_contradiction_score",
-            "attacked_topk_suspicious_fraction",
-            "attacked_duplicate_cluster_fraction",
-            "attacked_largest_source_fraction",
+            "clean_support_score", "attacked_support_score", "clean_contradiction_score",
+            "attacked_contradiction_score", "attacked_topk_suspicious_fraction",
+            "attacked_duplicate_cluster_fraction", "attacked_largest_source_fraction",
         ):
             object.__setattr__(self, name, _unit(getattr(self, name), name))
         object.__setattr__(
@@ -223,28 +220,15 @@ class RagRobustnessReport:
     def __post_init__(self) -> None:
         object.__setattr__(self, "count", _bounded_int(self.count, "count", 1, _MAX_CASES))
         for name in (
-            "clean_retrieval_success_rate",
-            "attacked_retrieval_success_rate",
-            "clean_supported_answer_rate",
-            "attacked_supported_answer_rate",
-            "attack_target_retrieval_rate",
-            "attack_target_citation_rate",
-            "answer_attack_success_rate",
-            "robust_or_abstain_rate",
-            "clean_abstention_rate",
-            "attacked_abstention_rate",
-            "support_retention",
-            "mean_suspicious_topk_fraction",
-            "mean_duplicate_cluster_fraction",
-            "mean_largest_source_fraction",
+            "clean_retrieval_success_rate", "attacked_retrieval_success_rate", "clean_supported_answer_rate",
+            "attacked_supported_answer_rate", "attack_target_retrieval_rate", "attack_target_citation_rate",
+            "answer_attack_success_rate", "robust_or_abstain_rate", "clean_abstention_rate",
+            "attacked_abstention_rate", "support_retention", "mean_suspicious_topk_fraction",
+            "mean_duplicate_cluster_fraction", "mean_largest_source_fraction",
         ):
             object.__setattr__(self, name, _unit(getattr(self, name), name))
         object.__setattr__(self, "contradiction_increase", _finite(self.contradiction_increase, "contradiction_increase"))
-        object.__setattr__(
-            self,
-            "mean_independent_support_groups",
-            _finite(self.mean_independent_support_groups, "mean_independent_support_groups"),
-        )
+        object.__setattr__(self, "mean_independent_support_groups", _finite(self.mean_independent_support_groups, "mean_independent_support_groups"))
         if self.mean_independent_support_groups < 0.0:
             raise ValueError("mean_independent_support_groups must be non-negative")
         for attack, metrics in self.per_attack.items():
@@ -254,9 +238,8 @@ class RagRobustnessReport:
             for metric_name, metric_value in metrics.items():
                 _identifier(metric_name, "per-attack metric", 120)
                 _finite(metric_value, "per-attack metric value")
-        expected = _digest(self._payload())
         provided = _sha256(self.report_sha256, "report_sha256")
-        if provided != expected:
+        if provided != _digest(self._payload()):
             raise ValueError("robustness report digest mismatch")
         object.__setattr__(self, "report_sha256", provided)
 
@@ -284,87 +267,50 @@ class RagRobustnessReport:
         }
 
 
-def _rate(values: Sequence[bool]) -> float:
-    if not values:
-        raise ValueError("rate requires at least one observation")
-    return sum(1 for value in values if value) / len(values)
-
-
-def _mean(values: Sequence[float]) -> float:
-    if not values:
-        raise ValueError("mean requires at least one observation")
-    return sum(values) / len(values)
-
-
 def _attack_slice(observations: Sequence[MatchedRobustnessObservation]) -> Mapping[str, float]:
-    support_retention_values = [
-        min(1.0, observation.attacked_support_score / max(observation.clean_support_score, 1e-12))
-        if observation.clean_support_score > 0.0
-        else (1.0 if observation.attacked_support_score <= 0.0 else 0.0)
-        for observation in observations
-    ]
     return {
         "count": float(len(observations)),
-        "answer_attack_success_rate": _rate([observation.compromised_answer for observation in observations]),
-        "attack_target_retrieval_rate": _rate([observation.attack_target_retrieved for observation in observations]),
-        "attack_target_citation_rate": _rate([observation.attack_target_cited for observation in observations]),
-        "attacked_supported_answer_rate": _rate([observation.attacked_answer_supported for observation in observations]),
-        "attacked_abstention_rate": _rate([observation.attacked_abstained for observation in observations]),
-        "support_retention": _mean(support_retention_values),
-        "contradiction_increase": _mean(
-            [observation.attacked_contradiction_score - observation.clean_contradiction_score for observation in observations]
-        ),
+        "answer_attack_success_rate": _rate([item.compromised_answer for item in observations]),
+        "attack_target_retrieval_rate": _rate([item.attack_target_retrieved for item in observations]),
+        "attack_target_citation_rate": _rate([item.attack_target_cited for item in observations]),
+        "attacked_supported_answer_rate": _rate([item.attacked_answer_supported for item in observations]),
+        "attacked_abstention_rate": _rate([item.attacked_abstained for item in observations]),
+        "support_retention": _mean([_support_retention(item.clean_support_score, item.attacked_support_score) for item in observations]),
+        "contradiction_increase": _mean([item.attacked_contradiction_score - item.clean_contradiction_score for item in observations]),
     }
 
 
 def build_robustness_report(observations: Sequence[MatchedRobustnessObservation]) -> RagRobustnessReport:
     selected = tuple(observations)
-    if not selected or len(selected) > _MAX_CASES:
-        raise ValueError("observations must be a non-empty bounded sequence")
-    if any(not isinstance(observation, MatchedRobustnessObservation) for observation in selected):
-        raise ValueError("every observation must be MatchedRobustnessObservation")
-    case_ids = [observation.binding.case_id for observation in selected]
+    if not selected or len(selected) > _MAX_CASES or any(not isinstance(item, MatchedRobustnessObservation) for item in selected):
+        raise ValueError("observations must be a non-empty bounded matched-observation sequence")
+    case_ids = [item.binding.case_id for item in selected]
     if len(set(case_ids)) != len(case_ids):
         raise ValueError("robustness case ids must be unique")
-
     by_attack: dict[str, list[MatchedRobustnessObservation]] = {}
-    for observation in selected:
-        by_attack.setdefault(observation.binding.attack_kind.value, []).append(observation)
-
-    support_retention_values = [
-        min(1.0, observation.attacked_support_score / max(observation.clean_support_score, 1e-12))
-        if observation.clean_support_score > 0.0
-        else (1.0 if observation.attacked_support_score <= 0.0 else 0.0)
-        for observation in selected
-    ]
+    for item in selected:
+        by_attack.setdefault(item.binding.attack_kind.value, []).append(item)
     payload: dict[str, Any] = {
         "count": len(selected),
-        "clean_retrieval_success_rate": _rate([observation.clean_retrieval_success for observation in selected]),
-        "attacked_retrieval_success_rate": _rate([observation.attacked_retrieval_success for observation in selected]),
-        "clean_supported_answer_rate": _rate([observation.clean_answer_supported for observation in selected]),
-        "attacked_supported_answer_rate": _rate([observation.attacked_answer_supported for observation in selected]),
-        "attack_target_retrieval_rate": _rate([observation.attack_target_retrieved for observation in selected]),
-        "attack_target_citation_rate": _rate([observation.attack_target_cited for observation in selected]),
-        "answer_attack_success_rate": _rate([observation.compromised_answer for observation in selected]),
-        "robust_or_abstain_rate": _rate(
-            [observation.attacked_answer_supported or observation.attacked_abstained for observation in selected]
-        ),
-        "clean_abstention_rate": _rate([observation.clean_abstained for observation in selected]),
-        "attacked_abstention_rate": _rate([observation.attacked_abstained for observation in selected]),
-        "support_retention": _mean(support_retention_values),
-        "contradiction_increase": _mean(
-            [observation.attacked_contradiction_score - observation.clean_contradiction_score for observation in selected]
-        ),
-        "mean_suspicious_topk_fraction": _mean([observation.attacked_topk_suspicious_fraction for observation in selected]),
-        "mean_duplicate_cluster_fraction": _mean([observation.attacked_duplicate_cluster_fraction for observation in selected]),
-        "mean_largest_source_fraction": _mean([observation.attacked_largest_source_fraction for observation in selected]),
-        "mean_independent_support_groups": _mean(
-            [float(observation.attacked_independent_support_groups) for observation in selected]
-        ),
+        "clean_retrieval_success_rate": _rate([item.clean_retrieval_success for item in selected]),
+        "attacked_retrieval_success_rate": _rate([item.attacked_retrieval_success for item in selected]),
+        "clean_supported_answer_rate": _rate([item.clean_answer_supported for item in selected]),
+        "attacked_supported_answer_rate": _rate([item.attacked_answer_supported for item in selected]),
+        "attack_target_retrieval_rate": _rate([item.attack_target_retrieved for item in selected]),
+        "attack_target_citation_rate": _rate([item.attack_target_cited for item in selected]),
+        "answer_attack_success_rate": _rate([item.compromised_answer for item in selected]),
+        "robust_or_abstain_rate": _rate([item.attacked_answer_supported or item.attacked_abstained for item in selected]),
+        "clean_abstention_rate": _rate([item.clean_abstained for item in selected]),
+        "attacked_abstention_rate": _rate([item.attacked_abstained for item in selected]),
+        "support_retention": _mean([_support_retention(item.clean_support_score, item.attacked_support_score) for item in selected]),
+        "contradiction_increase": _mean([item.attacked_contradiction_score - item.clean_contradiction_score for item in selected]),
+        "mean_suspicious_topk_fraction": _mean([item.attacked_topk_suspicious_fraction for item in selected]),
+        "mean_duplicate_cluster_fraction": _mean([item.attacked_duplicate_cluster_fraction for item in selected]),
+        "mean_largest_source_fraction": _mean([item.attacked_largest_source_fraction for item in selected]),
+        "mean_independent_support_groups": _mean([float(item.attacked_independent_support_groups) for item in selected]),
         "per_attack": {attack: _attack_slice(group) for attack, group in sorted(by_attack.items())},
     }
-    digest = _digest({"schema": "rigorousrag-robustness-report/v1", **payload})
-    return RagRobustnessReport(report_sha256=digest, **payload)
+    return RagRobustnessReport(report_sha256=_digest({"schema": "rigorousrag-robustness-report/v1", **payload}), **payload)
 
 
 @dataclass(frozen=True)
@@ -398,19 +344,11 @@ class PoisoningDefensePolicy:
 
     def __post_init__(self) -> None:
         for name in (
-            "minimum_source_trust",
-            "minimum_provenance_integrity",
-            "maximum_injection_risk",
-            "maximum_contradiction_risk",
-            "maximum_duplicate_cluster_fraction",
-            "maximum_largest_source_fraction",
+            "minimum_source_trust", "minimum_provenance_integrity", "maximum_injection_risk",
+            "maximum_contradiction_risk", "maximum_duplicate_cluster_fraction", "maximum_largest_source_fraction",
         ):
             object.__setattr__(self, name, _unit(getattr(self, name), name))
-        object.__setattr__(
-            self,
-            "minimum_independent_source_groups",
-            _bounded_int(self.minimum_independent_source_groups, "minimum_independent_source_groups", 1, _MAX_CANDIDATES),
-        )
+        object.__setattr__(self, "minimum_independent_source_groups", _bounded_int(self.minimum_independent_source_groups, "minimum_independent_source_groups", 1, _MAX_CANDIDATES))
         if not isinstance(self.block_on_integrity_failure, bool):
             raise ValueError("block_on_integrity_failure must be boolean")
 
@@ -436,31 +374,22 @@ class PoisoningRiskAssessment:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "candidate_count", _bounded_int(self.candidate_count, "candidate_count", 1, _MAX_CANDIDATES))
-        object.__setattr__(
-            self,
-            "independent_source_groups",
-            _bounded_int(self.independent_source_groups, "independent_source_groups", 1, _MAX_CANDIDATES),
-        )
+        object.__setattr__(self, "independent_source_groups", _bounded_int(self.independent_source_groups, "independent_source_groups", 1, _MAX_CANDIDATES))
         for name in (
-            "largest_source_fraction",
-            "largest_duplicate_cluster_fraction",
-            "low_trust_fraction",
-            "high_injection_risk_fraction",
-            "high_contradiction_risk_fraction",
-            "integrity_failure_fraction",
+            "largest_source_fraction", "largest_duplicate_cluster_fraction", "low_trust_fraction",
+            "high_injection_risk_fraction", "high_contradiction_risk_fraction", "integrity_failure_fraction",
         ):
             object.__setattr__(self, name, _unit(getattr(self, name), name))
         if not isinstance(self.decision, RobustnessDecision):
             object.__setattr__(self, "decision", RobustnessDecision(self.decision))
-        reasons = tuple(_identifier(reason, "reason", 160) for reason in self.reasons)
+        reasons = tuple(_identifier(value, "reason", 160) for value in self.reasons)
         if len(set(reasons)) != len(reasons):
-            raise ValueError("risk assessment reasons must be unique")
+            raise ValueError("risk reasons must be unique")
         object.__setattr__(self, "reasons", reasons)
         object.__setattr__(self, "policy_sha256", _sha256(self.policy_sha256, "policy_sha256"))
-        expected = _digest(self._payload())
         provided = _sha256(self.assessment_sha256, "assessment_sha256")
-        if expected != provided:
-            raise ValueError("poisoning risk assessment digest mismatch")
+        if provided != _digest(self._payload()):
+            raise ValueError("poisoning assessment digest mismatch")
         object.__setattr__(self, "assessment_sha256", provided)
 
     def _payload(self) -> Mapping[str, Any]:
@@ -480,85 +409,56 @@ class PoisoningRiskAssessment:
         }
 
 
-def assess_poisoning_risk(
-    candidates: Sequence[CandidateSecuritySignal],
-    *,
-    policy: PoisoningDefensePolicy,
-) -> PoisoningRiskAssessment:
+def assess_poisoning_risk(candidates: Sequence[CandidateSecuritySignal], *, policy: PoisoningDefensePolicy) -> PoisoningRiskAssessment:
     selected = tuple(candidates)
-    if not selected or len(selected) > _MAX_CANDIDATES:
-        raise ValueError("candidates must be a non-empty bounded sequence")
-    if any(not isinstance(candidate, CandidateSecuritySignal) for candidate in selected):
-        raise ValueError("every candidate must be CandidateSecuritySignal")
+    if not selected or len(selected) > _MAX_CANDIDATES or any(not isinstance(item, CandidateSecuritySignal) for item in selected):
+        raise ValueError("candidates must be a non-empty bounded security-signal sequence")
     if not isinstance(policy, PoisoningDefensePolicy):
         raise ValueError("policy must be PoisoningDefensePolicy")
-    if len({candidate.candidate_sha256 for candidate in selected}) != len(selected):
+    if len({item.candidate_sha256 for item in selected}) != len(selected):
         raise ValueError("candidate identities must be unique")
-
-    count = len(selected)
     source_counts: dict[str, int] = {}
     cluster_counts: dict[str, int] = {}
-    for candidate in selected:
-        source_counts[candidate.source_group_sha256] = source_counts.get(candidate.source_group_sha256, 0) + 1
-        cluster_counts[candidate.duplicate_cluster_sha256] = cluster_counts.get(candidate.duplicate_cluster_sha256, 0) + 1
-
-    largest_source_fraction = max(source_counts.values()) / count
-    largest_cluster_fraction = max(cluster_counts.values()) / count
-    low_trust_fraction = sum(candidate.source_trust < policy.minimum_source_trust for candidate in selected) / count
-    high_injection_fraction = sum(candidate.injection_risk > policy.maximum_injection_risk for candidate in selected) / count
-    high_contradiction_fraction = sum(candidate.contradiction_risk > policy.maximum_contradiction_risk for candidate in selected) / count
-    integrity_failure_fraction = sum(candidate.provenance_integrity < policy.minimum_provenance_integrity for candidate in selected) / count
-
-    blocking_reasons: list[str] = []
-    review_reasons: list[str] = []
-    if policy.block_on_integrity_failure and integrity_failure_fraction > 0.0:
-        blocking_reasons.append("provenance_integrity_failure")
+    for item in selected:
+        source_counts[item.source_group_sha256] = source_counts.get(item.source_group_sha256, 0) + 1
+        cluster_counts[item.duplicate_cluster_sha256] = cluster_counts.get(item.duplicate_cluster_sha256, 0) + 1
+    count = len(selected)
+    metrics = {
+        "largest_source_fraction": max(source_counts.values()) / count,
+        "largest_duplicate_cluster_fraction": max(cluster_counts.values()) / count,
+        "low_trust_fraction": sum(item.source_trust < policy.minimum_source_trust for item in selected) / count,
+        "high_injection_risk_fraction": sum(item.injection_risk > policy.maximum_injection_risk for item in selected) / count,
+        "high_contradiction_risk_fraction": sum(item.contradiction_risk > policy.maximum_contradiction_risk for item in selected) / count,
+        "integrity_failure_fraction": sum(item.provenance_integrity < policy.minimum_provenance_integrity for item in selected) / count,
+    }
+    blocking: list[str] = []
+    review: list[str] = []
+    if policy.block_on_integrity_failure and metrics["integrity_failure_fraction"] > 0.0:
+        blocking.append("provenance_integrity_failure")
     if len(source_counts) < policy.minimum_independent_source_groups:
-        blocking_reasons.append("insufficient_independent_sources")
-    if largest_cluster_fraction > policy.maximum_duplicate_cluster_fraction:
-        review_reasons.append("duplicate_cluster_concentration")
-    if largest_source_fraction > policy.maximum_largest_source_fraction:
-        review_reasons.append("single_source_concentration")
-    if low_trust_fraction > 0.0:
-        review_reasons.append("low_source_trust")
-    if high_injection_fraction > 0.0:
-        review_reasons.append("retrieved_instruction_risk")
-    if high_contradiction_fraction > 0.0:
-        review_reasons.append("contradiction_risk")
-
-    if blocking_reasons:
-        decision = RobustnessDecision.BLOCK
-        reasons = tuple(sorted(set(blocking_reasons + review_reasons)))
-    elif review_reasons:
-        decision = RobustnessDecision.REVIEW
-        reasons = tuple(sorted(set(review_reasons)))
-    else:
-        decision = RobustnessDecision.ALLOW
-        reasons = ()
-
-    payload: dict[str, Any] = {
+        blocking.append("insufficient_independent_sources")
+    if metrics["largest_duplicate_cluster_fraction"] > policy.maximum_duplicate_cluster_fraction:
+        review.append("duplicate_cluster_concentration")
+    if metrics["largest_source_fraction"] > policy.maximum_largest_source_fraction:
+        review.append("single_source_concentration")
+    if metrics["low_trust_fraction"] > 0.0:
+        review.append("low_source_trust")
+    if metrics["high_injection_risk_fraction"] > 0.0:
+        review.append("retrieved_instruction_risk")
+    if metrics["high_contradiction_risk_fraction"] > 0.0:
+        review.append("contradiction_risk")
+    decision = RobustnessDecision.BLOCK if blocking else (RobustnessDecision.REVIEW if review else RobustnessDecision.ALLOW)
+    reasons = tuple(sorted(set(blocking + review)))
+    payload = {
         "candidate_count": count,
         "independent_source_groups": len(source_counts),
-        "largest_source_fraction": largest_source_fraction,
-        "largest_duplicate_cluster_fraction": largest_cluster_fraction,
-        "low_trust_fraction": low_trust_fraction,
-        "high_injection_risk_fraction": high_injection_fraction,
-        "high_contradiction_risk_fraction": high_contradiction_fraction,
-        "integrity_failure_fraction": integrity_failure_fraction,
+        **metrics,
         "decision": decision,
         "reasons": reasons,
         "policy_sha256": policy.policy_sha256,
     }
-    digest = _digest(
-        {
-            "schema": "rigorousrag-poisoning-risk-assessment/v1",
-            **{
-                **payload,
-                "decision": decision.value,
-            },
-        }
-    )
-    return PoisoningRiskAssessment(assessment_sha256=digest, **payload)
+    digest_payload = {**payload, "decision": decision.value}
+    return PoisoningRiskAssessment(assessment_sha256=_digest({"schema": "rigorousrag-poisoning-risk-assessment/v1", **digest_payload}), **payload)
 
 
 @dataclass(frozen=True)
@@ -572,18 +472,11 @@ class RobustnessPromotionPolicy:
 
     def __post_init__(self) -> None:
         for name in (
-            "maximum_answer_attack_success_rate",
-            "maximum_attack_target_citation_rate",
-            "minimum_robust_or_abstain_rate",
-            "minimum_support_retention",
-            "maximum_clean_abstention_rate",
+            "maximum_answer_attack_success_rate", "maximum_attack_target_citation_rate",
+            "minimum_robust_or_abstain_rate", "minimum_support_retention", "maximum_clean_abstention_rate",
         ):
             object.__setattr__(self, name, _unit(getattr(self, name), name))
-        object.__setattr__(
-            self,
-            "maximum_contradiction_increase",
-            _finite(self.maximum_contradiction_increase, "maximum_contradiction_increase"),
-        )
+        object.__setattr__(self, "maximum_contradiction_increase", _finite(self.maximum_contradiction_increase, "maximum_contradiction_increase"))
         if self.maximum_contradiction_increase < 0.0:
             raise ValueError("maximum_contradiction_increase must be non-negative")
 
@@ -599,29 +492,23 @@ class RobustnessPromotionDecision:
     def __post_init__(self) -> None:
         if not isinstance(self.eligible, bool):
             raise ValueError("eligible must be boolean")
-        reasons = tuple(_identifier(reason, "reason", 160) for reason in self.reasons)
-        object.__setattr__(self, "reasons", reasons)
+        object.__setattr__(self, "reasons", tuple(_identifier(value, "reason", 160) for value in self.reasons))
         object.__setattr__(self, "report_sha256", _sha256(self.report_sha256, "report_sha256"))
         object.__setattr__(self, "policy_sha256", _sha256(self.policy_sha256, "policy_sha256"))
-        expected = _digest(
-            {
-                "schema": "rigorousrag-robustness-promotion-decision/v1",
-                "eligible": self.eligible,
-                "reasons": self.reasons,
-                "report_sha256": self.report_sha256,
-                "policy_sha256": self.policy_sha256,
-            }
-        )
         provided = _sha256(self.decision_sha256, "decision_sha256")
+        expected = _digest({
+            "schema": "rigorousrag-robustness-promotion-decision/v1",
+            "eligible": self.eligible,
+            "reasons": self.reasons,
+            "report_sha256": self.report_sha256,
+            "policy_sha256": self.policy_sha256,
+        })
         if provided != expected:
             raise ValueError("robustness promotion decision digest mismatch")
         object.__setattr__(self, "decision_sha256", provided)
 
 
-def evaluate_robustness_promotion(
-    report: RagRobustnessReport,
-    policy: RobustnessPromotionPolicy,
-) -> RobustnessPromotionDecision:
+def evaluate_robustness_promotion(report: RagRobustnessReport, policy: RobustnessPromotionPolicy) -> RobustnessPromotionDecision:
     if not isinstance(report, RagRobustnessReport) or not isinstance(policy, RobustnessPromotionPolicy):
         raise ValueError("report and policy have invalid types")
     reasons: list[str] = []
@@ -644,22 +531,15 @@ def evaluate_robustness_promotion(
         "report_sha256": report.report_sha256,
         "policy_sha256": policy_sha,
     }
-    decision_sha = _digest({"schema": "rigorousrag-robustness-promotion-decision/v1", **payload})
-    return RobustnessPromotionDecision(decision_sha256=decision_sha, **payload)
+    return RobustnessPromotionDecision(
+        decision_sha256=_digest({"schema": "rigorousrag-robustness-promotion-decision/v1", **payload}),
+        **payload,
+    )
 
 
 __all__ = [
-    "CandidateSecuritySignal",
-    "MatchedRobustnessObservation",
-    "PoisoningDefensePolicy",
-    "PoisoningRiskAssessment",
-    "RagAttackKind",
-    "RagRobustnessReport",
-    "RobustnessCaseBinding",
-    "RobustnessDecision",
-    "RobustnessPromotionDecision",
-    "RobustnessPromotionPolicy",
-    "assess_poisoning_risk",
-    "build_robustness_report",
-    "evaluate_robustness_promotion",
+    "CandidateSecuritySignal", "MatchedRobustnessObservation", "PoisoningDefensePolicy",
+    "PoisoningRiskAssessment", "RagAttackKind", "RagRobustnessReport", "RobustnessCaseBinding",
+    "RobustnessDecision", "RobustnessPromotionDecision", "RobustnessPromotionPolicy",
+    "assess_poisoning_risk", "build_robustness_report", "evaluate_robustness_promotion",
 ]
