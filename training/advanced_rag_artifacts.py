@@ -7,7 +7,7 @@ import math
 import os
 import shutil
 import tempfile
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping, Protocol, Sequence
 
@@ -78,10 +78,12 @@ class AdvancedArtifactManifest:
     kind: str
     checkpoint_digest: str
     plan_sha256: str
+    training_config_sha256: str
     source_commit: str
     dataset_manifest_sha256: str
     architecture_sha256: str
     base_model_sha256: str
+    generator_family: str | None
     tokenizer_sha256: str | None
     retrieval_stack_sha256: str | None
     budget_sha256: str | None
@@ -94,12 +96,17 @@ class AdvancedArtifactManifest:
     def __post_init__(self) -> None:
         if self.kind not in {"grounded_generator", "dynamic_rag_policy"}:
             raise ValueError("unsupported advanced artifact kind")
-        for name in ("checkpoint_digest", "plan_sha256", "dataset_manifest_sha256", "architecture_sha256", "base_model_sha256", "weights_sha256", "artifact_sha256"):
+        for name in ("checkpoint_digest", "plan_sha256", "training_config_sha256", "dataset_manifest_sha256", "architecture_sha256", "base_model_sha256", "weights_sha256", "artifact_sha256"):
             object.__setattr__(self, name, _sha(getattr(self, name), name))
         commit = str(self.source_commit).strip().lower()
         if len(commit) not in {40, 64} or any(ch not in _HEX for ch in commit):
             raise ValueError("source_commit must be a full Git object id")
         object.__setattr__(self, "source_commit", commit)
+        if self.kind == "grounded_generator":
+            if self.generator_family not in {"causal_lm", "seq2seq_lm"}:
+                raise ValueError("grounded generator artifact requires causal_lm or seq2seq_lm generator_family")
+        elif self.generator_family is not None:
+            raise ValueError("dynamic policy artifact does not own a generator family")
         for name in ("tokenizer_sha256", "retrieval_stack_sha256", "budget_sha256", "evaluation_receipt_sha256"):
             value = getattr(self, name)
             if value is not None:
@@ -160,12 +167,14 @@ def _write_manifest(directory: Path, payload: Mapping[str, Any]) -> None:
 
 
 def _manifest_payload(**values: Any) -> tuple[dict[str, Any], str]:
-    unsigned = {"schema": "rigorousrag-advanced-inference-artifact/v1", **values}
+    unsigned = {"schema": "rigorousrag-advanced-inference-artifact/v2", **values}
     artifact_sha = _digest(unsigned)
     return {**unsigned, "artifact_sha256": artifact_sha}, artifact_sha
 
 
-def export_grounded_generator_artifact(*, checkpoint_manager: CheckpointManager, checkpoint_digest: str, plan: GroundedTrainingPlan, destination_root: str | Path, evaluation_receipt_sha256: str | None = None, include_retriever: bool = True) -> AdvancedArtifactManifest:
+def export_grounded_generator_artifact(*, checkpoint_manager: CheckpointManager, checkpoint_digest: str, plan: GroundedTrainingPlan, generator_family: str, destination_root: str | Path, evaluation_receipt_sha256: str | None = None, include_retriever: bool = True) -> AdvancedArtifactManifest:
+    if generator_family not in {"causal_lm", "seq2seq_lm"}:
+        raise ValueError("generator_family must be causal_lm or seq2seq_lm")
     path, checkpoint = checkpoint_manager.verify(checkpoint_digest)
     if checkpoint.source_commit != plan.source_commit or checkpoint.dataset_manifest_digest != plan.dataset_manifest_sha256 or checkpoint.model_architecture != f"grounded_generation:{plan.plan_sha256}":
         raise ValueError("checkpoint is not bound to the supplied grounded training plan")
@@ -178,8 +187,10 @@ def export_grounded_generator_artifact(*, checkpoint_manager: CheckpointManager,
         weights_sha, weights_bytes = _save_filtered_safetensors(path / "model.safetensors", temporary / "model.safetensors", prefixes)
         values = {
             "kind": "grounded_generator", "checkpoint_digest": checkpoint_digest, "plan_sha256": plan.plan_sha256,
+            "training_config_sha256": checkpoint.training_config_digest,
             "source_commit": plan.source_commit, "dataset_manifest_sha256": plan.dataset_manifest_sha256,
             "architecture_sha256": plan.architecture.architecture_sha256, "base_model_sha256": plan.base_model_sha256,
+            "generator_family": generator_family,
             "tokenizer_sha256": plan.tokenizer_sha256, "retrieval_stack_sha256": plan.retriever_stack_sha256 if include_retriever else None,
             "budget_sha256": None, "weights_sha256": weights_sha, "weights_bytes": weights_bytes,
             "included_prefixes": prefixes, "evaluation_receipt_sha256": evaluation_receipt_sha256,
@@ -208,8 +219,10 @@ def export_dynamic_policy_artifact(*, checkpoint_manager: CheckpointManager, che
         weights_sha, weights_bytes = _save_filtered_safetensors(path / "model.safetensors", temporary / "model.safetensors", prefixes)
         values = {
             "kind": "dynamic_rag_policy", "checkpoint_digest": checkpoint_digest, "plan_sha256": plan.plan_sha256,
+            "training_config_sha256": checkpoint.training_config_digest,
             "source_commit": plan.source_commit, "dataset_manifest_sha256": plan.dataset_manifest_sha256,
             "architecture_sha256": plan.architecture.architecture_sha256, "base_model_sha256": plan.base_generator_sha256,
+            "generator_family": None,
             "tokenizer_sha256": None, "retrieval_stack_sha256": plan.retrieval_stack_sha256,
             "budget_sha256": plan.budget.budget_sha256, "weights_sha256": weights_sha, "weights_bytes": weights_bytes,
             "included_prefixes": list(prefixes), "evaluation_receipt_sha256": evaluation_receipt_sha256,
