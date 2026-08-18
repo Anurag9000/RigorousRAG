@@ -1,14 +1,14 @@
 """Turnkey source-only training composition for grounded generation and dynamic RAG.
 
 Callers supply local dataset artifacts and already-admitted model/tokenizer objects. This
-module binds datasets, deterministic samplers, collators, stage objectives, evaluator,
+module binds datasets, deterministic samplers, strict collators, stage objectives, evaluator,
 checkpoint manager and exact-resume trainer. It performs no work merely on import.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping
 
 try:
     import torch
@@ -19,9 +19,7 @@ except Exception:  # pragma: no cover
 
 from training.advanced_rag_data import (
     DynamicCollatorConfig,
-    DynamicRagEpisodeCollator,
     GroundedCollatorConfig,
-    GroundedGenerationCollator,
     ManifestBoundAdvancedJsonlDataset,
     RetrieverBatchBuilder,
     TensorCacheProvider,
@@ -30,11 +28,15 @@ from training.advanced_rag_evaluators import DynamicPolicyValidationEvaluator, G
 from training.advanced_rag_models import DynamicRagPolicyModel, GroundedGeneratorTrainingModule
 from training.advanced_rag_steps import (
     DynamicPolicyStepConfig,
-    DynamicRetrievalPolicyStep,
     GroundedGenerationStep,
     GroundedStepConfig,
     dynamic_plan_to_trainer_config,
     grounded_plan_to_trainer_config,
+)
+from training.advanced_rag_strict import (
+    StrictDynamicRagEpisodeCollator,
+    StrictDynamicRetrievalPolicyStep,
+    StrictGroundedGenerationCollator,
 )
 from training.checkpointing import CheckpointManager
 from training.data_pipeline import ResumableDeterministicSampler
@@ -106,7 +108,14 @@ class TrainingExecutionConfig:
 
 @dataclass(frozen=True)
 class ParameterTrainabilityPolicy:
-    """Stage-local parameter policy. Empty prefixes mean train every parameter."""
+    """Stage-local parameter policy. Empty prefixes mean train every parameter.
+
+    Optimizer/scheduler state intentionally continues across stages in the generic engine.
+    Per-stage learning rates are still applied by ``TrainingStageSpec``; newly unfrozen
+    parameters enter the already-bound optimizer with no historical moment state while
+    previously trained parameters retain their optimizer state. This policy is explicit and
+    deterministic across checkpoint/resume.
+    """
     trainable_prefixes: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
@@ -185,12 +194,12 @@ class GroundedGeneratorTrainingRunner:
         runtimes, validation_steps = [], []
         for stage_index, stage in enumerate(self.plan.stages):
             sampler = ResumableDeterministicSampler(len(train_dataset), seed=self.execution.seed + stage_index, shuffle=True)
-            collator = GroundedGenerationCollator(self.tokenizer, self.collator_config, teacher_cache=self.teacher_cache, retriever_batch_builder=self.retriever_batch_builder)
+            collator = StrictGroundedGenerationCollator(self.tokenizer, self.collator_config, teacher_cache=self.teacher_cache, retriever_batch_builder=self.retriever_batch_builder)
             step = GroundedGenerationStep(GroundedStepConfig(stage.objective))
             validation_steps.append(GroundedGenerationStep(GroundedStepConfig(stage.objective)))
             wrapped = _TrainabilityStep(step, self.trainability.get(stage.name, ParameterTrainabilityPolicy()))
             runtimes.append(StageRuntime(dataloader=_loader(train_dataset, sampler, collator, batch_size=self.execution.train_batch_size, execution=self.execution), step=wrapped, sampler=sampler, collator=collator))
-        validation_collator = GroundedGenerationCollator(self.tokenizer, self.collator_config, teacher_cache=self.teacher_cache, retriever_batch_builder=self.retriever_batch_builder)
+        validation_collator = StrictGroundedGenerationCollator(self.tokenizer, self.collator_config, teacher_cache=self.teacher_cache, retriever_batch_builder=self.retriever_batch_builder)
         validation_loader = _loader(validation_dataset, None, validation_collator, batch_size=self.execution.validation_batch_size, execution=self.execution)
         evaluator = GroundedValidationEvaluator(validation_loader, validation_steps, ValidationLimits(self.execution.validation_maximum_batches))
         engine = TorchTrainingEngine(model, trainer_config, CheckpointManager(self.checkpoint_root))
@@ -217,12 +226,12 @@ class DynamicRagPolicyTrainingRunner:
         runtimes, validation_steps = [], []
         for stage_index, stage in enumerate(self.plan.stages):
             sampler = ResumableDeterministicSampler(len(train_dataset), seed=self.execution.seed + stage_index, shuffle=True)
-            collator = DynamicRagEpisodeCollator(self.tokenizer, self.plan.architecture, self.collator_config, hidden_state_cache=self.hidden_state_cache)
-            step = DynamicRetrievalPolicyStep(DynamicPolicyStepConfig(stage.objective), actions=self.plan.architecture.actions)
-            validation_steps.append(DynamicRetrievalPolicyStep(DynamicPolicyStepConfig(stage.objective), actions=self.plan.architecture.actions))
+            collator = StrictDynamicRagEpisodeCollator(self.tokenizer, self.plan.architecture, self.collator_config, hidden_state_cache=self.hidden_state_cache)
+            step = StrictDynamicRetrievalPolicyStep(DynamicPolicyStepConfig(stage.objective), actions=self.plan.architecture.actions)
+            validation_steps.append(StrictDynamicRetrievalPolicyStep(DynamicPolicyStepConfig(stage.objective), actions=self.plan.architecture.actions))
             wrapped = _TrainabilityStep(step, self.trainability.get(stage.name, ParameterTrainabilityPolicy()))
             runtimes.append(StageRuntime(dataloader=_loader(train_dataset, sampler, collator, batch_size=self.execution.train_batch_size, execution=self.execution), step=wrapped, sampler=sampler, collator=collator))
-        validation_collator = DynamicRagEpisodeCollator(self.tokenizer, self.plan.architecture, self.collator_config, hidden_state_cache=self.hidden_state_cache)
+        validation_collator = StrictDynamicRagEpisodeCollator(self.tokenizer, self.plan.architecture, self.collator_config, hidden_state_cache=self.hidden_state_cache)
         validation_loader = _loader(validation_dataset, None, validation_collator, batch_size=self.execution.validation_batch_size, execution=self.execution)
         evaluator = DynamicPolicyValidationEvaluator(validation_loader, validation_steps, ValidationLimits(self.execution.validation_maximum_batches))
         engine = TorchTrainingEngine(model, trainer_config, CheckpointManager(self.checkpoint_root))
