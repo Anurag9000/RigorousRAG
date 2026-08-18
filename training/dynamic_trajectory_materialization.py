@@ -14,10 +14,11 @@ from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any, Mapping, Protocol, Sequence
 
-from training.advanced_rag_data import DynamicRagEpisodeStep, TextSpan
+from training.advanced_rag_data import DynamicRagEpisodeStep
 from training.advanced_rag_supervision import (
     CounterfactualActionProvider,
     DynamicRewardConfig,
+    counterfactual_action_target,
     generalized_advantage_estimate,
     trajectory_rewards,
 )
@@ -161,20 +162,9 @@ def materialize_dynamic_trajectories(
             metadata["trajectory_identity_sha256"] = identity.identity_sha256
             metadata["return_target"] = format(targets.returns[index], ".17g")
             if counterfactual_provider is not None:
-                utilities = counterfactual_provider.action_utilities(step)
-                if not utilities:
-                    raise ValueError("counterfactual provider returned no action utilities")
-                adjusted = sorted(
-                    (
-                        float(utility) - identity.reward_config.action_cost(action),
-                        action.value,
-                        action,
-                    )
-                    for action, utility in utilities.items()
-                )
-                best = max(adjusted, key=lambda item: (item[0], item[1]))
-                metadata["counterfactual_best_action"] = best[2].value
-                metadata["counterfactual_best_utility"] = format(best[0], ".17g")
+                action, gain = counterfactual_action_target(counterfactual_provider.action_utilities(step), identity.reward_config)
+                metadata["counterfactual_best_action"] = action.value
+                metadata["counterfactual_gain_over_continue"] = format(gain, ".17g")
             materialized.append(replace(step, advantage=targets.advantages[index], metadata=metadata))
 
     destination = Path(output_path).expanduser().resolve()
@@ -211,9 +201,4 @@ def materialize_dynamic_trajectories(
     )
 
 
-__all__ = [
-    "LoggedValueProvider",
-    "MaterializedTrajectoryReceipt",
-    "TrajectoryMaterializationIdentity",
-    "materialize_dynamic_trajectories",
-]
+__all__ = ["LoggedValueProvider", "MaterializedTrajectoryReceipt", "TrajectoryMaterializationIdentity", "materialize_dynamic_trajectories"]
