@@ -17,6 +17,8 @@ from training.grounded_generation import GroundedGenerationArchitectureConfig, G
 from training.grounded_supervision_pipeline import RetrieverCouplingConfig
 from training.local_artifact_loading import LocalArtifactTreeBinding
 
+_HEX = frozenset("0123456789abcdef")
+
 
 def _mapping(value: Any, label: str) -> Mapping[str, Any]:
     if not isinstance(value, Mapping):
@@ -32,6 +34,13 @@ def _strict(value: Mapping[str, Any], *, allowed: set[str], required: set[str], 
     if missing:
         raise ValueError(f"{label} is missing required fields: {sorted(missing)}")
     return value
+
+
+def _sha(value: Any, label: str) -> str:
+    selected = str(value).strip().lower()
+    if len(selected) != 64 or any(ch not in _HEX for ch in selected):
+        raise ValueError(f"{label} must be SHA-256")
+    return selected
 
 
 def _dataclass_kwargs(cls: Any, raw: Mapping[str, Any], label: str) -> dict[str, Any]:
@@ -69,32 +78,55 @@ def _split(raw: Any, label: str) -> LocalTrainingSplit:
 
 @dataclass(frozen=True)
 class TensorCacheSpec:
+    """Exact immutable binding to one materialized supervision cache.
+
+    ``identity`` describes who/what produced the cache; ``contract_sha256`` commits to the
+    complete closed entry set. Building the spec reopens and seals the cache, then fails if the
+    current bytes differ from the contract embedded in the training configuration.
+    """
     root: str
     identity: SupervisionCacheIdentity
+    contract_sha256: str
 
     def __post_init__(self) -> None:
-        root = safe_advanced_path(self.root, label="supervision cache root", must_exist=False)
-        if root.exists() and not root.is_dir():
-            raise ValueError("supervision cache root must be a directory when it exists")
+        root = safe_advanced_path(self.root, label="supervision cache root", must_exist=True, require_directory=True)
         object.__setattr__(self, "root", str(root))
         if not isinstance(self.identity, SupervisionCacheIdentity):
             raise ValueError("cache identity must be SupervisionCacheIdentity")
+        object.__setattr__(self, "contract_sha256", _sha(self.contract_sha256, "cache contract_sha256"))
 
     def build(self) -> SafetensorSupervisionCache:
-        return AuthoritativeSafetensorSupervisionCache(self.root, self.identity)
+        cache = AuthoritativeSafetensorSupervisionCache(self.root, self.identity)
+        actual = cache.seal()
+        if actual != self.contract_sha256:
+            raise ValueError("supervision cache content contract differs from training config")
+        return cache
 
 
 def _cache(raw: Any | None, label: str) -> TensorCacheSpec | None:
     if raw is None:
         return None
-    selected = _strict(_mapping(raw, label), allowed={"root", "identity"}, required={"root", "identity"}, label=label)
+    selected = _strict(
+        _mapping(raw, label),
+        allowed={"root", "identity", "contract_sha256"},
+        required={"root", "identity", "contract_sha256"},
+        label=label,
+    )
     identity_raw = _strict(
         _mapping(selected["identity"], f"{label}.identity"),
         allowed={"cache_kind", "producer_sha256", "tokenizer_sha256", "dataset_manifest_sha256", "source_commit", "config_sha256"},
         required={"cache_kind", "producer_sha256", "tokenizer_sha256", "dataset_manifest_sha256", "source_commit", "config_sha256"},
         label=f"{label}.identity",
     )
-    return TensorCacheSpec(root=selected["root"], identity=SupervisionCacheIdentity(**dict(identity_raw)))
+    spec = TensorCacheSpec(
+        root=selected["root"],
+        identity=SupervisionCacheIdentity(**dict(identity_raw)),
+        contract_sha256=selected["contract_sha256"],
+    )
+    # Config parsing is itself an admission boundary: do not accept a syntactically correct
+    # cache descriptor whose present bytes no longer match the pinned contract.
+    spec.build()
+    return spec
 
 
 def _stage(raw: Any, default: CurriculumStageHyperparameters, label: str) -> CurriculumStageHyperparameters:
