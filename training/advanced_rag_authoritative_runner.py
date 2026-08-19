@@ -21,6 +21,7 @@ from training.advanced_rag_multi_evidence import MultiEvidenceCausalGroundedColl
 from training.advanced_rag_runner import AdvancedTrainingRunResult, DynamicRagPolicyTrainingRunner, GroundedGeneratorTrainingRunner, _TrainabilityStep, _effective_trainability, _loader, _trainer_with_evaluation
 from training.advanced_rag_steps import DynamicPolicyStepConfig, GroundedStepConfig, dynamic_plan_to_trainer_config, grounded_plan_to_trainer_config
 from training.advanced_rag_strict import StrictDynamicRetrievalPolicyStep
+from training.advanced_tokenizer_contract import assert_advanced_training_tokenizer
 from training.data_pipeline import ResumableDeterministicSampler
 from training.seq2seq_grounded import Seq2SeqGroundedGeneratorTrainingModule
 from training.torch_engine import StageRuntime, TorchTrainingEngine
@@ -43,6 +44,7 @@ class AuthoritativeGroundedGeneratorTrainingRunner(GroundedGeneratorTrainingRunn
         if generator_family not in {"causal_lm", "seq2seq_lm"}:
             raise ValueError("generator_family must be causal_lm or seq2seq_lm")
         self.generator_family = generator_family
+        assert_advanced_training_tokenizer(self.tokenizer)
 
     def _authoritative_collator(self) -> Any:
         collator = MultiEvidenceSeq2SeqGroundedCollator if self.generator_family == "seq2seq_lm" else MultiEvidenceCausalGroundedCollator
@@ -87,6 +89,10 @@ class AuthoritativeGroundedGeneratorTrainingRunner(GroundedGeneratorTrainingRunn
 
 class AuthoritativeDynamicRagPolicyTrainingRunner(DynamicRagPolicyTrainingRunner):
     """Final dynamic runner with variable-length hidden-state alignment and strict off-policy loss."""
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        assert_advanced_training_tokenizer(self.tokenizer)
+
     def run(self, *, resume_checkpoint_digest: str | None = None, event_sink: Any | None = None) -> AdvancedTrainingRunResult:
         train_dataset = ManifestBoundAdvancedJsonlDataset(self.train_split.path, expected_sha256=self.train_split.content_sha256, dataset_manifest_sha256=self.plan.dataset_manifest_sha256, split_name=self.train_split.split_name, record_kind="dynamic_rag_episode", expected_record_count=self.train_split.expected_record_count)
         validation_dataset = ManifestBoundAdvancedJsonlDataset(self.validation_split.path, expected_sha256=self.validation_split.content_sha256, dataset_manifest_sha256=self.plan.dataset_manifest_sha256, split_name=self.validation_split.split_name, record_kind="dynamic_rag_episode", expected_record_count=self.validation_split.expected_record_count)
