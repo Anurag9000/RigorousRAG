@@ -6,6 +6,15 @@ requires-python = ">=3.10,<3.14"
 license = { text = "MIT" }
 readme = "README.md"
 
+[project.scripts]
+rigorousrag-advanced-training = "training.advanced_rag_operator:main"
+rigorousrag-advanced-release = "training.authoritative_advanced_release_operator:main"
+rigorousrag-grounded-import = "training.authoritative_governed_grounded_import_cli:main"
+rigorousrag-dynamic-publish = "training.dynamic_dataset_publication_cli:main"
+rigorousrag-benchmark-import = "evaluation.authoritative_governed_benchmark_import_cli:main"
+rigorousrag-corpus-import = "evaluation.authoritative_governed_benchmark_corpus_cli:main"
+rigorousrag-qrels = "evaluation.governed_qrels_cli:main"
+
 [tool.pytest.ini_options]
 minversion = "8.0"
 addopts = "-ra --strict-config --strict-markers --cov=. --cov-report=term-missing --cov-fail-under=50"
