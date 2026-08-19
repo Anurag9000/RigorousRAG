@@ -30,28 +30,26 @@ def _stream_sha(path: Path) -> str:
 
 
 class AuthoritativeSafetensorSupervisionCache(SafetensorSupervisionCache):
-    """Base cache plus path authority, strict JSON, entry verification and exact sealing.
+    """Writable materialization cache that can transition to a frozen read authority.
 
-    ``contract_sha256`` is intentionally derived from the immutable cache identity and the
-    complete set of exact tensor-entry digests. It is therefore safe to persist in promotion,
-    restart and training-data receipts. Contract computation never trusts filenames alone:
-    every entry must be a regular non-symlink manifest/tensor pair, the manifest key must hash
-    back to its filename, the identity must match this cache, and the tensor bytes must match
-    the manifest digest. Unknown/orphan files make sealing fail closed.
-
-    Construction validates the current closed entry set immediately. This gives configuration
-    preflight the same cache-integrity semantics as training/restart while still allowing a
-    genuinely empty fresh cache to be created and populated by explicit materialization code.
+    Before ``seal()`` the cache may be populated by explicit canonical materialization code.
+    ``seal()`` snapshots the exact key -> tensor SHA/name mapping and immutable cache contract.
+    After sealing, writes are rejected and every membership/read verifies the requested entry
+    against that frozen snapshot. This prevents an internally consistent file replacement after
+    the training input identity was computed from silently changing supervision consumed by the
+    run.
     """
 
     def __init__(self, root: str | Path, identity: SupervisionCacheIdentity) -> None:
         safe = safe_advanced_path(root, label="supervision cache root", must_exist=False)
         if safe.exists() and not safe.is_dir():
             raise ValueError("supervision cache root must be a directory when it exists")
+        self._sealed_contract_sha256: str | None = None
+        self._sealed_entries: dict[str, tuple[str, tuple[str, ...]]] | None = None
         super().__init__(safe, identity)
-        # Force fail-closed validation now rather than deferring malformed/orphan discovery
-        # until the first training batch or restart operation.
-        _ = self.contract_sha256
+        # Existing malformed/orphan caches fail at construction. Empty fresh caches remain
+        # valid for the explicit materialization phase.
+        self._scan_contract()
 
     @staticmethod
     def _bounded_regular(path: Path, label: str, maximum: int) -> int:
@@ -89,51 +87,7 @@ class AuthoritativeSafetensorSupervisionCache(SafetensorSupervisionCache):
             raise ValueError("supervision cache tensor_names must be a sorted unique string list")
         return manifest
 
-    def contains(self, key: str) -> bool:
-        """Return membership only after proving the exact manifest/tensor pair is intact.
-
-        A genuinely absent pair returns ``False``. Partial/orphan, wrong-key, wrong-identity or
-        digest-mismatched entries raise instead of being treated as absent, which makes this
-        suitable for whole-dataset preflight without loading safetensor payloads into memory.
-        """
-        tensor_path, manifest_path = self._paths(key)
-        tensor_exists = tensor_path.exists()
-        manifest_exists = manifest_path.exists()
-        if not tensor_exists and not manifest_exists:
-            return False
-        if tensor_exists != manifest_exists:
-            raise ValueError(f"supervision cache key {key!r} has an orphan tensor/manifest entry")
-        self._bounded_regular(tensor_path, "supervision tensor entry", _MAX_ENTRY_BYTES)
-        manifest = self._strict_manifest(manifest_path)
-        if manifest.get("key") != key:
-            raise ValueError("supervision cache manifest key mismatch")
-        if _stream_sha(tensor_path) != manifest.get("tensor_sha256"):
-            raise ValueError("supervision cache tensor digest mismatch")
-        return True
-
-    def get(self, key: str) -> Mapping[str, Any]:
-        try:
-            from safetensors.torch import load_file
-        except Exception as exc:
-            raise RuntimeError("safetensors is required for supervision cache reads") from exc
-        if not self.contains(key):
-            raise KeyError(f"supervision cache lacks key {key!r}")
-        tensor_path, manifest_path = self._paths(key)
-        manifest = self._strict_manifest(manifest_path)
-        tensors = load_file(str(tensor_path), device="cpu")
-        if sorted(tensors) != list(manifest["tensor_names"]):
-            raise ValueError("supervision cache tensor names differ from manifest")
-        return tensors
-
-    @property
-    def contract_sha256(self) -> str:
-        """Return a deterministic digest of the exact closed cache contents.
-
-        The root is treated as a closed authority boundary: only paired ``<64hex>.json`` and
-        ``<64hex>.safetensors`` files are permitted. This catches partial writes, stale files,
-        symlink substitution and post-seal mutation before a cache is admitted into a recipe or
-        restarted canonical bundle.
-        """
+    def _scan_contract(self) -> tuple[str, dict[str, tuple[str, tuple[str, ...]]]]:
         manifest_paths: dict[str, Path] = {}
         tensor_paths: dict[str, Path] = {}
         for path in self.root.iterdir():
@@ -154,6 +108,7 @@ class AuthoritativeSafetensorSupervisionCache(SafetensorSupervisionCache):
                 f"supervision cache contains orphan entries; missing_tensor={missing_tensor}, missing_manifest={missing_manifest}"
             )
         entries = []
+        descriptors: dict[str, tuple[str, tuple[str, ...]]] = {}
         for stem in sorted(manifest_paths):
             manifest_path = manifest_paths[stem]
             tensor_path = tensor_paths[stem]
@@ -166,12 +121,16 @@ class AuthoritativeSafetensorSupervisionCache(SafetensorSupervisionCache):
             actual_tensor_sha = _stream_sha(tensor_path)
             if actual_tensor_sha != manifest["tensor_sha256"]:
                 raise ValueError("supervision cache tensor digest mismatch during sealing")
+            names = tuple(manifest["tensor_names"])
+            if key in descriptors:
+                raise ValueError("supervision cache contains duplicate logical keys")
+            descriptors[key] = (actual_tensor_sha, names)
             entries.append(
                 {
                     "key": key,
                     "key_sha256": stem,
                     "tensor_sha256": actual_tensor_sha,
-                    "tensor_names": list(manifest["tensor_names"]),
+                    "tensor_names": list(names),
                 }
             )
         payload = {
@@ -180,7 +139,87 @@ class AuthoritativeSafetensorSupervisionCache(SafetensorSupervisionCache):
             "entry_count": len(entries),
             "entries": entries,
         }
-        return hashlib.sha256(_canonical(payload)).hexdigest()
+        return hashlib.sha256(_canonical(payload)).hexdigest(), descriptors
+
+    @property
+    def is_sealed(self) -> bool:
+        return self._sealed_contract_sha256 is not None
+
+    def seal(self) -> str:
+        """Freeze exact current contents for read-only authoritative consumption."""
+        contract, descriptors = self._scan_contract()
+        if self._sealed_contract_sha256 is not None:
+            if contract != self._sealed_contract_sha256 or descriptors != self._sealed_entries:
+                raise ValueError("sealed supervision cache contents changed")
+            return self._sealed_contract_sha256
+        self._sealed_contract_sha256 = contract
+        self._sealed_entries = descriptors
+        return contract
+
+    def assert_sealed_integrity(self) -> str:
+        if self._sealed_contract_sha256 is None or self._sealed_entries is None:
+            raise ValueError("supervision cache is not sealed")
+        contract, descriptors = self._scan_contract()
+        if contract != self._sealed_contract_sha256 or descriptors != self._sealed_entries:
+            raise ValueError("sealed supervision cache content contract changed")
+        return contract
+
+    def put(self, key: str, tensors: Mapping[str, Any]) -> str:
+        if self.is_sealed:
+            raise ValueError("sealed supervision cache is read-only")
+        return super().put(key, tensors)
+
+    def _verify_expected_entry(self, key: str) -> Mapping[str, Any] | None:
+        tensor_path, manifest_path = self._paths(key)
+        tensor_exists = tensor_path.exists()
+        manifest_exists = manifest_path.exists()
+        expected = None if self._sealed_entries is None else self._sealed_entries.get(key)
+        if not tensor_exists and not manifest_exists:
+            if expected is not None:
+                raise ValueError(f"sealed supervision cache lost required key {key!r}")
+            return None
+        if tensor_exists != manifest_exists:
+            raise ValueError(f"supervision cache key {key!r} has an orphan tensor/manifest entry")
+        self._bounded_regular(tensor_path, "supervision tensor entry", _MAX_ENTRY_BYTES)
+        manifest = self._strict_manifest(manifest_path)
+        if manifest.get("key") != key:
+            raise ValueError("supervision cache manifest key mismatch")
+        actual_sha = _stream_sha(tensor_path)
+        if actual_sha != manifest.get("tensor_sha256"):
+            raise ValueError("supervision cache tensor digest mismatch")
+        if self._sealed_entries is not None:
+            if expected is None:
+                raise ValueError(f"key {key!r} was added after supervision cache sealing")
+            expected_sha, expected_names = expected
+            if actual_sha != expected_sha or tuple(manifest["tensor_names"]) != expected_names:
+                raise ValueError(f"sealed supervision cache key {key!r} changed after sealing")
+        return manifest
+
+    def contains(self, key: str) -> bool:
+        """Return membership only after proving exact current/frozen pair integrity."""
+        return self._verify_expected_entry(key) is not None
+
+    def get(self, key: str) -> Mapping[str, Any]:
+        try:
+            from safetensors.torch import load_file
+        except Exception as exc:
+            raise RuntimeError("safetensors is required for supervision cache reads") from exc
+        manifest = self._verify_expected_entry(key)
+        if manifest is None:
+            raise KeyError(f"supervision cache lacks key {key!r}")
+        tensor_path, _ = self._paths(key)
+        tensors = load_file(str(tensor_path), device="cpu")
+        if sorted(tensors) != list(manifest["tensor_names"]):
+            raise ValueError("supervision cache tensor names differ from manifest")
+        return tensors
+
+    @property
+    def contract_sha256(self) -> str:
+        """Return frozen contract after sealing, otherwise the exact current contract."""
+        if self._sealed_contract_sha256 is not None:
+            return self._sealed_contract_sha256
+        contract, _ = self._scan_contract()
+        return contract
 
 
 __all__ = ["AuthoritativeSafetensorSupervisionCache"]
