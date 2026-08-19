@@ -20,12 +20,12 @@ except Exception:  # pragma: no cover
     torch = None  # type: ignore[assignment]
 
 from orchestration.dynamic_rag_runtime import DynamicPolicyProvider
-from security.model_output_authority import ClosedOutputSchema
 from tools.trusted_generation_context import ChatMessage
 from training.advanced_rag_runtime_loading import LoadedDynamicPolicyArtifact, LoadedGroundedArtifact
 from training.dynamic_retrieval_policy import DynamicRetrievalAction, DynamicRetrievalFeatures
 
 _MAX_OUTPUT_CHARS = 10_000_000
+_ABSENT_ACTION_SCORE = -1.0e30
 
 
 def _require_torch() -> None:
@@ -106,15 +106,13 @@ class LocalGroundedGeneratorProvider:
 
     @property
     def contract_sha256(self) -> str:
-        return _digest(
-            {
-                "schema": "rigorousrag-local-grounded-generator-provider/v1",
-                "artifact_sha256": self.artifact_sha256,
-                "generator_family": self.loaded.manifest.generator_family,
-                "tokenizer_sha256": self.loaded.manifest.tokenizer_sha256,
-                "generation_config_sha256": self.config.config_sha256,
-            }
-        )
+        return _digest({
+            "schema": "rigorousrag-local-grounded-generator-provider/v1",
+            "artifact_sha256": self.artifact_sha256,
+            "generator_family": self.loaded.manifest.generator_family,
+            "tokenizer_sha256": self.loaded.manifest.tokenizer_sha256,
+            "generation_config_sha256": self.config.config_sha256,
+        })
 
     def _render(self, messages: Sequence[ChatMessage]) -> str:
         if not messages:
@@ -133,8 +131,7 @@ class LocalGroundedGeneratorProvider:
         return "\n".join(f"<{item['role']}>\n{item['content']}" for item in records) + "\n<assistant>\n"
 
     def generate(self, messages: Sequence[ChatMessage], *, request_sha256: str, output_schema_sha256: str) -> str:
-        _require_torch()
-        _sha(request_sha256, "request_sha256"); _sha(output_schema_sha256, "output_schema_sha256")
+        _require_torch(); _sha(request_sha256, "request_sha256"); _sha(output_schema_sha256, "output_schema_sha256")
         prompt = self._render(messages)
         tokenizer = self.loaded.tokenizer
         encoded = tokenizer(prompt, return_tensors="pt", add_special_tokens=True, truncation=False)
@@ -149,13 +146,17 @@ class LocalGroundedGeneratorProvider:
         except StopIteration:
             device = torch.device("cpu")
         model_inputs = {key: value.to(device) if torch.is_tensor(value) else value for key, value in encoded.items()}
-        generation = {
+        generation: dict[str, Any] = {
             "max_new_tokens": self.config.max_new_tokens,
             "do_sample": self.config.do_sample,
             "repetition_penalty": self.config.repetition_penalty,
-            "pad_token_id": getattr(tokenizer, "pad_token_id", None),
-            "eos_token_id": getattr(tokenizer, "eos_token_id", None),
         }
+        pad = getattr(tokenizer, "pad_token_id", None)
+        eos = getattr(tokenizer, "eos_token_id", None)
+        if pad is not None:
+            generation["pad_token_id"] = pad
+        if eos is not None:
+            generation["eos_token_id"] = eos
         if self.config.do_sample:
             generation["temperature"] = self.config.temperature
             generation["top_p"] = self.config.top_p
@@ -174,7 +175,7 @@ class LocalGroundedGeneratorProvider:
 
 
 class LocalDynamicPolicyProvider(DynamicPolicyProvider):
-    """Inference adapter exposing only closed dynamic-retrieval action scores."""
+    """Inference adapter exposing the runtime's complete closed action-score vocabulary."""
     def __init__(self, loaded: LoadedDynamicPolicyArtifact) -> None:
         if not isinstance(loaded, LoadedDynamicPolicyArtifact):
             raise ValueError("loaded must be LoadedDynamicPolicyArtifact")
@@ -186,15 +187,14 @@ class LocalDynamicPolicyProvider(DynamicPolicyProvider):
 
     @property
     def contract_sha256(self) -> str:
-        return _digest(
-            {
-                "schema": "rigorousrag-local-dynamic-policy-provider/v1",
-                "artifact_sha256": self.artifact_sha256,
-                "architecture_sha256": self.loaded.manifest.architecture_sha256,
-                "budget_sha256": self.loaded.manifest.budget_sha256,
-                "score_semantics": "raw_action_logits",
-            }
-        )
+        return _digest({
+            "schema": "rigorousrag-local-dynamic-policy-provider/v2",
+            "artifact_sha256": self.artifact_sha256,
+            "architecture_sha256": self.loaded.manifest.architecture_sha256,
+            "budget_sha256": self.loaded.manifest.budget_sha256,
+            "score_semantics": "raw_action_logits_with_absent_action_sentinel",
+            "absent_action_score": _ABSENT_ACTION_SCORE,
+        })
 
     def action_scores(self, features: DynamicRetrievalFeatures, *, snapshot_sha256: str) -> Mapping[DynamicRetrievalAction, float]:
         _require_torch(); _sha(snapshot_sha256, "snapshot_sha256")
@@ -214,11 +214,8 @@ class LocalDynamicPolicyProvider(DynamicPolicyProvider):
         if logits is None or logits.ndim != 2 or logits.shape != (1, len(architecture.actions)):
             raise ValueError("dynamic policy model returned invalid action logits")
         values = logits[0].detach().float().cpu().tolist()
-        return {action: float(values[index]) for index, action in enumerate(architecture.actions)}
+        learned = {action: float(values[index]) for index, action in enumerate(architecture.actions)}
+        return {action: learned.get(action, _ABSENT_ACTION_SCORE) for action in DynamicRetrievalAction}
 
 
-__all__ = [
-    "LocalDynamicPolicyProvider",
-    "LocalGroundedGenerationConfig",
-    "LocalGroundedGeneratorProvider",
-]
+__all__ = ["LocalDynamicPolicyProvider", "LocalGroundedGenerationConfig", "LocalGroundedGeneratorProvider"]
