@@ -1,31 +1,23 @@
 """Richer backward-compatible data records for authoritative advanced RAG training.
 
 The original record classes remain stable research primitives. This module subclasses them
-so configuration-driven runs can preserve two pieces of supervision that otherwise collapse:
+so configuration-driven runs can preserve supervision that otherwise collapses:
 
-* supporting and contradicting evidence identities may coexist for one claim; and
-* a logged dynamic-RAG state may declare the exact closed set of actions that were legal.
-
-Subclasses remain ``isinstance`` compatible with the existing collators and models.
+* supporting and contradicting evidence identities may coexist for one claim;
+* a logged dynamic-RAG state declares the exact closed set of actions that were legal; and
+* a state-value/return target is distinct from an immediate realized retrieval gain.
 """
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
 from training.advanced_path_authority import safe_advanced_path
-from training.advanced_rag_data import (
-    AdvancedDatasetBinding,
-    DynamicRagEpisodeStep,
-    GroundedClaimAnnotation,
-    GroundedEvidenceRecord,
-    GroundedGenerationExample,
-    TextSpan,
-    sha256_file,
-)
-from training.dynamic_retrieval_policy import DEFAULT_FEATURE_NAMES, DynamicRetrievalAction
+from training.advanced_rag_data import AdvancedDatasetBinding, DynamicRagEpisodeStep, GroundedClaimAnnotation, GroundedEvidenceRecord, GroundedGenerationExample, TextSpan, sha256_file
+from training.dynamic_retrieval_policy import DynamicRetrievalAction
 from training.grounded_generation import ReflectionAction
 
 _MAX_EVIDENCE = 4096
@@ -39,6 +31,18 @@ def _identifier(value: Any, label: str, maximum: int = 2000) -> str:
     selected = value.strip()
     if not selected or len(selected) > maximum or any(ord(ch) < 32 or ord(ch) == 127 for ch in selected):
         raise ValueError(f"{label} is invalid")
+    return selected
+
+
+def _finite(value: Any, label: str) -> float:
+    if isinstance(value, bool):
+        raise ValueError(f"{label} must be finite")
+    try:
+        selected = float(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(f"{label} must be finite") from exc
+    if not math.isfinite(selected):
+        raise ValueError(f"{label} must be finite")
     return selected
 
 
@@ -94,6 +98,7 @@ class StancedGroundedClaimAnnotation(GroundedClaimAnnotation):
 @dataclass(frozen=True)
 class LegalDynamicRagEpisodeStep(DynamicRagEpisodeStep):
     valid_actions: tuple[DynamicRetrievalAction, ...] = tuple(DynamicRetrievalAction)
+    value_target: float | None = None
 
     def __post_init__(self) -> None:
         super().__post_init__()
@@ -103,6 +108,8 @@ class LegalDynamicRagEpisodeStep(DynamicRagEpisodeStep):
         if self.action not in actions:
             raise ValueError("logged action must be present in valid_actions")
         object.__setattr__(self, "valid_actions", actions)
+        if self.value_target is not None:
+            object.__setattr__(self, "value_target", _finite(self.value_target, "value_target"))
 
 
 def parse_authoritative_grounded_example(value: Any) -> GroundedGenerationExample:
@@ -139,7 +146,6 @@ def parse_authoritative_grounded_example(value: Any) -> GroundedGenerationExampl
         contradicting = _ids(item.get("contradicting_evidence_ids"), "contradicting_evidence_ids")
         supported = bool(item.get("supported", False))
         contradicted = bool(item.get("contradicted", False))
-        # Backward compatibility: legacy evidence_ids inherit the declared binary stance.
         if legacy and not supporting and not contradicting:
             if supported and contradicted:
                 raise ValueError("legacy evidence_ids cannot be split across both stances; provide explicit stanced ids")
@@ -147,16 +153,10 @@ def parse_authoritative_grounded_example(value: Any) -> GroundedGenerationExampl
                 contradicting = legacy
             elif supported:
                 supporting = legacy
-        claims.append(
-            StancedGroundedClaimAnnotation(
-                span=_span(item.get("span")),
-                evidence_ids=legacy,
-                supported=supported,
-                contradicted=contradicted,
-                supporting_evidence_ids=supporting,
-                contradicting_evidence_ids=contradicting,
-            )
-        )
+        claims.append(StancedGroundedClaimAnnotation(
+            span=_span(item.get("span")), evidence_ids=legacy, supported=supported, contradicted=contradicted,
+            supporting_evidence_ids=supporting, contradicting_evidence_ids=contradicting,
+        ))
     return GroundedGenerationExample(
         example_id=value.get("example_id"), prompt=value.get("prompt"), answer=value.get("answer", ""),
         evidence=tuple(evidence), claims=tuple(claims), abstain=bool(value.get("abstain", False)),
@@ -174,7 +174,7 @@ def parse_authoritative_dynamic_step(value: Any) -> LegalDynamicRagEpisodeStep:
     allowed = {
         "episode_id", "step_id", "context", "features", "action", "realized_retrieval_gain",
         "behavior_action_probability", "advantage", "need_spans", "hidden_state_cache_key",
-        "terminal_utility", "metadata", "valid_actions",
+        "terminal_utility", "metadata", "valid_actions", "value_target",
     }
     unknown = set(value) - allowed
     if unknown:
@@ -183,6 +183,8 @@ def parse_authoritative_dynamic_step(value: Any) -> LegalDynamicRagEpisodeStep:
     if not isinstance(need, list):
         raise ValueError("need_spans must be an array")
     raw_valid = value.get("valid_actions")
+    if raw_valid is not None and not isinstance(raw_valid, list):
+        raise ValueError("valid_actions must be an array when supplied")
     valid = tuple(DynamicRetrievalAction(action) for action in raw_valid) if raw_valid is not None else tuple(DynamicRetrievalAction)
     return LegalDynamicRagEpisodeStep(
         episode_id=value.get("episode_id"), step_id=value.get("step_id"), context=value.get("context"),
@@ -190,6 +192,7 @@ def parse_authoritative_dynamic_step(value: Any) -> LegalDynamicRagEpisodeStep:
         behavior_action_probability=value.get("behavior_action_probability"), advantage=value.get("advantage"),
         need_spans=tuple(_span(item) for item in need), hidden_state_cache_key=value.get("hidden_state_cache_key"),
         terminal_utility=value.get("terminal_utility"), metadata=value.get("metadata") or {}, valid_actions=valid,
+        value_target=value.get("value_target"),
     )
 
 
@@ -233,8 +236,4 @@ class ManifestBoundAuthoritativeJsonlDataset:
         return self._records[index]
 
 
-__all__ = [
-    "LegalDynamicRagEpisodeStep", "ManifestBoundAuthoritativeJsonlDataset",
-    "StancedGroundedClaimAnnotation", "parse_authoritative_dynamic_step",
-    "parse_authoritative_grounded_example",
-]
+__all__ = ["LegalDynamicRagEpisodeStep", "ManifestBoundAuthoritativeJsonlDataset", "StancedGroundedClaimAnnotation", "parse_authoritative_dynamic_step", "parse_authoritative_grounded_example"]
