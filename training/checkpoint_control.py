@@ -11,7 +11,6 @@ import json
 import os
 import tempfile
 from dataclasses import asdict
-from pathlib import Path
 
 from training.checkpointing import CheckpointManager, TrainerCursor, TrainerState, canonical_digest
 
@@ -85,7 +84,14 @@ def read_checkpoint_pointer(manager: CheckpointManager, pointer: str) -> str:
         )
     except Exception as exc:
         raise ValueError("checkpoint pointer is not strict JSON") from exc
-    if not isinstance(payload, dict) or set(payload) != {"checkpoint_digest"}:
+    if not isinstance(payload, dict):
+        raise ValueError("checkpoint pointer must be a JSON object")
+    fields = set(payload)
+    if fields == {"checkpoint_digest", "global_step"}:
+        step = payload["global_step"]
+        if isinstance(step, bool) or not isinstance(step, int) or step < 0:
+            raise ValueError("checkpoint pointer global_step must be a non-negative integer")
+    elif fields != {"checkpoint_digest"}:
         raise ValueError("checkpoint pointer has an unsupported schema")
     digest = str(payload["checkpoint_digest"]).strip().lower()
     if len(digest) != 64 or any(ch not in _HEX for ch in digest):
