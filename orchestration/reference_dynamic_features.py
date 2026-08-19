@@ -9,7 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from typing import Any, Mapping, Protocol
 
 try:
@@ -163,9 +163,10 @@ class GeneratorHiddenStateAdapter:
     """Extract policy selector states from an exact admitted causal or seq2seq generator.
 
     Causal models use the final causal hidden states. Encoder-decoder models use encoder
-    ``last_hidden_state`` over the visible context rather than attempting an under-specified
-    decoder forward without decoder inputs. The final visible token is the state summary in
-    both families, matching the token-aligned cache/query-selector contract.
+    ``last_hidden_state`` over the visible context. The state summary is the actual final
+    token whose attention-mask value is visible, so pooling is correct for either left- or
+    right-padded reuse even though the authoritative training contract itself requires right
+    padding.
     """
     def __init__(
         self,
@@ -189,12 +190,12 @@ class GeneratorHiddenStateAdapter:
     @property
     def contract_sha256(self) -> str:
         return _digest({
-            "schema": "rigorousrag-generator-hidden-state-adapter/v2",
+            "schema": "rigorousrag-generator-hidden-state-adapter/v3",
             "generator_sha256": self.generator_sha256,
             "tokenizer_sha256": self.tokenizer_sha256,
             "generator_family": self.generator_family,
             "max_length": self.max_length,
-            "state_pooling": "last_visible_token",
+            "state_pooling": "actual_last_visible_token",
         })
 
     def encode(self, texts: list[str]) -> Mapping[str, Any]:
@@ -231,8 +232,12 @@ class GeneratorHiddenStateAdapter:
             mask = torch.ones(token_hidden.shape[:2], device=token_hidden.device, dtype=torch.long)
         if tuple(mask.shape) != tuple(token_hidden.shape[:2]):
             raise ValueError("generator attention mask does not align with hidden states")
-        lengths = mask.long().sum(dim=1).clamp_min(1)
-        state_hidden = token_hidden[torch.arange(token_hidden.size(0), device=token_hidden.device), lengths - 1]
+        visible = mask.to(dtype=torch.bool)
+        if torch.any(~visible.any(dim=1)):
+            raise ValueError("generator attention mask contains a row with no visible tokens")
+        positions = torch.arange(token_hidden.size(1), device=token_hidden.device).unsqueeze(0).expand(token_hidden.size(0), -1)
+        last_visible = positions.masked_fill(~visible, -1).max(dim=1).values
+        state_hidden = token_hidden[torch.arange(token_hidden.size(0), device=token_hidden.device), last_visible]
         return {
             "token_hidden": token_hidden.detach().cpu(),
             "state_hidden": state_hidden.detach().cpu(),
