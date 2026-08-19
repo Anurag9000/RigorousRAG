@@ -2,7 +2,8 @@
 
 This module turns logged generation-time episodes into immutable local training JSONL after
 operators explicitly execute admitted value/counterfactual providers. It preserves legal
-action sets when present and never selects an illegal counterfactual target.
+action sets when present, never selects an illegal counterfactual target, and stores GAE
+returns as explicit state-value targets rather than hiding them in metadata.
 """
 from __future__ import annotations
 
@@ -114,6 +115,7 @@ def _record(step: DynamicRagEpisodeStep) -> Mapping[str, Any]:
     }
     if isinstance(step, LegalDynamicRagEpisodeStep):
         result["valid_actions"] = [action.value for action in step.valid_actions]
+        result["value_target"] = step.value_target
     return result
 
 
@@ -168,13 +170,16 @@ def materialize_dynamic_trajectories(
         for index, step in enumerate(episode):
             metadata = dict(step.metadata)
             metadata["trajectory_identity_sha256"] = identity.identity_sha256
-            metadata["return_target"] = format(targets.returns[index], ".17g")
             if counterfactual_provider is not None:
                 utilities = _legal_counterfactual_utilities(step, counterfactual_provider.action_utilities(step))
                 action, gain = counterfactual_action_target(utilities, identity.reward_config)
                 metadata["counterfactual_best_action"] = action.value
                 metadata["counterfactual_gain_over_continue"] = format(gain, ".17g")
-            materialized.append(replace(step, advantage=targets.advantages[index], metadata=metadata))
+            if isinstance(step, LegalDynamicRagEpisodeStep):
+                materialized.append(replace(step, advantage=targets.advantages[index], value_target=targets.returns[index], metadata=metadata))
+            else:
+                metadata["return_target"] = format(targets.returns[index], ".17g")
+                materialized.append(replace(step, advantage=targets.advantages[index], metadata=metadata))
 
     destination = safe_advanced_path(output_path, label="dynamic trajectory output", must_exist=False)
     destination.parent.mkdir(parents=True, exist_ok=True)
