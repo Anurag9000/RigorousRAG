@@ -2,21 +2,22 @@
 
 This is the launch path used by the CLI/config layer. Older modules remain reusable research
 primitives; configuration-driven training always uses padding-safe supervision, exact input
-identities, strict off-policy learning and an explicit causal/seq2seq generator family.
+identities, strict off-policy learning, multi-evidence citation targets and an explicit
+causal/seq2seq generator family.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 from training.advanced_checkpoint_authority import AdvancedCheckpointManager
 from training.advanced_rag_data import ManifestBoundAdvancedJsonlDataset
 from training.advanced_rag_evaluators import DynamicPolicyValidationEvaluator, GroundedValidationEvaluator, ValidationLimits
-from training.advanced_rag_final_collation import FinalCausalGroundedCollator, FinalDynamicRagEpisodeCollator, FinalSeq2SeqGroundedCollator
+from training.advanced_rag_final_collation import FinalDynamicRagEpisodeCollator
 from training.advanced_rag_final_objectives import AuthoritativeGroundedGenerationStep
 from training.advanced_rag_identity import AdvancedTrainingInputIdentity, dataclass_sha256, provider_identity_sha256, trainability_sha256
 from training.advanced_rag_models import DynamicRagPolicyModel, GroundedGeneratorTrainingModule
+from training.advanced_rag_multi_evidence import MultiEvidenceCausalGroundedCollator, MultiEvidenceSeq2SeqGroundedCollator
 from training.advanced_rag_runner import AdvancedTrainingRunResult, DynamicRagPolicyTrainingRunner, GroundedGeneratorTrainingRunner, _TrainabilityStep, _effective_trainability, _loader, _trainer_with_evaluation
 from training.advanced_rag_steps import DynamicPolicyStepConfig, GroundedStepConfig, dynamic_plan_to_trainer_config, grounded_plan_to_trainer_config
 from training.advanced_rag_strict import StrictDynamicRetrievalPolicyStep
@@ -44,7 +45,7 @@ class AuthoritativeGroundedGeneratorTrainingRunner(GroundedGeneratorTrainingRunn
         self.generator_family = generator_family
 
     def _authoritative_collator(self) -> Any:
-        collator = FinalSeq2SeqGroundedCollator if self.generator_family == "seq2seq_lm" else FinalCausalGroundedCollator
+        collator = MultiEvidenceSeq2SeqGroundedCollator if self.generator_family == "seq2seq_lm" else MultiEvidenceCausalGroundedCollator
         return collator(self.tokenizer, self.collator_config, teacher_cache=self.teacher_cache, reference_cache=self.reference_cache, retriever_batch_builder=self.retriever_batch_builder)
 
     def _authoritative_model(self) -> Any:
