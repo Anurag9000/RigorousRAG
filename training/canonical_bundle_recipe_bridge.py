@@ -30,8 +30,11 @@ def _cache(bundle: CanonicalTrainingDataBundle, role: str) -> TensorCacheSpec | 
     if len(matches) != 1:
         raise ValueError(f"canonical bundle has duplicate cache role {role!r}")
     item = matches[0]
-    item.reopen()  # exact content contract verification
-    return TensorCacheSpec(root=item.root, identity=item.identity)
+    cache = item.reopen()
+    actual = cache.seal()
+    if actual != item.contract_sha256:
+        raise ValueError(f"canonical bundle cache role {role!r} changed after restart verification")
+    return TensorCacheSpec(root=item.root, identity=item.identity, contract_sha256=actual)
 
 
 def write_grounded_recipe_from_canonical_bundle(
