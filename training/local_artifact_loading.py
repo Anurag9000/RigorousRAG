@@ -40,11 +40,19 @@ def _file_sha(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _regular_root(path: str | Path, *, label: str) -> Path:
+    raw = Path(path).expanduser()
+    if raw.is_symlink():
+        raise ValueError(f"{label} may not be a symlink")
+    root = raw.resolve(strict=True)
+    if not root.is_dir():
+        raise ValueError(f"{label} must be a directory")
+    return root
+
+
 def local_tree_sha256(path: str | Path) -> str:
     """Content-address a local artifact tree independent of its absolute directory name."""
-    root = Path(path).expanduser().resolve(strict=True)
-    if not root.is_dir() or root.is_symlink():
-        raise ValueError("local artifact root must be a regular directory, not a symlink")
+    root = _regular_root(path, label="local artifact root")
     records = []
     total = 0
     for index, candidate in enumerate(sorted(root.rglob("*"), key=lambda item: item.relative_to(root).as_posix())):
@@ -80,9 +88,7 @@ class LocalArtifactTreeBinding:
     artifact_kind: Literal["causal_lm", "seq2seq_lm", "tokenizer", "sequence_classifier"]
 
     def __post_init__(self) -> None:
-        root = Path(self.path).expanduser().resolve(strict=True)
-        if not root.is_dir() or root.is_symlink():
-            raise ValueError("local artifact path must be a non-symlink directory")
+        root = _regular_root(self.path, label="local artifact path")
         object.__setattr__(self, "path", str(root))
         object.__setattr__(self, "expected_sha256", _sha(self.expected_sha256, "expected_sha256"))
         if self.artifact_kind not in {"causal_lm", "seq2seq_lm", "tokenizer", "sequence_classifier"}:
@@ -107,11 +113,7 @@ def load_local_tokenizer(binding: LocalArtifactTreeBinding) -> Any:
         from transformers import AutoTokenizer
     except Exception as exc:
         raise RuntimeError("transformers is required only when loading a local tokenizer") from exc
-    tokenizer = AutoTokenizer.from_pretrained(
-        binding.path,
-        local_files_only=True,
-        trust_remote_code=False,
-    )
+    tokenizer = AutoTokenizer.from_pretrained(binding.path, local_files_only=True, trust_remote_code=False)
     if getattr(tokenizer, "pad_token_id", None) is None:
         eos = getattr(tokenizer, "eos_token", None)
         if eos is None:
@@ -130,10 +132,7 @@ def load_local_language_model(binding: LocalArtifactTreeBinding) -> Any:
         raise RuntimeError("transformers is required only when loading a local language model") from exc
     model_class = AutoModelForCausalLM if binding.artifact_kind == "causal_lm" else AutoModelForSeq2SeqLM
     return model_class.from_pretrained(
-        binding.path,
-        local_files_only=True,
-        trust_remote_code=False,
-        use_safetensors=True,
+        binding.path, local_files_only=True, trust_remote_code=False, use_safetensors=True,
     )
 
 
@@ -146,10 +145,7 @@ def load_local_sequence_classifier(binding: LocalArtifactTreeBinding) -> Any:
     except Exception as exc:
         raise RuntimeError("transformers is required only when loading a local sequence classifier") from exc
     return AutoModelForSequenceClassification.from_pretrained(
-        binding.path,
-        local_files_only=True,
-        trust_remote_code=False,
-        use_safetensors=True,
+        binding.path, local_files_only=True, trust_remote_code=False, use_safetensors=True,
     )
 
 
