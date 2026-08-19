@@ -11,7 +11,7 @@ import hashlib
 import json
 import os
 import tempfile
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -63,6 +63,19 @@ class AdvancedPromotionEvidence:
         if not self.promoted and not reasons:
             raise ValueError("blocked promotion evidence requires reason codes")
         object.__setattr__(self, "reason_codes", reasons)
+        expected_primitive = _digest(
+            {
+                "schema": "rigorousrag-advanced-artifact-promotion/v1",
+                "artifact_sha256": self.artifact_sha256,
+                "policy_sha256": self.policy_sha256,
+                "evaluation_receipt_sha256": self.evaluation_receipt_sha256,
+                "promoted": self.promoted,
+                "reason_codes": list(self.reason_codes),
+                "metrics_sha256": self.metrics_sha256,
+            }
+        )
+        if expected_primitive != self.primitive_receipt_sha256:
+            raise ValueError("nested advanced artifact promotion receipt digest mismatch")
         expected = _digest(self._payload())
         if expected != self.evidence_sha256:
             raise ValueError("advanced promotion evidence digest mismatch")
