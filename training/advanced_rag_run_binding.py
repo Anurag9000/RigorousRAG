@@ -13,8 +13,8 @@ from dataclasses import dataclass
 from typing import Any
 
 from training.advanced_rag_authoritative_runner import GroundedGeneratorPathBinding
-from training.advanced_rag_config import DynamicConfiguredRun, GroundedConfiguredRun
-from training.advanced_rag_identity import AdvancedTrainingInputIdentity, dataclass_sha256, trainability_sha256
+from training.advanced_rag_config import DynamicConfiguredRun, GroundedConfiguredRun, TensorCacheSpec
+from training.advanced_rag_identity import AdvancedTrainingInputIdentity, dataclass_sha256, provider_identity_sha256, trainability_sha256
 from training.advanced_rag_runner import _effective_trainability, _trainer_with_evaluation
 from training.advanced_rag_steps import dynamic_plan_to_trainer_config, grounded_plan_to_trainer_config
 from training.checkpointing import CheckpointManager
@@ -35,14 +35,28 @@ def _sha(value: Any, label: str) -> str:
     return selected
 
 
+def _cache_identity(spec: TensorCacheSpec | None, *, label: str) -> str | None:
+    if spec is None:
+        return None
+    if not isinstance(spec, TensorCacheSpec):
+        raise ValueError(f"{label} must be TensorCacheSpec")
+    cache = spec.build()
+    # provider_identity_sha256 deliberately prefers the exact sealed content contract over
+    # the weaker cache-configuration identity, matching the authoritative training runner.
+    return provider_identity_sha256(cache, label=label)
+
+
 def _retriever_supervision_sha256(config: GroundedConfiguredRun) -> str | None:
     if config.retriever_utility_cache is None:
         return None
+    utility_cache_sha = _cache_identity(config.retriever_utility_cache, label="retriever utility cache")
+    if utility_cache_sha is None:
+        raise RuntimeError("retriever utility cache identity unexpectedly missing")
     return _digest(
         {
             "schema": "rigorousrag-cached-document-utility-builder/v1",
             "tokenizer_sha256": config.plan.tokenizer_sha256,
-            "utility_cache_sha256": config.retriever_utility_cache.identity.digest,
+            "utility_cache_sha256": utility_cache_sha,
             "config_sha256": config.retriever_coupling.config_sha256,
         }
     )
@@ -62,8 +76,8 @@ def grounded_training_input_identity(config: GroundedConfiguredRun) -> AdvancedT
         execution_config_sha256=dataclass_sha256(config.execution, label="advanced-execution-config"),
         collator_config_sha256=dataclass_sha256(path_binding, label="grounded-generator-path-binding"),
         trainability_sha256=trainability_sha256(trainability),
-        teacher_cache_sha256=None if config.teacher_cache is None else config.teacher_cache.identity.digest,
-        reference_cache_sha256=None if config.reference_cache is None else config.reference_cache.identity.digest,
+        teacher_cache_sha256=_cache_identity(config.teacher_cache, label="teacher cache"),
+        reference_cache_sha256=_cache_identity(config.reference_cache, label="reference cache"),
         retriever_supervision_sha256=_retriever_supervision_sha256(config),
     )
 
@@ -81,7 +95,7 @@ def dynamic_training_input_identity(config: DynamicConfiguredRun) -> AdvancedTra
         execution_config_sha256=dataclass_sha256(config.execution, label="advanced-execution-config"),
         collator_config_sha256=dataclass_sha256(config.collator, label="dynamic-collator-config"),
         trainability_sha256=trainability_sha256(trainability),
-        hidden_state_cache_sha256=None if config.hidden_state_cache is None else config.hidden_state_cache.identity.digest,
+        hidden_state_cache_sha256=_cache_identity(config.hidden_state_cache, label="hidden-state cache"),
     )
 
 
@@ -139,7 +153,16 @@ class VerifiedAdvancedCheckpointBinding:
             raise ValueError("unsupported advanced checkpoint kind")
         if self.generator_family not in {"causal_lm", "seq2seq_lm"}:
             raise ValueError("advanced checkpoint binding requires causal_lm or seq2seq_lm generator_family")
-        object.__setattr__(self, "tokenizer_sha256", _sha(self.tokenizer_sha256, "tokenizer_sha256"))
+        for name in ("checkpoint_digest", "plan_sha256", "training_input_sha256", "training_config_sha256", "dataset_manifest_sha256", "tokenizer_sha256"):
+            object.__setattr__(self, name, _sha(getattr(self, name), name))
+        commit = str(self.source_commit).strip().lower()
+        if len(commit) not in {40, 64} or any(ch not in "0123456789abcdef" for ch in commit):
+            raise ValueError("source_commit must be a full Git object id")
+        object.__setattr__(self, "source_commit", commit)
+        if not isinstance(self.bound_run_id, str) or not self.bound_run_id.strip():
+            raise ValueError("bound_run_id is required")
+        if not isinstance(self.model_architecture, str) or not self.model_architecture.strip():
+            raise ValueError("model_architecture is required")
         if self.kind == "grounded_generation":
             if self.retriever_positive_label_index is not None and (
                 isinstance(self.retriever_positive_label_index, bool)
