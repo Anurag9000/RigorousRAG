@@ -1,9 +1,9 @@
 """Checkpoint-to-inference artifact export and promotion contracts for advanced RAG.
 
-Authoritative exports require a checkpoint/run-config verification receipt. The resulting
-manifest carries enough canonical architecture data to reconstruct repository-owned
-heads/controllers while referring to separately admitted base-model/tokenizer/retriever trees
-by digest. Nothing is loaded or executed on import.
+Authoritative exports require a verified advanced checkpoint and produce a closed two-file,
+content-addressed inference artifact. Promotion receipts are self-verifying, idempotent export
+re-verifies any pre-existing destination, and final admission re-hashes the persisted artifact
+immediately before handing it to an admission sink.
 """
 from __future__ import annotations
 
@@ -13,12 +13,14 @@ import math
 import os
 import shutil
 import tempfile
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Mapping, Protocol, Sequence
 
+from training.advanced_checkpoint_authority import AdvancedCheckpointManager
+from training.advanced_path_authority import safe_advanced_path
+from training.advanced_rag_artifact_directory import assert_artifact_directory_matches_manifest
 from training.advanced_rag_run_binding import VerifiedAdvancedCheckpointBinding
-from training.checkpointing import CheckpointManager
 from training.dynamic_retrieval_policy import DynamicPolicyArchitecture, DynamicPolicyTrainingPlan, DynamicRetrievalBudget
 from training.grounded_generation import GroundedGenerationArchitectureConfig, GroundedTrainingPlan
 
@@ -62,12 +64,7 @@ def _file_sha(path: Path) -> str:
     return digest.hexdigest()
 
 
-def grounded_runtime_config(
-    plan: GroundedTrainingPlan,
-    binding: VerifiedAdvancedCheckpointBinding,
-    *,
-    include_retriever: bool,
-) -> Mapping[str, Any]:
+def grounded_runtime_config(plan: GroundedTrainingPlan, binding: VerifiedAdvancedCheckpointBinding, *, include_retriever: bool) -> Mapping[str, Any]:
     architecture = plan.architecture
     result: dict[str, Any] = {
         "architecture": {
@@ -87,8 +84,7 @@ def grounded_runtime_config(
 
 
 def dynamic_runtime_config(plan: DynamicPolicyTrainingPlan) -> Mapping[str, Any]:
-    architecture = plan.architecture
-    budget = plan.budget
+    architecture, budget = plan.architecture, plan.budget
     return {
         "architecture": {
             "feature_names": list(architecture.feature_names),
@@ -108,19 +104,11 @@ def dynamic_runtime_config(plan: DynamicPolicyTrainingPlan) -> Mapping[str, Any]
     }
 
 
-def _validate_runtime_config(
-    kind: str,
-    value: Mapping[str, Any],
-    *,
-    architecture_sha256: str,
-    budget_sha256: str | None,
-    retrieval_stack_sha256: str | None,
-) -> Mapping[str, Any]:
+def _validate_runtime_config(kind: str, value: Mapping[str, Any], *, architecture_sha256: str, budget_sha256: str | None, retrieval_stack_sha256: str | None) -> Mapping[str, Any]:
     if not isinstance(value, Mapping):
         raise ValueError("runtime_config must be a mapping")
     if kind == "grounded_generator":
-        allowed = {"architecture", "retriever_adapter"}
-        if not set(value).issubset(allowed) or "architecture" not in value or not isinstance(value["architecture"], Mapping):
+        if not set(value).issubset({"architecture", "retriever_adapter"}) or "architecture" not in value or not isinstance(value["architecture"], Mapping):
             raise ValueError("grounded runtime_config contains unsupported fields")
         architecture = GroundedGenerationArchitectureConfig(**dict(value["architecture"]))
         if architecture.architecture_sha256 != architecture_sha256:
@@ -161,8 +149,7 @@ class MetricQualificationPolicy:
     def __post_init__(self) -> None:
         object.__setattr__(self, "minimum", {str(k): _finite(v, f"minimum[{k}]") for k, v in self.minimum.items()})
         object.__setattr__(self, "maximum", {str(k): _finite(v, f"maximum[{k}]") for k, v in self.maximum.items()})
-        overlap = set(self.minimum) & set(self.maximum)
-        for key in overlap:
+        for key in set(self.minimum) & set(self.maximum):
             if self.minimum[key] > self.maximum[key]:
                 raise ValueError(f"metric {key} minimum exceeds maximum")
 
@@ -196,10 +183,7 @@ class AdvancedArtifactManifest:
     def __post_init__(self) -> None:
         if self.kind not in {"grounded_generator", "dynamic_rag_policy"}:
             raise ValueError("unsupported advanced artifact kind")
-        for name in (
-            "checkpoint_digest", "plan_sha256", "training_input_sha256", "training_config_sha256",
-            "dataset_manifest_sha256", "architecture_sha256", "base_model_sha256", "weights_sha256", "artifact_sha256",
-        ):
+        for name in ("checkpoint_digest", "plan_sha256", "training_input_sha256", "training_config_sha256", "dataset_manifest_sha256", "architecture_sha256", "base_model_sha256", "weights_sha256", "artifact_sha256"):
             object.__setattr__(self, name, _sha(getattr(self, name), name))
         commit = str(self.source_commit).strip().lower()
         if len(commit) not in {40, 64} or any(ch not in _HEX for ch in commit):
@@ -216,23 +200,16 @@ class AdvancedArtifactManifest:
             value = getattr(self, name)
             if value is not None:
                 object.__setattr__(self, name, _sha(value, name))
-        object.__setattr__(
-            self,
-            "runtime_config",
-            _validate_runtime_config(
-                self.kind,
-                self.runtime_config,
-                architecture_sha256=self.architecture_sha256,
-                budget_sha256=self.budget_sha256,
-                retrieval_stack_sha256=self.retrieval_stack_sha256,
-            ),
-        )
+        object.__setattr__(self, "runtime_config", _validate_runtime_config(self.kind, self.runtime_config, architecture_sha256=self.architecture_sha256, budget_sha256=self.budget_sha256, retrieval_stack_sha256=self.retrieval_stack_sha256))
         if isinstance(self.weights_bytes, bool) or not isinstance(self.weights_bytes, int) or self.weights_bytes <= 0:
             raise ValueError("weights_bytes must be positive")
         prefixes = tuple(str(value).strip() for value in self.included_prefixes)
-        if not prefixes or any(not value for value in prefixes):
-            raise ValueError("included_prefixes must be non-empty")
+        if not prefixes or any(not value for value in prefixes) or len(set(prefixes)) != len(prefixes):
+            raise ValueError("included_prefixes must be non-empty and unique")
         object.__setattr__(self, "included_prefixes", prefixes)
+        unsigned = {"schema": "rigorousrag-advanced-inference-artifact/v3", **{key: value for key, value in asdict(self).items() if key != "artifact_sha256"}}
+        if _digest(unsigned) != self.artifact_sha256:
+            raise ValueError("advanced artifact manifest self-digest mismatch")
 
 
 @dataclass(frozen=True)
@@ -240,14 +217,15 @@ class AdvancedArtifactPromotionReceipt:
     artifact_sha256: str
     policy_sha256: str
     evaluation_receipt_sha256: str
+    metrics_sha256: str
     promoted: bool
     reason_codes: tuple[str, ...]
     receipt_sha256: str
 
     def __post_init__(self) -> None:
-        for name in ("artifact_sha256", "policy_sha256", "evaluation_receipt_sha256", "receipt_sha256"):
+        for name in ("artifact_sha256", "policy_sha256", "evaluation_receipt_sha256", "metrics_sha256", "receipt_sha256"):
             object.__setattr__(self, name, _sha(getattr(self, name), name))
-        reasons = tuple(str(value).strip() for value in self.reason_codes)
+        reasons = tuple(sorted({str(value).strip() for value in self.reason_codes}))
         if any(not value for value in reasons):
             raise ValueError("promotion reason codes are invalid")
         if self.promoted and reasons:
@@ -255,6 +233,17 @@ class AdvancedArtifactPromotionReceipt:
         if not self.promoted and not reasons:
             raise ValueError("blocked promotion requires reason codes")
         object.__setattr__(self, "reason_codes", reasons)
+        expected = _digest({
+            "schema": "rigorousrag-advanced-artifact-promotion/v1",
+            "artifact_sha256": self.artifact_sha256,
+            "policy_sha256": self.policy_sha256,
+            "evaluation_receipt_sha256": self.evaluation_receipt_sha256,
+            "promoted": self.promoted,
+            "reason_codes": list(self.reason_codes),
+            "metrics_sha256": self.metrics_sha256,
+        })
+        if expected != self.receipt_sha256:
+            raise ValueError("advanced artifact promotion receipt digest mismatch")
 
 
 class ArtifactAdmissionSink(Protocol):
@@ -299,130 +288,127 @@ def _assert_binding(binding: VerifiedAdvancedCheckpointBinding, *, kind: str, pl
         raise ValueError("verified checkpoint binding does not match requested artifact export")
 
 
-def export_grounded_generator_artifact(
-    *, checkpoint_manager: CheckpointManager, checkpoint_digest: str, plan: GroundedTrainingPlan,
-    verified_binding: VerifiedAdvancedCheckpointBinding, destination_root: str | Path,
-    evaluation_receipt_sha256: str | None = None, include_retriever: bool = True,
-) -> AdvancedArtifactManifest:
+def _assert_manager(manager: Any) -> AdvancedCheckpointManager:
+    if not isinstance(manager, AdvancedCheckpointManager):
+        raise ValueError("advanced artifact export requires AdvancedCheckpointManager")
+    return manager
+
+
+def _publish_export(root: Path, temporary: Path, manifest: AdvancedArtifactManifest) -> None:
+    destination = root / manifest.artifact_sha256
+    if destination.exists():
+        assert_artifact_directory_matches_manifest(destination, manifest)
+        shutil.rmtree(temporary, ignore_errors=True)
+        return
+    os.replace(temporary, destination)
+    assert_artifact_directory_matches_manifest(destination, manifest)
+
+
+def export_grounded_generator_artifact(*, checkpoint_manager: AdvancedCheckpointManager, checkpoint_digest: str, plan: GroundedTrainingPlan, verified_binding: VerifiedAdvancedCheckpointBinding, destination_root: str | Path, evaluation_receipt_sha256: str | None = None, include_retriever: bool = True) -> AdvancedArtifactManifest:
+    manager = _assert_manager(checkpoint_manager)
     _assert_binding(verified_binding, kind="grounded_generation", plan_sha256=plan.plan_sha256, checkpoint_digest=checkpoint_digest)
-    path, checkpoint = checkpoint_manager.verify(checkpoint_digest)
-    if (
-        checkpoint.source_commit != plan.source_commit
-        or checkpoint.dataset_manifest_digest != plan.dataset_manifest_sha256
-        or checkpoint.model_architecture != f"grounded_generation:{plan.plan_sha256}"
-        or checkpoint.training_config_digest != verified_binding.training_config_sha256
-        or checkpoint.run_id != verified_binding.bound_run_id
-    ):
+    path, checkpoint = manager.verify(checkpoint_digest)
+    if checkpoint.source_commit != plan.source_commit or checkpoint.dataset_manifest_digest != plan.dataset_manifest_sha256 or checkpoint.model_architecture != f"grounded_generation:{plan.plan_sha256}" or checkpoint.training_config_digest != verified_binding.training_config_sha256 or checkpoint.run_id != verified_binding.bound_run_id:
         raise ValueError("checkpoint no longer matches verified grounded training binding")
     prefixes = ["base_model.", "auxiliary."]
     if include_retriever and plan.retriever_stack_sha256 is not None:
         prefixes.append("retriever_model.")
-    root = Path(destination_root).expanduser().resolve(); root.mkdir(parents=True, exist_ok=True)
+    root = safe_advanced_path(destination_root, label="advanced artifact export root", must_exist=False)
+    if root.exists() and not root.is_dir():
+        raise ValueError("advanced artifact export root must be a directory")
+    root.mkdir(parents=True, exist_ok=True)
     temporary = Path(tempfile.mkdtemp(prefix=".grounded-export-", dir=root))
     try:
         weights_sha, weights_bytes = _save_filtered_safetensors(path / "model.safetensors", temporary / "model.safetensors", prefixes)
         retrieval_sha = plan.retriever_stack_sha256 if include_retriever else None
         values = {
             "kind": "grounded_generator", "checkpoint_digest": checkpoint_digest, "plan_sha256": plan.plan_sha256,
-            "training_input_sha256": verified_binding.training_input_sha256,
-            "training_config_sha256": verified_binding.training_config_sha256,
+            "training_input_sha256": verified_binding.training_input_sha256, "training_config_sha256": verified_binding.training_config_sha256,
             "source_commit": plan.source_commit, "dataset_manifest_sha256": plan.dataset_manifest_sha256,
             "architecture_sha256": plan.architecture.architecture_sha256, "base_model_sha256": plan.base_model_sha256,
             "generator_family": verified_binding.generator_family, "tokenizer_sha256": plan.tokenizer_sha256,
             "retrieval_stack_sha256": retrieval_sha, "budget_sha256": None,
             "runtime_config": grounded_runtime_config(plan, verified_binding, include_retriever=include_retriever),
-            "weights_sha256": weights_sha, "weights_bytes": weights_bytes,
-            "included_prefixes": prefixes, "evaluation_receipt_sha256": evaluation_receipt_sha256,
+            "weights_sha256": weights_sha, "weights_bytes": weights_bytes, "included_prefixes": prefixes,
+            "evaluation_receipt_sha256": evaluation_receipt_sha256,
         }
         payload, artifact_sha = _manifest_payload(**values)
         _write_manifest(temporary, payload)
-        destination = root / artifact_sha
-        if destination.exists():
-            shutil.rmtree(temporary)
-        else:
-            os.replace(temporary, destination)
-        return AdvancedArtifactManifest(**{**values, "included_prefixes": tuple(prefixes), "artifact_sha256": artifact_sha})
+        manifest = AdvancedArtifactManifest(**{**values, "included_prefixes": tuple(prefixes), "artifact_sha256": artifact_sha})
+        _publish_export(root, temporary, manifest)
+        return manifest
     finally:
         if temporary.exists():
             shutil.rmtree(temporary, ignore_errors=True)
 
 
-def export_dynamic_policy_artifact(
-    *, checkpoint_manager: CheckpointManager, checkpoint_digest: str, plan: DynamicPolicyTrainingPlan,
-    verified_binding: VerifiedAdvancedCheckpointBinding, destination_root: str | Path,
-    evaluation_receipt_sha256: str | None = None,
-) -> AdvancedArtifactManifest:
+def export_dynamic_policy_artifact(*, checkpoint_manager: AdvancedCheckpointManager, checkpoint_digest: str, plan: DynamicPolicyTrainingPlan, verified_binding: VerifiedAdvancedCheckpointBinding, destination_root: str | Path, evaluation_receipt_sha256: str | None = None) -> AdvancedArtifactManifest:
+    manager = _assert_manager(checkpoint_manager)
     _assert_binding(verified_binding, kind="dynamic_rag_policy", plan_sha256=plan.plan_sha256, checkpoint_digest=checkpoint_digest)
-    path, checkpoint = checkpoint_manager.verify(checkpoint_digest)
-    if (
-        checkpoint.source_commit != plan.source_commit
-        or checkpoint.dataset_manifest_digest != plan.dataset_manifest_sha256
-        or checkpoint.model_architecture != f"dynamic_retrieval_policy:{plan.plan_sha256}"
-        or checkpoint.training_config_digest != verified_binding.training_config_sha256
-        or checkpoint.run_id != verified_binding.bound_run_id
-    ):
+    path, checkpoint = manager.verify(checkpoint_digest)
+    if checkpoint.source_commit != plan.source_commit or checkpoint.dataset_manifest_digest != plan.dataset_manifest_sha256 or checkpoint.model_architecture != f"dynamic_retrieval_policy:{plan.plan_sha256}" or checkpoint.training_config_digest != verified_binding.training_config_sha256 or checkpoint.run_id != verified_binding.bound_run_id:
         raise ValueError("checkpoint no longer matches verified dynamic-policy training binding")
     prefixes = ("controller.", "need_selector.")
-    root = Path(destination_root).expanduser().resolve(); root.mkdir(parents=True, exist_ok=True)
+    root = safe_advanced_path(destination_root, label="advanced artifact export root", must_exist=False)
+    if root.exists() and not root.is_dir():
+        raise ValueError("advanced artifact export root must be a directory")
+    root.mkdir(parents=True, exist_ok=True)
     temporary = Path(tempfile.mkdtemp(prefix=".dynamic-export-", dir=root))
     try:
         weights_sha, weights_bytes = _save_filtered_safetensors(path / "model.safetensors", temporary / "model.safetensors", prefixes)
         values = {
             "kind": "dynamic_rag_policy", "checkpoint_digest": checkpoint_digest, "plan_sha256": plan.plan_sha256,
-            "training_input_sha256": verified_binding.training_input_sha256,
-            "training_config_sha256": verified_binding.training_config_sha256,
+            "training_input_sha256": verified_binding.training_input_sha256, "training_config_sha256": verified_binding.training_config_sha256,
             "source_commit": plan.source_commit, "dataset_manifest_sha256": plan.dataset_manifest_sha256,
             "architecture_sha256": plan.architecture.architecture_sha256, "base_model_sha256": plan.base_generator_sha256,
             "generator_family": None, "tokenizer_sha256": None, "retrieval_stack_sha256": plan.retrieval_stack_sha256,
             "budget_sha256": plan.budget.budget_sha256, "runtime_config": dynamic_runtime_config(plan),
-            "weights_sha256": weights_sha, "weights_bytes": weights_bytes,
-            "included_prefixes": list(prefixes), "evaluation_receipt_sha256": evaluation_receipt_sha256,
+            "weights_sha256": weights_sha, "weights_bytes": weights_bytes, "included_prefixes": list(prefixes),
+            "evaluation_receipt_sha256": evaluation_receipt_sha256,
         }
         payload, artifact_sha = _manifest_payload(**values)
         _write_manifest(temporary, payload)
-        destination = root / artifact_sha
-        if destination.exists():
-            shutil.rmtree(temporary)
-        else:
-            os.replace(temporary, destination)
-        return AdvancedArtifactManifest(**{**values, "included_prefixes": prefixes, "artifact_sha256": artifact_sha})
+        manifest = AdvancedArtifactManifest(**{**values, "included_prefixes": prefixes, "artifact_sha256": artifact_sha})
+        _publish_export(root, temporary, manifest)
+        return manifest
     finally:
         if temporary.exists():
             shutil.rmtree(temporary, ignore_errors=True)
 
 
 def qualify_advanced_artifact(manifest: AdvancedArtifactManifest, *, evaluation_receipt_sha256: str, metrics: Mapping[str, float], policy: MetricQualificationPolicy) -> AdvancedArtifactPromotionReceipt:
+    if not isinstance(manifest, AdvancedArtifactManifest):
+        raise ValueError("manifest must be AdvancedArtifactManifest")
+    if not isinstance(policy, MetricQualificationPolicy):
+        raise ValueError("policy must be MetricQualificationPolicy")
     evaluation_sha = _sha(evaluation_receipt_sha256, "evaluation_receipt_sha256")
     if manifest.evaluation_receipt_sha256 is not None and manifest.evaluation_receipt_sha256 != evaluation_sha:
         raise ValueError("artifact manifest is bound to a different evaluation receipt")
     selected = {str(key): _finite(value, f"metric {key}") for key, value in metrics.items()}
     reasons = []
     for key, threshold in policy.minimum.items():
-        if key not in selected:
-            reasons.append(f"missing_minimum_metric:{key}")
-        elif selected[key] < threshold:
-            reasons.append(f"below_minimum:{key}")
+        if key not in selected: reasons.append(f"missing_minimum_metric:{key}")
+        elif selected[key] < threshold: reasons.append(f"below_minimum:{key}")
     for key, threshold in policy.maximum.items():
-        if key not in selected:
-            reasons.append(f"missing_maximum_metric:{key}")
-        elif selected[key] > threshold:
-            reasons.append(f"above_maximum:{key}")
+        if key not in selected: reasons.append(f"missing_maximum_metric:{key}")
+        elif selected[key] > threshold: reasons.append(f"above_maximum:{key}")
+    reasons = sorted(set(reasons))
     promoted = not reasons
+    metrics_sha = _digest(selected)
     unsigned = {
         "schema": "rigorousrag-advanced-artifact-promotion/v1", "artifact_sha256": manifest.artifact_sha256,
         "policy_sha256": policy.policy_sha256, "evaluation_receipt_sha256": evaluation_sha,
-        "promoted": promoted, "reason_codes": sorted(reasons), "metrics_sha256": _digest(selected),
+        "promoted": promoted, "reason_codes": reasons, "metrics_sha256": metrics_sha,
     }
-    receipt_sha = _digest(unsigned)
-    return AdvancedArtifactPromotionReceipt(manifest.artifact_sha256, policy.policy_sha256, evaluation_sha, promoted, tuple(sorted(reasons)), receipt_sha)
+    return AdvancedArtifactPromotionReceipt(manifest.artifact_sha256, policy.policy_sha256, evaluation_sha, metrics_sha, promoted, tuple(reasons), _digest(unsigned))
 
 
 def admit_promoted_artifact(directory: str | Path, manifest: AdvancedArtifactManifest, receipt: AdvancedArtifactPromotionReceipt, sink: ArtifactAdmissionSink) -> Any:
+    if not isinstance(manifest, AdvancedArtifactManifest) or not isinstance(receipt, AdvancedArtifactPromotionReceipt):
+        raise ValueError("manifest/receipt types are invalid")
     if not receipt.promoted or receipt.artifact_sha256 != manifest.artifact_sha256:
         raise ValueError("only a matching promoted artifact may enter admission")
-    selected = Path(directory).expanduser().resolve(strict=True)
-    if selected.name != manifest.artifact_sha256 or not selected.is_dir() or selected.is_symlink():
-        raise ValueError("artifact directory is not the content-addressed promoted artifact")
+    selected = assert_artifact_directory_matches_manifest(directory, manifest)
     return sink.admit(str(selected), artifact_sha256=manifest.artifact_sha256, promotion_receipt_sha256=receipt.receipt_sha256)
 
 
