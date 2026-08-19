@@ -2,8 +2,8 @@
 
 Configuration-driven and direct-library training use the same strict path/tokenizer/cache
 authority, exact input identities, complete cache-key preflight, multi-evidence/contested
-grounding supervision, and legal-action-masked dynamic policy objectives while preserving
-older research primitives.
+grounding supervision, legal-action-masked dynamic policy objectives, and lineage-aware
+content-addressed resume while preserving older research primitives.
 """
 from __future__ import annotations
 
@@ -21,9 +21,10 @@ from training.advanced_rag_multi_evidence import MultiEvidenceCausalGroundedColl
 from training.advanced_rag_runner import AdvancedTrainingRunResult, DynamicRagPolicyTrainingRunner, GroundedGeneratorTrainingRunner, _TrainabilityStep, _effective_trainability, _loader, _trainer_with_evaluation
 from training.advanced_rag_steps import DynamicPolicyStepConfig, GroundedStepConfig, dynamic_plan_to_trainer_config, grounded_plan_to_trainer_config
 from training.advanced_tokenizer_contract import assert_advanced_training_tokenizer
+from training.advanced_torch_engine import AuthoritativeTorchTrainingEngine
 from training.data_pipeline import ResumableDeterministicSampler
 from training.seq2seq_grounded import Seq2SeqGroundedGeneratorTrainingModule
-from training.torch_engine import StageRuntime, TorchTrainingEngine
+from training.torch_engine import StageRuntime
 
 
 @dataclass(frozen=True)
@@ -165,7 +166,7 @@ class AuthoritativeGroundedGeneratorTrainingRunner(GroundedGeneratorTrainingRunn
         validation_loader = _loader(validation_dataset, None, self._authoritative_collator(), batch_size=self.execution.validation_batch_size, execution=self.execution)
         evaluator = GroundedValidationEvaluator(validation_loader, validation_steps, ValidationLimits(self.execution.validation_maximum_batches))
         manager = AdvancedCheckpointManager(self.checkpoint_root)
-        engine = TorchTrainingEngine(model, trainer_config, manager)
+        engine = AuthoritativeTorchTrainingEngine(model, trainer_config, manager)
         summary = engine.fit(runtimes, resume_checkpoint_digest=resume_checkpoint_digest, evaluator=evaluator, event_sink=event_sink)
         return AdvancedTrainingRunResult(summary, self.plan.plan_sha256, input_identity.input_sha256, train_dataset.binding.content_sha256, validation_dataset.binding.content_sha256, str(manager.root))
 
@@ -220,7 +221,7 @@ class AuthoritativeDynamicRagPolicyTrainingRunner(DynamicRagPolicyTrainingRunner
         validation_loader = _loader(validation_dataset, None, validation_collator, batch_size=self.execution.validation_batch_size, execution=self.execution)
         evaluator = DynamicPolicyValidationEvaluator(validation_loader, validation_steps, ValidationLimits(self.execution.validation_maximum_batches))
         manager = AdvancedCheckpointManager(self.checkpoint_root)
-        engine = TorchTrainingEngine(model, trainer_config, manager)
+        engine = AuthoritativeTorchTrainingEngine(model, trainer_config, manager)
         summary = engine.fit(runtimes, resume_checkpoint_digest=resume_checkpoint_digest, evaluator=evaluator, event_sink=event_sink)
         return AdvancedTrainingRunResult(summary, self.plan.plan_sha256, input_identity.input_sha256, train_dataset.binding.content_sha256, validation_dataset.binding.content_sha256, str(manager.root))
 
