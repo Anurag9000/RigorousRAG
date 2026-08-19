@@ -3,19 +3,15 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
-from security.artifact_attestation import (
-    ArtifactAdmissionPolicy,
-    ArtifactAttestationStatement,
-    AttestationVerifier,
-    SignedAttestationEnvelope,
-    decide_artifact_admission,
-    verify_attestation,
-)
+from security.artifact_attestation import ArtifactAdmissionPolicy, ArtifactAttestationStatement, AttestationVerifier, SignedAttestationEnvelope, decide_artifact_admission, verify_attestation
+from training.advanced_path_authority import safe_advanced_path
 from training.advanced_rag_artifacts import AdvancedArtifactManifest, AdvancedArtifactPromotionReceipt, ArtifactAdmissionSink
+from training.advanced_rag_manifest_integrity import assert_advanced_manifest_self_consistent
+from training.advanced_rag_promotion_evidence import AdvancedPromotionEvidence
 
 
 def _canonical(value: Any) -> bytes:
@@ -45,18 +41,24 @@ class AdvancedArtifactAdmissionReceipt:
     receipt_sha256: str
 
     def __post_init__(self) -> None:
-        for name in (
-            "artifact_sha256",
-            "promotion_receipt_sha256",
-            "attestation_statement_sha256",
-            "attestation_verification_sha256",
-            "admission_policy_sha256",
-            "admission_decision_sha256",
-            "receipt_sha256",
-        ):
+        for name in ("artifact_sha256", "promotion_receipt_sha256", "attestation_statement_sha256", "attestation_verification_sha256", "admission_policy_sha256", "admission_decision_sha256", "receipt_sha256"):
             object.__setattr__(self, name, _sha(getattr(self, name), name))
         if not isinstance(self.admitted, bool):
             raise ValueError("admitted must be boolean")
+        if _digest(self._payload()) != self.receipt_sha256:
+            raise ValueError("advanced artifact admission receipt digest mismatch")
+
+    def _payload(self) -> Mapping[str, Any]:
+        return {
+            "schema": "rigorousrag-advanced-artifact-admission-receipt/v1",
+            "artifact_sha256": self.artifact_sha256,
+            "promotion_receipt_sha256": self.promotion_receipt_sha256,
+            "attestation_statement_sha256": self.attestation_statement_sha256,
+            "attestation_verification_sha256": self.attestation_verification_sha256,
+            "admission_policy_sha256": self.admission_policy_sha256,
+            "admission_decision_sha256": self.admission_decision_sha256,
+            "admitted": self.admitted,
+        }
 
 
 def verify_advanced_artifact_attestation(
@@ -69,9 +71,8 @@ def verify_advanced_artifact_attestation(
     now: float,
     expected_dependency_lock_sha256: str,
 ) -> AdvancedArtifactAdmissionReceipt:
-    """Verify promotion + signed supply-chain evidence and produce one immutable receipt."""
-    if not isinstance(manifest, AdvancedArtifactManifest):
-        raise ValueError("manifest must be AdvancedArtifactManifest")
+    """Lower-level bridge after the caller has already verified promotion evidence."""
+    assert_advanced_manifest_self_consistent(manifest)
     if not isinstance(promotion, AdvancedArtifactPromotionReceipt):
         raise ValueError("promotion must be AdvancedArtifactPromotionReceipt")
     if not promotion.promoted or promotion.artifact_sha256 != manifest.artifact_sha256:
@@ -85,10 +86,7 @@ def verify_advanced_artifact_attestation(
         raise ValueError("attestation subject does not match promoted advanced artifact")
     verification = verify_attestation(envelope, verifier, now=now)
     decision = decide_artifact_admission(
-        statement,
-        verification,
-        policy=policy,
-        now=now,
+        statement, verification, policy=policy, now=now,
         expected_artifact_sha256=manifest.artifact_sha256,
         expected_source_revision=manifest.source_commit,
         expected_dependency_lock_sha256=expected_dependency_lock_sha256,
@@ -103,7 +101,34 @@ def verify_advanced_artifact_attestation(
         "admission_decision_sha256": decision.decision_sha256,
         "admitted": decision.admitted,
     }
-    return AdvancedArtifactAdmissionReceipt(**unsigned, receipt_sha256=_digest(unsigned))
+    return AdvancedArtifactAdmissionReceipt(**{key: value for key, value in unsigned.items() if key != "schema"}, receipt_sha256=_digest(unsigned))
+
+
+def verify_advanced_artifact_attestation_with_evidence(
+    manifest: AdvancedArtifactManifest,
+    promotion_evidence: AdvancedPromotionEvidence,
+    envelope: SignedAttestationEnvelope,
+    verifier: AttestationVerifier,
+    *,
+    policy: ArtifactAdmissionPolicy,
+    now: float,
+    expected_dependency_lock_sha256: str,
+) -> AdvancedArtifactAdmissionReceipt:
+    """Authoritative bridge from self-verifying metric evidence to signed admission."""
+    assert_advanced_manifest_self_consistent(manifest)
+    if not isinstance(promotion_evidence, AdvancedPromotionEvidence):
+        raise ValueError("promotion_evidence must be AdvancedPromotionEvidence")
+    if not promotion_evidence.promoted or promotion_evidence.artifact_sha256 != manifest.artifact_sha256:
+        raise ValueError("promotion evidence does not authorize this artifact")
+    return verify_advanced_artifact_attestation(
+        manifest,
+        promotion_evidence.primitive_receipt(),
+        envelope,
+        verifier,
+        policy=policy,
+        now=now,
+        expected_dependency_lock_sha256=expected_dependency_lock_sha256,
+    )
 
 
 def admit_attested_advanced_artifact(
@@ -113,25 +138,36 @@ def admit_attested_advanced_artifact(
     admission: AdvancedArtifactAdmissionReceipt,
     sink: ArtifactAdmissionSink,
 ) -> Any:
-    """Final fail-closed handoff after both metric promotion and signed supply-chain admission."""
+    """Final fail-closed handoff after metric promotion and signed supply-chain admission."""
+    assert_advanced_manifest_self_consistent(manifest)
     if not promotion.promoted or not admission.admitted:
         raise ValueError("artifact must pass promotion and attestation admission")
     if not (manifest.artifact_sha256 == promotion.artifact_sha256 == admission.artifact_sha256):
         raise ValueError("artifact/promotion/admission identities differ")
     if admission.promotion_receipt_sha256 != promotion.receipt_sha256:
         raise ValueError("admission receipt is bound to a different promotion receipt")
-    selected = Path(directory).expanduser().resolve(strict=True)
-    if not selected.is_dir() or selected.is_symlink() or selected.name != manifest.artifact_sha256:
+    selected = safe_advanced_path(directory, label="advanced artifact directory", must_exist=True, require_directory=True)
+    if selected.name != manifest.artifact_sha256:
         raise ValueError("advanced artifact directory must be the exact content-addressed export directory")
-    return sink.admit(
-        str(selected),
-        artifact_sha256=manifest.artifact_sha256,
-        promotion_receipt_sha256=admission.receipt_sha256,
-    )
+    return sink.admit(str(selected), artifact_sha256=manifest.artifact_sha256, promotion_receipt_sha256=admission.receipt_sha256)
+
+
+def admit_attested_advanced_artifact_with_evidence(
+    directory: str | Path,
+    manifest: AdvancedArtifactManifest,
+    promotion_evidence: AdvancedPromotionEvidence,
+    admission: AdvancedArtifactAdmissionReceipt,
+    sink: ArtifactAdmissionSink,
+) -> Any:
+    if not isinstance(promotion_evidence, AdvancedPromotionEvidence):
+        raise ValueError("promotion_evidence must be AdvancedPromotionEvidence")
+    return admit_attested_advanced_artifact(directory, manifest, promotion_evidence.primitive_receipt(), admission, sink)
 
 
 __all__ = [
     "AdvancedArtifactAdmissionReceipt",
     "admit_attested_advanced_artifact",
+    "admit_attested_advanced_artifact_with_evidence",
     "verify_advanced_artifact_attestation",
+    "verify_advanced_artifact_attestation_with_evidence",
 ]
