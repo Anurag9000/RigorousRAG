@@ -55,6 +55,47 @@ def _masked_accuracy(logits: Any, targets: Any, mask: Any | None = None) -> tupl
     return correct, count
 
 
+def _multi_positive_citation_accuracy(batch: Mapping[str, Any], citation_logits: Any, *, ignore_index: int) -> tuple[int, int]:
+    _require_torch()
+    target_mask = batch.get("citation_target_mask")
+    if target_mask is not None:
+        if not torch.is_tensor(target_mask) or target_mask.shape != citation_logits.shape:
+            raise ValueError("citation_target_mask must align with citation logits")
+        target_mask = target_mask.to(device=citation_logits.device, dtype=torch.bool)
+        active = target_mask.any(dim=-1)
+        supervision = batch.get("citation_supervision_mask")
+        if supervision is not None:
+            if not torch.is_tensor(supervision) or supervision.shape != active.shape:
+                raise ValueError("citation_supervision_mask must align with [B,C]")
+            active = active & supervision.to(device=citation_logits.device, dtype=torch.bool)
+        count = int(active.sum().item())
+        if count == 0:
+            return 0, 0
+        prediction = citation_logits.argmax(dim=-1)
+        correct_matrix = target_mask.gather(-1, prediction.unsqueeze(-1)).squeeze(-1)
+        return int((correct_matrix & active).sum().item()), count
+    targets = batch["citation_targets"]
+    mask = targets.ne(ignore_index)
+    count = int(mask.sum().item())
+    if count == 0:
+        return 0, 0
+    prediction = citation_logits.argmax(dim=-1)
+    return int(((prediction == targets) & mask).sum().item()), count
+
+
+def _legal_action_logits(batch: Mapping[str, Any], logits: Any) -> Any:
+    _require_torch()
+    mask = batch.get("valid_action_mask")
+    if mask is None:
+        return logits
+    if not torch.is_tensor(mask) or mask.shape != logits.shape:
+        raise ValueError("valid_action_mask must align with validation action logits")
+    selected = mask.to(device=logits.device, dtype=torch.bool)
+    if torch.any(~selected.any(dim=-1)):
+        raise ValueError("every validation state requires at least one legal action")
+    return logits.masked_fill(~selected, torch.finfo(logits.dtype).min)
+
+
 @dataclass(frozen=True)
 class ValidationLimits:
     maximum_batches: int | None = None
@@ -65,7 +106,7 @@ class ValidationLimits:
 
 
 class GroundedValidationEvaluator:
-    """Evaluate each grounded curriculum stage with its exact training objective."""
+    """Evaluate each grounded curriculum stage with its exact training objective semantics."""
     def __init__(self, dataloader: Iterable[Mapping[str, Any]], stage_steps: Sequence[GroundedGenerationStep], limits: ValidationLimits = ValidationLimits()) -> None:
         self.dataloader = dataloader
         self.stage_steps = tuple(stage_steps)
@@ -96,12 +137,8 @@ class GroundedValidationEvaluator:
                 totals[key] = totals.get(key, 0.0) + float(value)
             outputs = model(**batch["model_inputs"])
             if "citation_logits" in outputs:
-                targets = batch["citation_targets"]
-                mask = targets.ne(step.config.ignore_index)
-                count = int(mask.sum().item())
-                if count:
-                    prediction = outputs["citation_logits"].argmax(dim=-1)
-                    citation_correct += int(((prediction == targets) & mask).sum().item()); citation_count += count
+                correct, count = _multi_positive_citation_accuracy(batch, outputs["citation_logits"], ignore_index=step.config.ignore_index)
+                citation_correct += correct; citation_count += count
             if "support_logits" in outputs:
                 correct, count = _masked_accuracy(outputs["support_logits"], batch["support_targets"], batch.get("claim_mask")); support_correct += correct; support_count += count
             if "contradiction_logits" in outputs:
@@ -131,7 +168,7 @@ class GroundedValidationEvaluator:
 
 
 class DynamicPolicyValidationEvaluator:
-    """Evaluate action, value and information-need learning with exact stage objectives."""
+    """Evaluate action, value and information-need learning with exact authoritative semantics."""
     def __init__(self, dataloader: Iterable[Mapping[str, Any]], stage_steps: Sequence[DynamicRetrievalPolicyStep], limits: ValidationLimits = ValidationLimits()) -> None:
         self.dataloader = dataloader
         self.stage_steps = tuple(stage_steps)
@@ -159,12 +196,18 @@ class DynamicPolicyValidationEvaluator:
                 totals[key] = totals.get(key, 0.0) + float(value)
             outputs = model(features=batch["features"], token_hidden=batch.get("token_hidden"), state_hidden=batch.get("state_hidden"), attention_mask=batch.get("attention_mask"))
             if "action_logits" in outputs:
+                logits = _legal_action_logits(batch, outputs["action_logits"])
                 targets = batch["action_targets"]
                 mask = targets.ne(step.config.ignore_index)
                 count = int(mask.sum().item())
-                action_correct += int(((outputs["action_logits"].argmax(dim=-1) == targets) & mask).sum().item()); action_count += count
+                action_correct += int(((logits.argmax(dim=-1) == targets) & mask).sum().item()); action_count += count
             if "retrieval_value" in outputs:
-                target = batch["realized_retrieval_gain"].to(dtype=outputs["retrieval_value"].dtype)
+                raw_target = batch.get("value_targets", batch.get("realized_retrieval_gain"))
+                if raw_target is None:
+                    raise ValueError("dynamic validation requires value_targets or realized_retrieval_gain")
+                target = raw_target.to(dtype=outputs["retrieval_value"].dtype)
+                if target.shape != outputs["retrieval_value"].shape:
+                    raise ValueError("dynamic validation value target must align with retrieval_value")
                 value_absolute_error += float((outputs["retrieval_value"] - target).abs().sum().item()); value_count += int(target.numel())
             if "need_logits" in outputs and "need_target_mask" in batch:
                 valid = batch.get("need_valid_mask", torch.ones_like(batch["need_target_mask"], dtype=torch.bool)).to(dtype=torch.bool)
