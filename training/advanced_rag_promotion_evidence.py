@@ -83,13 +83,23 @@ class AdvancedPromotionEvidence:
         }
 
     def primitive_receipt(self) -> AdvancedArtifactPromotionReceipt:
-        return AdvancedArtifactPromotionReceipt(self.artifact_sha256, self.policy_sha256, self.evaluation_receipt_sha256, self.promoted, self.reason_codes, self.primitive_receipt_sha256)
+        return AdvancedArtifactPromotionReceipt(
+            self.artifact_sha256,
+            self.policy_sha256,
+            self.evaluation_receipt_sha256,
+            self.metrics_sha256,
+            self.promoted,
+            self.reason_codes,
+            self.primitive_receipt_sha256,
+        )
 
 
 def build_advanced_promotion_evidence(manifest: AdvancedArtifactManifest, evaluation: AdvancedEvaluationReceipt, policy: MetricQualificationPolicy) -> AdvancedPromotionEvidence:
     assert_advanced_manifest_self_consistent(manifest)
     primitive = qualify_advanced_artifact_with_receipt(manifest, evaluation, policy)
     metrics_sha = _digest({str(key): float(value) for key, value in sorted(evaluation.metrics.items())})
+    if primitive.metrics_sha256 != metrics_sha:
+        raise ValueError("primitive promotion receipt metrics digest differs from evaluation metrics")
     unsigned = {
         "schema": "rigorousrag-advanced-promotion-evidence/v1",
         "artifact_sha256": primitive.artifact_sha256,
@@ -101,10 +111,14 @@ def build_advanced_promotion_evidence(manifest: AdvancedArtifactManifest, evalua
         "primitive_receipt_sha256": primitive.receipt_sha256,
     }
     return AdvancedPromotionEvidence(
-        artifact_sha256=primitive.artifact_sha256, policy_sha256=primitive.policy_sha256,
-        evaluation_receipt_sha256=primitive.evaluation_receipt_sha256, metrics_sha256=metrics_sha,
-        promoted=primitive.promoted, reason_codes=tuple(sorted(primitive.reason_codes)),
-        primitive_receipt_sha256=primitive.receipt_sha256, evidence_sha256=_digest(unsigned),
+        artifact_sha256=primitive.artifact_sha256,
+        policy_sha256=primitive.policy_sha256,
+        evaluation_receipt_sha256=primitive.evaluation_receipt_sha256,
+        metrics_sha256=metrics_sha,
+        promoted=primitive.promoted,
+        reason_codes=tuple(sorted(primitive.reason_codes)),
+        primitive_receipt_sha256=primitive.receipt_sha256,
+        evidence_sha256=_digest(unsigned),
     )
 
 
@@ -117,7 +131,9 @@ def write_advanced_promotion_evidence(path: str | Path, evidence: AdvancedPromot
     descriptor, temporary = tempfile.mkstemp(prefix=f".{destination.name}-", suffix=".tmp", dir=destination.parent)
     try:
         with os.fdopen(descriptor, "wb") as handle:
-            handle.write(_canonical(payload) + b"\n"); handle.flush(); os.fsync(handle.fileno())
+            handle.write(_canonical(payload) + b"\n")
+            handle.flush()
+            os.fsync(handle.fileno())
         os.replace(temporary, destination)
     finally:
         if os.path.exists(temporary):
@@ -137,10 +153,14 @@ def read_advanced_promotion_evidence(path: str | Path) -> AdvancedPromotionEvide
     if not isinstance(payload, Mapping) or set(payload) != required or payload["schema"] != "rigorousrag-advanced-promotion-evidence/v1":
         raise ValueError("unsupported or malformed promotion evidence")
     return AdvancedPromotionEvidence(
-        artifact_sha256=payload["artifact_sha256"], policy_sha256=payload["policy_sha256"],
-        evaluation_receipt_sha256=payload["evaluation_receipt_sha256"], metrics_sha256=payload["metrics_sha256"],
-        promoted=payload["promoted"], reason_codes=tuple(payload["reason_codes"]),
-        primitive_receipt_sha256=payload["primitive_receipt_sha256"], evidence_sha256=payload["evidence_sha256"],
+        artifact_sha256=payload["artifact_sha256"],
+        policy_sha256=payload["policy_sha256"],
+        evaluation_receipt_sha256=payload["evaluation_receipt_sha256"],
+        metrics_sha256=payload["metrics_sha256"],
+        promoted=payload["promoted"],
+        reason_codes=tuple(payload["reason_codes"]),
+        primitive_receipt_sha256=payload["primitive_receipt_sha256"],
+        evidence_sha256=payload["evidence_sha256"],
     )
 
 
