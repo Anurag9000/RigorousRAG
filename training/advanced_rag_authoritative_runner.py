@@ -1,8 +1,9 @@
 """Authoritative ready-to-train composition for advanced RAG.
 
 Configuration-driven and direct-library training use the same strict path/tokenizer/cache
-authority, exact input identities, multi-evidence/contested grounding supervision, and
-legal-action-masked dynamic policy objectives while preserving older research primitives.
+authority, exact input identities, complete cache-key preflight, multi-evidence/contested
+grounding supervision, and legal-action-masked dynamic policy objectives while preserving
+older research primitives.
 """
 from __future__ import annotations
 
@@ -60,9 +61,19 @@ def _assert_cache_binding(
         raise ValueError(f"{label} source commit differs from training plan")
     if producer_sha256 is not None and getattr(identity, "producer_sha256", None) != producer_sha256:
         raise ValueError(f"{label} producer identity differs from training plan")
-    # Force the strongest exact content contract now; malformed/orphan/mutated strict caches
-    # therefore fail before any optimizer or dataloader work begins.
     provider_identity_sha256(cache, label=label)
+
+
+def _require_cache_key(cache: Any | None, key: str | None, *, label: str) -> None:
+    if cache is None:
+        raise ValueError(f"{label} cache is required")
+    if not isinstance(key, str) or not key.strip():
+        raise ValueError(f"{label} cache key is required")
+    contains = getattr(cache, "contains", None)
+    if not callable(contains):
+        raise ValueError(f"{label} cache must expose verified membership preflight")
+    if not bool(contains(key)):
+        raise ValueError(f"{label} cache lacks required key {key!r}")
 
 
 class AuthoritativeGroundedGeneratorTrainingRunner(GroundedGeneratorTrainingRunner):
@@ -111,10 +122,26 @@ class AuthoritativeGroundedGeneratorTrainingRunner(GroundedGeneratorTrainingRunn
             return Seq2SeqGroundedGeneratorTrainingModule(base_model=self.base_model, config=self.plan.architecture, retriever_model=self.retriever_model)
         return GroundedGeneratorTrainingModule(base_model=self.base_model, config=self.plan.architecture, retriever_model=self.retriever_model)
 
+    def _preflight_cache_coverage(self, dataset: ManifestBoundAuthoritativeJsonlDataset) -> None:
+        needs_teacher = any(stage.objective.teacher_distillation > 0.0 for stage in self.plan.stages)
+        needs_preference = any(stage.objective.preference > 0.0 for stage in self.plan.stages)
+        needs_retriever = any(stage.objective.retriever_coupling > 0.0 for stage in self.plan.stages)
+        utility_cache = getattr(self.retriever_batch_builder, "utility_cache", None) if self.retriever_batch_builder is not None else None
+        for index in range(len(dataset)):
+            example = dataset[index]
+            if needs_teacher:
+                _require_cache_key(self.teacher_cache, example.teacher_cache_key, label=f"teacher[{example.example_id}]")
+            if needs_preference and example.reference_chosen_log_prob is None:
+                _require_cache_key(self.reference_cache, example.example_id, label=f"reference[{example.example_id}]")
+            if needs_retriever:
+                key = example.retriever_cache_key or example.example_id
+                _require_cache_key(utility_cache, key, label=f"document-utility[{example.example_id}]")
+
     def run(self, *, resume_checkpoint_digest: str | None = None, event_sink: Any | None = None) -> AdvancedTrainingRunResult:
         train_dataset = ManifestBoundAuthoritativeJsonlDataset(self.train_split.path, expected_sha256=self.train_split.content_sha256, dataset_manifest_sha256=self.plan.dataset_manifest_sha256, split_name=self.train_split.split_name, record_kind="grounded_generation", expected_record_count=self.train_split.expected_record_count)
         validation_dataset = ManifestBoundAuthoritativeJsonlDataset(self.validation_split.path, expected_sha256=self.validation_split.content_sha256, dataset_manifest_sha256=self.plan.dataset_manifest_sha256, split_name=self.validation_split.split_name, record_kind="grounded_generation", expected_record_count=self.validation_split.expected_record_count)
         self._preflight(train_dataset); self._preflight(validation_dataset)
+        self._preflight_cache_coverage(train_dataset); self._preflight_cache_coverage(validation_dataset)
         effective_trainability = _effective_trainability(self.plan.stages, self.trainability)
         path_binding = GroundedGeneratorPathBinding(self.generator_family, self.collator_config)
         input_identity = AdvancedTrainingInputIdentity(
@@ -158,10 +185,19 @@ class AuthoritativeDynamicRagPolicyTrainingRunner(DynamicRagPolicyTrainingRunner
             producer_sha256=self.plan.base_generator_sha256,
         )
 
+    def _preflight_cache_coverage(self, dataset: ManifestBoundAuthoritativeJsonlDataset) -> None:
+        needs_hidden = any(stage.objective.need_selection_weight > 0.0 for stage in self.plan.stages)
+        if not needs_hidden:
+            return
+        for index in range(len(dataset)):
+            step = dataset[index]
+            _require_cache_key(self.hidden_state_cache, step.hidden_state_cache_key, label=f"hidden-state[{step.episode_id}:{step.step_id}]")
+
     def run(self, *, resume_checkpoint_digest: str | None = None, event_sink: Any | None = None) -> AdvancedTrainingRunResult:
         train_dataset = ManifestBoundAuthoritativeJsonlDataset(self.train_split.path, expected_sha256=self.train_split.content_sha256, dataset_manifest_sha256=self.plan.dataset_manifest_sha256, split_name=self.train_split.split_name, record_kind="dynamic_rag_episode", expected_record_count=self.train_split.expected_record_count)
         validation_dataset = ManifestBoundAuthoritativeJsonlDataset(self.validation_split.path, expected_sha256=self.validation_split.content_sha256, dataset_manifest_sha256=self.plan.dataset_manifest_sha256, split_name=self.validation_split.split_name, record_kind="dynamic_rag_episode", expected_record_count=self.validation_split.expected_record_count)
         self._preflight(train_dataset); self._preflight(validation_dataset)
+        self._preflight_cache_coverage(train_dataset); self._preflight_cache_coverage(validation_dataset)
         effective_trainability = _effective_trainability(self.plan.stages, self.trainability)
         input_identity = AdvancedTrainingInputIdentity(
             kind="dynamic_rag_policy", plan_sha256=self.plan.plan_sha256,
