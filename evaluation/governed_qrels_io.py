@@ -1,4 +1,4 @@
-"""Strict persistence and reconstruction for governed qrels v2 receipts."""
+"""Strict persistence and disk-backed reconstruction for governed qrels v2 receipts."""
 from __future__ import annotations
 
 import json
@@ -7,7 +7,8 @@ import tempfile
 from pathlib import Path
 from typing import Any, Mapping
 
-from evaluation.governed_qrels import GovernedQrels, GovernedQrelsReceipt, load_governed_qrels
+from evaluation.authoritative_governed_qrels import load_authoritative_governed_qrels
+from evaluation.governed_qrels import GovernedQrels, GovernedQrelsReceipt
 from training.advanced_path_authority import safe_advanced_path
 
 _MAX_BYTES = 16 * 1024 * 1024
@@ -65,8 +66,9 @@ def read_governed_qrels_receipt(path: str | Path) -> GovernedQrelsReceipt:
 
 
 def load_governed_qrels_from_receipt(path: str | Path) -> GovernedQrels:
+    """Reconstruct exact persisted qrels through the disk-backed authoritative loader."""
     receipt = read_governed_qrels_receipt(path)
-    qrels = load_governed_qrels(
+    qrels = load_authoritative_governed_qrels(
         receipt.source_path,
         expected_sha256=receipt.source_sha256,
         input_format=receipt.input_format,
@@ -76,6 +78,10 @@ def load_governed_qrels_from_receipt(path: str | Path) -> GovernedQrels:
         relevance_field=receipt.relevance_field,
     )
     if qrels.receipt != receipt or qrels.receipt.receipt_sha256 != receipt.receipt_sha256:
+        # Close the temporary store before failing reconstruction.
+        mapping = qrels.relevant_by_query
+        close = getattr(mapping, "close", None)
+        if callable(close): close()
         raise ValueError("reloaded qrels semantics differ from persisted receipt")
     return qrels
 
