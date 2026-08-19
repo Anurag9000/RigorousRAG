@@ -28,6 +28,13 @@ def _digest(value: Any) -> str:
     return hashlib.sha256(_canonical(value)).hexdigest()
 
 
+def _sha(value: Any, label: str) -> str:
+    selected = str(value).strip().lower()
+    if len(selected) != 64 or any(ch not in "0123456789abcdef" for ch in selected):
+        raise ValueError(f"{label} must be SHA-256")
+    return selected
+
+
 def _retriever_supervision_sha256(config: GroundedConfiguredRun) -> str | None:
     if config.retriever_utility_cache is None:
         return None
@@ -123,24 +130,25 @@ class VerifiedAdvancedCheckpointBinding:
     source_commit: str
     dataset_manifest_sha256: str
     model_architecture: str
-    generator_family: str | None
+    generator_family: str
+    tokenizer_sha256: str
     retriever_positive_label_index: int | None = None
 
     def __post_init__(self) -> None:
         if self.kind not in {"grounded_generation", "dynamic_rag_policy"}:
             raise ValueError("unsupported advanced checkpoint kind")
+        if self.generator_family not in {"causal_lm", "seq2seq_lm"}:
+            raise ValueError("advanced checkpoint binding requires causal_lm or seq2seq_lm generator_family")
+        object.__setattr__(self, "tokenizer_sha256", _sha(self.tokenizer_sha256, "tokenizer_sha256"))
         if self.kind == "grounded_generation":
-            if self.generator_family not in {"causal_lm", "seq2seq_lm"}:
-                raise ValueError("grounded checkpoint binding requires generator family")
             if self.retriever_positive_label_index is not None and (
                 isinstance(self.retriever_positive_label_index, bool)
                 or not isinstance(self.retriever_positive_label_index, int)
                 or self.retriever_positive_label_index < 0
             ):
                 raise ValueError("retriever_positive_label_index must be non-negative or None")
-        else:
-            if self.generator_family is not None or self.retriever_positive_label_index is not None:
-                raise ValueError("dynamic checkpoint binding may not carry grounded runtime adapter data")
+        elif self.retriever_positive_label_index is not None:
+            raise ValueError("dynamic checkpoint binding may not carry grounded retriever adapter data")
 
 
 def verify_checkpoint_against_run_config(
@@ -157,7 +165,8 @@ def verify_checkpoint_against_run_config(
         identity = grounded_training_input_identity(config)
         trainer = _grounded_trainer(config, identity)
         expected_architecture = f"grounded_generation:{config.plan.plan_sha256}"
-        generator_family: str | None = config.base_model.artifact_kind
+        generator_family = config.base_model.artifact_kind
+        tokenizer_sha256 = config.plan.tokenizer_sha256
         retriever_positive_label_index = config.retriever_coupling.positive_label_index if config.retriever_model is not None else None
         kind = "grounded_generation"
         plan_sha256 = config.plan.plan_sha256
@@ -167,7 +176,8 @@ def verify_checkpoint_against_run_config(
         identity = dynamic_training_input_identity(config)
         trainer = _dynamic_trainer(config, identity)
         expected_architecture = f"dynamic_retrieval_policy:{config.plan.plan_sha256}"
-        generator_family = None
+        generator_family = config.generator.artifact_kind
+        tokenizer_sha256 = config.tokenizer.expected_sha256
         retriever_positive_label_index = None
         kind = "dynamic_rag_policy"
         plan_sha256 = config.plan.plan_sha256
@@ -201,6 +211,7 @@ def verify_checkpoint_against_run_config(
         dataset_manifest_sha256=dataset_sha,
         model_architecture=expected_architecture,
         generator_family=generator_family,
+        tokenizer_sha256=tokenizer_sha256,
         retriever_positive_label_index=retriever_positive_label_index,
     )
 
