@@ -5,22 +5,28 @@ import hashlib
 import os
 import sqlite3
 import tempfile
-from typing import Any
+from typing import TYPE_CHECKING
 
-from evaluation.authoritative_governed_retrieval_benchmark import (
-    AuthoritativeGovernedRetrievalBenchmark,
-)
 from evaluation.benchmark_run_evidence import _normalize_row
 from evaluation.benchmark_suite import BenchmarkSuiteResult
+
+if TYPE_CHECKING:
+    from evaluation.authoritative_governed_retrieval_benchmark import (
+        AuthoritativeGovernedRetrievalBenchmark,
+    )
 
 _MAX_SAMPLE = 100
 
 
 def assert_authoritative_retrieval_result_universe(
     result: BenchmarkSuiteResult,
-    benchmark: AuthoritativeGovernedRetrievalBenchmark,
+    benchmark: "AuthoritativeGovernedRetrievalBenchmark",
 ) -> str:
     """Require one canonical result row for every governed benchmark query, and no others."""
+    from evaluation.authoritative_governed_retrieval_benchmark import (
+        AuthoritativeGovernedRetrievalBenchmark,
+    )
+
     if not isinstance(result, BenchmarkSuiteResult):
         raise ValueError("result must be BenchmarkSuiteResult")
     if not isinstance(benchmark, AuthoritativeGovernedRetrievalBenchmark):
