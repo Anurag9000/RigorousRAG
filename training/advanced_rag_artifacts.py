@@ -1,4 +1,10 @@
-"""Checkpoint-to-inference artifact export and promotion contracts for advanced RAG."""
+"""Checkpoint-to-inference artifact export and promotion contracts for advanced RAG.
+
+Authoritative exports require a checkpoint/run-config verification receipt.  The resulting
+manifest carries enough canonical architecture data to reconstruct the repository-owned
+heads/controllers while still referring to separately admitted base-model/tokenizer trees by
+digest.  Nothing is loaded or executed on import.
+"""
 from __future__ import annotations
 
 import hashlib
@@ -11,9 +17,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping, Protocol, Sequence
 
+from training.advanced_rag_run_binding import VerifiedAdvancedCheckpointBinding
 from training.checkpointing import CheckpointManager
-from training.dynamic_retrieval_policy import DynamicPolicyTrainingPlan
-from training.grounded_generation import GroundedTrainingPlan
+from training.dynamic_retrieval_policy import DynamicPolicyArchitecture, DynamicPolicyTrainingPlan, DynamicRetrievalBudget
+from training.grounded_generation import GroundedGenerationArchitectureConfig, GroundedTrainingPlan
 
 _HEX = frozenset("0123456789abcdef")
 
@@ -55,6 +62,65 @@ def _file_sha(path: Path) -> str:
     return digest.hexdigest()
 
 
+def grounded_runtime_config(plan: GroundedTrainingPlan) -> Mapping[str, Any]:
+    architecture = plan.architecture
+    return {
+        "architecture": {
+            "hidden_size": architecture.hidden_size,
+            "attribution_size": architecture.attribution_size,
+            "reflection_actions": [action.value for action in architecture.reflection_actions],
+        }
+    }
+
+
+def dynamic_runtime_config(plan: DynamicPolicyTrainingPlan) -> Mapping[str, Any]:
+    architecture = plan.architecture
+    budget = plan.budget
+    return {
+        "architecture": {
+            "feature_names": list(architecture.feature_names),
+            "hidden_size": architecture.hidden_size,
+            "context_hidden_size": architecture.context_hidden_size,
+            "need_projection_size": architecture.need_projection_size,
+            "actions": [action.value for action in architecture.actions],
+        },
+        "budget": {
+            "max_generation_tokens": budget.max_generation_tokens,
+            "max_retrievals": budget.max_retrievals,
+            "max_verifications": budget.max_verifications,
+            "min_tokens_before_retrieval": budget.min_tokens_before_retrieval,
+            "min_tokens_before_stop": budget.min_tokens_before_stop,
+            "max_consecutive_retrievals": budget.max_consecutive_retrievals,
+        },
+    }
+
+
+def _validate_runtime_config(kind: str, value: Mapping[str, Any], *, architecture_sha256: str, budget_sha256: str | None) -> Mapping[str, Any]:
+    if not isinstance(value, Mapping):
+        raise ValueError("runtime_config must be a mapping")
+    if kind == "grounded_generator":
+        if set(value) != {"architecture"} or not isinstance(value["architecture"], Mapping):
+            raise ValueError("grounded runtime_config must contain only architecture")
+        architecture = GroundedGenerationArchitectureConfig(**dict(value["architecture"]))
+        if architecture.architecture_sha256 != architecture_sha256:
+            raise ValueError("grounded runtime architecture does not match architecture_sha256")
+        if budget_sha256 is not None:
+            raise ValueError("grounded artifact may not carry dynamic budget")
+    elif kind == "dynamic_rag_policy":
+        if set(value) != {"architecture", "budget"} or not isinstance(value["architecture"], Mapping) or not isinstance(value["budget"], Mapping):
+            raise ValueError("dynamic runtime_config must contain architecture and budget")
+        architecture = DynamicPolicyArchitecture(**dict(value["architecture"]))
+        budget = DynamicRetrievalBudget(**dict(value["budget"]))
+        if architecture.architecture_sha256 != architecture_sha256:
+            raise ValueError("dynamic runtime architecture does not match architecture_sha256")
+        if budget_sha256 is None or budget.budget_sha256 != budget_sha256:
+            raise ValueError("dynamic runtime budget does not match budget_sha256")
+    else:
+        raise ValueError("unsupported advanced artifact kind")
+    # Round-trip through strict canonical JSON types so callers cannot retain mutable aliases.
+    return json.loads(_canonical(value).decode("utf-8"))
+
+
 @dataclass(frozen=True)
 class MetricQualificationPolicy:
     minimum: Mapping[str, float] = field(default_factory=dict)
@@ -78,6 +144,7 @@ class AdvancedArtifactManifest:
     kind: str
     checkpoint_digest: str
     plan_sha256: str
+    training_input_sha256: str
     training_config_sha256: str
     source_commit: str
     dataset_manifest_sha256: str
@@ -87,6 +154,7 @@ class AdvancedArtifactManifest:
     tokenizer_sha256: str | None
     retrieval_stack_sha256: str | None
     budget_sha256: str | None
+    runtime_config: Mapping[str, Any]
     weights_sha256: str
     weights_bytes: int
     included_prefixes: tuple[str, ...]
@@ -96,7 +164,10 @@ class AdvancedArtifactManifest:
     def __post_init__(self) -> None:
         if self.kind not in {"grounded_generator", "dynamic_rag_policy"}:
             raise ValueError("unsupported advanced artifact kind")
-        for name in ("checkpoint_digest", "plan_sha256", "training_config_sha256", "dataset_manifest_sha256", "architecture_sha256", "base_model_sha256", "weights_sha256", "artifact_sha256"):
+        for name in (
+            "checkpoint_digest", "plan_sha256", "training_input_sha256", "training_config_sha256",
+            "dataset_manifest_sha256", "architecture_sha256", "base_model_sha256", "weights_sha256", "artifact_sha256",
+        ):
             object.__setattr__(self, name, _sha(getattr(self, name), name))
         commit = str(self.source_commit).strip().lower()
         if len(commit) not in {40, 64} or any(ch not in _HEX for ch in commit):
@@ -105,12 +176,15 @@ class AdvancedArtifactManifest:
         if self.kind == "grounded_generator":
             if self.generator_family not in {"causal_lm", "seq2seq_lm"}:
                 raise ValueError("grounded generator artifact requires causal_lm or seq2seq_lm generator_family")
+            if self.tokenizer_sha256 is None:
+                raise ValueError("grounded generator artifact requires tokenizer identity")
         elif self.generator_family is not None:
             raise ValueError("dynamic policy artifact does not own a generator family")
         for name in ("tokenizer_sha256", "retrieval_stack_sha256", "budget_sha256", "evaluation_receipt_sha256"):
             value = getattr(self, name)
             if value is not None:
                 object.__setattr__(self, name, _sha(value, name))
+        object.__setattr__(self, "runtime_config", _validate_runtime_config(self.kind, self.runtime_config, architecture_sha256=self.architecture_sha256, budget_sha256=self.budget_sha256))
         if isinstance(self.weights_bytes, bool) or not isinstance(self.weights_bytes, int) or self.weights_bytes <= 0:
             raise ValueError("weights_bytes must be positive")
         prefixes = tuple(str(value).strip() for value in self.included_prefixes)
@@ -134,6 +208,10 @@ class AdvancedArtifactPromotionReceipt:
         reasons = tuple(str(value).strip() for value in self.reason_codes)
         if any(not value for value in reasons):
             raise ValueError("promotion reason codes are invalid")
+        if self.promoted and reasons:
+            raise ValueError("promoted receipt may not contain failure reasons")
+        if not self.promoted and not reasons:
+            raise ValueError("blocked promotion requires reason codes")
         object.__setattr__(self, "reason_codes", reasons)
 
 
@@ -167,17 +245,38 @@ def _write_manifest(directory: Path, payload: Mapping[str, Any]) -> None:
 
 
 def _manifest_payload(**values: Any) -> tuple[dict[str, Any], str]:
-    unsigned = {"schema": "rigorousrag-advanced-inference-artifact/v2", **values}
+    unsigned = {"schema": "rigorousrag-advanced-inference-artifact/v3", **values}
     artifact_sha = _digest(unsigned)
     return {**unsigned, "artifact_sha256": artifact_sha}, artifact_sha
 
 
-def export_grounded_generator_artifact(*, checkpoint_manager: CheckpointManager, checkpoint_digest: str, plan: GroundedTrainingPlan, generator_family: str, destination_root: str | Path, evaluation_receipt_sha256: str | None = None, include_retriever: bool = True) -> AdvancedArtifactManifest:
-    if generator_family not in {"causal_lm", "seq2seq_lm"}:
-        raise ValueError("generator_family must be causal_lm or seq2seq_lm")
+def _assert_binding(binding: VerifiedAdvancedCheckpointBinding, *, kind: str, plan_sha256: str, checkpoint_digest: str) -> None:
+    if not isinstance(binding, VerifiedAdvancedCheckpointBinding):
+        raise ValueError("verified_binding must be VerifiedAdvancedCheckpointBinding")
+    if binding.kind != kind or binding.plan_sha256 != plan_sha256 or binding.checkpoint_digest != checkpoint_digest:
+        raise ValueError("verified checkpoint binding does not match requested artifact export")
+
+
+def export_grounded_generator_artifact(
+    *,
+    checkpoint_manager: CheckpointManager,
+    checkpoint_digest: str,
+    plan: GroundedTrainingPlan,
+    verified_binding: VerifiedAdvancedCheckpointBinding,
+    destination_root: str | Path,
+    evaluation_receipt_sha256: str | None = None,
+    include_retriever: bool = True,
+) -> AdvancedArtifactManifest:
+    _assert_binding(verified_binding, kind="grounded_generation", plan_sha256=plan.plan_sha256, checkpoint_digest=checkpoint_digest)
     path, checkpoint = checkpoint_manager.verify(checkpoint_digest)
-    if checkpoint.source_commit != plan.source_commit or checkpoint.dataset_manifest_digest != plan.dataset_manifest_sha256 or checkpoint.model_architecture != f"grounded_generation:{plan.plan_sha256}":
-        raise ValueError("checkpoint is not bound to the supplied grounded training plan")
+    if (
+        checkpoint.source_commit != plan.source_commit
+        or checkpoint.dataset_manifest_digest != plan.dataset_manifest_sha256
+        or checkpoint.model_architecture != f"grounded_generation:{plan.plan_sha256}"
+        or checkpoint.training_config_digest != verified_binding.training_config_sha256
+        or checkpoint.run_id != verified_binding.bound_run_id
+    ):
+        raise ValueError("checkpoint no longer matches verified grounded training binding")
     prefixes = ["base_model.", "auxiliary."]
     if include_retriever and plan.retriever_stack_sha256 is not None:
         prefixes.append("retriever_model.")
@@ -187,12 +286,15 @@ def export_grounded_generator_artifact(*, checkpoint_manager: CheckpointManager,
         weights_sha, weights_bytes = _save_filtered_safetensors(path / "model.safetensors", temporary / "model.safetensors", prefixes)
         values = {
             "kind": "grounded_generator", "checkpoint_digest": checkpoint_digest, "plan_sha256": plan.plan_sha256,
-            "training_config_sha256": checkpoint.training_config_digest,
+            "training_input_sha256": verified_binding.training_input_sha256,
+            "training_config_sha256": verified_binding.training_config_sha256,
             "source_commit": plan.source_commit, "dataset_manifest_sha256": plan.dataset_manifest_sha256,
             "architecture_sha256": plan.architecture.architecture_sha256, "base_model_sha256": plan.base_model_sha256,
-            "generator_family": generator_family,
-            "tokenizer_sha256": plan.tokenizer_sha256, "retrieval_stack_sha256": plan.retriever_stack_sha256 if include_retriever else None,
-            "budget_sha256": None, "weights_sha256": weights_sha, "weights_bytes": weights_bytes,
+            "generator_family": verified_binding.generator_family,
+            "tokenizer_sha256": plan.tokenizer_sha256,
+            "retrieval_stack_sha256": plan.retriever_stack_sha256 if include_retriever else None,
+            "budget_sha256": None, "runtime_config": grounded_runtime_config(plan),
+            "weights_sha256": weights_sha, "weights_bytes": weights_bytes,
             "included_prefixes": prefixes, "evaluation_receipt_sha256": evaluation_receipt_sha256,
         }
         payload, artifact_sha = _manifest_payload(**values)
@@ -208,10 +310,25 @@ def export_grounded_generator_artifact(*, checkpoint_manager: CheckpointManager,
             shutil.rmtree(temporary, ignore_errors=True)
 
 
-def export_dynamic_policy_artifact(*, checkpoint_manager: CheckpointManager, checkpoint_digest: str, plan: DynamicPolicyTrainingPlan, destination_root: str | Path, evaluation_receipt_sha256: str | None = None) -> AdvancedArtifactManifest:
+def export_dynamic_policy_artifact(
+    *,
+    checkpoint_manager: CheckpointManager,
+    checkpoint_digest: str,
+    plan: DynamicPolicyTrainingPlan,
+    verified_binding: VerifiedAdvancedCheckpointBinding,
+    destination_root: str | Path,
+    evaluation_receipt_sha256: str | None = None,
+) -> AdvancedArtifactManifest:
+    _assert_binding(verified_binding, kind="dynamic_rag_policy", plan_sha256=plan.plan_sha256, checkpoint_digest=checkpoint_digest)
     path, checkpoint = checkpoint_manager.verify(checkpoint_digest)
-    if checkpoint.source_commit != plan.source_commit or checkpoint.dataset_manifest_digest != plan.dataset_manifest_sha256 or checkpoint.model_architecture != f"dynamic_retrieval_policy:{plan.plan_sha256}":
-        raise ValueError("checkpoint is not bound to the supplied dynamic policy training plan")
+    if (
+        checkpoint.source_commit != plan.source_commit
+        or checkpoint.dataset_manifest_digest != plan.dataset_manifest_sha256
+        or checkpoint.model_architecture != f"dynamic_retrieval_policy:{plan.plan_sha256}"
+        or checkpoint.training_config_digest != verified_binding.training_config_sha256
+        or checkpoint.run_id != verified_binding.bound_run_id
+    ):
+        raise ValueError("checkpoint no longer matches verified dynamic-policy training binding")
     prefixes = ("controller.", "need_selector.")
     root = Path(destination_root).expanduser().resolve(); root.mkdir(parents=True, exist_ok=True)
     temporary = Path(tempfile.mkdtemp(prefix=".dynamic-export-", dir=root))
@@ -219,12 +336,13 @@ def export_dynamic_policy_artifact(*, checkpoint_manager: CheckpointManager, che
         weights_sha, weights_bytes = _save_filtered_safetensors(path / "model.safetensors", temporary / "model.safetensors", prefixes)
         values = {
             "kind": "dynamic_rag_policy", "checkpoint_digest": checkpoint_digest, "plan_sha256": plan.plan_sha256,
-            "training_config_sha256": checkpoint.training_config_digest,
+            "training_input_sha256": verified_binding.training_input_sha256,
+            "training_config_sha256": verified_binding.training_config_sha256,
             "source_commit": plan.source_commit, "dataset_manifest_sha256": plan.dataset_manifest_sha256,
             "architecture_sha256": plan.architecture.architecture_sha256, "base_model_sha256": plan.base_generator_sha256,
-            "generator_family": None,
-            "tokenizer_sha256": None, "retrieval_stack_sha256": plan.retrieval_stack_sha256,
-            "budget_sha256": plan.budget.budget_sha256, "weights_sha256": weights_sha, "weights_bytes": weights_bytes,
+            "generator_family": None, "tokenizer_sha256": None, "retrieval_stack_sha256": plan.retrieval_stack_sha256,
+            "budget_sha256": plan.budget.budget_sha256, "runtime_config": dynamic_runtime_config(plan),
+            "weights_sha256": weights_sha, "weights_bytes": weights_bytes,
             "included_prefixes": list(prefixes), "evaluation_receipt_sha256": evaluation_receipt_sha256,
         }
         payload, artifact_sha = _manifest_payload(**values)
@@ -257,7 +375,11 @@ def qualify_advanced_artifact(manifest: AdvancedArtifactManifest, *, evaluation_
         elif selected[key] > threshold:
             reasons.append(f"above_maximum:{key}")
     promoted = not reasons
-    unsigned = {"schema": "rigorousrag-advanced-artifact-promotion/v1", "artifact_sha256": manifest.artifact_sha256, "policy_sha256": policy.policy_sha256, "evaluation_receipt_sha256": evaluation_sha, "promoted": promoted, "reason_codes": sorted(reasons), "metrics_sha256": _digest(selected)}
+    unsigned = {
+        "schema": "rigorousrag-advanced-artifact-promotion/v1", "artifact_sha256": manifest.artifact_sha256,
+        "policy_sha256": policy.policy_sha256, "evaluation_receipt_sha256": evaluation_sha,
+        "promoted": promoted, "reason_codes": sorted(reasons), "metrics_sha256": _digest(selected),
+    }
     receipt_sha = _digest(unsigned)
     return AdvancedArtifactPromotionReceipt(manifest.artifact_sha256, policy.policy_sha256, evaluation_sha, promoted, tuple(sorted(reasons)), receipt_sha)
 
@@ -271,4 +393,8 @@ def admit_promoted_artifact(directory: str | Path, manifest: AdvancedArtifactMan
     return sink.admit(str(selected), artifact_sha256=manifest.artifact_sha256, promotion_receipt_sha256=receipt.receipt_sha256)
 
 
-__all__ = ["AdvancedArtifactManifest", "AdvancedArtifactPromotionReceipt", "ArtifactAdmissionSink", "MetricQualificationPolicy", "admit_promoted_artifact", "export_dynamic_policy_artifact", "export_grounded_generator_artifact", "qualify_advanced_artifact"]
+__all__ = [
+    "AdvancedArtifactManifest", "AdvancedArtifactPromotionReceipt", "ArtifactAdmissionSink", "MetricQualificationPolicy",
+    "admit_promoted_artifact", "dynamic_runtime_config", "export_dynamic_policy_artifact",
+    "export_grounded_generator_artifact", "grounded_runtime_config", "qualify_advanced_artifact",
+]
