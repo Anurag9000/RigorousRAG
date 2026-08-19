@@ -4,6 +4,9 @@ The importer writes canonical benchmark JSONL and a self-verifying receipt.  Thi
 the read side: it re-hashes the receipt, manifest and every canonical split, reconstructs the
 real :class:`evaluation.dataset_governance.DatasetManifest`, validates split identities, and
 exposes ``BenchmarkExample`` iterators that plug directly into ``run_benchmark_suite``.
+
+Split verification is streaming: detailed examples are never accumulated merely to verify an
+import. Identifier collections are retained only for the deterministic split-identity digests.
 """
 from __future__ import annotations
 
@@ -15,15 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator, Mapping
 
-from evaluation.dataset_governance import (
-    DatasetCard,
-    DatasetManifest,
-    DatasetModality,
-    DatasetTask,
-    LicenseStatus,
-    SplitManifest,
-    canonical_digest,
-)
+from evaluation.dataset_governance import DatasetCard, DatasetManifest, DatasetModality, DatasetTask, LicenseStatus, SplitManifest
 from evaluation.governed_benchmark_import import GovernedBenchmarkImportReceipt, ImportedSplitReceipt
 from tools.benchmark_adapters import BenchmarkExample
 
@@ -108,7 +103,7 @@ def _benchmark_example(value: Any, *, line_number: int) -> BenchmarkExample:
     metadata = value.get("metadata")
     if not isinstance(metadata, Mapping) or len(metadata) > 10_000:
         raise ValueError(f"canonical benchmark line {line_number} metadata must be a bounded object")
-    example = BenchmarkExample(
+    return BenchmarkExample(
         example_id=_identifier(value.get("example_id"), "example_id"),
         query=_identifier(value.get("query"), "query", 8_000_000),
         answers=_string_tuple(value.get("answers"), "answers"),
@@ -116,7 +111,6 @@ def _benchmark_example(value: Any, *, line_number: int) -> BenchmarkExample:
         contexts=_string_tuple(value.get("contexts"), "contexts"),
         metadata=dict(metadata),
     )
-    return example
 
 
 def iter_canonical_benchmark_jsonl(path: str | Path, *, expected_sha256: str | None = None) -> Iterator[BenchmarkExample]:
@@ -153,15 +147,9 @@ def _card(value: Any) -> DatasetCard:
     if set(value) != required:
         raise ValueError("dataset manifest card fields differ from DatasetCard")
     return DatasetCard(
-        summary=value["summary"],
-        intended_uses=tuple(value["intended_uses"]),
-        forbidden_uses=tuple(value["forbidden_uses"]),
-        populations_or_domains=tuple(value["populations_or_domains"]),
-        languages=tuple(value["languages"]),
-        pii_notes=value["pii_notes"],
-        safety_notes=value["safety_notes"],
-        source_citation=value["source_citation"],
-        known_limitations=tuple(value["known_limitations"]),
+        summary=value["summary"], intended_uses=tuple(value["intended_uses"]), forbidden_uses=tuple(value["forbidden_uses"]),
+        populations_or_domains=tuple(value["populations_or_domains"]), languages=tuple(value["languages"]), pii_notes=value["pii_notes"],
+        safety_notes=value["safety_notes"], source_citation=value["source_citation"], known_limitations=tuple(value["known_limitations"]),
     )
 
 
@@ -174,8 +162,8 @@ def _manifest(value: Any) -> DatasetManifest:
     splits_raw = value["splits"]
     if not isinstance(splits_raw, list):
         raise ValueError("dataset manifest splits must be an array")
-    splits = []
     split_fields = {"name", "content_sha256", "record_count", "record_id_sha256", "source_group_sha256", "query_id_sha256", "document_id_sha256"}
+    splits = []
     for item in splits_raw:
         if not isinstance(item, Mapping) or set(item) != split_fields:
             raise ValueError("dataset manifest split fields differ from SplitManifest")
@@ -184,20 +172,10 @@ def _manifest(value: Any) -> DatasetManifest:
     if not isinstance(metadata, Mapping):
         raise ValueError("dataset manifest metadata must be an object")
     return DatasetManifest(
-        dataset_id=value["dataset_id"],
-        exact_version=value["exact_version"],
-        source_locator=value["source_locator"],
-        artifact_sha256=value["artifact_sha256"],
-        license_identifier=value["license_identifier"],
-        license_status=LicenseStatus(value["license_status"]),
-        license_evidence=value["license_evidence"],
-        loader_name=value["loader_name"],
-        loader_version=value["loader_version"],
-        transformation_sha256=value["transformation_sha256"],
-        splits=tuple(splits),
-        tasks=tuple(DatasetTask(item) for item in value["tasks"]),
-        modalities=tuple(DatasetModality(item) for item in value["modalities"]),
-        card=_card(value["card"]),
+        dataset_id=value["dataset_id"], exact_version=value["exact_version"], source_locator=value["source_locator"], artifact_sha256=value["artifact_sha256"],
+        license_identifier=value["license_identifier"], license_status=LicenseStatus(value["license_status"]), license_evidence=value["license_evidence"],
+        loader_name=value["loader_name"], loader_version=value["loader_version"], transformation_sha256=value["transformation_sha256"], splits=tuple(splits),
+        tasks=tuple(DatasetTask(item) for item in value["tasks"]), modalities=tuple(DatasetModality(item) for item in value["modalities"]), card=_card(value["card"]),
         metadata={str(key): str(item) for key, item in metadata.items()},
     )
 
@@ -233,12 +211,8 @@ def verify_governed_benchmark_import(receipt_path: str | Path, *, require_promot
             raise ValueError("import split receipt fields differ from ImportedSplitReceipt")
         receipts.append(ImportedSplitReceipt(**dict(item)))
     receipt = GovernedBenchmarkImportReceipt(
-        dataset_manifest_sha256=raw["dataset_manifest_sha256"],
-        dataset_artifact_sha256=raw["dataset_artifact_sha256"],
-        transformation_sha256=raw["transformation_sha256"],
-        manifest_path=raw["manifest_path"],
-        split_receipts=tuple(receipts),
-        receipt_sha256=raw["receipt_sha256"],
+        dataset_manifest_sha256=raw["dataset_manifest_sha256"], dataset_artifact_sha256=raw["dataset_artifact_sha256"], transformation_sha256=raw["transformation_sha256"],
+        manifest_path=raw["manifest_path"], split_receipts=tuple(receipts), receipt_sha256=raw["receipt_sha256"],
     )
     manifest_file = _safe_file(receipt.manifest_path, "governed dataset manifest")
     manifest_raw = _strict_json(manifest_file, "governed dataset manifest")
@@ -258,12 +232,19 @@ def verify_governed_benchmark_import(receipt_path: str | Path, *, require_promot
         split_manifest = split_manifest_by_name[item.name]
         if split_manifest.content_sha256 != item.output_sha256 or split_manifest.record_count != item.record_count or split_manifest.record_id_sha256 != item.record_id_sha256 or split_manifest.query_id_sha256 != item.query_id_sha256 or split_manifest.document_id_sha256 != item.document_id_sha256 or split_manifest.source_group_sha256 != item.source_group_sha256:
             raise ValueError(f"dataset manifest split {item.name} differs from import receipt")
-        examples = list(iter_canonical_benchmark_jsonl(item.output_path, expected_sha256=item.output_sha256))
-        if len(examples) != item.record_count:
+        record_ids: list[str] = []
+        document_ids: list[str] = []
+        source_groups: list[str] = []
+        count = 0
+        for example in iter_canonical_benchmark_jsonl(item.output_path, expected_sha256=item.output_sha256):
+            count += 1
+            record_ids.append(example.example_id)
+            document_ids.extend(example.relevant_ids)
+            source_group = example.metadata.get("source_group_id") if isinstance(example.metadata, Mapping) else None
+            if isinstance(source_group, str) and source_group.strip():
+                source_groups.append(source_group.strip())
+        if count != item.record_count:
             raise ValueError(f"canonical split {item.name} record count differs from receipt")
-        record_ids = [example.example_id for example in examples]
-        document_ids = [identifier for example in examples for identifier in example.relevant_ids]
-        source_groups = [str(example.metadata["source_group_id"]).strip() for example in examples if isinstance(example.metadata, Mapping) and isinstance(example.metadata.get("source_group_id"), str) and str(example.metadata["source_group_id"]).strip()]
         if _id_digest(record_ids) != item.record_id_sha256 or _id_digest(record_ids) != item.query_id_sha256:
             raise ValueError(f"canonical split {item.name} record/query identity digest differs from receipt")
         actual_document = _id_digest(document_ids) if document_ids else None
