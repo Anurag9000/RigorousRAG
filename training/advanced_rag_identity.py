@@ -25,13 +25,20 @@ def _sha(value: Any, label: str) -> str:
 def provider_identity_sha256(provider: Any | None, *, label: str) -> str | None:
     """Return the strongest reproducible identity exposed by a provider.
 
-    A mutable/sidecar provider may expose both a configuration identity and an exact content
-    contract.  The content contract must win: it binds the identity *and* the bytes/entries that
-    training will actually consume.  Falling back to ``identity.digest`` is reserved for
-    providers that genuinely have no stronger content contract.
+    Mutable supervision caches may expose an explicit ``seal()`` transition. In that case the
+    identity operation is also the read-authority boundary: exact current contents are frozen
+    before their content contract is captured, so later reads are checked against the same
+    snapshot that entered the run/checkpoint identity. Generic providers without a seal remain
+    unchanged.
     """
     if provider is None:
         return None
+    seal = getattr(provider, "seal", None)
+    if callable(seal):
+        sealed = seal()
+        if not isinstance(sealed, str):
+            raise ValueError(f"{label} seal() must return a SHA-256 content contract")
+        return _sha(sealed, label)
     identity = getattr(provider, "identity", None)
     for candidate in (
         getattr(provider, "contract_sha256", None),
