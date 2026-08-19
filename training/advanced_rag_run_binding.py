@@ -12,12 +12,12 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
+from training.advanced_checkpoint_authority import AdvancedCheckpointManager
 from training.advanced_rag_authoritative_runner import GroundedGeneratorPathBinding
 from training.advanced_rag_config import DynamicConfiguredRun, GroundedConfiguredRun, TensorCacheSpec
 from training.advanced_rag_identity import AdvancedTrainingInputIdentity, dataclass_sha256, provider_identity_sha256, trainability_sha256
 from training.advanced_rag_runner import _effective_trainability, _trainer_with_evaluation
 from training.advanced_rag_steps import dynamic_plan_to_trainer_config, grounded_plan_to_trainer_config
-from training.checkpointing import CheckpointManager
 
 
 def _canonical(value: Any) -> bytes:
@@ -43,8 +43,6 @@ def _cache_identity(spec: TensorCacheSpec | None, *, label: str, expected_kind: 
     if spec.identity.cache_kind != expected_kind:
         raise ValueError(f"{label} must use cache_kind={expected_kind}")
     cache = spec.build()
-    # provider_identity_sha256 deliberately prefers the exact sealed content contract over
-    # the weaker cache-configuration identity, matching the authoritative training runner.
     return provider_identity_sha256(cache, label=label)
 
 
@@ -181,13 +179,13 @@ class VerifiedAdvancedCheckpointBinding:
 
 
 def verify_checkpoint_against_run_config(
-    checkpoint_manager: CheckpointManager,
+    checkpoint_manager: AdvancedCheckpointManager,
     checkpoint_digest: str,
     config: GroundedConfiguredRun | DynamicConfiguredRun,
 ) -> VerifiedAdvancedCheckpointBinding:
-    """Fail closed unless a checkpoint exactly matches the supplied immutable run config."""
-    if not isinstance(checkpoint_manager, CheckpointManager):
-        raise ValueError("checkpoint_manager must be CheckpointManager")
+    """Fail closed unless an authoritative checkpoint exactly matches the immutable run config."""
+    if not isinstance(checkpoint_manager, AdvancedCheckpointManager):
+        raise ValueError("checkpoint_manager must be AdvancedCheckpointManager")
     _, manifest = checkpoint_manager.verify(checkpoint_digest)
 
     if isinstance(config, GroundedConfiguredRun):
