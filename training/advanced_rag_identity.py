@@ -23,13 +23,20 @@ def _sha(value: Any, label: str) -> str:
 
 
 def provider_identity_sha256(provider: Any | None, *, label: str) -> str | None:
+    """Return the strongest reproducible identity exposed by a provider.
+
+    A mutable/sidecar provider may expose both a configuration identity and an exact content
+    contract.  The content contract must win: it binds the identity *and* the bytes/entries that
+    training will actually consume.  Falling back to ``identity.digest`` is reserved for
+    providers that genuinely have no stronger content contract.
+    """
     if provider is None:
         return None
     identity = getattr(provider, "identity", None)
     for candidate in (
-        getattr(identity, "digest", None),
         getattr(provider, "contract_sha256", None),
         getattr(provider, "binding_sha256", None),
+        getattr(identity, "digest", None),
     ):
         if isinstance(candidate, str):
             return _sha(candidate, label)
