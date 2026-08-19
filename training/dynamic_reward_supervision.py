@@ -10,6 +10,7 @@ from typing import Any, Mapping, Protocol, Sequence
 
 from training.advanced_path_authority import safe_advanced_path
 from training.advanced_rag_authoritative_data import LegalDynamicRagEpisodeStep
+from training.dynamic_record_identity import dynamic_step_pair
 
 _MAX_BYTES = 2 * 1024 * 1024 * 1024
 _MAX_RECORDS = 100_000_000
@@ -57,7 +58,7 @@ class RealizedRetrievalGainProvider(Protocol):
 
 
 class SidecarRealizedRetrievalGainProvider:
-    """Strict sidecar of measured post-action utility deltas keyed by episode/step."""
+    """Strict sidecar of measured post-action utility deltas keyed by exact episode/step pairs."""
     def __init__(self, path: str | Path, *, expected_sha256: str, metric_contract_sha256: str) -> None:
         source = safe_advanced_path(path, label="realized retrieval gain sidecar", must_exist=True, require_file=True)
         if source.stat().st_size <= 0 or source.stat().st_size > _MAX_BYTES:
@@ -75,17 +76,14 @@ class SidecarRealizedRetrievalGainProvider:
         raw = payload.get("gains")
         if not isinstance(raw, list) or len(raw) > _MAX_RECORDS:
             raise ValueError("realized retrieval gains must be a bounded array")
-        gains: dict[str, float] = {}
+        gains: dict[tuple[str, str], float] = {}
         for index, item in enumerate(raw):
             if not isinstance(item, Mapping) or set(item) != {"episode_id", "step_id", "gain"}:
                 raise ValueError(f"realized retrieval gain record {index} is malformed")
-            episode = str(item["episode_id"]).strip(); step = str(item["step_id"]).strip()
-            if not episode or not step:
-                raise ValueError("realized retrieval gain identity is empty")
-            key = f"{episode}:{step}"
+            key = dynamic_step_pair(item["episode_id"], item["step_id"])
             if key in gains:
-                raise ValueError(f"duplicate realized retrieval gain identity: {key}")
-            gains[key] = _finite(item["gain"], f"gain[{key}]")
+                raise ValueError(f"duplicate realized retrieval gain identity: {key!r}")
+            gains[key] = _finite(item["gain"], f"gain[{key!r}]")
         self.path = str(source)
         self.content_sha256 = actual
         self._gains = gains
@@ -96,15 +94,15 @@ class SidecarRealizedRetrievalGainProvider:
             "schema": "rigorousrag-realized-retrieval-gain-provider/v1",
             "content_sha256": self.content_sha256,
             "metric_contract_sha256": self.metric_contract_sha256,
-            "semantics": "measured_post_action_utility_delta",
+            "semantics": "measured_post_action_utility_delta_keyed_by_exact_episode_step_pair",
         })
 
     def gains(self, steps: Sequence[LegalDynamicRagEpisodeStep]) -> Sequence[float]:
         result = []
         for step in steps:
-            key = f"{step.episode_id}:{step.step_id}"
+            key = dynamic_step_pair(step.episode_id, step.step_id)
             if key not in self._gains:
-                raise ValueError(f"realized retrieval gain sidecar lacks step {key}")
+                raise ValueError(f"realized retrieval gain sidecar lacks step {key!r}")
             result.append(self._gains[key])
         return tuple(result)
 
