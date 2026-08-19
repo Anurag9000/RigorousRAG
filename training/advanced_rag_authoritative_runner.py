@@ -1,8 +1,8 @@
 """Authoritative ready-to-train composition for advanced RAG.
 
-Configuration-driven training uses strict path/tokenizer/cache authority, exact input
-identities, multi-evidence/contested grounding supervision, and legal-action-masked dynamic
-policy objectives while preserving the older research primitives.
+Configuration-driven and direct-library training use the same strict path/tokenizer/cache
+authority, exact input identities, multi-evidence/contested grounding supervision, and
+legal-action-masked dynamic policy objectives while preserving older research primitives.
 """
 from __future__ import annotations
 
@@ -35,6 +35,36 @@ class GroundedGeneratorPathBinding:
             raise ValueError("generator_family must be causal_lm or seq2seq_lm")
 
 
+def _assert_cache_binding(
+    cache: Any | None,
+    *,
+    label: str,
+    expected_kind: str,
+    dataset_manifest_sha256: str,
+    tokenizer_sha256: str,
+    source_commit: str,
+    producer_sha256: str | None = None,
+) -> None:
+    if cache is None:
+        return
+    identity = getattr(cache, "identity", None)
+    if identity is None:
+        raise ValueError(f"{label} must expose immutable cache identity")
+    if getattr(identity, "cache_kind", None) != expected_kind:
+        raise ValueError(f"{label} must use cache_kind={expected_kind}")
+    if getattr(identity, "dataset_manifest_sha256", None) != dataset_manifest_sha256:
+        raise ValueError(f"{label} dataset manifest differs from training plan")
+    if getattr(identity, "tokenizer_sha256", None) != tokenizer_sha256:
+        raise ValueError(f"{label} tokenizer identity differs from training plan")
+    if getattr(identity, "source_commit", None) != source_commit:
+        raise ValueError(f"{label} source commit differs from training plan")
+    if producer_sha256 is not None and getattr(identity, "producer_sha256", None) != producer_sha256:
+        raise ValueError(f"{label} producer identity differs from training plan")
+    # Force the strongest exact content contract now; malformed/orphan/mutated strict caches
+    # therefore fail before any optimizer or dataloader work begins.
+    provider_identity_sha256(cache, label=label)
+
+
 class AuthoritativeGroundedGeneratorTrainingRunner(GroundedGeneratorTrainingRunner):
     """Final grounded runner supporting causal/seq2seq and contested evidence stances."""
     def __init__(self, *args: Any, generator_family: str, **kwargs: Any) -> None:
@@ -43,6 +73,34 @@ class AuthoritativeGroundedGeneratorTrainingRunner(GroundedGeneratorTrainingRunn
             raise ValueError("generator_family must be causal_lm or seq2seq_lm")
         self.generator_family = generator_family
         assert_advanced_training_tokenizer(self.tokenizer)
+        _assert_cache_binding(
+            self.teacher_cache,
+            label="teacher cache",
+            expected_kind="teacher_logits",
+            dataset_manifest_sha256=self.plan.dataset_manifest_sha256,
+            tokenizer_sha256=self.plan.tokenizer_sha256,
+            source_commit=self.plan.source_commit,
+            producer_sha256=self.plan.teacher_model_sha256,
+        )
+        _assert_cache_binding(
+            self.reference_cache,
+            label="reference cache",
+            expected_kind="reference_policy_log_probs",
+            dataset_manifest_sha256=self.plan.dataset_manifest_sha256,
+            tokenizer_sha256=self.plan.tokenizer_sha256,
+            source_commit=self.plan.source_commit,
+        )
+        if self.retriever_batch_builder is not None:
+            if getattr(self.retriever_batch_builder, "tokenizer_sha256", None) != self.plan.tokenizer_sha256:
+                raise ValueError("retriever supervision tokenizer identity differs from training plan")
+            _assert_cache_binding(
+                getattr(self.retriever_batch_builder, "utility_cache", None),
+                label="retriever utility cache",
+                expected_kind="document_lm_utility",
+                dataset_manifest_sha256=self.plan.dataset_manifest_sha256,
+                tokenizer_sha256=self.plan.tokenizer_sha256,
+                source_commit=self.plan.source_commit,
+            )
 
     def _authoritative_collator(self) -> Any:
         collator = MultiEvidenceSeq2SeqGroundedCollator if self.generator_family == "seq2seq_lm" else MultiEvidenceCausalGroundedCollator
@@ -90,6 +148,15 @@ class AuthoritativeDynamicRagPolicyTrainingRunner(DynamicRagPolicyTrainingRunner
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         assert_advanced_training_tokenizer(self.tokenizer)
+        _assert_cache_binding(
+            self.hidden_state_cache,
+            label="hidden-state cache",
+            expected_kind="generator_hidden_states",
+            dataset_manifest_sha256=self.plan.dataset_manifest_sha256,
+            tokenizer_sha256=self.tokenizer_sha256,
+            source_commit=self.plan.source_commit,
+            producer_sha256=self.plan.base_generator_sha256,
+        )
 
     def run(self, *, resume_checkpoint_digest: str | None = None, event_sink: Any | None = None) -> AdvancedTrainingRunResult:
         train_dataset = ManifestBoundAuthoritativeJsonlDataset(self.train_split.path, expected_sha256=self.train_split.content_sha256, dataset_manifest_sha256=self.plan.dataset_manifest_sha256, split_name=self.train_split.split_name, record_kind="dynamic_rag_episode", expected_record_count=self.train_split.expected_record_count)
