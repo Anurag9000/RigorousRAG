@@ -89,18 +89,37 @@ class AuthoritativeSafetensorSupervisionCache(SafetensorSupervisionCache):
             raise ValueError("supervision cache tensor_names must be a sorted unique string list")
         return manifest
 
-    def get(self, key: str) -> Mapping[str, Any]:
-        try:
-            from safetensors.torch import load_file
-        except Exception as exc:
-            raise RuntimeError("safetensors is required for supervision cache reads") from exc
+    def contains(self, key: str) -> bool:
+        """Return membership only after proving the exact manifest/tensor pair is intact.
+
+        A genuinely absent pair returns ``False``. Partial/orphan, wrong-key, wrong-identity or
+        digest-mismatched entries raise instead of being treated as absent, which makes this
+        suitable for whole-dataset preflight without loading safetensor payloads into memory.
+        """
         tensor_path, manifest_path = self._paths(key)
+        tensor_exists = tensor_path.exists()
+        manifest_exists = manifest_path.exists()
+        if not tensor_exists and not manifest_exists:
+            return False
+        if tensor_exists != manifest_exists:
+            raise ValueError(f"supervision cache key {key!r} has an orphan tensor/manifest entry")
         self._bounded_regular(tensor_path, "supervision tensor entry", _MAX_ENTRY_BYTES)
         manifest = self._strict_manifest(manifest_path)
         if manifest.get("key") != key:
             raise ValueError("supervision cache manifest key mismatch")
         if _stream_sha(tensor_path) != manifest.get("tensor_sha256"):
             raise ValueError("supervision cache tensor digest mismatch")
+        return True
+
+    def get(self, key: str) -> Mapping[str, Any]:
+        try:
+            from safetensors.torch import load_file
+        except Exception as exc:
+            raise RuntimeError("safetensors is required for supervision cache reads") from exc
+        if not self.contains(key):
+            raise KeyError(f"supervision cache lacks key {key!r}")
+        tensor_path, manifest_path = self._paths(key)
+        manifest = self._strict_manifest(manifest_path)
         tensors = load_file(str(tensor_path), device="cpu")
         if sorted(tensors) != list(manifest["tensor_names"]):
             raise ValueError("supervision cache tensor names differ from manifest")
