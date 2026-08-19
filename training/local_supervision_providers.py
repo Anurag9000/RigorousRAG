@@ -20,6 +20,7 @@ except Exception:  # pragma: no cover
     F = None  # type: ignore[assignment]
 
 from training.advanced_rag_data import DynamicRagEpisodeStep, GroundedGenerationExample
+from training.dynamic_record_identity import dynamic_step_identity, dynamic_step_pair
 from training.dynamic_retrieval_policy import DynamicPolicyArchitecture, DynamicRetrievalAction
 
 
@@ -225,36 +226,61 @@ class LocalDynamicPolicyValueProvider:
         value = output.get("retrieval_value") if isinstance(output, Mapping) else getattr(output, "retrieval_value", None)
         if value is None or value.ndim != 1 or value.numel() != len(steps):
             raise ValueError("dynamic value model must expose one retrieval_value per step")
-        return tuple(float(item) for item in value.detach().cpu().tolist())
+        values = tuple(float(item) for item in value.detach().cpu().tolist())
+        if any(not math.isfinite(item) for item in values):
+            raise ValueError("dynamic value provider returned non-finite value")
+        return values
+
+
+def _counterfactual_key(value: Any) -> str:
+    if isinstance(value, tuple) and len(value) == 2:
+        episode, step = dynamic_step_pair(value[0], value[1])
+        return dynamic_step_identity(episode, step)
+    if isinstance(value, str):
+        selected = value.strip()
+        prefix = "dynamic-step:"
+        if selected.startswith(prefix):
+            digest = selected[len(prefix):].lower()
+            if len(digest) == 64 and all(ch in "0123456789abcdef" for ch in digest):
+                return prefix + digest
+    raise ValueError("counterfactual utility key must be an (episode_id, step_id) tuple or canonical dynamic-step:<sha256> identity")
 
 
 class LoggedCounterfactualUtilityProvider:
-    """Content-bound counterfactual utilities supplied by an admitted offline simulator/log."""
-    def __init__(self, utilities: Mapping[str, Mapping[str, float]], *, source_sha256: str) -> None:
+    """Content-bound counterfactual utilities supplied by an admitted offline simulator/log.
+
+    Delimiter-concatenated ``episode:step`` keys are intentionally rejected. Callers must use
+    exact two-tuples or canonical ``dynamic-step:<sha256>`` identities so distinct legal IDs
+    cannot alias one another.
+    """
+    def __init__(self, utilities: Mapping[Any, Mapping[str, float]], *, source_sha256: str) -> None:
         self.source_sha256 = _sha(source_sha256, "source_sha256")
         normalized: dict[str, dict[DynamicRetrievalAction, float]] = {}
-        for step_id, mapping in utilities.items():
-            if not isinstance(step_id, str) or not step_id or not isinstance(mapping, Mapping) or not mapping:
-                raise ValueError("counterfactual utility mapping is invalid")
-            actions = {}
+        for raw_key, mapping in utilities.items():
+            key = _counterfactual_key(raw_key)
+            if key in normalized or not isinstance(mapping, Mapping) or not mapping:
+                raise ValueError("counterfactual utility mapping is invalid or duplicated")
+            actions: dict[DynamicRetrievalAction, float] = {}
             for raw_action, raw_value in mapping.items():
                 action = DynamicRetrievalAction(raw_action)
                 value = float(raw_value)
                 if not math.isfinite(value):
                     raise ValueError("counterfactual utility must be finite")
+                if action in actions:
+                    raise ValueError("counterfactual utility mapping repeats an action")
                 actions[action] = value
-            normalized[step_id] = actions
+            normalized[key] = actions
         self.utilities = normalized
 
     @property
     def contract_sha256(self) -> str:
         serializable = {key: {action.value: value for action, value in sorted(mapping.items(), key=lambda item: item[0].value)} for key, mapping in sorted(self.utilities.items())}
-        return _digest({"schema": "rigorousrag-logged-counterfactual-utility-provider/v1", "source_sha256": self.source_sha256, "utilities": serializable})
+        return _digest({"schema": "rigorousrag-logged-counterfactual-utility-provider/v2", "source_sha256": self.source_sha256, "identity_semantics": "canonical_dynamic_step_sha256", "utilities": serializable})
 
     def action_utilities(self, step: DynamicRagEpisodeStep) -> Mapping[DynamicRetrievalAction, float]:
-        key = f"{step.episode_id}:{step.step_id}"
+        key = dynamic_step_identity(step.episode_id, step.step_id)
         if key not in self.utilities:
-            raise ValueError(f"counterfactual utility source lacks step {key}")
+            raise ValueError(f"counterfactual utility source lacks canonical step {key}")
         return dict(self.utilities[key])
 
 
