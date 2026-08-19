@@ -1,22 +1,25 @@
 """Richer backward-compatible data records for authoritative advanced RAG training.
 
-The original record classes remain stable research primitives. This module subclasses them
-so configuration-driven runs can preserve supervision that otherwise collapses:
-
-* supporting and contradicting evidence identities may coexist for one claim;
-* a logged dynamic-RAG state declares the exact closed set of actions that were legal; and
-* a state-value/return target is distinct from an immediate realized retrieval gain.
+The authoritative JSONL dataset validates exact source bytes and every record once, then keeps
+only a compact random-access index. Records are reparsed lazily and their exact line SHA-256 is
+rechecked on every access, preserving content authority without retaining the full corpus as
+Python objects in memory.
 """
 from __future__ import annotations
 
+import hashlib
 import json
-import math
+import os
+import sqlite3
+import tempfile
+import threading
+from array import array
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
 from training.advanced_path_authority import safe_advanced_path
-from training.advanced_rag_data import AdvancedDatasetBinding, DynamicRagEpisodeStep, GroundedClaimAnnotation, GroundedEvidenceRecord, GroundedGenerationExample, TextSpan, sha256_file
+from training.advanced_rag_data import AdvancedDatasetBinding, DynamicRagEpisodeStep, GroundedClaimAnnotation, GroundedEvidenceRecord, GroundedGenerationExample, TextSpan
 from training.dynamic_retrieval_policy import DynamicRetrievalAction
 from training.grounded_generation import ReflectionAction
 
@@ -24,6 +27,7 @@ _MAX_EVIDENCE = 4096
 _MAX_RECORDS = 100_000_000
 _MAX_BYTES_PER_LINE = 64 * 1024 * 1024
 _MAX_METADATA = 2000
+_HEX = frozenset("0123456789abcdef")
 
 
 def _identifier(value: Any, label: str, maximum: int = 2000) -> str:
@@ -32,6 +36,13 @@ def _identifier(value: Any, label: str, maximum: int = 2000) -> str:
     selected = value.strip()
     if not selected or len(selected) > maximum or any(ord(ch) < 32 or ord(ch) == 127 for ch in selected):
         raise ValueError(f"{label} is invalid")
+    return selected
+
+
+def _sha256(value: Any, label: str) -> str:
+    selected = str(value).strip().lower()
+    if len(selected) != 64 or any(ch not in _HEX for ch in selected):
+        raise ValueError(f"{label} must be SHA-256")
     return selected
 
 
@@ -45,6 +56,9 @@ def _finite(value: Any, label: str) -> float:
     if not math.isfinite(selected):
         raise ValueError(f"{label} must be finite")
     return selected
+
+
+import math
 
 
 def _span(value: Any) -> TextSpan:
@@ -174,7 +188,7 @@ def parse_authoritative_grounded_example(value: Any) -> GroundedGenerationExampl
         unsupported_spans=tuple(_span(item) for item in unsupported_raw), chosen_answer=value.get("chosen_answer"),
         rejected_answer=value.get("rejected_answer"), reference_chosen_log_prob=value.get("reference_chosen_log_prob"),
         reference_rejected_log_prob=value.get("reference_rejected_log_prob"), teacher_cache_key=value.get("teacher_cache_key"),
-        retriever_cache_key=value.get("retriever_cache_key"), metadata=value.get("metadata") or {},
+        retriever_cache_key=value.get("retriever_cache_key"), metadata=_metadata(value.get("metadata")),
     )
 
 
@@ -207,44 +221,160 @@ def parse_authoritative_dynamic_step(value: Any) -> LegalDynamicRagEpisodeStep:
     )
 
 
+def _strict_json_line(raw: bytes, *, label: str) -> Any:
+    try:
+        text = raw.decode("utf-8", errors="strict")
+        return json.loads(text, parse_constant=lambda value: (_ for _ in ()).throw(ValueError(value)))
+    except Exception as exc:
+        raise ValueError(f"{label} is not strict UTF-8 JSON") from exc
+
+
+def _record_identity(record: Any, record_kind: str) -> str:
+    if record_kind == "grounded_generation":
+        return "grounded:" + record.example_id
+    # JSON tuple encoding is injective even when identifiers themselves contain ':' or other
+    # punctuation; simple string concatenation is not.
+    return "dynamic:" + json.dumps([record.episode_id, record.step_id], ensure_ascii=False, separators=(",", ":"))
+
+
 class ManifestBoundAuthoritativeJsonlDataset:
-    """Strict manifest-bound parser for authoritative grounded/dynamic records."""
+    """Lazy random-access JSONL dataset bound to exact validated source bytes.
+
+    Construction performs one full streaming pass that simultaneously verifies the configured
+    source SHA-256, strict-parses every non-empty line, validates record semantics and detects
+    duplicate logical record identities through a temporary disk-backed SQLite uniqueness
+    index. Only byte offsets, byte lengths and 32-byte line digests remain resident afterward.
+
+    ``__getitem__`` reads exactly the indexed byte range, rechecks its SHA-256 against the
+    construction-time digest, and reparses it. Thus external file replacement cannot silently
+    change a consumed record after validation, while deterministic random-access samplers remain
+    available without keeping the full corpus as Python objects.
+    """
+
     def __init__(self, path: str | Path, *, expected_sha256: str, dataset_manifest_sha256: str, split_name: str, record_kind: str, expected_record_count: int | None = None) -> None:
         selected = safe_advanced_path(path, label="advanced training dataset", must_exist=True, require_file=True)
-        actual = sha256_file(selected)
-        expected = str(expected_sha256).strip().lower()
-        if actual != expected:
-            raise ValueError("local advanced-training data digest does not match expected artifact")
+        expected = _sha256(expected_sha256, "expected_sha256")
+        manifest_sha = _sha256(dataset_manifest_sha256, "dataset_manifest_sha256")
         if record_kind not in {"grounded_generation", "dynamic_rag_episode"}:
             raise ValueError("record_kind must be grounded_generation or dynamic_rag_episode")
         parser = parse_authoritative_grounded_example if record_kind == "grounded_generation" else parse_authoritative_dynamic_step
-        records = []
-        with selected.open("r", encoding="utf-8", errors="strict") as handle:
-            for line_number, line in enumerate(handle, start=1):
-                if not line.strip():
-                    continue
-                if len(line.encode("utf-8")) > _MAX_BYTES_PER_LINE:
-                    raise ValueError(f"advanced training JSON line {line_number} exceeds byte safety bound")
-                if len(records) >= _MAX_RECORDS:
-                    raise ValueError("advanced training dataset exceeds record safety bound")
-                try:
-                    payload = json.loads(line, parse_constant=lambda raw: (_ for _ in ()).throw(ValueError(raw)))
-                    records.append(parser(payload))
-                except Exception as exc:
-                    raise ValueError(f"invalid {record_kind} JSON at line {line_number}") from exc
-        if expected_record_count is not None and len(records) != expected_record_count:
-            raise ValueError("advanced training record count differs from manifest")
-        ids = [record.example_id if record_kind == "grounded_generation" else f"{record.episode_id}:{record.step_id}" for record in records]
-        if len(ids) != len(set(ids)):
-            raise ValueError("advanced training record identities must be unique")
-        self._records = tuple(records)
-        self.binding = AdvancedDatasetBinding(str(selected), actual, dataset_manifest_sha256, split_name, len(records), record_kind)
+
+        offsets = array("Q")
+        lengths = array("Q")
+        line_digests = bytearray()
+        whole = hashlib.sha256()
+        descriptor, uniqueness_name = tempfile.mkstemp(prefix="rigorousrag-authoritative-ids-", suffix=".sqlite3")
+        os.close(descriptor)
+        connection: sqlite3.Connection | None = None
+        count = 0
+        try:
+            connection = sqlite3.connect(uniqueness_name)
+            connection.execute("PRAGMA journal_mode=OFF")
+            connection.execute("PRAGMA synchronous=OFF")
+            connection.execute("PRAGMA temp_store=FILE")
+            connection.execute("CREATE TABLE identities(value TEXT PRIMARY KEY) WITHOUT ROWID")
+            connection.execute("BEGIN")
+            with selected.open("rb") as handle:
+                line_number = 0
+                while True:
+                    offset = handle.tell()
+                    raw = handle.readline()
+                    if not raw:
+                        break
+                    line_number += 1
+                    whole.update(raw)
+                    if not raw.strip():
+                        continue
+                    if len(raw) > _MAX_BYTES_PER_LINE:
+                        raise ValueError(f"advanced training JSON line {line_number} exceeds byte safety bound")
+                    if count >= _MAX_RECORDS:
+                        raise ValueError("advanced training dataset exceeds record safety bound")
+                    payload = _strict_json_line(raw, label=f"advanced training JSON line {line_number}")
+                    try:
+                        record = parser(payload)
+                    except Exception as exc:
+                        raise ValueError(f"invalid {record_kind} JSON at line {line_number}") from exc
+                    identity = _record_identity(record, record_kind)
+                    try:
+                        connection.execute("INSERT INTO identities(value) VALUES (?)", (identity,))
+                    except sqlite3.IntegrityError as exc:
+                        raise ValueError(f"advanced training record identity is duplicated at line {line_number}") from exc
+                    offsets.append(offset)
+                    lengths.append(len(raw))
+                    line_digests.extend(hashlib.sha256(raw).digest())
+                    count += 1
+            connection.commit()
+        finally:
+            if connection is not None:
+                connection.close()
+            try:
+                os.unlink(uniqueness_name)
+            except FileNotFoundError:
+                pass
+
+        actual = whole.hexdigest()
+        if actual != expected:
+            raise ValueError("local advanced-training data digest does not match expected artifact")
+        if expected_record_count is not None:
+            if isinstance(expected_record_count, bool) or not isinstance(expected_record_count, int) or expected_record_count < 0:
+                raise ValueError("expected_record_count must be non-negative or None")
+            if count != expected_record_count:
+                raise ValueError("advanced training record count differs from manifest")
+
+        self._path = str(selected)
+        self._offsets = offsets
+        self._lengths = lengths
+        self._line_digests = bytes(line_digests)
+        self._parser = parser
+        self._record_kind = record_kind
+        self._local = threading.local()
+        self.binding = AdvancedDatasetBinding(str(selected), actual, manifest_sha, split_name, count, record_kind)
+
+    def __getstate__(self) -> dict[str, Any]:
+        state = dict(self.__dict__)
+        state.pop("_local", None)
+        # Module-level parser functions are recoverable from record_kind and need not be pickled.
+        state.pop("_parser", None)
+        return state
+
+    def __setstate__(self, state: Mapping[str, Any]) -> None:
+        self.__dict__.update(dict(state))
+        self._parser = parse_authoritative_grounded_example if self._record_kind == "grounded_generation" else parse_authoritative_dynamic_step
+        self._local = threading.local()
+
+    def _handle(self) -> Any:
+        handle = getattr(self._local, "handle", None)
+        if handle is None or handle.closed:
+            handle = open(self._path, "rb")
+            self._local.handle = handle
+        return handle
 
     def __len__(self) -> int:
-        return len(self._records)
+        return len(self._offsets)
 
     def __getitem__(self, index: int) -> Any:
-        return self._records[index]
+        if isinstance(index, bool) or not isinstance(index, int):
+            raise TypeError("advanced training dataset index must be an integer")
+        length = len(self)
+        if index < 0:
+            index += length
+        if not 0 <= index < length:
+            raise IndexError("advanced training dataset index out of range")
+        offset = int(self._offsets[index])
+        byte_length = int(self._lengths[index])
+        handle = self._handle()
+        handle.seek(offset)
+        raw = handle.read(byte_length)
+        if len(raw) != byte_length:
+            raise ValueError("advanced training dataset changed after validation: indexed row is truncated")
+        expected_digest = self._line_digests[index * 32 : (index + 1) * 32]
+        if hashlib.sha256(raw).digest() != expected_digest:
+            raise ValueError("advanced training dataset changed after validation: indexed row digest mismatch")
+        payload = _strict_json_line(raw, label=f"advanced training record {index}")
+        try:
+            return self._parser(payload)
+        except Exception as exc:
+            raise ValueError(f"advanced training dataset row {index} no longer parses authoritatively") from exc
 
 
 __all__ = ["LegalDynamicRagEpisodeStep", "ManifestBoundAuthoritativeJsonlDataset", "StancedGroundedClaimAnnotation", "parse_authoritative_dynamic_step", "parse_authoritative_grounded_example"]
