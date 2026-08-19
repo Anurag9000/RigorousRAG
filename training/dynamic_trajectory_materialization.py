@@ -1,8 +1,8 @@
 """Durable dynamic-RAG trajectory target materialization.
 
 This module turns logged generation-time episodes into immutable local training JSONL after
-operators explicitly execute admitted value/counterfactual providers. It does not run any
-model, retrieval stack, or dataset acquisition on import.
+operators explicitly execute admitted value/counterfactual providers. It preserves legal
+action sets when present and never selects an illegal counterfactual target.
 """
 from __future__ import annotations
 
@@ -14,14 +14,10 @@ from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any, Mapping, Protocol, Sequence
 
+from training.advanced_path_authority import safe_advanced_path
+from training.advanced_rag_authoritative_data import LegalDynamicRagEpisodeStep
 from training.advanced_rag_data import DynamicRagEpisodeStep
-from training.advanced_rag_supervision import (
-    CounterfactualActionProvider,
-    DynamicRewardConfig,
-    counterfactual_action_target,
-    generalized_advantage_estimate,
-    trajectory_rewards,
-)
+from training.advanced_rag_supervision import CounterfactualActionProvider, DynamicRewardConfig, counterfactual_action_target, generalized_advantage_estimate, trajectory_rewards
 
 
 def _canonical(value: Any) -> bytes:
@@ -58,14 +54,7 @@ class TrajectoryMaterializationIdentity:
     reward_config: DynamicRewardConfig = DynamicRewardConfig()
 
     def __post_init__(self) -> None:
-        for name in (
-            "source_dataset_sha256",
-            "dataset_manifest_sha256",
-            "runtime_stack_sha256",
-            "feature_provider_sha256",
-            "behavior_policy_sha256",
-            "value_provider_sha256",
-        ):
+        for name in ("source_dataset_sha256", "dataset_manifest_sha256", "runtime_stack_sha256", "feature_provider_sha256", "behavior_policy_sha256", "value_provider_sha256"):
             object.__setattr__(self, name, _sha(getattr(self, name), name))
         if self.counterfactual_provider_sha256 is not None:
             object.__setattr__(self, "counterfactual_provider_sha256", _sha(self.counterfactual_provider_sha256, "counterfactual_provider_sha256"))
@@ -78,11 +67,7 @@ class TrajectoryMaterializationIdentity:
 
     @property
     def identity_sha256(self) -> str:
-        return _digest({
-            "schema": "rigorousrag-dynamic-trajectory-materialization-identity/v1",
-            **{k: v for k, v in asdict(self).items() if k != "reward_config"},
-            "reward_config": asdict(self.reward_config),
-        })
+        return _digest({"schema": "rigorousrag-dynamic-trajectory-materialization-identity/v1", **{k: v for k, v in asdict(self).items() if k != "reward_config"}, "reward_config": asdict(self.reward_config)})
 
 
 @dataclass(frozen=True)
@@ -94,9 +79,26 @@ class MaterializedTrajectoryReceipt:
     identity_sha256: str
     receipt_sha256: str
 
+    def __post_init__(self) -> None:
+        for name in ("output_sha256", "identity_sha256", "receipt_sha256"):
+            object.__setattr__(self, name, _sha(getattr(self, name), name))
+        if isinstance(self.record_count, bool) or not isinstance(self.record_count, int) or self.record_count <= 0:
+            raise ValueError("record_count must be positive")
+        if isinstance(self.episode_count, bool) or not isinstance(self.episode_count, int) or self.episode_count <= 0:
+            raise ValueError("episode_count must be positive")
+        expected = _digest({
+            "schema": "rigorousrag-dynamic-trajectory-materialization-receipt/v1",
+            "output_sha256": self.output_sha256,
+            "record_count": self.record_count,
+            "episode_count": self.episode_count,
+            "identity_sha256": self.identity_sha256,
+        })
+        if expected != self.receipt_sha256:
+            raise ValueError("trajectory materialization receipt digest mismatch")
+
 
 def _record(step: DynamicRagEpisodeStep) -> Mapping[str, Any]:
-    return {
+    result: dict[str, Any] = {
         "episode_id": step.episode_id,
         "step_id": step.step_id,
         "context": step.context,
@@ -110,6 +112,19 @@ def _record(step: DynamicRagEpisodeStep) -> Mapping[str, Any]:
         "terminal_utility": step.terminal_utility,
         "metadata": dict(step.metadata),
     }
+    if isinstance(step, LegalDynamicRagEpisodeStep):
+        result["valid_actions"] = [action.value for action in step.valid_actions]
+    return result
+
+
+def _legal_counterfactual_utilities(step: DynamicRagEpisodeStep, utilities: Mapping[Any, float]) -> Mapping[Any, float]:
+    if isinstance(step, LegalDynamicRagEpisodeStep):
+        legal = set(step.valid_actions)
+        selected = {action: value for action, value in utilities.items() if action in legal}
+        if not selected:
+            raise ValueError("counterfactual provider returned no utility for any legal action")
+        return selected
+    return utilities
 
 
 def materialize_dynamic_trajectories(
@@ -128,8 +143,7 @@ def materialize_dynamic_trajectories(
     if getattr(value_provider, "contract_sha256", None) != identity.value_provider_sha256:
         raise ValueError("value provider contract does not match materialization identity")
     if counterfactual_provider is not None:
-        provider_sha = getattr(counterfactual_provider, "contract_sha256", None)
-        if provider_sha != identity.counterfactual_provider_sha256:
+        if getattr(counterfactual_provider, "contract_sha256", None) != identity.counterfactual_provider_sha256:
             raise ValueError("counterfactual provider contract does not match materialization identity")
     elif identity.counterfactual_provider_sha256 is not None:
         raise ValueError("materialization identity requires a counterfactual provider")
@@ -150,24 +164,19 @@ def materialize_dynamic_trajectories(
         if len(values) != len(episode):
             raise ValueError("value provider returned the wrong number of values")
         rewards = trajectory_rewards(episode, identity.reward_config)
-        targets = generalized_advantage_estimate(
-            rewards,
-            values,
-            discount=identity.reward_config.discount,
-            gae_lambda=identity.reward_config.gae_lambda,
-            bootstrap_value=0.0,
-        )
+        targets = generalized_advantage_estimate(rewards, values, discount=identity.reward_config.discount, gae_lambda=identity.reward_config.gae_lambda, bootstrap_value=0.0)
         for index, step in enumerate(episode):
             metadata = dict(step.metadata)
             metadata["trajectory_identity_sha256"] = identity.identity_sha256
             metadata["return_target"] = format(targets.returns[index], ".17g")
             if counterfactual_provider is not None:
-                action, gain = counterfactual_action_target(counterfactual_provider.action_utilities(step), identity.reward_config)
+                utilities = _legal_counterfactual_utilities(step, counterfactual_provider.action_utilities(step))
+                action, gain = counterfactual_action_target(utilities, identity.reward_config)
                 metadata["counterfactual_best_action"] = action.value
                 metadata["counterfactual_gain_over_continue"] = format(gain, ".17g")
             materialized.append(replace(step, advantage=targets.advantages[index], metadata=metadata))
 
-    destination = Path(output_path).expanduser().resolve()
+    destination = safe_advanced_path(output_path, label="dynamic trajectory output", must_exist=False)
     destination.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary_name = tempfile.mkstemp(prefix=f".{destination.name}-", suffix=".tmp", dir=destination.parent)
     digest = hashlib.sha256()
@@ -175,8 +184,7 @@ def materialize_dynamic_trajectories(
         with os.fdopen(descriptor, "wb") as handle:
             for step in materialized:
                 line = _canonical(_record(step)) + b"\n"
-                handle.write(line)
-                digest.update(line)
+                handle.write(line); digest.update(line)
             handle.flush(); os.fsync(handle.fileno())
         os.replace(temporary_name, destination)
     finally:
@@ -192,12 +200,8 @@ def materialize_dynamic_trajectories(
         "identity_sha256": identity.identity_sha256,
     }
     return MaterializedTrajectoryReceipt(
-        output_path=str(destination),
-        output_sha256=output_sha,
-        record_count=len(materialized),
-        episode_count=len(by_episode),
-        identity_sha256=identity.identity_sha256,
-        receipt_sha256=_digest(unsigned),
+        output_path=str(destination), output_sha256=output_sha, record_count=len(materialized),
+        episode_count=len(by_episode), identity_sha256=identity.identity_sha256, receipt_sha256=_digest(unsigned),
     )
 
 
