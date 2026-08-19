@@ -1,9 +1,9 @@
 """Authoritative retrieval benchmark composition for promotion-grade evaluation.
 
 The v2 path binds only authoritative components: v2 query import, passed disk-backed leakage
-qualification, disk-backed qrels, and the v2 closed corpus publication.  Relevant-document
-coverage and qrels pair identity are proved with SQLite/streaming hashes; no corpus-sized pair
-or identifier list is materialized in Python.
+qualification, disk-backed qrels, and the v2 closed corpus publication. Relevant-document
+coverage and qrels pair identity are proved with SQLite/streaming hashes. Promotion-grade run
+evidence is emitted through the streaming v2 result-artifact authority.
 """
 from __future__ import annotations
 
@@ -14,22 +14,20 @@ import sqlite3
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterator, Mapping
+from typing import Any, Iterator
 
 from evaluation.advanced_rag_receipts import AdvancedEvaluationRun
+from evaluation.authoritative_benchmark_run_evidence import (
+    AuthoritativeBenchmarkResultReceipt,
+    materialize_authoritative_benchmark_run_evidence,
+)
 from evaluation.authoritative_governed_benchmark_corpus import (
     AuthoritativeBenchmarkCorpusReceipt,
     iter_authoritative_benchmark_corpus,
     verify_authoritative_benchmark_corpus_receipt,
 )
-from evaluation.authoritative_governed_benchmark_io import (
-    VerifiedAuthoritativeGovernedBenchmark,
-)
+from evaluation.authoritative_governed_benchmark_io import VerifiedAuthoritativeGovernedBenchmark
 from evaluation.authoritative_governed_qrels import _SQLiteRelevantMapping
-from evaluation.benchmark_run_evidence import (
-    BenchmarkResultArtifactReceipt,
-    materialize_benchmark_run_evidence,
-)
 from evaluation.benchmark_suite import BenchmarkSuiteResult
 from evaluation.governed_benchmark_qualification import GovernedBenchmarkLeakageReceipt
 from evaluation.governed_qrels import GovernedQrels, overlay_qrels
@@ -85,11 +83,9 @@ def _coverage(qrels: GovernedQrels, corpus: AuthoritativeBenchmarkCorpusReceipt)
             if count != corpus.record_count:
                 raise ValueError("authoritative corpus iteration count differs from corpus receipt")
             for query_id in qrels.relevant_by_query:
-                document_ids = qrels.relevant_by_query[query_id]
-                for document_id in document_ids:
+                for document_id in qrels.relevant_by_query[query_id]:
                     if connection.execute("SELECT 1 FROM corpus_ids WHERE document_id=?", (document_id,)).fetchone() is None:
-                        if len(missing) < _MAX_MISSING_SAMPLE:
-                            missing.append(document_id)
+                        if len(missing) < _MAX_MISSING_SAMPLE: missing.append(document_id)
                     pair_digest.update(query_id.encode("utf-8")); pair_digest.update(b"\t"); pair_digest.update(document_id.encode("utf-8")); pair_digest.update(b"\n"); pair_count += 1
             if missing:
                 raise ValueError(f"qrels reference documents absent from authoritative corpus; sample={missing}")
@@ -188,10 +184,17 @@ def materialize_authoritative_retrieval_run_evidence(
     base_evaluator_contract_sha256: str,
     seed: int,
     repeat_index: int,
-    output_path: str | Path,
-) -> tuple[AdvancedEvaluationRun, BenchmarkResultArtifactReceipt]:
+    output_dir: str | Path,
+) -> tuple[AdvancedEvaluationRun, AuthoritativeBenchmarkResultReceipt]:
     evaluator = authoritative_retrieval_evaluator_contract_sha256(base_evaluator_contract_sha256, benchmark)
-    return materialize_benchmark_run_evidence(result, benchmark_manifest=benchmark.queries.manifest, evaluator_contract_sha256=evaluator, seed=seed, repeat_index=repeat_index, output_path=output_path)
+    return materialize_authoritative_benchmark_run_evidence(
+        result,
+        benchmark_manifest=benchmark.queries.manifest,
+        evaluator_contract_sha256=evaluator,
+        seed=seed,
+        repeat_index=repeat_index,
+        output_dir=output_dir,
+    )
 
 
 __all__ = ["AuthoritativeGovernedRetrievalBenchmark", "authoritative_retrieval_evaluator_contract_sha256", "build_authoritative_governed_retrieval_benchmark", "materialize_authoritative_retrieval_run_evidence"]
