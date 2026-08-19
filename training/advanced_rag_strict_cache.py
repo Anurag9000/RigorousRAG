@@ -33,11 +33,15 @@ class AuthoritativeSafetensorSupervisionCache(SafetensorSupervisionCache):
     """Base cache plus path authority, strict JSON, entry verification and exact sealing.
 
     ``contract_sha256`` is intentionally derived from the immutable cache identity and the
-    complete set of exact tensor-entry digests.  It is therefore safe to persist in promotion,
-    restart and training-data receipts.  Contract computation never trusts filenames alone:
+    complete set of exact tensor-entry digests. It is therefore safe to persist in promotion,
+    restart and training-data receipts. Contract computation never trusts filenames alone:
     every entry must be a regular non-symlink manifest/tensor pair, the manifest key must hash
     back to its filename, the identity must match this cache, and the tensor bytes must match
     the manifest digest. Unknown/orphan files make sealing fail closed.
+
+    Construction validates the current closed entry set immediately. This gives configuration
+    preflight the same cache-integrity semantics as training/restart while still allowing a
+    genuinely empty fresh cache to be created and populated by explicit materialization code.
     """
 
     def __init__(self, root: str | Path, identity: SupervisionCacheIdentity) -> None:
@@ -45,6 +49,9 @@ class AuthoritativeSafetensorSupervisionCache(SafetensorSupervisionCache):
         if safe.exists() and not safe.is_dir():
             raise ValueError("supervision cache root must be a directory when it exists")
         super().__init__(safe, identity)
+        # Force fail-closed validation now rather than deferring malformed/orphan discovery
+        # until the first training batch or restart operation.
+        _ = self.contract_sha256
 
     @staticmethod
     def _bounded_regular(path: Path, label: str, maximum: int) -> int:
@@ -104,7 +111,7 @@ class AuthoritativeSafetensorSupervisionCache(SafetensorSupervisionCache):
         """Return a deterministic digest of the exact closed cache contents.
 
         The root is treated as a closed authority boundary: only paired ``<64hex>.json`` and
-        ``<64hex>.safetensors`` files are permitted.  This catches partial writes, stale files,
+        ``<64hex>.safetensors`` files are permitted. This catches partial writes, stale files,
         symlink substitution and post-seal mutation before a cache is admitted into a recipe or
         restarted canonical bundle.
         """
