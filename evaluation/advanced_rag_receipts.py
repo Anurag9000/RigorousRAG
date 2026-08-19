@@ -3,7 +3,8 @@
 This module does not run benchmarks. It turns already-produced, governed benchmark results
 into immutable receipts bound to the exact checkpoint and training identity. Repeats/seeds,
 benchmark manifests, evaluator contracts, sample counts and result-artifact digests are all
-part of the receipt; promotion consumes only the deterministic aggregate metrics.
+part of the receipt; promotion consumes only an aggregate that is recomputed from one strict,
+homogeneous run cohort.
 """
 from __future__ import annotations
 
@@ -63,7 +64,7 @@ def _finite(value: Any, label: str) -> float:
 def _metrics(value: Mapping[str, Any], label: str) -> Mapping[str, float]:
     if not isinstance(value, Mapping) or not value or len(value) > _MAX_METRICS:
         raise ValueError(f"{label} must be a bounded non-empty mapping")
-    return {_text(str(key), f"{label} key", 300): _finite(metric, f"{label}[{key}]") for key, metric in value.items()}
+    return {_text(str(key), f"{label} key", 300): _finite(item, f"{label}[{key}]") for key, item in value.items()}
 
 
 @dataclass(frozen=True)
@@ -96,6 +97,60 @@ class AdvancedEvaluationRun:
         return _digest({"schema": "rigorousrag-advanced-evaluation-run/v1", **asdict(self)})
 
 
+def _validated_cohort(runs: Sequence[AdvancedEvaluationRun]) -> tuple[AdvancedEvaluationRun, ...]:
+    selected = tuple(runs)
+    if not selected or len(selected) > _MAX_RUNS or any(not isinstance(run, AdvancedEvaluationRun) for run in selected):
+        raise ValueError("evaluation cohort requires bounded AdvancedEvaluationRun values")
+    if len({run.run_sha256 for run in selected}) != len(selected):
+        raise ValueError("evaluation cohort contains duplicate run identities")
+    if len({(run.seed, run.repeat_index) for run in selected}) != len(selected):
+        raise ValueError("evaluation cohort contains duplicate seed/repeat coordinates")
+    first = selected[0]
+    cohort_fields = {
+        "benchmark_id": first.benchmark_id,
+        "benchmark_manifest_sha256": first.benchmark_manifest_sha256,
+        "evaluator_contract_sha256": first.evaluator_contract_sha256,
+        "sample_count": first.sample_count,
+    }
+    failures: list[str] = []
+    metric_names = set(first.metrics)
+    for index, run in enumerate(selected[1:], start=1):
+        if run.benchmark_id != cohort_fields["benchmark_id"]:
+            failures.append(f"run[{index}].benchmark_id")
+        if run.benchmark_manifest_sha256 != cohort_fields["benchmark_manifest_sha256"]:
+            failures.append(f"run[{index}].benchmark_manifest_sha256")
+        if run.evaluator_contract_sha256 != cohort_fields["evaluator_contract_sha256"]:
+            failures.append(f"run[{index}].evaluator_contract_sha256")
+        if run.sample_count != cohort_fields["sample_count"]:
+            failures.append(f"run[{index}].sample_count")
+        if set(run.metrics) != metric_names:
+            failures.append(f"run[{index}].metrics")
+    if failures:
+        raise ValueError(f"evaluation runs do not form one comparable cohort: {failures[:40]}")
+    return selected
+
+
+def aggregate_evaluation_metrics(runs: Sequence[AdvancedEvaluationRun], *, aggregation: str = "mean") -> Mapping[str, float]:
+    selected = _validated_cohort(runs)
+    if aggregation not in {"mean", "median"}:
+        raise ValueError("aggregation must be mean or median")
+    keys = set(selected[0].metrics)
+    result: dict[str, float] = {}
+    for key in sorted(keys):
+        values = [run.metrics[key] for run in selected]
+        result[key] = float(fmean(values) if aggregation == "mean" else median(values))
+    return result
+
+
+def _assert_aggregate_matches(runs: Sequence[AdvancedEvaluationRun], aggregation: str, supplied: Mapping[str, float]) -> None:
+    recomputed = aggregate_evaluation_metrics(runs, aggregation=aggregation)
+    if set(supplied) != set(recomputed):
+        raise ValueError("evaluation receipt aggregate metric names differ from run recomputation")
+    mismatches = [name for name in supplied if not math.isclose(float(supplied[name]), float(recomputed[name]), rel_tol=1e-12, abs_tol=1e-12)]
+    if mismatches:
+        raise ValueError(f"evaluation receipt aggregate differs from embedded runs: {mismatches[:40]}")
+
+
 @dataclass(frozen=True)
 class AdvancedEvaluationReceipt:
     kind: str
@@ -120,13 +175,11 @@ class AdvancedEvaluationReceipt:
         object.__setattr__(self, "source_commit", commit)
         if self.aggregation not in {"mean", "median"}:
             raise ValueError("aggregation must be mean or median")
-        runs = tuple(self.runs)
-        if not runs or len(runs) > _MAX_RUNS or any(not isinstance(run, AdvancedEvaluationRun) for run in runs):
-            raise ValueError("evaluation receipt requires bounded AdvancedEvaluationRun values")
-        if len({run.run_sha256 for run in runs}) != len(runs):
-            raise ValueError("evaluation receipt contains duplicate run identities")
+        runs = _validated_cohort(self.runs)
         object.__setattr__(self, "runs", runs)
-        object.__setattr__(self, "metrics", _metrics(self.metrics, "aggregate metrics"))
+        metrics = _metrics(self.metrics, "aggregate metrics")
+        _assert_aggregate_matches(runs, self.aggregation, metrics)
+        object.__setattr__(self, "metrics", metrics)
         expected = _digest(self._payload())
         provided = _sha(self.receipt_sha256, "receipt_sha256")
         if expected != provided:
@@ -148,27 +201,10 @@ class AdvancedEvaluationReceipt:
         }
 
 
-def aggregate_evaluation_metrics(runs: Sequence[AdvancedEvaluationRun], *, aggregation: str = "mean") -> Mapping[str, float]:
-    selected = tuple(runs)
-    if not selected:
-        raise ValueError("cannot aggregate an empty evaluation run set")
-    if aggregation not in {"mean", "median"}:
-        raise ValueError("aggregation must be mean or median")
-    keys = set(selected[0].metrics)
-    for run in selected[1:]:
-        if set(run.metrics) != keys:
-            raise ValueError("all repeated evaluation runs must expose the same metric names")
-    result: dict[str, float] = {}
-    for key in sorted(keys):
-        values = [run.metrics[key] for run in selected]
-        result[key] = float(fmean(values) if aggregation == "mean" else median(values))
-    return result
-
-
 def build_advanced_evaluation_receipt(binding: VerifiedAdvancedCheckpointBinding, runs: Sequence[AdvancedEvaluationRun], *, aggregation: str = "mean") -> AdvancedEvaluationReceipt:
     if not isinstance(binding, VerifiedAdvancedCheckpointBinding):
         raise ValueError("binding must be VerifiedAdvancedCheckpointBinding")
-    selected_runs = tuple(runs)
+    selected_runs = _validated_cohort(runs)
     metrics = aggregate_evaluation_metrics(selected_runs, aggregation=aggregation)
     unsigned = {
         "schema": "rigorousrag-advanced-evaluation-receipt/v1",
@@ -238,10 +274,13 @@ def read_advanced_evaluation_receipt(path: str | Path) -> AdvancedEvaluationRece
     required = {"schema", "kind", "checkpoint_digest", "plan_sha256", "training_input_sha256", "training_config_sha256", "source_commit", "aggregation", "runs", "metrics", "receipt_sha256"}
     if not isinstance(payload, Mapping) or set(payload) != required or payload["schema"] != "rigorousrag-advanced-evaluation-receipt/v1":
         raise ValueError("unsupported or malformed evaluation receipt")
+    if not isinstance(payload["runs"], list):
+        raise ValueError("evaluation receipt runs must be an array")
     runs = []
+    allowed_run_fields = {"benchmark_id", "benchmark_manifest_sha256", "evaluator_contract_sha256", "seed", "repeat_index", "sample_count", "metrics", "result_artifact_sha256", "slice_metrics_sha256", "run_sha256"}
     for raw in payload["runs"]:
-        if not isinstance(raw, Mapping) or "run_sha256" not in raw:
-            raise ValueError("evaluation receipt run is malformed")
+        if not isinstance(raw, Mapping) or set(raw) != allowed_run_fields:
+            raise ValueError("evaluation receipt run fields are malformed")
         values = {key: value for key, value in raw.items() if key != "run_sha256"}
         run = AdvancedEvaluationRun(**values)
         if run.run_sha256 != raw["run_sha256"]:
