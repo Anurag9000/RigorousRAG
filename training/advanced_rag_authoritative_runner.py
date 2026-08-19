@@ -1,9 +1,8 @@
 """Authoritative ready-to-train composition for advanced RAG.
 
-This is the launch path used by the CLI/config layer. Older modules remain reusable research
-primitives; configuration-driven training always uses padding-safe supervision, exact input
-identities, strict off-policy learning, multi-evidence citation targets and an explicit
-causal/seq2seq generator family.
+Configuration-driven training uses strict path/tokenizer/cache authority, exact input
+identities, multi-evidence/contested grounding supervision, and legal-action-masked dynamic
+policy objectives while preserving the older research primitives.
 """
 from __future__ import annotations
 
@@ -11,16 +10,15 @@ from dataclasses import dataclass
 from typing import Any
 
 from training.advanced_checkpoint_authority import AdvancedCheckpointManager
-from training.advanced_rag_data import ManifestBoundAdvancedJsonlDataset
+from training.advanced_rag_action_legality import LegalActionDynamicRagEpisodeCollator, LegalActionDynamicRetrievalPolicyStep
+from training.advanced_rag_authoritative_data import ManifestBoundAuthoritativeJsonlDataset
 from training.advanced_rag_evaluators import DynamicPolicyValidationEvaluator, GroundedValidationEvaluator, ValidationLimits
-from training.advanced_rag_final_collation import FinalDynamicRagEpisodeCollator
 from training.advanced_rag_final_objectives import AuthoritativeGroundedGenerationStep
 from training.advanced_rag_identity import AdvancedTrainingInputIdentity, dataclass_sha256, provider_identity_sha256, trainability_sha256
 from training.advanced_rag_models import DynamicRagPolicyModel, GroundedGeneratorTrainingModule
 from training.advanced_rag_multi_evidence import MultiEvidenceCausalGroundedCollator, MultiEvidenceSeq2SeqGroundedCollator
 from training.advanced_rag_runner import AdvancedTrainingRunResult, DynamicRagPolicyTrainingRunner, GroundedGeneratorTrainingRunner, _TrainabilityStep, _effective_trainability, _loader, _trainer_with_evaluation
 from training.advanced_rag_steps import DynamicPolicyStepConfig, GroundedStepConfig, dynamic_plan_to_trainer_config, grounded_plan_to_trainer_config
-from training.advanced_rag_strict import StrictDynamicRetrievalPolicyStep
 from training.advanced_tokenizer_contract import assert_advanced_training_tokenizer
 from training.data_pipeline import ResumableDeterministicSampler
 from training.seq2seq_grounded import Seq2SeqGroundedGeneratorTrainingModule
@@ -38,7 +36,7 @@ class GroundedGeneratorPathBinding:
 
 
 class AuthoritativeGroundedGeneratorTrainingRunner(GroundedGeneratorTrainingRunner):
-    """Final grounded runner supporting causal and encoder-decoder generators."""
+    """Final grounded runner supporting causal/seq2seq and contested evidence stances."""
     def __init__(self, *args: Any, generator_family: str, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         if generator_family not in {"causal_lm", "seq2seq_lm"}:
@@ -56,8 +54,8 @@ class AuthoritativeGroundedGeneratorTrainingRunner(GroundedGeneratorTrainingRunn
         return GroundedGeneratorTrainingModule(base_model=self.base_model, config=self.plan.architecture, retriever_model=self.retriever_model)
 
     def run(self, *, resume_checkpoint_digest: str | None = None, event_sink: Any | None = None) -> AdvancedTrainingRunResult:
-        train_dataset = ManifestBoundAdvancedJsonlDataset(self.train_split.path, expected_sha256=self.train_split.content_sha256, dataset_manifest_sha256=self.plan.dataset_manifest_sha256, split_name=self.train_split.split_name, record_kind="grounded_generation", expected_record_count=self.train_split.expected_record_count)
-        validation_dataset = ManifestBoundAdvancedJsonlDataset(self.validation_split.path, expected_sha256=self.validation_split.content_sha256, dataset_manifest_sha256=self.plan.dataset_manifest_sha256, split_name=self.validation_split.split_name, record_kind="grounded_generation", expected_record_count=self.validation_split.expected_record_count)
+        train_dataset = ManifestBoundAuthoritativeJsonlDataset(self.train_split.path, expected_sha256=self.train_split.content_sha256, dataset_manifest_sha256=self.plan.dataset_manifest_sha256, split_name=self.train_split.split_name, record_kind="grounded_generation", expected_record_count=self.train_split.expected_record_count)
+        validation_dataset = ManifestBoundAuthoritativeJsonlDataset(self.validation_split.path, expected_sha256=self.validation_split.content_sha256, dataset_manifest_sha256=self.plan.dataset_manifest_sha256, split_name=self.validation_split.split_name, record_kind="grounded_generation", expected_record_count=self.validation_split.expected_record_count)
         self._preflight(train_dataset); self._preflight(validation_dataset)
         effective_trainability = _effective_trainability(self.plan.stages, self.trainability)
         path_binding = GroundedGeneratorPathBinding(self.generator_family, self.collator_config)
@@ -88,14 +86,14 @@ class AuthoritativeGroundedGeneratorTrainingRunner(GroundedGeneratorTrainingRunn
 
 
 class AuthoritativeDynamicRagPolicyTrainingRunner(DynamicRagPolicyTrainingRunner):
-    """Final dynamic runner with variable-length hidden-state alignment and strict off-policy loss."""
+    """Final dynamic runner with exact legal-action masking and strict off-policy loss."""
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         assert_advanced_training_tokenizer(self.tokenizer)
 
     def run(self, *, resume_checkpoint_digest: str | None = None, event_sink: Any | None = None) -> AdvancedTrainingRunResult:
-        train_dataset = ManifestBoundAdvancedJsonlDataset(self.train_split.path, expected_sha256=self.train_split.content_sha256, dataset_manifest_sha256=self.plan.dataset_manifest_sha256, split_name=self.train_split.split_name, record_kind="dynamic_rag_episode", expected_record_count=self.train_split.expected_record_count)
-        validation_dataset = ManifestBoundAdvancedJsonlDataset(self.validation_split.path, expected_sha256=self.validation_split.content_sha256, dataset_manifest_sha256=self.plan.dataset_manifest_sha256, split_name=self.validation_split.split_name, record_kind="dynamic_rag_episode", expected_record_count=self.validation_split.expected_record_count)
+        train_dataset = ManifestBoundAuthoritativeJsonlDataset(self.train_split.path, expected_sha256=self.train_split.content_sha256, dataset_manifest_sha256=self.plan.dataset_manifest_sha256, split_name=self.train_split.split_name, record_kind="dynamic_rag_episode", expected_record_count=self.train_split.expected_record_count)
+        validation_dataset = ManifestBoundAuthoritativeJsonlDataset(self.validation_split.path, expected_sha256=self.validation_split.content_sha256, dataset_manifest_sha256=self.plan.dataset_manifest_sha256, split_name=self.validation_split.split_name, record_kind="dynamic_rag_episode", expected_record_count=self.validation_split.expected_record_count)
         self._preflight(train_dataset); self._preflight(validation_dataset)
         effective_trainability = _effective_trainability(self.plan.stages, self.trainability)
         input_identity = AdvancedTrainingInputIdentity(
@@ -111,11 +109,11 @@ class AuthoritativeDynamicRagPolicyTrainingRunner(DynamicRagPolicyTrainingRunner
         runtimes, validation_steps = [], []
         for stage_index, stage in enumerate(self.plan.stages):
             sampler = ResumableDeterministicSampler(len(train_dataset), seed=self.execution.seed + stage_index, shuffle=True)
-            collator = FinalDynamicRagEpisodeCollator(self.tokenizer, self.plan.architecture, self.collator_config, hidden_state_cache=self.hidden_state_cache)
-            step = StrictDynamicRetrievalPolicyStep(DynamicPolicyStepConfig(stage.objective), actions=self.plan.architecture.actions)
-            validation_steps.append(StrictDynamicRetrievalPolicyStep(DynamicPolicyStepConfig(stage.objective), actions=self.plan.architecture.actions))
+            collator = LegalActionDynamicRagEpisodeCollator(self.tokenizer, self.plan.architecture, self.collator_config, hidden_state_cache=self.hidden_state_cache)
+            step = LegalActionDynamicRetrievalPolicyStep(DynamicPolicyStepConfig(stage.objective), actions=self.plan.architecture.actions)
+            validation_steps.append(LegalActionDynamicRetrievalPolicyStep(DynamicPolicyStepConfig(stage.objective), actions=self.plan.architecture.actions))
             runtimes.append(StageRuntime(dataloader=_loader(train_dataset, sampler, collator, batch_size=self.execution.train_batch_size, execution=self.execution), step=_TrainabilityStep(step, effective_trainability[stage.name]), sampler=sampler, collator=collator))
-        validation_collator = FinalDynamicRagEpisodeCollator(self.tokenizer, self.plan.architecture, self.collator_config, hidden_state_cache=self.hidden_state_cache)
+        validation_collator = LegalActionDynamicRagEpisodeCollator(self.tokenizer, self.plan.architecture, self.collator_config, hidden_state_cache=self.hidden_state_cache)
         validation_loader = _loader(validation_dataset, None, validation_collator, batch_size=self.execution.validation_batch_size, execution=self.execution)
         evaluator = DynamicPolicyValidationEvaluator(validation_loader, validation_steps, ValidationLimits(self.execution.validation_maximum_batches))
         manager = AdvancedCheckpointManager(self.checkpoint_root)
