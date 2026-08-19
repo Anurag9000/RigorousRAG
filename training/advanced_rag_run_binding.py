@@ -1,7 +1,7 @@
 """Reconstruct and verify exact advanced-RAG training identities from run configs.
 
 This module is intentionally source-only: it does not load model weights, datasets into
-accelerators, or execute training.  It rebuilds the same immutable input identity and generic
+accelerators, or execute training. It rebuilds the same immutable input identity and generic
 trainer configuration used by the authoritative runners, then verifies a content-addressed
 checkpoint before export/promotion.
 """
@@ -124,15 +124,23 @@ class VerifiedAdvancedCheckpointBinding:
     dataset_manifest_sha256: str
     model_architecture: str
     generator_family: str | None
+    retriever_positive_label_index: int | None = None
 
     def __post_init__(self) -> None:
         if self.kind not in {"grounded_generation", "dynamic_rag_policy"}:
             raise ValueError("unsupported advanced checkpoint kind")
-        if self.kind == "grounded_generation" and self.generator_family not in {"causal_lm", "seq2seq_lm"}:
-            raise ValueError("grounded checkpoint binding requires generator family")
-        if self.kind == "dynamic_rag_policy" and self.generator_family is not None:
-            raise ValueError("dynamic checkpoint binding may not carry generator family")
-
+        if self.kind == "grounded_generation":
+            if self.generator_family not in {"causal_lm", "seq2seq_lm"}:
+                raise ValueError("grounded checkpoint binding requires generator family")
+            if self.retriever_positive_label_index is not None and (
+                isinstance(self.retriever_positive_label_index, bool)
+                or not isinstance(self.retriever_positive_label_index, int)
+                or self.retriever_positive_label_index < 0
+            ):
+                raise ValueError("retriever_positive_label_index must be non-negative or None")
+        else:
+            if self.generator_family is not None or self.retriever_positive_label_index is not None:
+                raise ValueError("dynamic checkpoint binding may not carry grounded runtime adapter data")
 
 
 def verify_checkpoint_against_run_config(
@@ -150,6 +158,7 @@ def verify_checkpoint_against_run_config(
         trainer = _grounded_trainer(config, identity)
         expected_architecture = f"grounded_generation:{config.plan.plan_sha256}"
         generator_family: str | None = config.base_model.artifact_kind
+        retriever_positive_label_index = config.retriever_coupling.positive_label_index if config.retriever_model is not None else None
         kind = "grounded_generation"
         plan_sha256 = config.plan.plan_sha256
         dataset_sha = config.plan.dataset_manifest_sha256
@@ -159,6 +168,7 @@ def verify_checkpoint_against_run_config(
         trainer = _dynamic_trainer(config, identity)
         expected_architecture = f"dynamic_retrieval_policy:{config.plan.plan_sha256}"
         generator_family = None
+        retriever_positive_label_index = None
         kind = "dynamic_rag_policy"
         plan_sha256 = config.plan.plan_sha256
         dataset_sha = config.plan.dataset_manifest_sha256
@@ -191,6 +201,7 @@ def verify_checkpoint_against_run_config(
         dataset_manifest_sha256=dataset_sha,
         model_architecture=expected_architecture,
         generator_family=generator_family,
+        retriever_positive_label_index=retriever_positive_label_index,
     )
 
 
