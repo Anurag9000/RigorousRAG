@@ -1,4 +1,4 @@
-"""Legal-action masking for authoritative dynamic-RAG policy training."""
+"""Legal-action masking and explicit value targets for authoritative dynamic-RAG training."""
 from __future__ import annotations
 
 from typing import Any, Mapping, Sequence
@@ -20,7 +20,7 @@ def _require_torch() -> None:
 
 
 class LegalActionDynamicRagEpisodeCollator(FinalDynamicRagEpisodeCollator):
-    """Final dynamic collator plus exact legal action mask for every logged state."""
+    """Final dynamic collator plus exact legal action and state-value targets."""
     def __call__(self, examples: Sequence[LegalDynamicRagEpisodeStep]) -> dict[str, Any]:
         _require_torch()
         if not examples or any(not isinstance(item, LegalDynamicRagEpisodeStep) for item in examples):
@@ -37,6 +37,11 @@ class LegalActionDynamicRagEpisodeCollator(FinalDynamicRagEpisodeCollator):
             rows.append([action in legal for action in architecture_actions])
         batch = super().__call__(examples)
         batch["valid_action_mask"] = torch.tensor(rows, dtype=torch.bool)
+        have_values = [item.value_target is not None for item in examples]
+        if any(have_values) and not all(have_values):
+            raise ValueError("a dynamic batch may not mix present and absent state-value targets")
+        if all(have_values):
+            batch["value_targets"] = torch.tensor([float(item.value_target) for item in examples], dtype=torch.float32)
         return batch
 
 
@@ -65,8 +70,9 @@ class _LegalityMaskedModel:
 
 
 class LegalActionDynamicRetrievalPolicyStep:
-    """Strict dynamic objective after server-log-derived legality masking."""
+    """Strict dynamic objective after legality masking and value-target normalization."""
     def __init__(self, config: DynamicPolicyStepConfig, *, actions: tuple[Any, ...]) -> None:
+        self.config = config
         self.inner = StrictDynamicRetrievalPolicyStep(config, actions=actions)
 
     def __call__(self, model: Any, batch: Mapping[str, Any]) -> Any:
@@ -82,7 +88,13 @@ class LegalActionDynamicRetrievalPolicyStep:
         selected = mask.gather(1, targets.long().unsqueeze(1)).squeeze(1)
         if not bool(selected.all().item()):
             raise ValueError("one or more logged action targets are invalid in their state")
-        return self.inner(_LegalityMaskedModel(model, mask), batch)
+        normalized = dict(batch)
+        if self.config.objective.value_weight > 0.0:
+            value_targets = normalized.get("value_targets")
+            if value_targets is None:
+                raise ValueError("authoritative value learning requires explicit value_targets from trajectory materialization")
+            normalized["realized_retrieval_gain"] = value_targets
+        return self.inner(_LegalityMaskedModel(model, mask), normalized)
 
 
 __all__ = ["LegalActionDynamicRagEpisodeCollator", "LegalActionDynamicRetrievalPolicyStep"]
