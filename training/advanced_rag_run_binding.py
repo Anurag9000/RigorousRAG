@@ -1,0 +1,202 @@
+"""Reconstruct and verify exact advanced-RAG training identities from run configs.
+
+This module is intentionally source-only: it does not load model weights, datasets into
+accelerators, or execute training.  It rebuilds the same immutable input identity and generic
+trainer configuration used by the authoritative runners, then verifies a content-addressed
+checkpoint before export/promotion.
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+from dataclasses import dataclass
+from typing import Any
+
+from training.advanced_rag_authoritative_runner import GroundedGeneratorPathBinding
+from training.advanced_rag_config import DynamicConfiguredRun, GroundedConfiguredRun
+from training.advanced_rag_identity import AdvancedTrainingInputIdentity, dataclass_sha256, trainability_sha256
+from training.advanced_rag_runner import _effective_trainability, _trainer_with_evaluation
+from training.advanced_rag_steps import dynamic_plan_to_trainer_config, grounded_plan_to_trainer_config
+from training.checkpointing import CheckpointManager
+
+
+def _canonical(value: Any) -> bytes:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode("utf-8")
+
+
+def _digest(value: Any) -> str:
+    return hashlib.sha256(_canonical(value)).hexdigest()
+
+
+def _retriever_supervision_sha256(config: GroundedConfiguredRun) -> str | None:
+    if config.retriever_utility_cache is None:
+        return None
+    return _digest(
+        {
+            "schema": "rigorousrag-cached-document-utility-builder/v1",
+            "tokenizer_sha256": config.plan.tokenizer_sha256,
+            "utility_cache_sha256": config.retriever_utility_cache.identity.digest,
+            "config_sha256": config.retriever_coupling.config_sha256,
+        }
+    )
+
+
+def grounded_training_input_identity(config: GroundedConfiguredRun) -> AdvancedTrainingInputIdentity:
+    if not isinstance(config, GroundedConfiguredRun):
+        raise ValueError("config must be GroundedConfiguredRun")
+    trainability = _effective_trainability(config.plan.stages, config.trainability)
+    path_binding = GroundedGeneratorPathBinding(config.base_model.artifact_kind, config.collator)
+    return AdvancedTrainingInputIdentity(
+        kind="grounded_generation",
+        plan_sha256=config.plan.plan_sha256,
+        training_split_sha256=config.train_split.content_sha256,
+        validation_split_sha256=config.validation_split.content_sha256,
+        tokenizer_sha256=config.plan.tokenizer_sha256,
+        execution_config_sha256=dataclass_sha256(config.execution, label="advanced-execution-config"),
+        collator_config_sha256=dataclass_sha256(path_binding, label="grounded-generator-path-binding"),
+        trainability_sha256=trainability_sha256(trainability),
+        teacher_cache_sha256=None if config.teacher_cache is None else config.teacher_cache.identity.digest,
+        reference_cache_sha256=None if config.reference_cache is None else config.reference_cache.identity.digest,
+        retriever_supervision_sha256=_retriever_supervision_sha256(config),
+    )
+
+
+def dynamic_training_input_identity(config: DynamicConfiguredRun) -> AdvancedTrainingInputIdentity:
+    if not isinstance(config, DynamicConfiguredRun):
+        raise ValueError("config must be DynamicConfiguredRun")
+    trainability = _effective_trainability(config.plan.stages, config.trainability)
+    return AdvancedTrainingInputIdentity(
+        kind="dynamic_rag_policy",
+        plan_sha256=config.plan.plan_sha256,
+        training_split_sha256=config.train_split.content_sha256,
+        validation_split_sha256=config.validation_split.content_sha256,
+        tokenizer_sha256=config.tokenizer.expected_sha256,
+        execution_config_sha256=dataclass_sha256(config.execution, label="advanced-execution-config"),
+        collator_config_sha256=dataclass_sha256(config.collator, label="dynamic-collator-config"),
+        trainability_sha256=trainability_sha256(trainability),
+        hidden_state_cache_sha256=None if config.hidden_state_cache is None else config.hidden_state_cache.identity.digest,
+    )
+
+
+def _grounded_trainer(config: GroundedConfiguredRun, identity: AdvancedTrainingInputIdentity) -> Any:
+    trainer = grounded_plan_to_trainer_config(
+        config.plan,
+        device=config.execution.device,
+        precision=config.execution.precision,
+        gradient_accumulation_steps=config.execution.gradient_accumulation_steps,
+        max_grad_norm=config.execution.max_grad_norm,
+        seed=config.execution.seed,
+        deterministic_algorithms=config.execution.deterministic_algorithms,
+        ddp=config.execution.ddp,
+        weight_decay=config.execution.weight_decay,
+        scheduler=config.execution.scheduler,
+        warmup_steps=config.execution.warmup_steps,
+    )
+    return _trainer_with_evaluation(trainer, config.execution, identity)
+
+
+def _dynamic_trainer(config: DynamicConfiguredRun, identity: AdvancedTrainingInputIdentity) -> Any:
+    trainer = dynamic_plan_to_trainer_config(
+        config.plan,
+        device=config.execution.device,
+        precision=config.execution.precision,
+        gradient_accumulation_steps=config.execution.gradient_accumulation_steps,
+        max_grad_norm=config.execution.max_grad_norm,
+        seed=config.execution.seed,
+        deterministic_algorithms=config.execution.deterministic_algorithms,
+        ddp=config.execution.ddp,
+        weight_decay=config.execution.weight_decay,
+        scheduler=config.execution.scheduler,
+        warmup_steps=config.execution.warmup_steps,
+    )
+    return _trainer_with_evaluation(trainer, config.execution, identity)
+
+
+@dataclass(frozen=True)
+class VerifiedAdvancedCheckpointBinding:
+    kind: str
+    checkpoint_digest: str
+    plan_sha256: str
+    training_input_sha256: str
+    training_config_sha256: str
+    bound_run_id: str
+    source_commit: str
+    dataset_manifest_sha256: str
+    model_architecture: str
+    generator_family: str | None
+
+    def __post_init__(self) -> None:
+        if self.kind not in {"grounded_generation", "dynamic_rag_policy"}:
+            raise ValueError("unsupported advanced checkpoint kind")
+        if self.kind == "grounded_generation" and self.generator_family not in {"causal_lm", "seq2seq_lm"}:
+            raise ValueError("grounded checkpoint binding requires generator family")
+        if self.kind == "dynamic_rag_policy" and self.generator_family is not None:
+            raise ValueError("dynamic checkpoint binding may not carry generator family")
+
+
+
+def verify_checkpoint_against_run_config(
+    checkpoint_manager: CheckpointManager,
+    checkpoint_digest: str,
+    config: GroundedConfiguredRun | DynamicConfiguredRun,
+) -> VerifiedAdvancedCheckpointBinding:
+    """Fail closed unless a checkpoint exactly matches the supplied immutable run config."""
+    if not isinstance(checkpoint_manager, CheckpointManager):
+        raise ValueError("checkpoint_manager must be CheckpointManager")
+    _, manifest = checkpoint_manager.verify(checkpoint_digest)
+
+    if isinstance(config, GroundedConfiguredRun):
+        identity = grounded_training_input_identity(config)
+        trainer = _grounded_trainer(config, identity)
+        expected_architecture = f"grounded_generation:{config.plan.plan_sha256}"
+        generator_family: str | None = config.base_model.artifact_kind
+        kind = "grounded_generation"
+        plan_sha256 = config.plan.plan_sha256
+        dataset_sha = config.plan.dataset_manifest_sha256
+        source_commit = config.plan.source_commit
+    elif isinstance(config, DynamicConfiguredRun):
+        identity = dynamic_training_input_identity(config)
+        trainer = _dynamic_trainer(config, identity)
+        expected_architecture = f"dynamic_retrieval_policy:{config.plan.plan_sha256}"
+        generator_family = None
+        kind = "dynamic_rag_policy"
+        plan_sha256 = config.plan.plan_sha256
+        dataset_sha = config.plan.dataset_manifest_sha256
+        source_commit = config.plan.source_commit
+    else:
+        raise TypeError("unsupported configured run type")
+
+    failures: list[str] = []
+    if manifest.run_id != trainer.run_id:
+        failures.append("run_id")
+    if manifest.training_config_digest != trainer.digest:
+        failures.append("training_config_digest")
+    if manifest.source_commit != source_commit:
+        failures.append("source_commit")
+    if manifest.dataset_manifest_digest != dataset_sha:
+        failures.append("dataset_manifest_digest")
+    if manifest.model_architecture != expected_architecture:
+        failures.append("model_architecture")
+    if failures:
+        raise ValueError(f"checkpoint differs from configured training identity: {','.join(failures)}")
+
+    return VerifiedAdvancedCheckpointBinding(
+        kind=kind,
+        checkpoint_digest=manifest.digest,
+        plan_sha256=plan_sha256,
+        training_input_sha256=identity.input_sha256,
+        training_config_sha256=trainer.digest,
+        bound_run_id=trainer.run_id,
+        source_commit=source_commit,
+        dataset_manifest_sha256=dataset_sha,
+        model_architecture=expected_architecture,
+        generator_family=generator_family,
+    )
+
+
+__all__ = [
+    "VerifiedAdvancedCheckpointBinding",
+    "dynamic_training_input_identity",
+    "grounded_training_input_identity",
+    "verify_checkpoint_against_run_config",
+]
