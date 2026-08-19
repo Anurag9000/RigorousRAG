@@ -45,7 +45,9 @@ def run_dynamic_publication_config(path: str | Path) -> Mapping[str, Any]:
     if set(governance_raw) - allowed_governance: raise ValueError(f"governance contains unsupported fields: {sorted(set(governance_raw)-allowed_governance)}")
     metadata = governance_raw.get("metadata", {})
     if not isinstance(metadata, Mapping): raise ValueError("governance.metadata must be an object")
-    governance = DynamicDatasetGovernance(dataset_id=governance_raw.get("dataset_id"), exact_version=governance_raw.get("exact_version"), source_locator=governance_raw.get("source_locator"), license_identifier=governance_raw.get("license_identifier"), license_status=LicenseStatus(governance_raw.get("license_status")), license_evidence=governance_raw.get("license_evidence"), card=_card(governance_raw.get("card")), metadata={str(k): str(v) for k, v in metadata.items()}, require_promotable=bool(governance_raw.get("require_promotable", False)))
+    require_promotable = governance_raw.get("require_promotable", False)
+    if not isinstance(require_promotable, bool): raise ValueError("governance.require_promotable must be boolean")
+    governance = DynamicDatasetGovernance(dataset_id=governance_raw.get("dataset_id"), exact_version=governance_raw.get("exact_version"), source_locator=governance_raw.get("source_locator"), license_identifier=governance_raw.get("license_identifier"), license_status=LicenseStatus(governance_raw.get("license_status")), license_evidence=governance_raw.get("license_evidence"), card=_card(governance_raw.get("card")), metadata={str(k): str(v) for k, v in metadata.items()}, require_promotable=require_promotable)
     policy_raw = raw["split_policy"]
     if not isinstance(policy_raw, Mapping) or set(policy_raw) != {"seed", "weights"} or not isinstance(policy_raw["weights"], Mapping): raise ValueError("split_policy must contain seed and weights")
     policy = EpisodeSplitPolicy(seed=policy_raw["seed"], weights={str(k): v for k, v in policy_raw["weights"].items()})
@@ -58,7 +60,7 @@ def run_dynamic_publication_config(path: str | Path) -> Mapping[str, Any]:
     manifest, receipt = publish_dynamic_training_dataset(tuple(sources), governance=governance, split_policy=policy, output_dir=raw["output_dir"])
     verified = verify_dynamic_dataset_publication(Path(raw["output_dir"]) / "publication_receipt.json", sources=tuple(sources), require_promotable=governance.require_promotable)
     if verified.manifest.manifest_digest != manifest.manifest_digest or verified.receipt.receipt_sha256 != receipt.receipt_sha256: raise RuntimeError("dynamic publication verification returned a different identity")
-    return {"dataset_id": manifest.dataset_id, "dataset_manifest_sha256": manifest.manifest_digest, "source_set_sha256": receipt.source_set_sha256, "split_policy_sha256": receipt.split_policy_sha256, "receipt_sha256": receipt.receipt_sha256, "splits": {item.name: {"path": item.path, "sha256": item.sha256, "record_count": item.record_count} for item in receipt.splits}}
+    return {"dataset_id": manifest.dataset_id, "dataset_manifest_sha256": manifest.manifest_digest, "source_set_sha256": receipt.source_set_sha256, "split_policy_sha256": receipt.split_policy_sha256, "receipt_sha256": receipt.receipt_sha256, "publication_authority": "dynamic_dataset_publication/v2", "splits": {item.name: {"path": item.path, "sha256": item.sha256, "record_count": item.record_count} for item in receipt.splits}}
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -70,4 +72,4 @@ def main(argv: Sequence[str] | None = None) -> int:
 if __name__ == "__main__": raise SystemExit(main())
 
 
-__all__ = ["run_dynamic_publication_config"]
+__all__ = ["main", "run_dynamic_publication_config"]
