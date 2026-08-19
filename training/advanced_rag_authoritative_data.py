@@ -23,6 +23,7 @@ from training.grounded_generation import ReflectionAction
 _MAX_EVIDENCE = 4096
 _MAX_RECORDS = 100_000_000
 _MAX_BYTES_PER_LINE = 64 * 1024 * 1024
+_MAX_METADATA = 2000
 
 
 def _identifier(value: Any, label: str, maximum: int = 2000) -> str:
@@ -61,6 +62,14 @@ def _ids(raw: Any, label: str) -> tuple[str, ...]:
     if len(values) > _MAX_EVIDENCE or len(set(values)) != len(values):
         raise ValueError(f"{label} must be unique and bounded")
     return values
+
+
+def _metadata(raw: Any) -> Mapping[str, str]:
+    if raw is None:
+        return {}
+    if not isinstance(raw, Mapping) or len(raw) > _MAX_METADATA:
+        raise ValueError("metadata must be a bounded object")
+    return {_identifier(str(key), "metadata key", 300): _identifier(str(value), "metadata value", 10000) for key, value in raw.items()}
 
 
 @dataclass(frozen=True)
@@ -108,6 +117,7 @@ class LegalDynamicRagEpisodeStep(DynamicRagEpisodeStep):
         if self.action not in actions:
             raise ValueError("logged action must be present in valid_actions")
         object.__setattr__(self, "valid_actions", actions)
+        object.__setattr__(self, "metadata", _metadata(self.metadata))
         if self.value_target is not None:
             object.__setattr__(self, "value_target", _finite(self.value_target, "value_target"))
 
@@ -185,13 +195,14 @@ def parse_authoritative_dynamic_step(value: Any) -> LegalDynamicRagEpisodeStep:
     raw_valid = value.get("valid_actions")
     if raw_valid is not None and not isinstance(raw_valid, list):
         raise ValueError("valid_actions must be an array when supplied")
+    metadata = _metadata(value.get("metadata"))
     valid = tuple(DynamicRetrievalAction(action) for action in raw_valid) if raw_valid is not None else tuple(DynamicRetrievalAction)
     return LegalDynamicRagEpisodeStep(
         episode_id=value.get("episode_id"), step_id=value.get("step_id"), context=value.get("context"),
         features=value.get("features") or {}, action=value.get("action"), realized_retrieval_gain=value.get("realized_retrieval_gain", 0.0),
         behavior_action_probability=value.get("behavior_action_probability"), advantage=value.get("advantage"),
         need_spans=tuple(_span(item) for item in need), hidden_state_cache_key=value.get("hidden_state_cache_key"),
-        terminal_utility=value.get("terminal_utility"), metadata=value.get("metadata") or {}, valid_actions=valid,
+        terminal_utility=value.get("terminal_utility"), metadata=metadata, valid_actions=valid,
         value_target=value.get("value_target"),
     )
 
