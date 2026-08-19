@@ -17,12 +17,8 @@ from pathlib import Path
 from statistics import fmean, median
 from typing import Any, Mapping, Sequence
 
-from training.advanced_rag_artifacts import (
-    AdvancedArtifactManifest,
-    AdvancedArtifactPromotionReceipt,
-    MetricQualificationPolicy,
-    qualify_advanced_artifact,
-)
+from training.advanced_path_authority import safe_advanced_path
+from training.advanced_rag_artifacts import AdvancedArtifactManifest, AdvancedArtifactPromotionReceipt, MetricQualificationPolicy, qualify_advanced_artifact
 from training.advanced_rag_run_binding import VerifiedAdvancedCheckpointBinding
 
 _HEX = frozenset("0123456789abcdef")
@@ -169,38 +165,23 @@ def aggregate_evaluation_metrics(runs: Sequence[AdvancedEvaluationRun], *, aggre
     return result
 
 
-def build_advanced_evaluation_receipt(
-    binding: VerifiedAdvancedCheckpointBinding,
-    runs: Sequence[AdvancedEvaluationRun],
-    *,
-    aggregation: str = "mean",
-) -> AdvancedEvaluationReceipt:
+def build_advanced_evaluation_receipt(binding: VerifiedAdvancedCheckpointBinding, runs: Sequence[AdvancedEvaluationRun], *, aggregation: str = "mean") -> AdvancedEvaluationReceipt:
     if not isinstance(binding, VerifiedAdvancedCheckpointBinding):
         raise ValueError("binding must be VerifiedAdvancedCheckpointBinding")
     selected_runs = tuple(runs)
     metrics = aggregate_evaluation_metrics(selected_runs, aggregation=aggregation)
     unsigned = {
         "schema": "rigorousrag-advanced-evaluation-receipt/v1",
-        "kind": binding.kind,
-        "checkpoint_digest": binding.checkpoint_digest,
-        "plan_sha256": binding.plan_sha256,
-        "training_input_sha256": binding.training_input_sha256,
-        "training_config_sha256": binding.training_config_sha256,
-        "source_commit": binding.source_commit,
-        "aggregation": aggregation,
-        "runs": [{**asdict(run), "run_sha256": run.run_sha256} for run in selected_runs],
+        "kind": binding.kind, "checkpoint_digest": binding.checkpoint_digest,
+        "plan_sha256": binding.plan_sha256, "training_input_sha256": binding.training_input_sha256,
+        "training_config_sha256": binding.training_config_sha256, "source_commit": binding.source_commit,
+        "aggregation": aggregation, "runs": [{**asdict(run), "run_sha256": run.run_sha256} for run in selected_runs],
         "metrics": dict(metrics),
     }
     return AdvancedEvaluationReceipt(
-        kind=binding.kind,
-        checkpoint_digest=binding.checkpoint_digest,
-        plan_sha256=binding.plan_sha256,
-        training_input_sha256=binding.training_input_sha256,
-        training_config_sha256=binding.training_config_sha256,
-        source_commit=binding.source_commit,
-        aggregation=aggregation,
-        runs=selected_runs,
-        metrics=metrics,
+        kind=binding.kind, checkpoint_digest=binding.checkpoint_digest, plan_sha256=binding.plan_sha256,
+        training_input_sha256=binding.training_input_sha256, training_config_sha256=binding.training_config_sha256,
+        source_commit=binding.source_commit, aggregation=aggregation, runs=selected_runs, metrics=metrics,
         receipt_sha256=_digest(unsigned),
     )
 
@@ -224,25 +205,15 @@ def assert_evaluation_matches_artifact(receipt: AdvancedEvaluationReceipt, manif
         raise ValueError("artifact is bound to a different evaluation receipt")
 
 
-def qualify_advanced_artifact_with_receipt(
-    manifest: AdvancedArtifactManifest,
-    receipt: AdvancedEvaluationReceipt,
-    policy: MetricQualificationPolicy,
-) -> AdvancedArtifactPromotionReceipt:
-    """Authoritative promotion path: lineage-bound evaluation receipt only."""
+def qualify_advanced_artifact_with_receipt(manifest: AdvancedArtifactManifest, receipt: AdvancedEvaluationReceipt, policy: MetricQualificationPolicy) -> AdvancedArtifactPromotionReceipt:
     assert_evaluation_matches_artifact(receipt, manifest)
-    return qualify_advanced_artifact(
-        manifest,
-        evaluation_receipt_sha256=receipt.receipt_sha256,
-        metrics=receipt.metrics,
-        policy=policy,
-    )
+    return qualify_advanced_artifact(manifest, evaluation_receipt_sha256=receipt.receipt_sha256, metrics=receipt.metrics, policy=policy)
 
 
 def write_advanced_evaluation_receipt(path: str | Path, receipt: AdvancedEvaluationReceipt) -> str:
     if not isinstance(receipt, AdvancedEvaluationReceipt):
         raise ValueError("receipt must be AdvancedEvaluationReceipt")
-    destination = Path(path).expanduser().resolve()
+    destination = safe_advanced_path(path, label="advanced evaluation receipt destination", must_exist=False)
     destination.parent.mkdir(parents=True, exist_ok=True)
     payload = {**receipt._payload(), "receipt_sha256": receipt.receipt_sha256}
     descriptor, temporary = tempfile.mkstemp(prefix=f".{destination.name}-", suffix=".tmp", dir=destination.parent)
@@ -257,11 +228,8 @@ def write_advanced_evaluation_receipt(path: str | Path, receipt: AdvancedEvaluat
 
 
 def read_advanced_evaluation_receipt(path: str | Path) -> AdvancedEvaluationReceipt:
-    selected = Path(path).expanduser()
-    if selected.is_symlink():
-        raise ValueError("evaluation receipt path may not be a symlink")
-    selected = selected.resolve(strict=True)
-    if not selected.is_file() or selected.stat().st_size <= 0 or selected.stat().st_size > _MAX_RECEIPT_BYTES:
+    selected = safe_advanced_path(path, label="advanced evaluation receipt", must_exist=True, require_file=True)
+    if selected.stat().st_size <= 0 or selected.stat().st_size > _MAX_RECEIPT_BYTES:
         raise ValueError("evaluation receipt must be a bounded regular file")
     try:
         payload = json.loads(selected.read_text(encoding="utf-8"), parse_constant=lambda raw: (_ for _ in ()).throw(ValueError(raw)))
@@ -287,13 +255,4 @@ def read_advanced_evaluation_receipt(path: str | Path) -> AdvancedEvaluationRece
     )
 
 
-__all__ = [
-    "AdvancedEvaluationReceipt",
-    "AdvancedEvaluationRun",
-    "aggregate_evaluation_metrics",
-    "assert_evaluation_matches_artifact",
-    "build_advanced_evaluation_receipt",
-    "qualify_advanced_artifact_with_receipt",
-    "read_advanced_evaluation_receipt",
-    "write_advanced_evaluation_receipt",
-]
+__all__ = ["AdvancedEvaluationReceipt", "AdvancedEvaluationRun", "aggregate_evaluation_metrics", "assert_evaluation_matches_artifact", "build_advanced_evaluation_receipt", "qualify_advanced_artifact_with_receipt", "read_advanced_evaluation_receipt", "write_advanced_evaluation_receipt"]
