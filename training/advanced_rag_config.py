@@ -78,12 +78,7 @@ def _split(raw: Any, label: str) -> LocalTrainingSplit:
 
 @dataclass(frozen=True)
 class TensorCacheSpec:
-    """Exact immutable binding to one materialized supervision cache.
-
-    ``identity`` describes who/what produced the cache; ``contract_sha256`` commits to the
-    complete closed entry set. Building the spec reopens and seals the cache, then fails if the
-    current bytes differ from the contract embedded in the training configuration.
-    """
+    """Exact immutable binding to one materialized supervision cache."""
     root: str
     identity: SupervisionCacheIdentity
     contract_sha256: str
@@ -103,7 +98,7 @@ class TensorCacheSpec:
         return cache
 
 
-def _cache(raw: Any | None, label: str) -> TensorCacheSpec | None:
+def _cache(raw: Any | None, label: str, *, expected_kind: str) -> TensorCacheSpec | None:
     if raw is None:
         return None
     selected = _strict(
@@ -118,13 +113,10 @@ def _cache(raw: Any | None, label: str) -> TensorCacheSpec | None:
         required={"cache_kind", "producer_sha256", "tokenizer_sha256", "dataset_manifest_sha256", "source_commit", "config_sha256"},
         label=f"{label}.identity",
     )
-    spec = TensorCacheSpec(
-        root=selected["root"],
-        identity=SupervisionCacheIdentity(**dict(identity_raw)),
-        contract_sha256=selected["contract_sha256"],
-    )
-    # Config parsing is itself an admission boundary: do not accept a syntactically correct
-    # cache descriptor whose present bytes no longer match the pinned contract.
+    identity = SupervisionCacheIdentity(**dict(identity_raw))
+    if identity.cache_kind != expected_kind:
+        raise ValueError(f"{label} must use cache_kind={expected_kind}")
+    spec = TensorCacheSpec(root=selected["root"], identity=identity, contract_sha256=selected["contract_sha256"])
     spec.build()
     return spec
 
@@ -240,10 +232,11 @@ def load_grounded_run_config(path: str | Path) -> GroundedConfiguredRun:
     if retriever_raw is not None:
         retriever_obj = _strict(_mapping(retriever_raw, "retriever"), allowed={"model", "utility_cache", "coupling"}, required={"model", "utility_cache"}, label="retriever")
         retriever_model = _artifact(retriever_obj["model"], kind="sequence_classifier", label="retriever.model")
-        retriever_cache = _cache(retriever_obj["utility_cache"], "retriever.utility_cache")
+        retriever_cache = _cache(retriever_obj["utility_cache"], "retriever.utility_cache", expected_kind="document_lm_utility")
         retriever_config = RetrieverCouplingConfig(**_dataclass_kwargs(RetrieverCouplingConfig, _mapping(retriever_obj.get("coupling") or {}, "retriever.coupling"), "retriever.coupling"))
         retriever_sha = retriever_model.expected_sha256
-    teacher_cache = _cache(root.get("teacher_cache"), "teacher_cache")
+    teacher_cache = _cache(root.get("teacher_cache"), "teacher_cache", expected_kind="teacher_logits")
+    reference_cache = _cache(root.get("reference_cache"), "reference_cache", expected_kind="reference_policy_log_probs")
     teacher_sha = teacher_cache.identity.producer_sha256 if teacher_cache is not None else None
     plan, default_trainability = build_grounded_curriculum(
         run_id=root["run_id"], architecture=architecture, base_model_sha256=base.expected_sha256,
@@ -258,7 +251,7 @@ def load_grounded_run_config(path: str | Path) -> GroundedConfiguredRun:
         train_split=_split(root["train_split"], "train_split"), validation_split=_split(root["validation_split"], "validation_split"),
         checkpoint_root=_checkpoint_root(root["checkpoint_root"]), base_model=base, tokenizer=tokenizer,
         resume_checkpoint_digest=root.get("resume_checkpoint_digest"), teacher_cache=teacher_cache,
-        reference_cache=_cache(root.get("reference_cache"), "reference_cache"), retriever_model=retriever_model,
+        reference_cache=reference_cache, retriever_model=retriever_model,
         retriever_utility_cache=retriever_cache, retriever_coupling=retriever_config,
     )
 
@@ -292,7 +285,7 @@ def load_dynamic_run_config(path: str | Path) -> DynamicConfiguredRun:
         collator=DynamicCollatorConfig(**_dataclass_kwargs(DynamicCollatorConfig, _mapping(root.get("collator") or {}, "collator"), "collator")),
         train_split=_split(root["train_split"], "train_split"), validation_split=_split(root["validation_split"], "validation_split"),
         checkpoint_root=_checkpoint_root(root["checkpoint_root"]), generator=generator, tokenizer=tokenizer,
-        resume_checkpoint_digest=root.get("resume_checkpoint_digest"), hidden_state_cache=_cache(root.get("hidden_state_cache"), "hidden_state_cache"),
+        resume_checkpoint_digest=root.get("resume_checkpoint_digest"), hidden_state_cache=_cache(root.get("hidden_state_cache"), "hidden_state_cache", expected_kind="generator_hidden_states"),
     )
 
 
