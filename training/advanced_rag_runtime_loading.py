@@ -23,12 +23,7 @@ from training.advanced_rag_models import DynamicRagPolicyModel, GroundedGenerato
 from training.dynamic_retrieval_policy import DynamicPolicyArchitecture, DynamicRetrievalBudget
 from training.grounded_generation import GroundedGenerationArchitectureConfig
 from training.grounded_supervision_pipeline import PairwiseCandidateRetriever
-from training.local_artifact_loading import (
-    LocalArtifactTreeBinding,
-    load_local_language_model,
-    load_local_sequence_classifier,
-    load_local_tokenizer,
-)
+from training.local_artifact_loading import LocalArtifactTreeBinding, load_local_language_model, load_local_sequence_classifier, load_local_tokenizer
 from training.seq2seq_grounded import Seq2SeqGroundedGeneratorTrainingModule
 
 _MAX_MANIFEST_BYTES = 4 * 1024 * 1024
@@ -59,11 +54,19 @@ def _file_sha(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _artifact_root(directory: str | Path) -> Path:
+    raw = Path(directory).expanduser()
+    if raw.is_symlink():
+        raise ValueError("advanced artifact root may not be a symlink")
+    root = raw.resolve(strict=True)
+    if not root.is_dir():
+        raise ValueError("advanced artifact root must be a directory")
+    return root
+
+
 def read_advanced_artifact_manifest(directory: str | Path) -> AdvancedArtifactManifest:
     """Verify directory/manifest/weight identity without instantiating any model."""
-    root = Path(directory).expanduser().resolve(strict=True)
-    if not root.is_dir() or root.is_symlink():
-        raise ValueError("advanced artifact root must be a non-symlink directory")
+    root = _artifact_root(directory)
     children = {item.name: item for item in root.iterdir()}
     if set(children) != {"manifest.json", "model.safetensors"}:
         raise ValueError("advanced artifact directory must contain exactly manifest.json and model.safetensors")
@@ -143,7 +146,8 @@ def load_grounded_artifact(
     retriever_model: LocalArtifactTreeBinding | None = None,
 ) -> LoadedGroundedArtifact:
     """Reconstruct a grounded causal/seq2seq wrapper from a verified advanced artifact."""
-    manifest = read_advanced_artifact_manifest(directory)
+    root = _artifact_root(directory)
+    manifest = read_advanced_artifact_manifest(root)
     if manifest.kind != "grounded_generator":
         raise ValueError("artifact is not a grounded generator")
     if base_model.expected_sha256 != manifest.base_model_sha256 or base_model.artifact_kind != manifest.generator_family:
@@ -154,7 +158,6 @@ def load_grounded_artifact(
     tokenization = load_local_tokenizer(tokenizer)
     runtime = manifest.runtime_config
     architecture = GroundedGenerationArchitectureConfig(**dict(runtime["architecture"]))
-
     retriever = None
     adapter = runtime.get("retriever_adapter")
     if manifest.retrieval_stack_sha256 is not None:
@@ -168,32 +171,29 @@ def load_grounded_artifact(
         retriever = PairwiseCandidateRetriever(pair_model, positive_label_index=int(adapter["positive_label_index"]))
     elif retriever_model is not None:
         raise ValueError("retriever_model supplied for artifact that does not include retriever weights")
-
     if manifest.generator_family == "causal_lm":
         model = GroundedGeneratorTrainingModule(base_model=base, config=architecture, retriever_model=retriever)
     else:
         model = Seq2SeqGroundedGeneratorTrainingModule(base_model=base, config=architecture, retriever_model=retriever)
-    _load_safetensors_strict(model, Path(directory).expanduser().resolve(strict=True) / "model.safetensors")
+    _load_safetensors_strict(model, root / "model.safetensors")
     return LoadedGroundedArtifact(manifest=manifest, model=model, tokenizer=tokenization)
 
 
 def load_dynamic_policy_artifact(directory: str | Path) -> LoadedDynamicPolicyArtifact:
     """Reconstruct the complete dynamic controller/value/need-selector module."""
-    manifest = read_advanced_artifact_manifest(directory)
+    root = _artifact_root(directory)
+    manifest = read_advanced_artifact_manifest(root)
     if manifest.kind != "dynamic_rag_policy":
         raise ValueError("artifact is not a dynamic RAG policy")
     runtime = manifest.runtime_config
     architecture = DynamicPolicyArchitecture(**dict(runtime["architecture"]))
     budget = DynamicRetrievalBudget(**dict(runtime["budget"]))
     model = DynamicRagPolicyModel(architecture)
-    _load_safetensors_strict(model, Path(directory).expanduser().resolve(strict=True) / "model.safetensors")
+    _load_safetensors_strict(model, root / "model.safetensors")
     return LoadedDynamicPolicyArtifact(manifest=manifest, model=model, budget=budget)
 
 
 __all__ = [
-    "LoadedDynamicPolicyArtifact",
-    "LoadedGroundedArtifact",
-    "load_dynamic_policy_artifact",
-    "load_grounded_artifact",
-    "read_advanced_artifact_manifest",
+    "LoadedDynamicPolicyArtifact", "LoadedGroundedArtifact", "load_dynamic_policy_artifact",
+    "load_grounded_artifact", "read_advanced_artifact_manifest",
 ]
