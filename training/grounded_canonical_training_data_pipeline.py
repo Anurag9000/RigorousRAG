@@ -3,8 +3,9 @@
 Raw governed annotations are first republished with deterministic teacher/retriever cache keys
 and proven split-level example-id isolation. Only then are optional teacher/reference/document-
 utility tensors materialized into strict caches whose identities bind that final manifest.
-Existing low-level supervision providers/materializers are reused; importing this module runs no
-model, download, retrieval or training.
+Completed caches are sealed read-only before their content contracts enter the canonical
+receipt. Existing low-level supervision providers/materializers are reused; importing this
+module runs no model, download, retrieval or training.
 """
 from __future__ import annotations
 
@@ -129,10 +130,7 @@ def _payload(example: Any, *, source_manifest_sha256: str, source_receipt_sha256
         "example_id": example.example_id,
         "prompt": example.prompt,
         "answer": example.answer,
-        "evidence": [
-            {"evidence_id": item.evidence_id, "text": item.text, "source_id": item.source_id}
-            for item in example.evidence
-        ],
+        "evidence": [{"evidence_id": item.evidence_id, "text": item.text, "source_id": item.source_id} for item in example.evidence],
         "claims": claims,
         "abstain": example.abstain,
         "reflection_action": example.reflection_action.value,
@@ -181,13 +179,7 @@ class CanonicalGroundedTrainingDataReceipt:
     receipt_sha256: str
 
     def __post_init__(self) -> None:
-        for name in (
-            "source_manifest_sha256",
-            "source_import_receipt_sha256",
-            "dataset_manifest_sha256",
-            "transformation_sha256",
-            "receipt_sha256",
-        ):
+        for name in ("source_manifest_sha256", "source_import_receipt_sha256", "dataset_manifest_sha256", "transformation_sha256", "receipt_sha256"):
             object.__setattr__(self, name, _sha(getattr(self, name), name))
         if not self.splits:
             raise ValueError("canonical grounded receipt requires splits")
@@ -222,14 +214,7 @@ class CanonicalGroundedTrainingDataResult:
         if len(matches) != 1:
             raise ValueError(f"unknown canonical grounded split {name!r}")
         item = matches[0]
-        return ManifestBoundAuthoritativeJsonlDataset(
-            item.path,
-            expected_sha256=item.sha256,
-            dataset_manifest_sha256=self.manifest.manifest_digest,
-            split_name=item.name,
-            record_kind="grounded_generation",
-            expected_record_count=item.record_count,
-        )
+        return ManifestBoundAuthoritativeJsonlDataset(item.path, expected_sha256=item.sha256, dataset_manifest_sha256=self.manifest.manifest_digest, split_name=item.name, record_kind="grounded_generation", expected_record_count=item.record_count)
 
 
 def _provider(provider: Any, *, tokenizer_sha256: str, label: str) -> tuple[str, str]:
@@ -241,54 +226,16 @@ def _provider(provider: Any, *, tokenizer_sha256: str, label: str) -> tuple[str,
     return contract, model_sha
 
 
-def _cache(
-    kind: str,
-    root: str | Path,
-    *,
-    producer_sha256: str,
-    tokenizer_sha256: str,
-    dataset_manifest_sha256: str,
-    source_commit: str,
-    provider_contract_sha256: str,
-) -> AuthoritativeSafetensorSupervisionCache:
+def _cache(kind: str, root: str | Path, *, producer_sha256: str, tokenizer_sha256: str, dataset_manifest_sha256: str, source_commit: str, provider_contract_sha256: str) -> AuthoritativeSafetensorSupervisionCache:
     selected = _empty_root(root, f"{kind} cache root")
-    config_sha = _digest(
-        {
-            "schema": "rigorousrag-canonical-grounded-cache-config/v1",
-            "kind": kind,
-            "provider_contract_sha256": provider_contract_sha256,
-            "dataset_manifest_sha256": dataset_manifest_sha256,
-        }
-    )
-    return AuthoritativeSafetensorSupervisionCache(
-        selected,
-        SupervisionCacheIdentity(
-            cache_kind=kind,
-            producer_sha256=producer_sha256,
-            tokenizer_sha256=tokenizer_sha256,
-            dataset_manifest_sha256=dataset_manifest_sha256,
-            source_commit=source_commit,
-            config_sha256=config_sha,
-        ),
-    )
+    config_sha = _digest({"schema": "rigorousrag-canonical-grounded-cache-config/v1", "kind": kind, "provider_contract_sha256": provider_contract_sha256, "dataset_manifest_sha256": dataset_manifest_sha256})
+    return AuthoritativeSafetensorSupervisionCache(selected, SupervisionCacheIdentity(cache_kind=kind, producer_sha256=producer_sha256, tokenizer_sha256=tokenizer_sha256, dataset_manifest_sha256=dataset_manifest_sha256, source_commit=source_commit, config_sha256=config_sha))
 
 
-def _example_batches(
-    published: Sequence[CanonicalGroundedSplit],
-    *,
-    dataset_manifest_sha256: str,
-    batch_size: int,
-) -> Iterator[tuple[Any, ...]]:
+def _example_batches(published: Sequence[CanonicalGroundedSplit], *, dataset_manifest_sha256: str, batch_size: int) -> Iterator[tuple[Any, ...]]:
     pending: list[Any] = []
     for item in published:
-        dataset = ManifestBoundAuthoritativeJsonlDataset(
-            item.path,
-            expected_sha256=item.sha256,
-            dataset_manifest_sha256=dataset_manifest_sha256,
-            split_name=item.name,
-            record_kind="grounded_generation",
-            expected_record_count=item.record_count,
-        )
+        dataset = ManifestBoundAuthoritativeJsonlDataset(item.path, expected_sha256=item.sha256, dataset_manifest_sha256=dataset_manifest_sha256, split_name=item.name, record_kind="grounded_generation", expected_record_count=item.record_count)
         for index in range(len(dataset)):
             pending.append(dataset[index])
             if len(pending) == batch_size:
@@ -317,11 +264,7 @@ def build_canonical_grounded_training_data(
     tokenizer_sha = _sha(tokenizer_sha256, "tokenizer_sha256")
     commit = _commit(source_commit)
     batch_size = _batch_size(materialization_batch_size)
-    for provider, cache_root, label in (
-        (teacher_provider, teacher_cache_root, "teacher"),
-        (reference_provider, reference_cache_root, "reference"),
-        (document_utility_provider, retriever_utility_cache_root, "document utility"),
-    ):
+    for provider, cache_root, label in ((teacher_provider, teacher_cache_root, "teacher"), (reference_provider, reference_cache_root, "reference"), (document_utility_provider, retriever_utility_cache_root, "document utility")):
         if (provider is None) != (cache_root is None):
             raise ValueError(f"{label} provider/cache root must be configured together")
 
@@ -341,21 +284,15 @@ def build_canonical_grounded_training_data(
             with os.fdopen(descriptor, "wb") as handle:
                 for index in range(len(dataset)):
                     example = dataset[index]
-                    payload = _payload(
-                        example,
-                        source_manifest_sha256=source.manifest.manifest_digest,
-                        source_receipt_sha256=source.receipt.receipt_sha256,
-                    )
+                    payload = _payload(example, source_manifest_sha256=source.manifest.manifest_digest, source_receipt_sha256=source.receipt.receipt_sha256)
                     parse_authoritative_grounded_example(payload)
                     encoded = _canonical(payload) + b"\n"
                     if len(encoded) > _MAX_LINE_BYTES:
                         raise ValueError("canonical grounded record exceeds line safety bound")
-                    handle.write(encoded)
-                    digest.update(encoded)
+                    handle.write(encoded); digest.update(encoded)
                     record_ids.append(example.example_id)
                     evidence_ids.extend(item.evidence_id for item in example.evidence)
-                handle.flush()
-                os.fsync(handle.fileno())
+                handle.flush(); os.fsync(handle.fileno())
             os.replace(temporary, destination)
         finally:
             if os.path.exists(temporary):
@@ -363,16 +300,7 @@ def build_canonical_grounded_training_data(
         split_sha = digest.hexdigest()
         if _stream_sha(destination) != split_sha:
             raise RuntimeError("canonical grounded split changed during publication")
-        published.append(
-            CanonicalGroundedSplit(
-                split_manifest.name,
-                str(destination),
-                split_sha,
-                len(dataset),
-                _id_digest(record_ids),
-                _id_digest(evidence_ids),
-            )
-        )
+        published.append(CanonicalGroundedSplit(split_manifest.name, str(destination), split_sha, len(dataset), _id_digest(record_ids), _id_digest(evidence_ids)))
         example_sets[split_manifest.name] = set(record_ids)
         total_records += len(dataset)
 
@@ -380,96 +308,35 @@ def build_canonical_grounded_training_data(
         raise ValueError("canonical grounded training data requires at least one record")
     names = sorted(example_sets)
     for index, left in enumerate(names):
-        for right in names[index + 1 :]:
+        for right in names[index + 1:]:
             overlap = example_sets[left] & example_sets[right]
             if overlap:
                 raise ValueError(f"grounded example-id leakage across {left}/{right}: {sorted(overlap)[:20]}")
 
-    transformation = _digest(
-        {
-            "schema": "rigorousrag-canonical-grounded-training-data/v1",
-            "source_manifest_sha256": source.manifest.manifest_digest,
-            "source_import_receipt_sha256": source.receipt.receipt_sha256,
-            "cache_keys": "teacher:<example_id>|utility:<example_id>",
-        }
-    )
+    transformation = _digest({"schema": "rigorousrag-canonical-grounded-training-data/v1", "source_manifest_sha256": source.manifest.manifest_digest, "source_import_receipt_sha256": source.receipt.receipt_sha256, "cache_keys": "teacher:<example_id>|utility:<example_id>"})
     manifest = DatasetManifest(
-        dataset_id=source.manifest.dataset_id,
-        exact_version=source.manifest.exact_version,
-        source_locator=source.manifest.source_locator,
-        artifact_sha256=source.manifest.artifact_sha256,
-        license_identifier=source.manifest.license_identifier,
-        license_status=source.manifest.license_status,
-        license_evidence=source.manifest.license_evidence,
-        loader_name="training.grounded_canonical_training_data_pipeline",
-        loader_version="1",
+        dataset_id=source.manifest.dataset_id, exact_version=source.manifest.exact_version, source_locator=source.manifest.source_locator,
+        artifact_sha256=source.manifest.artifact_sha256, license_identifier=source.manifest.license_identifier, license_status=source.manifest.license_status,
+        license_evidence=source.manifest.license_evidence, loader_name="training.grounded_canonical_training_data_pipeline", loader_version="1",
         transformation_sha256=transformation,
-        splits=tuple(
-            SplitManifest(
-                name=item.name,
-                content_sha256=item.sha256,
-                record_count=item.record_count,
-                record_id_sha256=item.record_id_sha256,
-                query_id_sha256=item.record_id_sha256,
-                document_id_sha256=item.evidence_id_sha256,
-            )
-            for item in published
-        ),
-        tasks=source.manifest.tasks,
-        modalities=source.manifest.modalities,
-        card=source.manifest.card,
-        metadata={
-            **source.manifest.metadata,
-            "canonical_record_kind": "grounded_generation",
-            "source_manifest_sha256": source.manifest.manifest_digest,
-        },
+        splits=tuple(SplitManifest(name=item.name, content_sha256=item.sha256, record_count=item.record_count, record_id_sha256=item.record_id_sha256, query_id_sha256=item.record_id_sha256, document_id_sha256=item.evidence_id_sha256) for item in published),
+        tasks=source.manifest.tasks, modalities=source.manifest.modalities, card=source.manifest.card,
+        metadata={**source.manifest.metadata, "canonical_record_kind": "grounded_generation", "source_manifest_sha256": source.manifest.manifest_digest},
     )
 
-    materializer = GroundedSupervisionMaterializer(
-        reference_provider=reference_provider,
-        teacher_provider=teacher_provider,
-        document_utility_provider=document_utility_provider,
-    )
+    materializer = GroundedSupervisionMaterializer(reference_provider=reference_provider, teacher_provider=teacher_provider, document_utility_provider=document_utility_provider)
     cache_bindings: list[GroundedCacheBinding] = []
     teacher_cache = reference_cache = utility_cache = None
 
     if teacher_provider is not None:
         contract, producer = _provider(teacher_provider, tokenizer_sha256=tokenizer_sha, label="teacher provider")
-        teacher_cache = _cache(
-            "teacher_logits",
-            teacher_cache_root,
-            producer_sha256=producer,
-            tokenizer_sha256=tokenizer_sha,
-            dataset_manifest_sha256=manifest.manifest_digest,
-            source_commit=commit,
-            provider_contract_sha256=contract,
-        )
+        teacher_cache = _cache("teacher_logits", teacher_cache_root, producer_sha256=producer, tokenizer_sha256=tokenizer_sha, dataset_manifest_sha256=manifest.manifest_digest, source_commit=commit, provider_contract_sha256=contract)
     if reference_provider is not None:
         contract, producer = _provider(reference_provider, tokenizer_sha256=tokenizer_sha, label="reference provider")
-        reference_cache = _cache(
-            "reference_policy_log_probs",
-            reference_cache_root,
-            producer_sha256=producer,
-            tokenizer_sha256=tokenizer_sha,
-            dataset_manifest_sha256=manifest.manifest_digest,
-            source_commit=commit,
-            provider_contract_sha256=contract,
-        )
+        reference_cache = _cache("reference_policy_log_probs", reference_cache_root, producer_sha256=producer, tokenizer_sha256=tokenizer_sha, dataset_manifest_sha256=manifest.manifest_digest, source_commit=commit, provider_contract_sha256=contract)
     if document_utility_provider is not None:
-        contract, producer = _provider(
-            document_utility_provider,
-            tokenizer_sha256=tokenizer_sha,
-            label="document utility provider",
-        )
-        utility_cache = _cache(
-            "document_lm_utility",
-            retriever_utility_cache_root,
-            producer_sha256=producer,
-            tokenizer_sha256=tokenizer_sha,
-            dataset_manifest_sha256=manifest.manifest_digest,
-            source_commit=commit,
-            provider_contract_sha256=contract,
-        )
+        contract, producer = _provider(document_utility_provider, tokenizer_sha256=tokenizer_sha, label="document utility provider")
+        utility_cache = _cache("document_lm_utility", retriever_utility_cache_root, producer_sha256=producer, tokenizer_sha256=tokenizer_sha, dataset_manifest_sha256=manifest.manifest_digest, source_commit=commit, provider_contract_sha256=contract)
 
     if teacher_cache is not None or reference_cache is not None or utility_cache is not None:
         for batch in _example_batches(published, dataset_manifest_sha256=manifest.manifest_digest, batch_size=batch_size):
@@ -480,36 +347,16 @@ def build_canonical_grounded_training_data(
             if utility_cache is not None:
                 materialize_document_utility_cache(batch, materializer=materializer, cache=utility_cache)
 
-    if teacher_cache is not None:
-        cache_bindings.append(
-            GroundedCacheBinding(
-                "teacher_logits",
-                str(teacher_cache.root),
-                teacher_cache.identity.digest,
-                teacher_cache.contract_sha256,
-                teacher_cache.identity.producer_sha256,
-            )
-        )
-    if reference_cache is not None:
-        cache_bindings.append(
-            GroundedCacheBinding(
-                "reference_policy_log_probs",
-                str(reference_cache.root),
-                reference_cache.identity.digest,
-                reference_cache.contract_sha256,
-                reference_cache.identity.producer_sha256,
-            )
-        )
-    if utility_cache is not None:
-        cache_bindings.append(
-            GroundedCacheBinding(
-                "document_lm_utility",
-                str(utility_cache.root),
-                utility_cache.identity.digest,
-                utility_cache.contract_sha256,
-                utility_cache.identity.producer_sha256,
-            )
-        )
+    teacher_contract = teacher_cache.seal() if teacher_cache is not None else None
+    reference_contract = reference_cache.seal() if reference_cache is not None else None
+    utility_contract = utility_cache.seal() if utility_cache is not None else None
+
+    if teacher_cache is not None and teacher_contract is not None:
+        cache_bindings.append(GroundedCacheBinding("teacher_logits", str(teacher_cache.root), teacher_cache.identity.digest, teacher_contract, teacher_cache.identity.producer_sha256))
+    if reference_cache is not None and reference_contract is not None:
+        cache_bindings.append(GroundedCacheBinding("reference_policy_log_probs", str(reference_cache.root), reference_cache.identity.digest, reference_contract, reference_cache.identity.producer_sha256))
+    if utility_cache is not None and utility_contract is not None:
+        cache_bindings.append(GroundedCacheBinding("document_lm_utility", str(utility_cache.root), utility_cache.identity.digest, utility_contract, utility_cache.identity.producer_sha256))
 
     unsigned = {
         "schema": "rigorousrag-canonical-grounded-training-data-receipt/v1",
@@ -520,41 +367,10 @@ def build_canonical_grounded_training_data(
         "splits": [asdict(item) for item in published],
         "caches": [asdict(item) for item in cache_bindings],
     }
-    receipt = CanonicalGroundedTrainingDataReceipt(
-        source.manifest.manifest_digest,
-        source.receipt.receipt_sha256,
-        manifest.manifest_digest,
-        transformation,
-        tuple(published),
-        tuple(cache_bindings),
-        _digest(unsigned),
-    )
-    _atomic(
-        root / "dataset_manifest.json",
-        _canonical(
-            {
-                "schema": "rigorousrag-dataset-manifest/v1",
-                "manifest": asdict(manifest),
-                "manifest_sha256": manifest.manifest_digest,
-            }
-        )
-        + b"\n",
-    )
+    receipt = CanonicalGroundedTrainingDataReceipt(source.manifest.manifest_digest, source.receipt.receipt_sha256, manifest.manifest_digest, transformation, tuple(published), tuple(cache_bindings), _digest(unsigned))
+    _atomic(root / "dataset_manifest.json", _canonical({"schema": "rigorousrag-dataset-manifest/v1", "manifest": asdict(manifest), "manifest_sha256": manifest.manifest_digest}) + b"\n")
     _atomic(root / "canonical_receipt.json", _canonical({**unsigned, "receipt_sha256": receipt.receipt_sha256}) + b"\n")
-    return CanonicalGroundedTrainingDataResult(
-        manifest,
-        tuple(published),
-        teacher_cache,
-        reference_cache,
-        utility_cache,
-        receipt,
-    )
+    return CanonicalGroundedTrainingDataResult(manifest, tuple(published), teacher_cache, reference_cache, utility_cache, receipt)
 
 
-__all__ = [
-    "CanonicalGroundedTrainingDataReceipt",
-    "CanonicalGroundedTrainingDataResult",
-    "CanonicalGroundedSplit",
-    "GroundedCacheBinding",
-    "build_canonical_grounded_training_data",
-]
+__all__ = ["CanonicalGroundedTrainingDataReceipt", "CanonicalGroundedTrainingDataResult", "CanonicalGroundedSplit", "GroundedCacheBinding", "build_canonical_grounded_training_data"]
