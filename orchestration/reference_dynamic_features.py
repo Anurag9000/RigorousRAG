@@ -41,6 +41,13 @@ def _digest(value: Any) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode("utf-8")).hexdigest()
 
 
+def _sha(value: Any, label: str) -> str:
+    selected = str(value).strip().lower()
+    if len(selected) != 64 or any(ch not in "0123456789abcdef" for ch in selected):
+        raise ValueError(f"{label} must be SHA-256")
+    return selected
+
+
 @dataclass(frozen=True)
 class GenerationUncertaintySignals:
     token_entropy: float
@@ -153,47 +160,88 @@ class ReferenceDynamicFeatureProvider:
 
 
 class GeneratorHiddenStateAdapter:
-    """Explicit adapter that obtains policy need-selector states from an admitted generator.
+    """Extract policy selector states from an exact admitted causal or seq2seq generator.
 
-    ``generator`` must follow the common Hugging-Face-like contract and expose hidden states.
-    Execution happens only when ``encode`` is called. Returned tensors are detached because
-    this adapter is intended for cached/logged policy training. Joint differentiable training
-    can instead route the same hidden tensors directly inside a composed model.
+    Causal models use the final causal hidden states. Encoder-decoder models use encoder
+    ``last_hidden_state`` over the visible context rather than attempting an under-specified
+    decoder forward without decoder inputs. The final visible token is the state summary in
+    both families, matching the token-aligned cache/query-selector contract.
     """
-    def __init__(self, generator: Any, tokenizer: Any, *, generator_sha256: str, tokenizer_sha256: str, max_length: int = 2048) -> None:
-        if len(generator_sha256) != 64 or len(tokenizer_sha256) != 64:
-            raise ValueError("generator/tokenizer identities must be SHA-256")
+    def __init__(
+        self,
+        generator: Any,
+        tokenizer: Any,
+        *,
+        generator_sha256: str,
+        tokenizer_sha256: str,
+        generator_family: str,
+        max_length: int = 2048,
+    ) -> None:
+        self.generator_sha256 = _sha(generator_sha256, "generator_sha256")
+        self.tokenizer_sha256 = _sha(tokenizer_sha256, "tokenizer_sha256")
+        if generator_family not in {"causal_lm", "seq2seq_lm"}:
+            raise ValueError("generator_family must be causal_lm or seq2seq_lm")
         if isinstance(max_length, bool) or not isinstance(max_length, int) or max_length <= 0:
             raise ValueError("max_length must be positive")
         self.generator, self.tokenizer = generator, tokenizer
-        self.generator_sha256, self.tokenizer_sha256, self.max_length = generator_sha256, tokenizer_sha256, max_length
+        self.generator_family, self.max_length = generator_family, max_length
 
     @property
     def contract_sha256(self) -> str:
-        return _digest({"schema": "rigorousrag-generator-hidden-state-adapter/v1", "generator_sha256": self.generator_sha256, "tokenizer_sha256": self.tokenizer_sha256, "max_length": self.max_length})
+        return _digest({
+            "schema": "rigorousrag-generator-hidden-state-adapter/v2",
+            "generator_sha256": self.generator_sha256,
+            "tokenizer_sha256": self.tokenizer_sha256,
+            "generator_family": self.generator_family,
+            "max_length": self.max_length,
+            "state_pooling": "last_visible_token",
+        })
 
     def encode(self, texts: list[str]) -> Mapping[str, Any]:
         if torch is None:
             raise RuntimeError("hidden-state extraction requires optional PyTorch")
-        if not texts:
-            raise ValueError("texts may not be empty")
+        if not texts or any(not isinstance(text, str) or not text for text in texts):
+            raise ValueError("texts must contain non-empty strings")
         encoded = self.tokenizer(texts, padding=True, truncation=True, max_length=self.max_length, return_tensors="pt")
-        device = next(self.generator.parameters()).device
+        try:
+            device = next(self.generator.parameters()).device
+        except StopIteration:
+            device = torch.device("cpu")
         inputs = {key: value.to(device) if torch.is_tensor(value) else value for key, value in encoded.items()}
-        with torch.no_grad():
-            output = self.generator(**inputs, output_hidden_states=True, return_dict=True)
-        hidden_states = getattr(output, "hidden_states", None)
-        if hidden_states is None:
-            hidden_states = getattr(output, "decoder_hidden_states", None)
-        if hidden_states is None or not hidden_states:
-            raise ValueError("generator does not expose hidden states")
-        token_hidden = hidden_states[-1]
         mask = inputs.get("attention_mask")
+        if self.generator_family == "seq2seq_lm":
+            if not hasattr(self.generator, "get_encoder"):
+                raise ValueError("seq2seq generator does not expose get_encoder()")
+            encoder = self.generator.get_encoder()
+            with torch.no_grad():
+                output = encoder(input_ids=inputs["input_ids"], attention_mask=mask, return_dict=True)
+            token_hidden = getattr(output, "last_hidden_state", None)
+            if token_hidden is None:
+                raise ValueError("seq2seq encoder does not expose last_hidden_state")
+        else:
+            with torch.no_grad():
+                output = self.generator(**inputs, output_hidden_states=True, return_dict=True)
+            hidden_states = getattr(output, "hidden_states", None)
+            if hidden_states is None or not hidden_states:
+                raise ValueError("causal generator does not expose hidden_states")
+            token_hidden = hidden_states[-1]
+        if token_hidden.ndim != 3:
+            raise ValueError("generator hidden states must have shape [B,T,H]")
         if mask is None:
             mask = torch.ones(token_hidden.shape[:2], device=token_hidden.device, dtype=torch.long)
+        if tuple(mask.shape) != tuple(token_hidden.shape[:2]):
+            raise ValueError("generator attention mask does not align with hidden states")
         lengths = mask.long().sum(dim=1).clamp_min(1)
         state_hidden = token_hidden[torch.arange(token_hidden.size(0), device=token_hidden.device), lengths - 1]
-        return {"token_hidden": token_hidden.detach().cpu(), "state_hidden": state_hidden.detach().cpu(), "attention_mask": mask.detach().cpu()}
+        return {
+            "token_hidden": token_hidden.detach().cpu(),
+            "state_hidden": state_hidden.detach().cpu(),
+            "attention_mask": mask.detach().cpu(),
+        }
 
 
-__all__ = ["ContextStateAnalyzer", "ContextStateSignals", "ElapsedBudgetAnalyzer", "EvidenceStateAnalyzer", "EvidenceStateSignals", "GenerationUncertaintyAnalyzer", "GenerationUncertaintySignals", "GeneratorHiddenStateAdapter", "ReferenceDynamicFeatureProvider"]
+__all__ = [
+    "ContextStateAnalyzer", "ContextStateSignals", "ElapsedBudgetAnalyzer", "EvidenceStateAnalyzer",
+    "EvidenceStateSignals", "GenerationUncertaintyAnalyzer", "GenerationUncertaintySignals",
+    "GeneratorHiddenStateAdapter", "ReferenceDynamicFeatureProvider",
+]
