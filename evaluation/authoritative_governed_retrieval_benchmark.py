@@ -1,10 +1,10 @@
 """Authoritative retrieval benchmark composition for promotion-grade evaluation.
 
 The v3 contract binds only authoritative components: v2 query import, passed disk-backed
-leakage qualification, disk-backed qrels, and the v2 closed corpus publication.  It proves
+leakage qualification, disk-backed qrels, and the v2 closed corpus publication. It proves
 both qrels-document coverage and exact equality of the governed query/qrels query universes
-with disk-backed indices before any evaluation run can be materialized. Promotion-grade run
-evidence is emitted through the streaming v2 result-artifact authority.
+with disk-backed indices before evaluation. Promotion-grade result publication additionally
+requires the result-row example IDs to equal that same query universe exactly.
 """
 from __future__ import annotations
 
@@ -29,6 +29,9 @@ from evaluation.authoritative_governed_benchmark_corpus import (
 )
 from evaluation.authoritative_governed_benchmark_io import VerifiedAuthoritativeGovernedBenchmark
 from evaluation.authoritative_governed_qrels import _SQLiteRelevantMapping
+from evaluation.authoritative_retrieval_result_universe import (
+    assert_authoritative_retrieval_result_universe,
+)
 from evaluation.benchmark_suite import BenchmarkSuiteResult
 from evaluation.governed_benchmark_qualification import GovernedBenchmarkLeakageReceipt
 from evaluation.governed_qrels import GovernedQrels, overlay_qrels
@@ -66,10 +69,7 @@ def _query_universe(
     queries: VerifiedAuthoritativeGovernedBenchmark,
     qrels: GovernedQrels,
 ) -> str:
-    descriptor, raw_database = tempfile.mkstemp(
-        prefix="rigorousrag-retrieval-queries-",
-        suffix=".sqlite3",
-    )
+    descriptor, raw_database = tempfile.mkstemp(prefix="rigorousrag-retrieval-queries-", suffix=".sqlite3")
     os.close(descriptor)
     missing_qrels: list[str] = []
     extra_qrels: list[str] = []
@@ -84,10 +84,7 @@ def _query_universe(
             for split in queries.manifest.splits:
                 for example in queries.split(split.name):
                     try:
-                        connection.execute(
-                            "INSERT INTO queries(query_id) VALUES (?)",
-                            (example.example_id,),
-                        )
+                        connection.execute("INSERT INTO queries(query_id) VALUES (?)", (example.example_id,))
                     except sqlite3.IntegrityError as exc:
                         raise ValueError(
                             f"governed query id {example.example_id!r} appears more than once across benchmark splits"
@@ -98,23 +95,14 @@ def _query_universe(
             connection.commit()
             if count <= 0:
                 raise ValueError("authoritative retrieval benchmark has no governed queries")
-            if count != qrels.receipt.query_count:
-                # Continue to set-difference diagnostics below; count inequality is guaranteed
-                # to produce at least one missing/extra ID.
-                pass
-            for (query_id,) in connection.execute(
-                "SELECT query_id FROM queries ORDER BY query_id COLLATE BINARY"
-            ):
+            for (query_id,) in connection.execute("SELECT query_id FROM queries ORDER BY query_id COLLATE BINARY"):
                 if not qrels.relevant_by_query.get(str(query_id), ()):
                     if len(missing_qrels) < _MAX_MISSING_SAMPLE:
                         missing_qrels.append(str(query_id))
             qrels_count = 0
             for query_id in qrels.relevant_by_query:
                 qrels_count += 1
-                if connection.execute(
-                    "SELECT 1 FROM queries WHERE query_id=?",
-                    (query_id,),
-                ).fetchone() is None:
+                if connection.execute("SELECT 1 FROM queries WHERE query_id=?", (query_id,)).fetchone() is None:
                     if len(extra_qrels) < _MAX_MISSING_SAMPLE:
                         extra_qrels.append(query_id)
             if qrels_count != qrels.receipt.query_count:
@@ -126,9 +114,7 @@ def _query_universe(
                     f"missing_qrels_sample={missing_qrels} extra_qrels_sample={extra_qrels}"
                 )
             digest = hashlib.sha256()
-            for (query_id,) in connection.execute(
-                "SELECT query_id FROM queries ORDER BY query_id COLLATE BINARY"
-            ):
+            for (query_id,) in connection.execute("SELECT query_id FROM queries ORDER BY query_id COLLATE BINARY"):
                 digest.update(str(query_id).encode("utf-8"))
                 digest.update(b"\n")
             return digest.hexdigest()
@@ -260,15 +246,7 @@ def build_authoritative_governed_retrieval_benchmark(
         "query_universe_sha256": query_universe,
         "qrels_coverage_sha256": coverage,
     })
-    return AuthoritativeGovernedRetrievalBenchmark(
-        queries,
-        leakage,
-        qrels,
-        corpus,
-        query_universe,
-        coverage,
-        contract,
-    )
+    return AuthoritativeGovernedRetrievalBenchmark(queries, leakage, qrels, corpus, query_universe, coverage, contract)
 
 
 def authoritative_retrieval_evaluator_contract_sha256(base_evaluator_contract_sha256: str, benchmark: AuthoritativeGovernedRetrievalBenchmark) -> str:
@@ -291,6 +269,7 @@ def materialize_authoritative_retrieval_run_evidence(
     repeat_index: int,
     output_dir: str | Path,
 ) -> tuple[AdvancedEvaluationRun, AuthoritativeBenchmarkResultReceipt]:
+    assert_authoritative_retrieval_result_universe(result, benchmark)
     evaluator = authoritative_retrieval_evaluator_contract_sha256(base_evaluator_contract_sha256, benchmark)
     return materialize_authoritative_benchmark_run_evidence(
         result,
