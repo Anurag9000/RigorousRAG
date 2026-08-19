@@ -1,9 +1,9 @@
 """Checkpoint-to-inference artifact export and promotion contracts for advanced RAG.
 
-Authoritative exports require a checkpoint/run-config verification receipt.  The resulting
-manifest carries enough canonical architecture data to reconstruct the repository-owned
-heads/controllers while still referring to separately admitted base-model/tokenizer trees by
-digest.  Nothing is loaded or executed on import.
+Authoritative exports require a checkpoint/run-config verification receipt. The resulting
+manifest carries enough canonical architecture data to reconstruct repository-owned
+heads/controllers while referring to separately admitted base-model/tokenizer/retriever trees
+by digest. Nothing is loaded or executed on import.
 """
 from __future__ import annotations
 
@@ -62,15 +62,28 @@ def _file_sha(path: Path) -> str:
     return digest.hexdigest()
 
 
-def grounded_runtime_config(plan: GroundedTrainingPlan) -> Mapping[str, Any]:
+def grounded_runtime_config(
+    plan: GroundedTrainingPlan,
+    binding: VerifiedAdvancedCheckpointBinding,
+    *,
+    include_retriever: bool,
+) -> Mapping[str, Any]:
     architecture = plan.architecture
-    return {
+    result: dict[str, Any] = {
         "architecture": {
             "hidden_size": architecture.hidden_size,
             "attribution_size": architecture.attribution_size,
             "reflection_actions": [action.value for action in architecture.reflection_actions],
         }
     }
+    if include_retriever and plan.retriever_stack_sha256 is not None:
+        if binding.retriever_positive_label_index is None:
+            raise ValueError("joint grounded artifact requires verified retriever label semantics")
+        result["retriever_adapter"] = {
+            "model_sha256": plan.retriever_stack_sha256,
+            "positive_label_index": binding.retriever_positive_label_index,
+        }
+    return result
 
 
 def dynamic_runtime_config(plan: DynamicPolicyTrainingPlan) -> Mapping[str, Any]:
@@ -95,17 +108,37 @@ def dynamic_runtime_config(plan: DynamicPolicyTrainingPlan) -> Mapping[str, Any]
     }
 
 
-def _validate_runtime_config(kind: str, value: Mapping[str, Any], *, architecture_sha256: str, budget_sha256: str | None) -> Mapping[str, Any]:
+def _validate_runtime_config(
+    kind: str,
+    value: Mapping[str, Any],
+    *,
+    architecture_sha256: str,
+    budget_sha256: str | None,
+    retrieval_stack_sha256: str | None,
+) -> Mapping[str, Any]:
     if not isinstance(value, Mapping):
         raise ValueError("runtime_config must be a mapping")
     if kind == "grounded_generator":
-        if set(value) != {"architecture"} or not isinstance(value["architecture"], Mapping):
-            raise ValueError("grounded runtime_config must contain only architecture")
+        allowed = {"architecture", "retriever_adapter"}
+        if not set(value).issubset(allowed) or "architecture" not in value or not isinstance(value["architecture"], Mapping):
+            raise ValueError("grounded runtime_config contains unsupported fields")
         architecture = GroundedGenerationArchitectureConfig(**dict(value["architecture"]))
         if architecture.architecture_sha256 != architecture_sha256:
             raise ValueError("grounded runtime architecture does not match architecture_sha256")
         if budget_sha256 is not None:
             raise ValueError("grounded artifact may not carry dynamic budget")
+        adapter = value.get("retriever_adapter")
+        if retrieval_stack_sha256 is None:
+            if adapter is not None:
+                raise ValueError("retriever adapter present without retrieval_stack_sha256")
+        else:
+            if not isinstance(adapter, Mapping) or set(adapter) != {"model_sha256", "positive_label_index"}:
+                raise ValueError("joint grounded artifact requires a closed retriever_adapter")
+            if _sha(adapter["model_sha256"], "retriever adapter model_sha256") != retrieval_stack_sha256:
+                raise ValueError("retriever adapter model identity differs from retrieval_stack_sha256")
+            label_index = adapter["positive_label_index"]
+            if isinstance(label_index, bool) or not isinstance(label_index, int) or label_index < 0:
+                raise ValueError("retriever positive_label_index must be non-negative")
     elif kind == "dynamic_rag_policy":
         if set(value) != {"architecture", "budget"} or not isinstance(value["architecture"], Mapping) or not isinstance(value["budget"], Mapping):
             raise ValueError("dynamic runtime_config must contain architecture and budget")
@@ -117,7 +150,6 @@ def _validate_runtime_config(kind: str, value: Mapping[str, Any], *, architectur
             raise ValueError("dynamic runtime budget does not match budget_sha256")
     else:
         raise ValueError("unsupported advanced artifact kind")
-    # Round-trip through strict canonical JSON types so callers cannot retain mutable aliases.
     return json.loads(_canonical(value).decode("utf-8"))
 
 
@@ -184,7 +216,17 @@ class AdvancedArtifactManifest:
             value = getattr(self, name)
             if value is not None:
                 object.__setattr__(self, name, _sha(value, name))
-        object.__setattr__(self, "runtime_config", _validate_runtime_config(self.kind, self.runtime_config, architecture_sha256=self.architecture_sha256, budget_sha256=self.budget_sha256))
+        object.__setattr__(
+            self,
+            "runtime_config",
+            _validate_runtime_config(
+                self.kind,
+                self.runtime_config,
+                architecture_sha256=self.architecture_sha256,
+                budget_sha256=self.budget_sha256,
+                retrieval_stack_sha256=self.retrieval_stack_sha256,
+            ),
+        )
         if isinstance(self.weights_bytes, bool) or not isinstance(self.weights_bytes, int) or self.weights_bytes <= 0:
             raise ValueError("weights_bytes must be positive")
         prefixes = tuple(str(value).strip() for value in self.included_prefixes)
@@ -258,14 +300,9 @@ def _assert_binding(binding: VerifiedAdvancedCheckpointBinding, *, kind: str, pl
 
 
 def export_grounded_generator_artifact(
-    *,
-    checkpoint_manager: CheckpointManager,
-    checkpoint_digest: str,
-    plan: GroundedTrainingPlan,
-    verified_binding: VerifiedAdvancedCheckpointBinding,
-    destination_root: str | Path,
-    evaluation_receipt_sha256: str | None = None,
-    include_retriever: bool = True,
+    *, checkpoint_manager: CheckpointManager, checkpoint_digest: str, plan: GroundedTrainingPlan,
+    verified_binding: VerifiedAdvancedCheckpointBinding, destination_root: str | Path,
+    evaluation_receipt_sha256: str | None = None, include_retriever: bool = True,
 ) -> AdvancedArtifactManifest:
     _assert_binding(verified_binding, kind="grounded_generation", plan_sha256=plan.plan_sha256, checkpoint_digest=checkpoint_digest)
     path, checkpoint = checkpoint_manager.verify(checkpoint_digest)
@@ -284,16 +321,16 @@ def export_grounded_generator_artifact(
     temporary = Path(tempfile.mkdtemp(prefix=".grounded-export-", dir=root))
     try:
         weights_sha, weights_bytes = _save_filtered_safetensors(path / "model.safetensors", temporary / "model.safetensors", prefixes)
+        retrieval_sha = plan.retriever_stack_sha256 if include_retriever else None
         values = {
             "kind": "grounded_generator", "checkpoint_digest": checkpoint_digest, "plan_sha256": plan.plan_sha256,
             "training_input_sha256": verified_binding.training_input_sha256,
             "training_config_sha256": verified_binding.training_config_sha256,
             "source_commit": plan.source_commit, "dataset_manifest_sha256": plan.dataset_manifest_sha256,
             "architecture_sha256": plan.architecture.architecture_sha256, "base_model_sha256": plan.base_model_sha256,
-            "generator_family": verified_binding.generator_family,
-            "tokenizer_sha256": plan.tokenizer_sha256,
-            "retrieval_stack_sha256": plan.retriever_stack_sha256 if include_retriever else None,
-            "budget_sha256": None, "runtime_config": grounded_runtime_config(plan),
+            "generator_family": verified_binding.generator_family, "tokenizer_sha256": plan.tokenizer_sha256,
+            "retrieval_stack_sha256": retrieval_sha, "budget_sha256": None,
+            "runtime_config": grounded_runtime_config(plan, verified_binding, include_retriever=include_retriever),
             "weights_sha256": weights_sha, "weights_bytes": weights_bytes,
             "included_prefixes": prefixes, "evaluation_receipt_sha256": evaluation_receipt_sha256,
         }
@@ -311,12 +348,8 @@ def export_grounded_generator_artifact(
 
 
 def export_dynamic_policy_artifact(
-    *,
-    checkpoint_manager: CheckpointManager,
-    checkpoint_digest: str,
-    plan: DynamicPolicyTrainingPlan,
-    verified_binding: VerifiedAdvancedCheckpointBinding,
-    destination_root: str | Path,
+    *, checkpoint_manager: CheckpointManager, checkpoint_digest: str, plan: DynamicPolicyTrainingPlan,
+    verified_binding: VerifiedAdvancedCheckpointBinding, destination_root: str | Path,
     evaluation_receipt_sha256: str | None = None,
 ) -> AdvancedArtifactManifest:
     _assert_binding(verified_binding, kind="dynamic_rag_policy", plan_sha256=plan.plan_sha256, checkpoint_digest=checkpoint_digest)
