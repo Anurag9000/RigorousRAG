@@ -68,7 +68,7 @@
   "reference_cache": {
     "root": "/absolute/local/path/to/reference-policy-cache",
     "identity": {
-      "cache_kind": "grounded_reference_policy",
+      "cache_kind": "reference_policy_log_probs",
       "producer_sha256": "REPLACE_WITH_64_HEX_REFERENCE_MODEL_SHA256",
       "tokenizer_sha256": "REPLACE_WITH_64_HEX_LOCAL_TOKENIZER_TREE_SHA256",
       "dataset_manifest_sha256": "REPLACE_WITH_64_HEX_DATASET_MANIFEST_SHA256",
