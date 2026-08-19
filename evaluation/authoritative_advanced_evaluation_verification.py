@@ -1,9 +1,10 @@
 """Restart verification for authoritative advanced evaluation evidence.
 
-This verifier is intentionally independent of a live checkpoint manager.  It proves every
-result receipt and result artifact still exists and verifies, rebuilds the homogeneous run
+This verifier is intentionally independent of a live checkpoint manager. It proves every
+result receipt and result artifact still exists and verifies, replays every persisted result
+row through the same canonical validation used at publication, rebuilds the homogeneous run
 cohort and aggregate, re-reads the persisted ``AdvancedEvaluationReceipt``, and checks the
-entire evidence envelope.  Artifact promotion can then compare that proven lineage directly to
+entire evidence envelope. Artifact promotion can then compare that proven lineage directly to
 the exported artifact manifest.
 """
 from __future__ import annotations
@@ -20,8 +21,8 @@ from evaluation.authoritative_advanced_evaluation import (
     AuthoritativeAdvancedEvaluationEvidence,
     read_authoritative_advanced_evaluation_evidence,
 )
-from evaluation.authoritative_benchmark_run_evidence import (
-    verify_authoritative_benchmark_result_receipt,
+from evaluation.strict_authoritative_benchmark_result_verification import (
+    verify_strict_authoritative_benchmark_result_receipt,
 )
 from training.advanced_path_authority import safe_advanced_path
 
@@ -60,7 +61,7 @@ def verify_authoritative_advanced_evaluation_evidence(
         )
         if _file_sha(receipt_path) != item.result_receipt_file_sha256:
             raise ValueError("benchmark result receipt bytes changed after evaluation publication")
-        run, receipt = verify_authoritative_benchmark_result_receipt(receipt_path)
+        run, receipt = verify_strict_authoritative_benchmark_result_receipt(receipt_path)
         if receipt.receipt_sha256 != item.result_receipt_sha256:
             raise ValueError("benchmark result receipt identity differs from evaluation evidence")
         if receipt.result_artifact_sha256 != item.result_artifact_sha256:
