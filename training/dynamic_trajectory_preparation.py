@@ -1,16 +1,15 @@
-"""Prepare recorded dynamic-RAG decisions for need-selection/value training.
+"""Compatibility preparation of recorded dynamic-RAG decisions.
 
-Runtime recording intentionally leaves hidden-state cache keys and information-need labels
-unset. This module closes that seam: it materializes exact generator hidden states into the
-authoritative safetensor cache, attaches deterministic cache keys, optionally attaches
-request-reviewed information-need spans from a content-bound sidecar, and returns a
-self-verifying preparation receipt. No model executes on import.
+The authoritative final-training workflow uses the two-phase manifest-bound pipeline in
+``dynamic_manifest_bound_hidden_cache`` so hidden-cache identity binds the final dataset
+manifest. This compatibility helper remains useful for non-final experiments and legacy
+callers; it now shares the same collision-resistant step keys, exact-pair sidecar identities
+and read-only sealing semantics. No model executes on import.
 """
 from __future__ import annotations
 
 import hashlib
 import json
-import math
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any, Mapping, Protocol, Sequence
@@ -24,6 +23,7 @@ from training.advanced_path_authority import safe_advanced_path
 from training.advanced_rag_authoritative_data import LegalDynamicRagEpisodeStep
 from training.advanced_rag_data import TextSpan
 from training.advanced_rag_strict_cache import AuthoritativeSafetensorSupervisionCache
+from training.dynamic_record_identity import dynamic_hidden_cache_key, dynamic_step_pair
 
 _MAX_ANNOTATIONS = 100_000_000
 _MAX_SIDECAR_BYTES = 2 * 1024 * 1024 * 1024
@@ -75,10 +75,11 @@ class InformationNeedAnnotationProvider(Protocol):
 
 
 class SidecarInformationNeedAnnotationProvider:
-    """Strict immutable annotation sidecar keyed by ``episode_id:step_id``.
+    """Strict immutable annotation sidecar keyed by exact episode/step tuples.
 
     An entry with an empty ``spans`` list is an explicit negative label, distinct from an
-    absent entry. This is important for supervised token-level information-need learning.
+    absent entry. The external JSON keeps episode_id and step_id as separate fields; internal
+    lookup therefore never relies on delimiter concatenation.
     """
     def __init__(self, path: str | Path, *, expected_sha256: str) -> None:
         source = safe_advanced_path(path, label="information-need annotation sidecar", must_exist=True, require_file=True)
@@ -97,16 +98,13 @@ class SidecarInformationNeedAnnotationProvider:
         raw_annotations = payload.get("annotations")
         if not isinstance(raw_annotations, list) or len(raw_annotations) > _MAX_ANNOTATIONS:
             raise ValueError("information-need annotations must be a bounded array")
-        annotations: dict[str, tuple[TextSpan, ...]] = {}
+        annotations: dict[tuple[str, str], tuple[TextSpan, ...]] = {}
         for index, raw in enumerate(raw_annotations):
             if not isinstance(raw, Mapping) or set(raw) != {"episode_id", "step_id", "spans"} or not isinstance(raw.get("spans"), list):
                 raise ValueError(f"information-need annotation {index} is malformed")
-            episode = str(raw["episode_id"]).strip(); step = str(raw["step_id"]).strip()
-            if not episode or not step:
-                raise ValueError("information-need annotation identity is empty")
-            key = f"{episode}:{step}"
+            key = dynamic_step_pair(raw["episode_id"], raw["step_id"])
             if key in annotations:
-                raise ValueError(f"duplicate information-need annotation identity: {key}")
+                raise ValueError(f"duplicate information-need annotation identity: {key!r}")
             spans = []
             for span_raw in raw["spans"]:
                 if not isinstance(span_raw, Mapping) or set(span_raw) != {"start", "end"}:
@@ -122,16 +120,16 @@ class SidecarInformationNeedAnnotationProvider:
         return _digest({
             "schema": "rigorousrag-information-need-annotation-provider/v1",
             "content_sha256": self.content_sha256,
-            "semantics": "character_spans_over_exact_record_context_with_explicit_empty_negative",
+            "semantics": "character_spans_over_exact_record_context_with_explicit_empty_negative_exact_pair_keying",
         })
 
     def spans(self, step: LegalDynamicRagEpisodeStep) -> Sequence[TextSpan]:
-        key = f"{step.episode_id}:{step.step_id}"
+        key = dynamic_step_pair(step.episode_id, step.step_id)
         if key not in self._annotations:
-            raise ValueError(f"information-need annotation sidecar lacks step {key}")
+            raise ValueError(f"information-need annotation sidecar lacks step {key!r}")
         spans = self._annotations[key]
         if any(span.end > len(step.context) for span in spans):
-            raise ValueError(f"information-need annotation for {key} lies outside exact step context")
+            raise ValueError(f"information-need annotation for {key!r} lies outside exact step context")
         return spans
 
 
@@ -185,11 +183,8 @@ def _normalized_hidden_tensors(encoded: Mapping[str, Any]) -> Mapping[str, Any]:
     if token_hidden.size(1) != attention.size(1) or token_hidden.size(2) != state_hidden.size(1):
         raise ValueError("hidden-state provider tensor shapes are inconsistent")
     visible = attention[0].to(dtype=torch.bool)
-    positions = torch.nonzero(visible, as_tuple=False).flatten()
-    if positions.numel() == 0:
+    if not bool(visible.any().item()):
         raise ValueError("hidden-state provider returned no visible tokens")
-    # Preserve the complete tokenizer-aligned sequence, including any leading pad positions;
-    # the authoritative collator validates the cached attention mask against current tokenization.
     return {
         "token_hidden": token_hidden[0].contiguous(),
         "state_hidden": state_hidden[0].contiguous(),
@@ -220,11 +215,13 @@ def prepare_dynamic_trajectory_supervision(
     annotation_provider: InformationNeedAnnotationProvider | None,
     require_need_annotations: bool = True,
 ) -> tuple[tuple[LegalDynamicRagEpisodeStep, ...], DynamicTrajectoryPreparationReceipt]:
-    """Attach hidden-state cache keys and optional information-need labels to every step."""
+    """Compatibility one-pass preparation; final training should use the two-phase path."""
     if not steps or any(not isinstance(step, LegalDynamicRagEpisodeStep) for step in steps):
         raise ValueError("preparation requires LegalDynamicRagEpisodeStep values")
     if not isinstance(cache, AuthoritativeSafetensorSupervisionCache):
         raise ValueError("cache must be AuthoritativeSafetensorSupervisionCache")
+    if cache.is_sealed:
+        raise ValueError("trajectory preparation cache must be writable and unsealed")
     provider_sha = _sha(getattr(hidden_provider, "contract_sha256", None), "hidden provider contract_sha256")
     generator_sha = _sha(getattr(hidden_provider, "generator_sha256", None), "hidden provider generator_sha256")
     tokenizer_sha = _sha(getattr(hidden_provider, "tokenizer_sha256", None), "hidden provider tokenizer_sha256")
@@ -244,13 +241,13 @@ def prepare_dynamic_trajectory_supervision(
     entry_digests = []
     seen: set[str] = set()
     for step in steps:
-        key = f"dynamic-hidden:{step.episode_id}:{step.step_id}"
+        key = dynamic_hidden_cache_key(step.episode_id, step.step_id)
         if key in seen:
             raise ValueError(f"duplicate hidden-state cache key: {key}")
         seen.add(key)
         spans = tuple(annotation_provider.spans(step)) if annotation_provider is not None else tuple(step.need_spans)
         if any(not isinstance(span, TextSpan) or span.end > len(step.context) for span in spans):
-            raise ValueError(f"invalid information-need spans for {step.episode_id}:{step.step_id}")
+            raise ValueError(f"invalid information-need spans for {dynamic_step_pair(step.episode_id, step.step_id)!r}")
         tensors = _normalized_hidden_tensors(hidden_provider.encode([step.context]))
         entry_sha = cache.put(key, tensors)
         metadata = dict(step.metadata)
@@ -261,6 +258,7 @@ def prepare_dynamic_trajectory_supervision(
         prepared.append(replace(step, hidden_state_cache_key=key, need_spans=spans, metadata=metadata))
         keys.append(key); entry_digests.append(entry_sha)
 
+    cache.seal()
     records_sha = _digest([_record_digest(step) for step in prepared])
     unsigned = {
         "schema": "rigorousrag-dynamic-trajectory-preparation-receipt/v1",
