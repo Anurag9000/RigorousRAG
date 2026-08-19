@@ -6,13 +6,8 @@ from dataclasses import dataclass, fields, replace
 from pathlib import Path
 from typing import Any, Mapping
 
-from training.advanced_rag_curricula import (
-    CurriculumStageHyperparameters,
-    DynamicCurriculumHyperparameters,
-    GroundedCurriculumHyperparameters,
-    build_dynamic_curriculum,
-    build_grounded_curriculum,
-)
+from training.advanced_path_authority import safe_advanced_path
+from training.advanced_rag_curricula import CurriculumStageHyperparameters, DynamicCurriculumHyperparameters, GroundedCurriculumHyperparameters, build_dynamic_curriculum, build_grounded_curriculum
 from training.advanced_rag_data import DynamicCollatorConfig, GroundedCollatorConfig
 from training.advanced_rag_runner import LocalTrainingSplit, ParameterTrainabilityPolicy, TrainingExecutionConfig
 from training.advanced_rag_supervision import SafetensorSupervisionCache, SupervisionCacheIdentity
@@ -47,9 +42,9 @@ def _dataclass_kwargs(cls: Any, raw: Mapping[str, Any], label: str) -> dict[str,
 
 
 def _read_json(path: str | Path) -> Mapping[str, Any]:
-    selected = Path(path).expanduser().resolve(strict=True)
-    if not selected.is_file() or selected.is_symlink() or selected.stat().st_size > 10 * 1024 * 1024:
-        raise ValueError("advanced RAG config must be a bounded regular non-symlink file")
+    selected = safe_advanced_path(path, label="advanced RAG config", must_exist=True, require_file=True)
+    if selected.stat().st_size > 10 * 1024 * 1024:
+        raise ValueError("advanced RAG config exceeds byte safety bound")
     try:
         value = json.loads(selected.read_text(encoding="utf-8"), parse_constant=lambda raw: (_ for _ in ()).throw(ValueError(raw)))
     except Exception as exc:
@@ -67,7 +62,8 @@ def _artifact(raw: Any, *, kind: str | None = None, label: str) -> LocalArtifact
 
 def _split(raw: Any, label: str) -> LocalTrainingSplit:
     selected = _strict(_mapping(raw, label), allowed={"path", "sha256", "split_name", "expected_record_count"}, required={"path", "sha256", "split_name"}, label=label)
-    return LocalTrainingSplit(path=selected["path"], content_sha256=selected["sha256"], split_name=selected["split_name"], expected_record_count=selected.get("expected_record_count"))
+    path = safe_advanced_path(selected["path"], label=f"{label}.path", must_exist=True, require_file=True)
+    return LocalTrainingSplit(path=str(path), content_sha256=selected["sha256"], split_name=selected["split_name"], expected_record_count=selected.get("expected_record_count"))
 
 
 @dataclass(frozen=True)
@@ -76,7 +72,9 @@ class TensorCacheSpec:
     identity: SupervisionCacheIdentity
 
     def __post_init__(self) -> None:
-        root = Path(self.root).expanduser().resolve()
+        root = safe_advanced_path(self.root, label="supervision cache root", must_exist=False)
+        if root.exists() and not root.is_dir():
+            raise ValueError("supervision cache root must be a directory when it exists")
         object.__setattr__(self, "root", str(root))
         if not isinstance(self.identity, SupervisionCacheIdentity):
             raise ValueError("cache identity must be SupervisionCacheIdentity")
@@ -141,6 +139,15 @@ def _trainability(raw: Any | None, defaults: Mapping[str, ParameterTrainabilityP
             raise ValueError("trainability values must be arrays of parameter prefixes")
         result[stage] = ParameterTrainabilityPolicy(tuple(prefixes))
     return result
+
+
+def _checkpoint_root(value: Any) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("checkpoint_root must be a non-empty path string")
+    selected = safe_advanced_path(value, label="advanced checkpoint root", must_exist=False)
+    if selected.exists() and not selected.is_dir():
+        raise ValueError("advanced checkpoint root must be a directory when it exists")
+    return str(selected)
 
 
 @dataclass(frozen=True)
@@ -212,12 +219,11 @@ def load_grounded_run_config(path: str | Path) -> GroundedConfiguredRun:
         include_preference=bool(curriculum_raw.get("include_preference", True)), hyperparameters=_grounded_hyper(curriculum_raw.get("stages")),
     )
     return GroundedConfiguredRun(
-        plan=plan,
-        trainability=_trainability(root.get("trainability"), default_trainability),
+        plan=plan, trainability=_trainability(root.get("trainability"), default_trainability),
         execution=TrainingExecutionConfig(**_dataclass_kwargs(TrainingExecutionConfig, _mapping(root.get("execution") or {}, "execution"), "execution")),
         collator=GroundedCollatorConfig(**_dataclass_kwargs(GroundedCollatorConfig, _mapping(root.get("collator") or {}, "collator"), "collator")),
         train_split=_split(root["train_split"], "train_split"), validation_split=_split(root["validation_split"], "validation_split"),
-        checkpoint_root=str(Path(root["checkpoint_root"]).expanduser().resolve()), base_model=base, tokenizer=tokenizer,
+        checkpoint_root=_checkpoint_root(root["checkpoint_root"]), base_model=base, tokenizer=tokenizer,
         resume_checkpoint_digest=root.get("resume_checkpoint_digest"), teacher_cache=teacher_cache,
         reference_cache=_cache(root.get("reference_cache"), "reference_cache"), retriever_model=retriever_model,
         retriever_utility_cache=retriever_cache, retriever_coupling=retriever_config,
@@ -252,7 +258,7 @@ def load_dynamic_run_config(path: str | Path) -> DynamicConfiguredRun:
         execution=TrainingExecutionConfig(**_dataclass_kwargs(TrainingExecutionConfig, _mapping(root.get("execution") or {}, "execution"), "execution")),
         collator=DynamicCollatorConfig(**_dataclass_kwargs(DynamicCollatorConfig, _mapping(root.get("collator") or {}, "collator"), "collator")),
         train_split=_split(root["train_split"], "train_split"), validation_split=_split(root["validation_split"], "validation_split"),
-        checkpoint_root=str(Path(root["checkpoint_root"]).expanduser().resolve()), generator=generator, tokenizer=tokenizer,
+        checkpoint_root=_checkpoint_root(root["checkpoint_root"]), generator=generator, tokenizer=tokenizer,
         resume_checkpoint_digest=root.get("resume_checkpoint_digest"), hidden_state_cache=_cache(root.get("hidden_state_cache"), "hidden_state_cache"),
     )
 
@@ -267,7 +273,4 @@ def load_advanced_run_config(path: str | Path) -> GroundedConfiguredRun | Dynami
     raise ValueError("advanced training config kind must be grounded_generation or dynamic_rag_policy")
 
 
-__all__ = [
-    "DynamicConfiguredRun", "GroundedConfiguredRun", "TensorCacheSpec", "load_advanced_run_config",
-    "load_dynamic_run_config", "load_grounded_run_config",
-]
+__all__ = ["DynamicConfiguredRun", "GroundedConfiguredRun", "TensorCacheSpec", "load_advanced_run_config", "load_dynamic_run_config", "load_grounded_run_config"]
