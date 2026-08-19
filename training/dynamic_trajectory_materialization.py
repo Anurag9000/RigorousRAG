@@ -2,13 +2,15 @@
 
 This module turns logged generation-time episodes into immutable local training JSONL after
 operators explicitly execute admitted value/counterfactual providers. It preserves legal
-action sets when present, never selects an illegal counterfactual target, and stores GAE
-returns as explicit state-value targets rather than hiding them in metadata.
+action sets, measures counterfactual improvement against the actual logged action rather than
+an assumed CONTINUE baseline, validates every numeric target as finite, and stores GAE returns
+as explicit state-value targets.
 """
 from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import tempfile
 from dataclasses import asdict, dataclass, replace
@@ -18,7 +20,8 @@ from typing import Any, Mapping, Protocol, Sequence
 from training.advanced_path_authority import safe_advanced_path
 from training.advanced_rag_authoritative_data import LegalDynamicRagEpisodeStep
 from training.advanced_rag_data import DynamicRagEpisodeStep
-from training.advanced_rag_supervision import CounterfactualActionProvider, DynamicRewardConfig, counterfactual_action_target, generalized_advantage_estimate, trajectory_rewards
+from training.advanced_rag_supervision import CounterfactualActionProvider, DynamicRewardConfig, generalized_advantage_estimate, trajectory_rewards
+from training.dynamic_retrieval_policy import DynamicRetrievalAction
 
 
 def _canonical(value: Any) -> bytes:
@@ -33,6 +36,18 @@ def _sha(value: str, label: str) -> str:
     selected = str(value).strip().lower()
     if len(selected) != 64 or any(ch not in "0123456789abcdef" for ch in selected):
         raise ValueError(f"{label} must be SHA-256")
+    return selected
+
+
+def _finite(value: Any, label: str) -> float:
+    if isinstance(value, bool):
+        raise ValueError(f"{label} must be finite")
+    try:
+        selected = float(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(f"{label} must be finite") from exc
+    if not math.isfinite(selected):
+        raise ValueError(f"{label} must be finite")
     return selected
 
 
@@ -119,14 +134,34 @@ def _record(step: DynamicRagEpisodeStep) -> Mapping[str, Any]:
     return result
 
 
-def _legal_counterfactual_utilities(step: DynamicRagEpisodeStep, utilities: Mapping[Any, float]) -> Mapping[Any, float]:
+def _legal_counterfactual_utilities(step: DynamicRagEpisodeStep, utilities: Mapping[Any, float]) -> Mapping[DynamicRetrievalAction, float]:
+    normalized: dict[DynamicRetrievalAction, float] = {}
+    for raw_action, raw_value in utilities.items():
+        action = raw_action if isinstance(raw_action, DynamicRetrievalAction) else DynamicRetrievalAction(raw_action)
+        if action in normalized:
+            raise ValueError(f"counterfactual provider duplicated action {action.value}")
+        normalized[action] = _finite(raw_value, f"counterfactual utility {action.value}")
+    if not normalized:
+        raise ValueError("counterfactual provider returned no action utilities")
     if isinstance(step, LegalDynamicRagEpisodeStep):
         legal = set(step.valid_actions)
-        selected = {action: value for action, value in utilities.items() if action in legal}
-        if not selected:
+        normalized = {action: value for action, value in normalized.items() if action in legal}
+        if not normalized:
             raise ValueError("counterfactual provider returned no utility for any legal action")
-        return selected
-    return utilities
+    if step.action not in normalized:
+        raise ValueError("counterfactual provider must score the actual logged action baseline")
+    return normalized
+
+
+def _counterfactual_target_against_logged_action(
+    step: DynamicRagEpisodeStep,
+    utilities: Mapping[DynamicRetrievalAction, float],
+    reward_config: DynamicRewardConfig,
+) -> tuple[DynamicRetrievalAction, float]:
+    adjusted = {action: _finite(value, f"counterfactual utility {action.value}") - reward_config.action_cost(action) for action, value in utilities.items()}
+    baseline = adjusted[step.action]
+    best = min(adjusted, key=lambda action: (-adjusted[action], action.value))
+    return best, _finite(adjusted[best] - baseline, "counterfactual gain over logged action")
 
 
 def materialize_dynamic_trajectories(
@@ -162,7 +197,7 @@ def materialize_dynamic_trajectories(
     materialized: list[DynamicRagEpisodeStep] = []
     for episode_id in sorted(by_episode):
         episode = by_episode[episode_id]
-        values = tuple(float(value) for value in value_provider.values(episode))
+        values = tuple(_finite(value, "logged state value") for value in value_provider.values(episode))
         if len(values) != len(episode):
             raise ValueError("value provider returned the wrong number of values")
         rewards = trajectory_rewards(episode, identity.reward_config)
@@ -172,16 +207,19 @@ def materialize_dynamic_trajectories(
             metadata["trajectory_identity_sha256"] = identity.identity_sha256
             if counterfactual_provider is not None:
                 utilities = _legal_counterfactual_utilities(step, counterfactual_provider.action_utilities(step))
-                action, gain = counterfactual_action_target(utilities, identity.reward_config)
+                action, gain = _counterfactual_target_against_logged_action(step, utilities, identity.reward_config)
                 metadata["counterfactual_best_action"] = action.value
-                metadata["counterfactual_gain_over_continue"] = format(gain, ".17g")
+                metadata["counterfactual_logged_action"] = step.action.value
+                metadata["counterfactual_gain_over_logged_action"] = format(gain, ".17g")
             if isinstance(step, LegalDynamicRagEpisodeStep):
-                materialized.append(replace(step, advantage=targets.advantages[index], value_target=targets.returns[index], metadata=metadata))
+                materialized.append(replace(step, advantage=_finite(targets.advantages[index], "advantage"), value_target=_finite(targets.returns[index], "value target"), metadata=metadata))
             else:
-                metadata["return_target"] = format(targets.returns[index], ".17g")
-                materialized.append(replace(step, advantage=targets.advantages[index], metadata=metadata))
+                metadata["return_target"] = format(_finite(targets.returns[index], "value target"), ".17g")
+                materialized.append(replace(step, advantage=_finite(targets.advantages[index], "advantage"), metadata=metadata))
 
     destination = safe_advanced_path(output_path, label="dynamic trajectory output", must_exist=False)
+    if destination.exists() and destination.is_dir():
+        raise ValueError("dynamic trajectory output must be a file path")
     destination.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary_name = tempfile.mkstemp(prefix=f".{destination.name}-", suffix=".tmp", dir=destination.parent)
     digest = hashlib.sha256()
