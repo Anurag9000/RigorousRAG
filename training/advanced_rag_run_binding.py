@@ -35,11 +35,13 @@ def _sha(value: Any, label: str) -> str:
     return selected
 
 
-def _cache_identity(spec: TensorCacheSpec | None, *, label: str) -> str | None:
+def _cache_identity(spec: TensorCacheSpec | None, *, label: str, expected_kind: str) -> str | None:
     if spec is None:
         return None
     if not isinstance(spec, TensorCacheSpec):
         raise ValueError(f"{label} must be TensorCacheSpec")
+    if spec.identity.cache_kind != expected_kind:
+        raise ValueError(f"{label} must use cache_kind={expected_kind}")
     cache = spec.build()
     # provider_identity_sha256 deliberately prefers the exact sealed content contract over
     # the weaker cache-configuration identity, matching the authoritative training runner.
@@ -49,7 +51,11 @@ def _cache_identity(spec: TensorCacheSpec | None, *, label: str) -> str | None:
 def _retriever_supervision_sha256(config: GroundedConfiguredRun) -> str | None:
     if config.retriever_utility_cache is None:
         return None
-    utility_cache_sha = _cache_identity(config.retriever_utility_cache, label="retriever utility cache")
+    utility_cache_sha = _cache_identity(
+        config.retriever_utility_cache,
+        label="retriever utility cache",
+        expected_kind="document_lm_utility",
+    )
     if utility_cache_sha is None:
         raise RuntimeError("retriever utility cache identity unexpectedly missing")
     return _digest(
@@ -76,8 +82,8 @@ def grounded_training_input_identity(config: GroundedConfiguredRun) -> AdvancedT
         execution_config_sha256=dataclass_sha256(config.execution, label="advanced-execution-config"),
         collator_config_sha256=dataclass_sha256(path_binding, label="grounded-generator-path-binding"),
         trainability_sha256=trainability_sha256(trainability),
-        teacher_cache_sha256=_cache_identity(config.teacher_cache, label="teacher cache"),
-        reference_cache_sha256=_cache_identity(config.reference_cache, label="reference cache"),
+        teacher_cache_sha256=_cache_identity(config.teacher_cache, label="teacher cache", expected_kind="teacher_logits"),
+        reference_cache_sha256=_cache_identity(config.reference_cache, label="reference cache", expected_kind="reference_policy_log_probs"),
         retriever_supervision_sha256=_retriever_supervision_sha256(config),
     )
 
@@ -95,7 +101,7 @@ def dynamic_training_input_identity(config: DynamicConfiguredRun) -> AdvancedTra
         execution_config_sha256=dataclass_sha256(config.execution, label="advanced-execution-config"),
         collator_config_sha256=dataclass_sha256(config.collator, label="dynamic-collator-config"),
         trainability_sha256=trainability_sha256(trainability),
-        hidden_state_cache_sha256=_cache_identity(config.hidden_state_cache, label="hidden-state cache"),
+        hidden_state_cache_sha256=_cache_identity(config.hidden_state_cache, label="hidden-state cache", expected_kind="generator_hidden_states"),
     )
 
 
