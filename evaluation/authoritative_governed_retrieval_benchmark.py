@@ -1,8 +1,9 @@
 """Authoritative retrieval benchmark composition for promotion-grade evaluation.
 
-The v2 path binds only authoritative components: v2 query import, passed disk-backed leakage
-qualification, disk-backed qrels, and the v2 closed corpus publication. Relevant-document
-coverage and qrels pair identity are proved with SQLite/streaming hashes. Promotion-grade run
+The v3 contract binds only authoritative components: v2 query import, passed disk-backed
+leakage qualification, disk-backed qrels, and the v2 closed corpus publication.  It proves
+both qrels-document coverage and exact equality of the governed query/qrels query universes
+with disk-backed indices before any evaluation run can be materialized. Promotion-grade run
 evidence is emitted through the streaming v2 result-artifact authority.
 """
 from __future__ import annotations
@@ -61,15 +62,97 @@ def _assert_authoritative_qrels(qrels: GovernedQrels) -> None:
         raise ValueError("authoritative qrels must contain at least one relevant pair/query/document")
 
 
+def _query_universe(
+    queries: VerifiedAuthoritativeGovernedBenchmark,
+    qrels: GovernedQrels,
+) -> str:
+    descriptor, raw_database = tempfile.mkstemp(
+        prefix="rigorousrag-retrieval-queries-",
+        suffix=".sqlite3",
+    )
+    os.close(descriptor)
+    missing_qrels: list[str] = []
+    extra_qrels: list[str] = []
+    try:
+        connection = sqlite3.connect(raw_database)
+        try:
+            connection.execute("PRAGMA journal_mode=OFF")
+            connection.execute("PRAGMA synchronous=OFF")
+            connection.execute("PRAGMA temp_store=FILE")
+            connection.execute("CREATE TABLE queries(query_id TEXT PRIMARY KEY) WITHOUT ROWID")
+            count = 0
+            for split in queries.manifest.splits:
+                for example in queries.split(split.name):
+                    try:
+                        connection.execute(
+                            "INSERT INTO queries(query_id) VALUES (?)",
+                            (example.example_id,),
+                        )
+                    except sqlite3.IntegrityError as exc:
+                        raise ValueError(
+                            f"governed query id {example.example_id!r} appears more than once across benchmark splits"
+                        ) from exc
+                    count += 1
+                    if count % 20_000 == 0:
+                        connection.commit()
+            connection.commit()
+            if count <= 0:
+                raise ValueError("authoritative retrieval benchmark has no governed queries")
+            if count != qrels.receipt.query_count:
+                # Continue to set-difference diagnostics below; count inequality is guaranteed
+                # to produce at least one missing/extra ID.
+                pass
+            for (query_id,) in connection.execute(
+                "SELECT query_id FROM queries ORDER BY query_id COLLATE BINARY"
+            ):
+                if not qrels.relevant_by_query.get(str(query_id), ()):
+                    if len(missing_qrels) < _MAX_MISSING_SAMPLE:
+                        missing_qrels.append(str(query_id))
+            qrels_count = 0
+            for query_id in qrels.relevant_by_query:
+                qrels_count += 1
+                if connection.execute(
+                    "SELECT 1 FROM queries WHERE query_id=?",
+                    (query_id,),
+                ).fetchone() is None:
+                    if len(extra_qrels) < _MAX_MISSING_SAMPLE:
+                        extra_qrels.append(query_id)
+            if qrels_count != qrels.receipt.query_count:
+                raise ValueError("authoritative qrels mapping query count differs from receipt")
+            if missing_qrels or extra_qrels or count != qrels_count:
+                raise ValueError(
+                    "governed query/qrels universes differ; "
+                    f"query_count={count} qrels_count={qrels_count} "
+                    f"missing_qrels_sample={missing_qrels} extra_qrels_sample={extra_qrels}"
+                )
+            digest = hashlib.sha256()
+            for (query_id,) in connection.execute(
+                "SELECT query_id FROM queries ORDER BY query_id COLLATE BINARY"
+            ):
+                digest.update(str(query_id).encode("utf-8"))
+                digest.update(b"\n")
+            return digest.hexdigest()
+        finally:
+            connection.close()
+    finally:
+        try:
+            os.unlink(raw_database)
+        except FileNotFoundError:
+            pass
+
+
 def _coverage(qrels: GovernedQrels, corpus: AuthoritativeBenchmarkCorpusReceipt) -> str:
     descriptor, raw_database = tempfile.mkstemp(prefix="rigorousrag-retrieval-coverage-", suffix=".sqlite3")
     os.close(descriptor)
     missing: list[str] = []
-    pair_digest = hashlib.sha256(); pair_count = 0
+    pair_digest = hashlib.sha256()
+    pair_count = 0
     try:
         connection = sqlite3.connect(raw_database)
         try:
-            connection.execute("PRAGMA journal_mode=OFF"); connection.execute("PRAGMA synchronous=OFF"); connection.execute("PRAGMA temp_store=FILE")
+            connection.execute("PRAGMA journal_mode=OFF")
+            connection.execute("PRAGMA synchronous=OFF")
+            connection.execute("PRAGMA temp_store=FILE")
             connection.execute("CREATE TABLE corpus_ids(document_id TEXT PRIMARY KEY) WITHOUT ROWID")
             count = 0
             for document in iter_authoritative_benchmark_corpus(corpus):
@@ -78,22 +161,30 @@ def _coverage(qrels: GovernedQrels, corpus: AuthoritativeBenchmarkCorpusReceipt)
                 except sqlite3.IntegrityError as exc:
                     raise ValueError(f"authoritative corpus contains duplicate document id {document.document_id!r}") from exc
                 count += 1
-                if count % 20_000 == 0: connection.commit()
+                if count % 20_000 == 0:
+                    connection.commit()
             connection.commit()
             if count != corpus.record_count:
                 raise ValueError("authoritative corpus iteration count differs from corpus receipt")
             for query_id in qrels.relevant_by_query:
                 for document_id in qrels.relevant_by_query[query_id]:
                     if connection.execute("SELECT 1 FROM corpus_ids WHERE document_id=?", (document_id,)).fetchone() is None:
-                        if len(missing) < _MAX_MISSING_SAMPLE: missing.append(document_id)
-                    pair_digest.update(query_id.encode("utf-8")); pair_digest.update(b"\t"); pair_digest.update(document_id.encode("utf-8")); pair_digest.update(b"\n"); pair_count += 1
+                        if len(missing) < _MAX_MISSING_SAMPLE:
+                            missing.append(document_id)
+                    pair_digest.update(query_id.encode("utf-8"))
+                    pair_digest.update(b"\t")
+                    pair_digest.update(document_id.encode("utf-8"))
+                    pair_digest.update(b"\n")
+                    pair_count += 1
             if missing:
                 raise ValueError(f"qrels reference documents absent from authoritative corpus; sample={missing}")
         finally:
             connection.close()
     finally:
-        try: os.unlink(raw_database)
-        except FileNotFoundError: pass
+        try:
+            os.unlink(raw_database)
+        except FileNotFoundError:
+            pass
     if pair_count != qrels.receipt.pair_count:
         raise ValueError("authoritative qrels mapping pair count differs from receipt")
     coverage_sha = pair_digest.hexdigest()
@@ -108,6 +199,7 @@ class AuthoritativeGovernedRetrievalBenchmark:
     leakage: GovernedBenchmarkLeakageReceipt
     qrels: GovernedQrels
     corpus: AuthoritativeBenchmarkCorpusReceipt
+    query_universe_sha256: str
     qrels_coverage_sha256: str
     contract_sha256: str
 
@@ -119,16 +211,18 @@ class AuthoritativeGovernedRetrievalBenchmark:
         _assert_authoritative_qrels(self.qrels)
         if not isinstance(self.corpus, AuthoritativeBenchmarkCorpusReceipt):
             raise ValueError("corpus must be AuthoritativeBenchmarkCorpusReceipt")
+        object.__setattr__(self, "query_universe_sha256", _sha(self.query_universe_sha256, "query_universe_sha256"))
         object.__setattr__(self, "qrels_coverage_sha256", _sha(self.qrels_coverage_sha256, "qrels_coverage_sha256"))
         object.__setattr__(self, "contract_sha256", _sha(self.contract_sha256, "contract_sha256"))
         expected = _digest({
-            "schema": "rigorousrag-authoritative-governed-retrieval-benchmark/v2",
+            "schema": "rigorousrag-authoritative-governed-retrieval-benchmark/v3",
             "query_manifest_sha256": self.queries.manifest.manifest_digest,
             "query_import_receipt_sha256": self.queries.receipt.receipt_sha256,
             "leakage_receipt_sha256": self.leakage.receipt_sha256,
             "qrels_receipt_sha256": self.qrels.receipt.receipt_sha256,
             "corpus_receipt_sha256": self.corpus.receipt_sha256,
             "corpus_publication_contract_sha256": self.corpus.publication_contract_sha256,
+            "query_universe_sha256": self.query_universe_sha256,
             "qrels_coverage_sha256": self.qrels_coverage_sha256,
         })
         if expected != self.contract_sha256:
@@ -153,27 +247,38 @@ def build_authoritative_governed_retrieval_benchmark(
         raise ValueError("leakage receipt differs from authoritative query benchmark")
     _assert_authoritative_qrels(qrels)
     corpus = verify_authoritative_benchmark_corpus_receipt(corpus_receipt_path)
+    query_universe = _query_universe(queries, qrels)
     coverage = _coverage(qrels, corpus)
     contract = _digest({
-        "schema": "rigorousrag-authoritative-governed-retrieval-benchmark/v2",
+        "schema": "rigorousrag-authoritative-governed-retrieval-benchmark/v3",
         "query_manifest_sha256": queries.manifest.manifest_digest,
         "query_import_receipt_sha256": queries.receipt.receipt_sha256,
         "leakage_receipt_sha256": leakage.receipt_sha256,
         "qrels_receipt_sha256": qrels.receipt.receipt_sha256,
         "corpus_receipt_sha256": corpus.receipt_sha256,
         "corpus_publication_contract_sha256": corpus.publication_contract_sha256,
+        "query_universe_sha256": query_universe,
         "qrels_coverage_sha256": coverage,
     })
-    return AuthoritativeGovernedRetrievalBenchmark(queries, leakage, qrels, corpus, coverage, contract)
+    return AuthoritativeGovernedRetrievalBenchmark(
+        queries,
+        leakage,
+        qrels,
+        corpus,
+        query_universe,
+        coverage,
+        contract,
+    )
 
 
 def authoritative_retrieval_evaluator_contract_sha256(base_evaluator_contract_sha256: str, benchmark: AuthoritativeGovernedRetrievalBenchmark) -> str:
     if not isinstance(benchmark, AuthoritativeGovernedRetrievalBenchmark):
         raise ValueError("benchmark must be AuthoritativeGovernedRetrievalBenchmark")
     return _digest({
-        "schema": "rigorousrag-authoritative-retrieval-evaluator-contract/v2",
+        "schema": "rigorousrag-authoritative-retrieval-evaluator-contract/v3",
         "base_evaluator_contract_sha256": _sha(base_evaluator_contract_sha256, "base_evaluator_contract_sha256"),
         "authoritative_retrieval_benchmark_sha256": benchmark.contract_sha256,
+        "query_universe_sha256": benchmark.query_universe_sha256,
     })
 
 
@@ -197,4 +302,9 @@ def materialize_authoritative_retrieval_run_evidence(
     )
 
 
-__all__ = ["AuthoritativeGovernedRetrievalBenchmark", "authoritative_retrieval_evaluator_contract_sha256", "build_authoritative_governed_retrieval_benchmark", "materialize_authoritative_retrieval_run_evidence"]
+__all__ = [
+    "AuthoritativeGovernedRetrievalBenchmark",
+    "authoritative_retrieval_evaluator_contract_sha256",
+    "build_authoritative_governed_retrieval_benchmark",
+    "materialize_authoritative_retrieval_run_evidence",
+]
