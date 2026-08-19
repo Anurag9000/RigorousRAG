@@ -10,6 +10,7 @@ from training.advanced_path_authority import safe_advanced_path
 from training.advanced_rag_curricula import CurriculumStageHyperparameters, DynamicCurriculumHyperparameters, GroundedCurriculumHyperparameters, build_dynamic_curriculum, build_grounded_curriculum
 from training.advanced_rag_data import DynamicCollatorConfig, GroundedCollatorConfig
 from training.advanced_rag_runner import LocalTrainingSplit, ParameterTrainabilityPolicy, TrainingExecutionConfig
+from training.advanced_rag_strict_cache import AuthoritativeSafetensorSupervisionCache
 from training.advanced_rag_supervision import SafetensorSupervisionCache, SupervisionCacheIdentity
 from training.dynamic_retrieval_policy import DynamicPolicyArchitecture, DynamicPolicyTrainingPlan, DynamicRetrievalBudget
 from training.grounded_generation import GroundedGenerationArchitectureConfig, GroundedTrainingPlan
@@ -80,7 +81,7 @@ class TensorCacheSpec:
             raise ValueError("cache identity must be SupervisionCacheIdentity")
 
     def build(self) -> SafetensorSupervisionCache:
-        return SafetensorSupervisionCache(self.root, self.identity)
+        return AuthoritativeSafetensorSupervisionCache(self.root, self.identity)
 
 
 def _cache(raw: Any | None, label: str) -> TensorCacheSpec | None:
