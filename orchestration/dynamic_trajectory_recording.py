@@ -13,7 +13,7 @@ from typing import Any, Mapping, Sequence
 
 from orchestration.dynamic_rag_runtime import DynamicFeatureProvider, DynamicPolicyProvider, DynamicRuntimeSnapshot
 from training.advanced_rag_authoritative_data import LegalDynamicRagEpisodeStep
-from training.dynamic_retrieval_policy import DynamicRetrievalAction, DynamicRetrievalBudget, DynamicRetrievalFeatures, allowed_actions
+from training.dynamic_retrieval_policy import DEFAULT_FEATURE_NAMES, DynamicRetrievalAction, DynamicRetrievalBudget, DynamicRetrievalFeatures, allowed_actions
 
 _MAX_CONTEXT = 5_000_000
 
@@ -88,11 +88,12 @@ class DynamicDecisionTrajectoryRecorder:
         context = self.request_text if not snapshot.generated_text else self.request_text + "\n\n" + snapshot.generated_text
         if len(context) > _MAX_CONTEXT:
             raise ValueError("recorded dynamic context exceeds character bound")
-        step = LegalDynamicRagEpisodeStep(
+        feature_mapping = {name: float(getattr(features, name)) for name in DEFAULT_FEATURE_NAMES}
+        self._steps.append(LegalDynamicRagEpisodeStep(
             episode_id=self.episode_id,
             step_id=f"{snapshot.iteration:08d}",
             context=context,
-            features={name: value for name, value in zip(features.vector(), ())},
+            features=feature_mapping,
             action=action,
             realized_retrieval_gain=0.0,
             behavior_action_probability=1.0,
@@ -100,15 +101,9 @@ class DynamicDecisionTrajectoryRecorder:
             need_spans=(),
             hidden_state_cache_key=None,
             terminal_utility=None,
-            metadata={
-                "snapshot_sha256": snapshot.snapshot_sha256,
-                "recorder_sha256": self.recorder_sha256,
-            },
+            metadata={"snapshot_sha256": snapshot.snapshot_sha256, "recorder_sha256": self.recorder_sha256},
             valid_actions=permitted,
-        )
-        # Build feature mapping explicitly after validation to preserve canonical names/order.
-        object.__setattr__(step, "features", {name: float(getattr(features, name)) for name in features.__dataclass_fields__})
-        self._steps.append(step)
+        ))
 
     def steps(self) -> tuple[LegalDynamicRagEpisodeStep, ...]:
         if self._snapshots:
@@ -157,15 +152,8 @@ class RecordingDynamicPolicyProvider:
         return scores
 
 
-def wrap_dynamic_providers_for_trajectory(
-    feature_provider: DynamicFeatureProvider,
-    policy_provider: DynamicPolicyProvider,
-    recorder: DynamicDecisionTrajectoryRecorder,
-) -> tuple[RecordingDynamicFeatureProvider, RecordingDynamicPolicyProvider]:
+def wrap_dynamic_providers_for_trajectory(feature_provider: DynamicFeatureProvider, policy_provider: DynamicPolicyProvider, recorder: DynamicDecisionTrajectoryRecorder) -> tuple[RecordingDynamicFeatureProvider, RecordingDynamicPolicyProvider]:
     return RecordingDynamicFeatureProvider(feature_provider, recorder), RecordingDynamicPolicyProvider(policy_provider, recorder)
 
 
-__all__ = [
-    "DynamicDecisionTrajectoryRecorder", "RecordingDynamicFeatureProvider",
-    "RecordingDynamicPolicyProvider", "wrap_dynamic_providers_for_trajectory",
-]
+__all__ = ["DynamicDecisionTrajectoryRecorder", "RecordingDynamicFeatureProvider", "RecordingDynamicPolicyProvider", "wrap_dynamic_providers_for_trajectory"]
