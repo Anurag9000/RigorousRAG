@@ -2,12 +2,15 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 from pathlib import Path
 from typing import Any, Mapping
 
-from training.checkpointing import CheckpointArtifact, CheckpointManager, TensorCheckpointManifest
+from training.checkpointing import CheckpointArtifact, CheckpointManager, TensorCheckpointManifest, TrainerState
 
 _MAX_MANIFEST_BYTES = 4 * 1024 * 1024
+_MAX_POINTER_BYTES = 4096
 _MANIFEST_FIELDS = {
     "version",
     "run_id",
@@ -56,12 +59,66 @@ def _strict_manifest_payload(path: Path) -> Mapping[str, Any]:
     return payload
 
 
+def _pointer_snapshot(path: Path) -> bytes | None:
+    if not path.exists():
+        return None
+    if path.is_symlink() or not path.is_file():
+        raise ValueError(f"advanced checkpoint pointer {path.name!r} must be a regular non-symlink file")
+    size = path.stat().st_size
+    if size <= 0 or size > _MAX_POINTER_BYTES:
+        raise ValueError(f"advanced checkpoint pointer {path.name!r} exceeds byte safety bound")
+    return path.read_bytes()
+
+
+def _restore_pointer(path: Path, payload: bytes | None) -> None:
+    if payload is None:
+        if path.exists():
+            if path.is_symlink() or not path.is_file():
+                raise ValueError(f"cannot remove non-regular checkpoint pointer {path.name!r}")
+            path.unlink()
+        return
+    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}-restore-", suffix=".tmp", dir=path.parent)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
 class AdvancedCheckpointManager(CheckpointManager):
-    """Generic manager with stricter path, manifest and closed-directory authority."""
+    """Generic manager with stricter path, save, manifest and closed-directory authority."""
 
     def __init__(self, root: str | Path) -> None:
         safe = assert_safe_advanced_checkpoint_root(root)
         super().__init__(safe)
+
+    def save(self, **kwargs: Any) -> TensorCheckpointManifest:
+        """Save, immediately verify, and only retain convenience pointers on verified success."""
+        trainer_state = kwargs.get("trainer_state")
+        if not isinstance(trainer_state, TrainerState):
+            raise ValueError("advanced checkpoint save requires TrainerState")
+        stage_boundary = bool(kwargs.get("stage_boundary", False))
+        pointer_paths = [self.root / "latest.json", self.root / "best.json"]
+        if stage_boundary:
+            pointer_paths.append(self.root / f"stage-{trainer_state.cursor.stage_index:04d}.json")
+        snapshots = {path: _pointer_snapshot(path) for path in pointer_paths}
+        manifest = super().save(**kwargs)
+        try:
+            _, verified = self.verify(manifest.digest)
+            if verified.digest != manifest.digest:
+                raise RuntimeError("advanced checkpoint save verification returned a different digest")
+            return verified
+        except Exception:
+            # Generic save updates convenience pointers before returning. Roll those pointers
+            # back if strict post-save verification discovers a pre-existing corrupted/colliding
+            # destination or any other closed-directory violation.
+            for path, payload in snapshots.items():
+                _restore_pointer(path, payload)
+            raise
 
     def read_manifest(self, checkpoint_path: str | Path) -> TensorCheckpointManifest:
         path = Path(checkpoint_path).resolve(strict=True)
