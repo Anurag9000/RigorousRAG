@@ -9,9 +9,10 @@ This module composes existing authorities instead of inventing another dataset f
  -> exact ``DynamicRuntimeTrainingLineage`` for canonical target materialization.
 
 The adapter requires a coherent runtime cohort: runtime policy, feature provider, policy artifact /
-contract, deterministic behavior-policy contract, training-context provider and complete runtime
-provider contract must match across every episode.  Source-set identity is recomputed from exact
-episode output/receipt digests and compared with the dynamic publication receipt on restart.
+contract, deterministic behavior-policy contract, training-context provider, terminal-utility
+semantics and complete runtime provider contract must match across every episode. Source-set
+identity is recomputed from exact episode output/receipt digests and compared with the dynamic
+publication receipt on restart.
 """
 from __future__ import annotations
 
@@ -30,7 +31,6 @@ from training.dynamic_canonical_training_data_pipeline import DynamicRuntimeTrai
 from training.dynamic_dataset_io import VerifiedDynamicDatasetPublication, verify_dynamic_dataset_publication
 from training.dynamic_dataset_publication import (
     DynamicDatasetGovernance,
-    DynamicDatasetPublicationReceipt,
     DynamicTrajectorySource,
     EpisodeSplitPolicy,
     publish_dynamic_training_dataset,
@@ -58,6 +58,18 @@ def _cohort_value(receipts: Sequence[RecordedDynamicEpisodeReceipt], field: str)
     return selected
 
 
+def _cohort_optional_value(receipts: Sequence[RecordedDynamicEpisodeReceipt], field: str) -> str | None:
+    values = {getattr(item, field) for item in receipts}
+    if len(values) != 1:
+        raise ValueError(f"recorded dynamic episode cohort has inconsistent {field}")
+    selected = next(iter(values))
+    if selected is None:
+        return None
+    if not isinstance(selected, str) or not selected:
+        raise ValueError(f"recorded dynamic episode cohort has invalid {field}")
+    return selected
+
+
 def _episode_receipts(paths: Sequence[str | Path]) -> tuple[RecordedDynamicEpisodeReceipt, ...]:
     selected = tuple(paths)
     if not selected or len(selected) > _MAX_EPISODE_SOURCES:
@@ -66,7 +78,7 @@ def _episode_receipts(paths: Sequence[str | Path]) -> tuple[RecordedDynamicEpiso
     episode_ids = [item.episode_id for item in receipts]
     if len(episode_ids) != len(set(episode_ids)):
         raise ValueError("recorded dynamic dataset episode ids must be globally unique")
-    # Order by logical episode id so source-set identity is independent of caller list order.
+    # Order by logical episode id so source-set identity is independent of config list order.
     return tuple(sorted(receipts, key=lambda item: item.episode_id))
 
 
@@ -109,6 +121,7 @@ def _lineage(
     _cohort_value(receipts, "policy_artifact_sha256")
     _cohort_value(receipts, "policy_contract_sha256")
     _cohort_value(receipts, "context_provider_sha256")
+    _cohort_optional_value(receipts, "terminal_utility_provider_sha256")
     return DynamicRuntimeTrainingLineage(
         source_dataset_sha256=verified.receipt.source_set_sha256,
         source_dataset_manifest_sha256=verified.manifest.manifest_digest,
@@ -174,6 +187,7 @@ def publish_recorded_dynamic_runtime_dataset(
         "runtime_provider_contract_sha256",
     ):
         _cohort_value(receipts, field)
+    _cohort_optional_value(receipts, "terminal_utility_provider_sha256")
     manifest, publication = publish_dynamic_training_dataset(
         _sources(receipts),
         governance=governance,
