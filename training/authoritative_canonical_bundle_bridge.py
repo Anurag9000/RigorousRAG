@@ -3,7 +3,7 @@
 The bundle container remains schema v1 because it is only a restart-verifiable transport of
 manifest/split/cache identities. Authority generation is proven before emission by reopening the
 Grounded/Dynamic v2 canonical receipt. Cache descriptors use the existing training-config type,
-whose reader now recognizes both historical v1 and disk-backed v2 cache authorities.
+whose reader recognizes both historical v1 and disk-backed v2 cache authorities.
 """
 from __future__ import annotations
 
@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from training.advanced_path_authority import safe_advanced_path
+from training.advanced_rag_supervision import SupervisionCacheIdentity
 from training.authoritative_dynamic_canonical_training_data import (
     VerifiedAuthoritativeDynamicCanonicalData,
     verify_authoritative_dynamic_canonical_training_data,
@@ -59,7 +60,9 @@ def _atomic(path: Path, payload: Mapping[str, Any]) -> None:
     descriptor, temporary = tempfile.mkstemp(prefix=f".{destination.name}-", suffix=".tmp", dir=destination.parent)
     try:
         with os.fdopen(descriptor, "wb") as handle:
-            handle.write(_canonical(payload) + b"\n"); handle.flush(); os.fsync(handle.fileno())
+            handle.write(_canonical(payload) + b"\n")
+            handle.flush()
+            os.fsync(handle.fileno())
         os.replace(temporary, destination)
     finally:
         if os.path.exists(temporary):
@@ -67,7 +70,12 @@ def _atomic(path: Path, payload: Mapping[str, Any]) -> None:
 
 
 def _cache_payload(item: CanonicalCacheDescriptor) -> Mapping[str, Any]:
-    return {"role": item.role, "root": item.root, "identity": asdict(item.identity), "contract_sha256": item.contract_sha256}
+    return {
+        "role": item.role,
+        "root": item.root,
+        "identity": asdict(item.identity),
+        "contract_sha256": item.contract_sha256,
+    }
 
 
 def _write_bundle(path: str | Path, unsigned: Mapping[str, Any]) -> CanonicalTrainingDataBundle:
@@ -84,7 +92,7 @@ def _write_bundle(path: str | Path, unsigned: Mapping[str, Any]) -> CanonicalTra
             CanonicalCacheDescriptor(
                 item["role"],
                 item["root"],
-                __import__("training.advanced_rag_supervision", fromlist=["SupervisionCacheIdentity"]).SupervisionCacheIdentity(**dict(item["identity"])),
+                SupervisionCacheIdentity(**dict(item["identity"])),
                 item["contract_sha256"],
             )
             for item in unsigned["caches"]
@@ -160,13 +168,14 @@ def write_authoritative_dynamic_canonical_bundle(
         verified.receipt.hidden_cache_contract_sha256,
     )
     manifest_path = Path(verified.dataset.receipt.manifest_path)
+    publication_receipt_path = manifest_path.parent / "publication_receipt.json"
     unsigned = {
         "schema": "rigorousrag-canonical-training-data-bundle/v1",
         "kind": "dynamic_rag_policy",
         "dataset_manifest_path": str(manifest_path),
         "dataset_manifest_sha256": verified.dataset.manifest.manifest_digest,
-        "dataset_receipt_path": str(canonical_receipt_file),
-        "dataset_receipt_sha256": _stream_sha(canonical_receipt_file),
+        "dataset_receipt_path": str(publication_receipt_path),
+        "dataset_receipt_sha256": _stream_sha(publication_receipt_path),
         "canonical_receipt": canonical_payload,
         "canonical_receipt_sha256": _digest(canonical_payload),
         "splits": [asdict(item) for item in splits],
