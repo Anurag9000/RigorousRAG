@@ -3,7 +3,7 @@
 The underlying recorder primitives live in ``dynamic_training_episode_recording``.  This entry
 preserves their exact observation semantics but writes the final-path receipt as plain canonical
 JSON while staging, renames the closed directory, and only then instantiates the receipt through
-the strict verifier.  Thus final-path validation never races the publication rename.
+the strict production verifier. Thus final-path validation never races the publication rename.
 """
 from __future__ import annotations
 
@@ -41,8 +41,8 @@ from orchestration.dynamic_training_episode_recording import (
     _finite,
     _sha,
     _step_payload,
-    verify_recorded_dynamic_episode,
 )
+from orchestration.strict_dynamic_training_episode_io import verify_recorded_dynamic_episode_strict
 from training.advanced_path_authority import safe_advanced_path
 
 _MAX_LINE_BYTES = 64 * 1024 * 1024
@@ -159,7 +159,7 @@ def run_authoritative_recorded_dynamic_rag_episode(
             raise RuntimeError("authoritative recorded dynamic episode directory is not closed")
         os.replace(stage, root)
         published = True
-        receipt = verify_recorded_dynamic_episode(root / "episode_receipt.json")
+        receipt = verify_recorded_dynamic_episode_strict(root / "episode_receipt.json")
         if receipt.runtime_result_sha256 != result.result_sha256:
             raise RuntimeError("recorded dynamic episode runtime result identity changed")
         return result, receipt
@@ -174,5 +174,5 @@ def run_authoritative_recorded_dynamic_rag_episode(
 __all__ = [
     "run_authoritative_recorded_dynamic_rag_episode",
     "RecordedDynamicEpisodeReceipt",
-    "verify_recorded_dynamic_episode",
+    "verify_recorded_dynamic_episode_strict",
 ]
