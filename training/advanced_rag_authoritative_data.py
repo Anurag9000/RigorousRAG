@@ -1,25 +1,34 @@
 """Richer backward-compatible data records for authoritative advanced RAG training.
 
 The authoritative JSONL dataset validates exact source bytes and every record once, then keeps
-only a compact random-access index. Records are reparsed lazily and their exact line SHA-256 is
-rechecked on every access, preserving content authority without retaining the full corpus as
-Python objects in memory.
+its random-access metadata in a sealed temporary SQLite index rather than O(N) Python arrays.
+Records are reparsed lazily and their exact line SHA-256 is rechecked on every access. Each
+DataLoader worker hashes the index before opening its own read-only immutable SQLite connection,
+so disk-backed indexing does not weaken source authority while supporting very large corpora.
 """
 from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import sqlite3
 import tempfile
 import threading
-from array import array
+import weakref
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
 from training.advanced_path_authority import safe_advanced_path
-from training.advanced_rag_data import AdvancedDatasetBinding, DynamicRagEpisodeStep, GroundedClaimAnnotation, GroundedEvidenceRecord, GroundedGenerationExample, TextSpan
+from training.advanced_rag_data import (
+    AdvancedDatasetBinding,
+    DynamicRagEpisodeStep,
+    GroundedClaimAnnotation,
+    GroundedEvidenceRecord,
+    GroundedGenerationExample,
+    TextSpan,
+)
 from training.dynamic_retrieval_policy import DynamicRetrievalAction
 from training.grounded_generation import ReflectionAction
 
@@ -58,7 +67,15 @@ def _finite(value: Any, label: str) -> float:
     return selected
 
 
-import math
+def _stream_sha(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while True:
+            block = handle.read(8 * 1024 * 1024)
+            if not block:
+                break
+            digest.update(block)
+    return digest.hexdigest()
 
 
 def _span(value: Any) -> TextSpan:
@@ -83,7 +100,10 @@ def _metadata(raw: Any) -> Mapping[str, str]:
         return {}
     if not isinstance(raw, Mapping) or len(raw) > _MAX_METADATA:
         raise ValueError("metadata must be a bounded object")
-    return {_identifier(str(key), "metadata key", 300): _identifier(str(value), "metadata value", 10000) for key, value in raw.items()}
+    return {
+        _identifier(str(key), "metadata key", 300): _identifier(str(value), "metadata value", 10000)
+        for key, value in raw.items()
+    }
 
 
 @dataclass(frozen=True)
@@ -125,7 +145,10 @@ class LegalDynamicRagEpisodeStep(DynamicRagEpisodeStep):
 
     def __post_init__(self) -> None:
         super().__post_init__()
-        actions = tuple(action if isinstance(action, DynamicRetrievalAction) else DynamicRetrievalAction(action) for action in self.valid_actions)
+        actions = tuple(
+            action if isinstance(action, DynamicRetrievalAction) else DynamicRetrievalAction(action)
+            for action in self.valid_actions
+        )
         if not actions or len(set(actions)) != len(actions):
             raise ValueError("valid_actions must be a non-empty unique action sequence")
         if self.action not in actions:
@@ -177,18 +200,32 @@ def parse_authoritative_grounded_example(value: Any) -> GroundedGenerationExampl
                 contradicting = legacy
             elif supported:
                 supporting = legacy
-        claims.append(StancedGroundedClaimAnnotation(
-            span=_span(item.get("span")), evidence_ids=legacy, supported=supported, contradicted=contradicted,
-            supporting_evidence_ids=supporting, contradicting_evidence_ids=contradicting,
-        ))
+        claims.append(
+            StancedGroundedClaimAnnotation(
+                span=_span(item.get("span")),
+                evidence_ids=legacy,
+                supported=supported,
+                contradicted=contradicted,
+                supporting_evidence_ids=supporting,
+                contradicting_evidence_ids=contradicting,
+            )
+        )
     return GroundedGenerationExample(
-        example_id=value.get("example_id"), prompt=value.get("prompt"), answer=value.get("answer", ""),
-        evidence=tuple(evidence), claims=tuple(claims), abstain=bool(value.get("abstain", False)),
+        example_id=value.get("example_id"),
+        prompt=value.get("prompt"),
+        answer=value.get("answer", ""),
+        evidence=tuple(evidence),
+        claims=tuple(claims),
+        abstain=bool(value.get("abstain", False)),
         reflection_action=value.get("reflection_action", ReflectionAction.STOP.value),
-        unsupported_spans=tuple(_span(item) for item in unsupported_raw), chosen_answer=value.get("chosen_answer"),
-        rejected_answer=value.get("rejected_answer"), reference_chosen_log_prob=value.get("reference_chosen_log_prob"),
-        reference_rejected_log_prob=value.get("reference_rejected_log_prob"), teacher_cache_key=value.get("teacher_cache_key"),
-        retriever_cache_key=value.get("retriever_cache_key"), metadata=_metadata(value.get("metadata")),
+        unsupported_spans=tuple(_span(item) for item in unsupported_raw),
+        chosen_answer=value.get("chosen_answer"),
+        rejected_answer=value.get("rejected_answer"),
+        reference_chosen_log_prob=value.get("reference_chosen_log_prob"),
+        reference_rejected_log_prob=value.get("reference_rejected_log_prob"),
+        teacher_cache_key=value.get("teacher_cache_key"),
+        retriever_cache_key=value.get("retriever_cache_key"),
+        metadata=_metadata(value.get("metadata")),
     )
 
 
@@ -212,19 +249,26 @@ def parse_authoritative_dynamic_step(value: Any) -> LegalDynamicRagEpisodeStep:
     metadata = _metadata(value.get("metadata"))
     valid = tuple(DynamicRetrievalAction(action) for action in raw_valid) if raw_valid is not None else tuple(DynamicRetrievalAction)
     return LegalDynamicRagEpisodeStep(
-        episode_id=value.get("episode_id"), step_id=value.get("step_id"), context=value.get("context"),
-        features=value.get("features") or {}, action=value.get("action"), realized_retrieval_gain=value.get("realized_retrieval_gain", 0.0),
-        behavior_action_probability=value.get("behavior_action_probability"), advantage=value.get("advantage"),
-        need_spans=tuple(_span(item) for item in need), hidden_state_cache_key=value.get("hidden_state_cache_key"),
-        terminal_utility=value.get("terminal_utility"), metadata=metadata, valid_actions=valid,
+        episode_id=value.get("episode_id"),
+        step_id=value.get("step_id"),
+        context=value.get("context"),
+        features=value.get("features") or {},
+        action=value.get("action"),
+        realized_retrieval_gain=value.get("realized_retrieval_gain", 0.0),
+        behavior_action_probability=value.get("behavior_action_probability"),
+        advantage=value.get("advantage"),
+        need_spans=tuple(_span(item) for item in need),
+        hidden_state_cache_key=value.get("hidden_state_cache_key"),
+        terminal_utility=value.get("terminal_utility"),
+        metadata=metadata,
+        valid_actions=valid,
         value_target=value.get("value_target"),
     )
 
 
 def _strict_json_line(raw: bytes, *, label: str) -> Any:
     try:
-        text = raw.decode("utf-8", errors="strict")
-        return json.loads(text, parse_constant=lambda value: (_ for _ in ()).throw(ValueError(value)))
+        return json.loads(raw.decode("utf-8", errors="strict"), parse_constant=lambda token: (_ for _ in ()).throw(ValueError(token)))
     except Exception as exc:
         raise ValueError(f"{label} is not strict UTF-8 JSON") from exc
 
@@ -232,26 +276,32 @@ def _strict_json_line(raw: bytes, *, label: str) -> Any:
 def _record_identity(record: Any, record_kind: str) -> str:
     if record_kind == "grounded_generation":
         return "grounded:" + record.example_id
-    # JSON tuple encoding is injective even when identifiers themselves contain ':' or other
-    # punctuation; simple string concatenation is not.
     return "dynamic:" + json.dumps([record.episode_id, record.step_id], ensure_ascii=False, separators=(",", ":"))
 
 
+def _cleanup_index(path: str) -> None:
+    for suffix in ("", "-wal", "-shm"):
+        try:
+            os.unlink(path + suffix)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            pass
+
+
 class ManifestBoundAuthoritativeJsonlDataset:
-    """Lazy random-access JSONL dataset bound to exact validated source bytes.
+    """Disk-indexed lazy random-access JSONL dataset bound to exact source bytes."""
 
-    Construction performs one full streaming pass that simultaneously verifies the configured
-    source SHA-256, strict-parses every non-empty line, validates record semantics and detects
-    duplicate logical record identities through a temporary disk-backed SQLite uniqueness
-    index. Only byte offsets, byte lengths and 32-byte line digests remain resident afterward.
-
-    ``__getitem__`` reads exactly the indexed byte range, rechecks its SHA-256 against the
-    construction-time digest, and reparses it. Thus external file replacement cannot silently
-    change a consumed record after validation, while deterministic random-access samplers remain
-    available without keeping the full corpus as Python objects.
-    """
-
-    def __init__(self, path: str | Path, *, expected_sha256: str, dataset_manifest_sha256: str, split_name: str, record_kind: str, expected_record_count: int | None = None) -> None:
+    def __init__(
+        self,
+        path: str | Path,
+        *,
+        expected_sha256: str,
+        dataset_manifest_sha256: str,
+        split_name: str,
+        record_kind: str,
+        expected_record_count: int | None = None,
+    ) -> None:
         selected = safe_advanced_path(path, label="advanced training dataset", must_exist=True, require_file=True)
         expected = _sha256(expected_sha256, "expected_sha256")
         manifest_sha = _sha256(dataset_manifest_sha256, "dataset_manifest_sha256")
@@ -259,19 +309,21 @@ class ManifestBoundAuthoritativeJsonlDataset:
             raise ValueError("record_kind must be grounded_generation or dynamic_rag_episode")
         parser = parse_authoritative_grounded_example if record_kind == "grounded_generation" else parse_authoritative_dynamic_step
 
-        offsets = array("Q")
-        lengths = array("Q")
-        line_digests = bytearray()
-        whole = hashlib.sha256()
-        descriptor, uniqueness_name = tempfile.mkstemp(prefix="rigorousrag-authoritative-ids-", suffix=".sqlite3")
+        descriptor, index_name = tempfile.mkstemp(prefix="rigorousrag-authoritative-index-", suffix=".sqlite3")
         os.close(descriptor)
+        index_path = Path(index_name)
+        index_path.unlink(missing_ok=True)
         connection: sqlite3.Connection | None = None
+        whole = hashlib.sha256()
         count = 0
         try:
-            connection = sqlite3.connect(uniqueness_name)
-            connection.execute("PRAGMA journal_mode=OFF")
-            connection.execute("PRAGMA synchronous=OFF")
+            connection = sqlite3.connect(str(index_path), timeout=30.0)
+            connection.execute("PRAGMA journal_mode=DELETE")
+            connection.execute("PRAGMA synchronous=FULL")
             connection.execute("PRAGMA temp_store=FILE")
+            connection.execute(
+                "CREATE TABLE records(ordinal INTEGER PRIMARY KEY,byte_offset INTEGER NOT NULL,byte_length INTEGER NOT NULL,line_sha256 BLOB NOT NULL)"
+            )
             connection.execute("CREATE TABLE identities(value TEXT PRIMARY KEY) WITHOUT ROWID")
             connection.execute("BEGIN")
             with selected.open("rb") as handle:
@@ -296,61 +348,92 @@ class ManifestBoundAuthoritativeJsonlDataset:
                         raise ValueError(f"invalid {record_kind} JSON at line {line_number}") from exc
                     identity = _record_identity(record, record_kind)
                     try:
-                        connection.execute("INSERT INTO identities(value) VALUES (?)", (identity,))
+                        connection.execute("INSERT INTO identities(value) VALUES(?)", (identity,))
                     except sqlite3.IntegrityError as exc:
                         raise ValueError(f"advanced training record identity is duplicated at line {line_number}") from exc
-                    offsets.append(offset)
-                    lengths.append(len(raw))
-                    line_digests.extend(hashlib.sha256(raw).digest())
+                    connection.execute(
+                        "INSERT INTO records(ordinal,byte_offset,byte_length,line_sha256) VALUES(?,?,?,?)",
+                        (count, offset, len(raw), sqlite3.Binary(hashlib.sha256(raw).digest())),
+                    )
                     count += 1
+                    if count % 10000 == 0:
+                        connection.commit()
+                        connection.execute("BEGIN")
             connection.commit()
-        finally:
+            actual = whole.hexdigest()
+            if actual != expected:
+                raise ValueError("local advanced-training data digest does not match expected artifact")
+            if expected_record_count is not None:
+                if isinstance(expected_record_count, bool) or not isinstance(expected_record_count, int) or expected_record_count < 0:
+                    raise ValueError("expected_record_count must be non-negative or None")
+                if count != expected_record_count:
+                    raise ValueError("advanced training record count differs from manifest")
+            connection.execute("DROP TABLE identities")
+            connection.commit()
+            connection.execute("PRAGMA optimize")
+        except Exception:
             if connection is not None:
                 connection.close()
-            try:
-                os.unlink(uniqueness_name)
-            except FileNotFoundError:
-                pass
+            _cleanup_index(str(index_path))
+            raise
+        finally:
+            if connection is not None:
+                try:
+                    connection.close()
+                except Exception:
+                    pass
 
-        actual = whole.hexdigest()
-        if actual != expected:
-            raise ValueError("local advanced-training data digest does not match expected artifact")
-        if expected_record_count is not None:
-            if isinstance(expected_record_count, bool) or not isinstance(expected_record_count, int) or expected_record_count < 0:
-                raise ValueError("expected_record_count must be non-negative or None")
-            if count != expected_record_count:
-                raise ValueError("advanced training record count differs from manifest")
-
+        index_sha = _stream_sha(index_path)
         self._path = str(selected)
-        self._offsets = offsets
-        self._lengths = lengths
-        self._line_digests = bytes(line_digests)
+        self._index_path = str(index_path)
+        self._index_sha256 = index_sha
+        self._record_count = count
         self._parser = parser
         self._record_kind = record_kind
         self._local = threading.local()
-        self.binding = AdvancedDatasetBinding(str(selected), actual, manifest_sha, split_name, count, record_kind)
+        self._finalizer = weakref.finalize(self, _cleanup_index, self._index_path)
+        self.binding = AdvancedDatasetBinding(str(selected), expected, manifest_sha, split_name, count, record_kind)
 
     def __getstate__(self) -> dict[str, Any]:
         state = dict(self.__dict__)
         state.pop("_local", None)
-        # Module-level parser functions are recoverable from record_kind and need not be pickled.
         state.pop("_parser", None)
+        state.pop("_finalizer", None)
         return state
 
     def __setstate__(self, state: Mapping[str, Any]) -> None:
         self.__dict__.update(dict(state))
         self._parser = parse_authoritative_grounded_example if self._record_kind == "grounded_generation" else parse_authoritative_dynamic_step
         self._local = threading.local()
+        # Worker copies deliberately do not own cleanup; the parent dataset owns the index file.
+        self._finalizer = None
 
-    def _handle(self) -> Any:
-        handle = getattr(self._local, "handle", None)
+    def _data_handle(self) -> Any:
+        handle = getattr(self._local, "data_handle", None)
         if handle is None or handle.closed:
             handle = open(self._path, "rb")
-            self._local.handle = handle
+            self._local.data_handle = handle
         return handle
 
+    def _index_connection(self) -> sqlite3.Connection:
+        connection = getattr(self._local, "index_connection", None)
+        if connection is None:
+            index = Path(self._index_path)
+            if index.is_symlink() or not index.is_file():
+                raise ValueError("advanced training random-access index is missing or unsafe")
+            if _stream_sha(index) != self._index_sha256:
+                raise ValueError("advanced training random-access index changed after validation")
+            connection = sqlite3.connect(
+                f"file:{index}?mode=ro&immutable=1",
+                uri=True,
+                timeout=30.0,
+            )
+            connection.row_factory = sqlite3.Row
+            self._local.index_connection = connection
+        return connection
+
     def __len__(self) -> int:
-        return len(self._offsets)
+        return self._record_count
 
     def __getitem__(self, index: int) -> Any:
         if isinstance(index, bool) or not isinstance(index, int):
@@ -360,14 +443,20 @@ class ManifestBoundAuthoritativeJsonlDataset:
             index += length
         if not 0 <= index < length:
             raise IndexError("advanced training dataset index out of range")
-        offset = int(self._offsets[index])
-        byte_length = int(self._lengths[index])
-        handle = self._handle()
+        row = self._index_connection().execute(
+            "SELECT byte_offset,byte_length,line_sha256 FROM records WHERE ordinal=?",
+            (index,),
+        ).fetchone()
+        if row is None:
+            raise ValueError("advanced training random-access index lost an ordinal")
+        offset = int(row["byte_offset"])
+        byte_length = int(row["byte_length"])
+        expected_digest = bytes(row["line_sha256"])
+        handle = self._data_handle()
         handle.seek(offset)
         raw = handle.read(byte_length)
         if len(raw) != byte_length:
             raise ValueError("advanced training dataset changed after validation: indexed row is truncated")
-        expected_digest = self._line_digests[index * 32 : (index + 1) * 32]
         if hashlib.sha256(raw).digest() != expected_digest:
             raise ValueError("advanced training dataset changed after validation: indexed row digest mismatch")
         payload = _strict_json_line(raw, label=f"advanced training record {index}")
@@ -376,5 +465,23 @@ class ManifestBoundAuthoritativeJsonlDataset:
         except Exception as exc:
             raise ValueError(f"advanced training dataset row {index} no longer parses authoritatively") from exc
 
+    def close(self) -> None:
+        data_handle = getattr(self._local, "data_handle", None)
+        if data_handle is not None and not data_handle.closed:
+            data_handle.close()
+        connection = getattr(self._local, "index_connection", None)
+        if connection is not None:
+            connection.close()
+            self._local.index_connection = None
+        finalizer = getattr(self, "_finalizer", None)
+        if finalizer is not None and finalizer.alive:
+            finalizer()
 
-__all__ = ["LegalDynamicRagEpisodeStep", "ManifestBoundAuthoritativeJsonlDataset", "StancedGroundedClaimAnnotation", "parse_authoritative_dynamic_step", "parse_authoritative_grounded_example"]
+
+__all__ = [
+    "LegalDynamicRagEpisodeStep",
+    "ManifestBoundAuthoritativeJsonlDataset",
+    "StancedGroundedClaimAnnotation",
+    "parse_authoritative_dynamic_step",
+    "parse_authoritative_grounded_example",
+]
