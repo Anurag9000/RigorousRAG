@@ -11,10 +11,9 @@ from training.authoritative_canonical_materialization import (
     run_dynamic_canonical_materialization_config,
     run_grounded_canonical_materialization_config,
 )
-from training.governed_grounded_io import verify_governed_grounded_import
 from training.production_canonical_limits import (
     assert_production_split_count,
-    assert_production_split_sequence,
+    grounded_source_split_count_from_receipt,
 )
 
 _MAX_CONFIG_BYTES = 16 * 1024 * 1024
@@ -45,8 +44,8 @@ def _assert_grounded_source_limit(raw: Mapping[str, Any]) -> None:
     receipt_path = raw.get("source_receipt_path")
     if not isinstance(receipt_path, str) or not receipt_path.strip():
         raise ValueError("grounded canonical materialization requires source_receipt_path")
-    source = verify_governed_grounded_import(receipt_path, require_promotable=False)
-    assert_production_split_sequence(source.manifest.splits, label="grounded source splits")
+    count = grounded_source_split_count_from_receipt(receipt_path)
+    assert_production_split_count(count, label="grounded source split count")
 
 
 def run_canonical_materialization_config(path: str | Path) -> Mapping[str, Any]:
