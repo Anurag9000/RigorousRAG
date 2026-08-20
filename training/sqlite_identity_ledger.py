@@ -43,8 +43,9 @@ class SqliteIdentityLedger:
 
     ``add_unique`` enforces uniqueness across every scope in one namespace. ``add_set`` permits
     the same value in different scopes but deduplicates within a scope. Both forms optionally
-    bind an immutable payload SHA so reuse of one logical identifier for different content fails
-    closed.
+    bind an immutable payload SHA. For ``add_set`` the payload binding is global across scopes:
+    a logical identifier may be reused by multiple splits only when it denotes exactly the same
+    content everywhere.
     """
 
     def __init__(self, path: str | Path) -> None:
@@ -132,6 +133,21 @@ class SqliteIdentityLedger:
         value = _text(value, "identity value")
         payload = _optional_sha(payload_sha256, "payload_sha256")
         connection = self._open()
+
+        # The set relation is scoped, but the logical value->payload meaning is global inside a
+        # namespace. This permits one evidence/document id in multiple splits while preventing
+        # split-local content drift under the same id.
+        payload_rows = connection.execute(
+            "SELECT DISTINCT payload_sha256 FROM set_ids WHERE namespace=? AND value=?",
+            (namespace, value),
+        ).fetchall()
+        if payload_rows:
+            existing_payloads = {row[0] for row in payload_rows}
+            if existing_payloads != {payload}:
+                raise ValueError(
+                    f"set identity {namespace}/{value!r} was reused across scopes with different content"
+                )
+
         existing = connection.execute(
             "SELECT payload_sha256 FROM set_ids WHERE namespace=? AND scope=? AND value=?",
             (namespace, scope, value),
