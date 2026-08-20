@@ -68,6 +68,10 @@ def run_authoritative_recorded_dynamic_rag_episode(
 ) -> tuple[DynamicRagRuntimeResult, RecordedDynamicEpisodeReceipt]:
     if not isinstance(runtime_policy, DynamicRagRuntimePolicy):
         raise ValueError("runtime_policy must be DynamicRagRuntimePolicy")
+    selected_request = _sha(request_sha256, "request_sha256")
+    context_request = getattr(context_provider, "request_sha256", None)
+    if context_request is not None and _sha(context_request, "context provider request_sha256") != selected_request:
+        raise ValueError("context-provider request identity differs from runtime request")
     feature_sha = _sha(getattr(feature_provider, "contract_sha256", None), "feature provider contract_sha256")
     policy_artifact_sha = _sha(getattr(policy_provider, "artifact_sha256", None), "policy artifact_sha256")
     policy_contract_sha = _sha(getattr(policy_provider, "contract_sha256", None), "policy contract_sha256")
@@ -75,7 +79,7 @@ def run_authoritative_recorded_dynamic_rag_episode(
     terminal_sha = None if terminal_utility_provider is None else _sha(getattr(terminal_utility_provider, "contract_sha256", None), "terminal utility provider contract_sha256")
     buffer = _EpisodeBuffer(
         episode_id=episode_id,
-        request_sha256=request_sha256,
+        request_sha256=selected_request,
         runtime_policy=runtime_policy,
         context_provider=context_provider,
         feature_sha=feature_sha,
@@ -83,7 +87,7 @@ def run_authoritative_recorded_dynamic_rag_episode(
         policy_contract_sha=policy_contract_sha,
     )
     result = run_dynamic_rag(
-        request_sha256=request_sha256,
+        request_sha256=selected_request,
         runtime_policy=runtime_policy,
         feature_provider=_RecordingFeatureProvider(feature_provider, buffer),
         policy_provider=_RecordingPolicyProvider(policy_provider, buffer),
@@ -130,7 +134,7 @@ def run_authoritative_recorded_dynamic_rag_episode(
         unsigned = {
             "schema": "rigorousrag-recorded-dynamic-episode-receipt/v1",
             "episode_id": buffer.episode_id,
-            "request_sha256": _sha(request_sha256, "request_sha256"),
+            "request_sha256": selected_request,
             "runtime_policy_sha256": runtime_policy.policy_sha256,
             "feature_provider_sha256": feature_sha,
             "policy_artifact_sha256": policy_artifact_sha,
