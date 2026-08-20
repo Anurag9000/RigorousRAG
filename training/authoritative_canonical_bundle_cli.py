@@ -12,6 +12,7 @@ from training.authoritative_canonical_bundle_bridge import (
 from training.authoritative_canonical_recipe_bridge import (
     read_authoritative_canonical_training_bundle,
 )
+from training.production_canonical_limits import assert_production_split_sequence
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -45,6 +46,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     else:
         bundle = read_authoritative_canonical_training_bundle(args.bundle)
+    assert_production_split_sequence(bundle.splits, label="canonical bundle splits")
     print(
         json.dumps(
             {
