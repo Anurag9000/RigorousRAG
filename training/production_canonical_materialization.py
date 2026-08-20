@@ -47,6 +47,23 @@ def _sidecar(raw: Any, provider_type: Any, label: str, *, required: bool = False
     return provider_type(raw)
 
 
+def _close_sidecars(*providers: Any | None) -> None:
+    first_error: Exception | None = None
+    for provider in providers:
+        if provider is None:
+            continue
+        closer = getattr(provider, "close", None)
+        if not callable(closer):
+            continue
+        try:
+            closer()
+        except Exception as exc:  # cleanup must attempt every provider before surfacing failure.
+            if first_error is None:
+                first_error = exc
+    if first_error is not None:
+        raise RuntimeError("failed to close one or more dynamic supervision sidecars") from first_error
+
+
 def run_production_grounded_canonical_materialization_config(raw: Mapping[str, Any]) -> Mapping[str, Any]:
     value = _mapping(raw, "production grounded canonical materialization config")
     receipt_path = value.get("source_receipt_path")
@@ -124,47 +141,50 @@ def run_production_dynamic_canonical_materialization_config(raw: Mapping[str, An
         WorkerLocalCounterfactualActionProvider,
         "counterfactual_sidecar_receipt",
     )
-    require_need = _boolean(value.get("require_need_annotations", True), "require_need_annotations")
-    if require_need and annotation is None:
-        raise ValueError("require_need_annotations=true requires information_need_sidecar_receipt")
+    try:
+        require_need = _boolean(value.get("require_need_annotations", True), "require_need_annotations")
+        if require_need and annotation is None:
+            raise ValueError("require_need_annotations=true requires information_need_sidecar_receipt")
 
-    governance = _dynamic_governance(value["governance"])
-    policy = _split_policy(value["split_policy"])
-    assert_production_split_count(len(policy.weights), label="dynamic split-policy count")
-    verified = build_authoritative_dynamic_canonical_training_data(
-        steps,
-        hidden_provider=hidden_provider,
-        annotation_provider=annotation,
-        realized_gain_provider=gain,
-        value_provider=logged_value,
-        counterfactual_provider=counterfactual,
-        runtime_lineage=lineage,
-        governance=governance,
-        split_policy=policy,
-        output_dir=value["output_dir"],
-        require_need_annotations=require_need,
-    )
-    assert_production_split_count(len(verified.dataset.receipt.splits), label="dynamic canonical output split count")
-    bundle = None
-    if value.get("bundle_output_path") is not None:
-        bundle = write_authoritative_dynamic_canonical_bundle(
-            value["bundle_output_path"],
-            Path(verified.root) / "canonical_receipt.json",
+        governance = _dynamic_governance(value["governance"])
+        policy = _split_policy(value["split_policy"])
+        assert_production_split_count(len(policy.weights), label="dynamic split-policy count")
+        verified = build_authoritative_dynamic_canonical_training_data(
+            steps,
+            hidden_provider=hidden_provider,
+            annotation_provider=annotation,
+            realized_gain_provider=gain,
+            value_provider=logged_value,
+            counterfactual_provider=counterfactual,
+            runtime_lineage=lineage,
+            governance=governance,
+            split_policy=policy,
+            output_dir=value["output_dir"],
+            require_need_annotations=require_need,
         )
-    return {
-        "kind": "dynamic_rag_policy",
-        "canonical_root": verified.root,
-        "canonical_receipt_path": str(Path(verified.root) / "canonical_receipt.json"),
-        "canonical_receipt_sha256": verified.receipt.receipt_sha256,
-        "dataset_manifest_sha256": verified.dataset.manifest.manifest_digest,
-        "split_count": len(verified.dataset.receipt.splits),
-        "record_count": verified.receipt.materialized_record_count,
-        "episode_count": verified.receipt.materialized_episode_count,
-        "hidden_cache_contract_sha256": verified.receipt.hidden_cache_contract_sha256,
-        "bundle_path": None if bundle is None else str(value["bundle_output_path"]),
-        "bundle_sha256": None if bundle is None else bundle.bundle_sha256,
-        "sidecar_lookup_authority": "worker_local_immutable_sqlite/v1",
-    }
+        assert_production_split_count(len(verified.dataset.receipt.splits), label="dynamic canonical output split count")
+        bundle = None
+        if value.get("bundle_output_path") is not None:
+            bundle = write_authoritative_dynamic_canonical_bundle(
+                value["bundle_output_path"],
+                Path(verified.root) / "canonical_receipt.json",
+            )
+        return {
+            "kind": "dynamic_rag_policy",
+            "canonical_root": verified.root,
+            "canonical_receipt_path": str(Path(verified.root) / "canonical_receipt.json"),
+            "canonical_receipt_sha256": verified.receipt.receipt_sha256,
+            "dataset_manifest_sha256": verified.dataset.manifest.manifest_digest,
+            "split_count": len(verified.dataset.receipt.splits),
+            "record_count": verified.receipt.materialized_record_count,
+            "episode_count": verified.receipt.materialized_episode_count,
+            "hidden_cache_contract_sha256": verified.receipt.hidden_cache_contract_sha256,
+            "bundle_path": None if bundle is None else str(value["bundle_output_path"]),
+            "bundle_sha256": None if bundle is None else bundle.bundle_sha256,
+            "sidecar_lookup_authority": "worker_local_immutable_sqlite/v1",
+        }
+    finally:
+        _close_sidecars(annotation, gain, logged_value, counterfactual)
 
 
 __all__ = [
