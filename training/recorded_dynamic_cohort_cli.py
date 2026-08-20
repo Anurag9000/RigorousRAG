@@ -1,4 +1,4 @@
-"""Config-driven publication/verification of recorded dynamic-runtime cohorts."""
+"""Config-driven publication/strict verification of recorded dynamic-runtime cohorts."""
 from __future__ import annotations
 
 import argparse
@@ -9,10 +9,8 @@ from typing import Any, Mapping, Sequence
 from training.advanced_path_authority import safe_advanced_path
 from training.advanced_rag_supervision import DynamicRewardConfig
 from training.authoritative_canonical_materialization import _dynamic_governance, _split_policy
-from training.recorded_dynamic_cohort_authority import (
-    publish_recorded_dynamic_cohort,
-    verify_recorded_dynamic_cohort,
-)
+from training.recorded_dynamic_cohort_authority import publish_recorded_dynamic_cohort
+from training.strict_recorded_dynamic_cohort import verify_recorded_dynamic_cohort_strict
 
 _MAX_CONFIG_BYTES = 64 * 1024 * 1024
 _MAX_EPISODES = 100_000
@@ -43,6 +41,19 @@ def _reward(raw: Any) -> DynamicRewardConfig:
     return DynamicRewardConfig(**dict(raw))
 
 
+def _result(verified: Any) -> Mapping[str, Any]:
+    return {
+        "cohort_receipt_path": str(Path(verified.root) / "cohort_receipt.json"),
+        "cohort_receipt_sha256": verified.receipt.receipt_sha256,
+        "dataset_manifest_sha256": verified.dataset.manifest.manifest_digest,
+        "dataset_source_set_sha256": verified.dataset.receipt.source_set_sha256,
+        "episode_count": verified.receipt.episode_count,
+        "record_count": verified.receipt.record_count,
+        "runtime_lineage_sha256": verified.receipt.runtime_lineage_sha256,
+        "split_names": [item.name for item in verified.dataset.receipt.splits],
+    }
+
+
 def run_recorded_dynamic_cohort_config(path: str | Path) -> Mapping[str, Any]:
     raw = _read(path)
     allowed = {
@@ -55,7 +66,7 @@ def run_recorded_dynamic_cohort_config(path: str | Path) -> Mapping[str, Any]:
     paths = raw["episode_receipt_paths"]
     if not isinstance(paths, list) or not paths or len(paths) > _MAX_EPISODES or any(not isinstance(item, str) or not item.strip() for item in paths):
         raise ValueError(f"episode_receipt_paths must contain 1..{_MAX_EPISODES} non-empty path strings")
-    verified = publish_recorded_dynamic_cohort(
+    published = publish_recorded_dynamic_cohort(
         tuple(paths),
         governance=_dynamic_governance(raw["governance"]),
         split_policy=_split_policy(raw["split_policy"]),
@@ -64,17 +75,10 @@ def run_recorded_dynamic_cohort_config(path: str | Path) -> Mapping[str, Any]:
         dataset_output_dir=raw["dataset_output_dir"],
         cohort_output_dir=raw["cohort_output_dir"],
     )
-    receipt_path = Path(verified.root) / "cohort_receipt.json"
-    return {
-        "cohort_receipt_path": str(receipt_path),
-        "cohort_receipt_sha256": verified.receipt.receipt_sha256,
-        "dataset_manifest_sha256": verified.dataset.manifest.manifest_digest,
-        "dataset_source_set_sha256": verified.dataset.receipt.source_set_sha256,
-        "episode_count": verified.receipt.episode_count,
-        "record_count": verified.receipt.record_count,
-        "runtime_lineage_sha256": verified.receipt.runtime_lineage_sha256,
-        "split_names": [item.name for item in verified.dataset.receipt.splits],
-    }
+    # Publication inputs were already strict-admitted by the recorded-dataset builder. Reopen the
+    # final cohort through the strict restart authority before returning an operator result.
+    verified = verify_recorded_dynamic_cohort_strict(Path(published.root) / "cohort_receipt.json")
+    return _result(verified)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -88,17 +92,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "publish":
         result = run_recorded_dynamic_cohort_config(args.config)
     else:
-        verified = verify_recorded_dynamic_cohort(args.receipt)
-        result = {
-            "cohort_receipt_path": str(Path(verified.root) / "cohort_receipt.json"),
-            "cohort_receipt_sha256": verified.receipt.receipt_sha256,
-            "dataset_manifest_sha256": verified.dataset.manifest.manifest_digest,
-            "dataset_source_set_sha256": verified.dataset.receipt.source_set_sha256,
-            "episode_count": verified.receipt.episode_count,
-            "record_count": verified.receipt.record_count,
-            "runtime_lineage_sha256": verified.receipt.runtime_lineage_sha256,
-            "split_names": [item.name for item in verified.dataset.receipt.splits],
-        }
+        result = _result(verify_recorded_dynamic_cohort_strict(args.receipt))
     print(json.dumps(result, sort_keys=True, indent=2, ensure_ascii=False))
     return 0
 
