@@ -1,9 +1,9 @@
 """Bind qualified advanced-RAG artifacts into the existing runtime-stack authority.
 
 Production runtime binding requires the full evidence chain: exact exported artifact bytes,
-authoritative promotion evidence, authoritative advanced evaluation evidence, and verified v2
-benchmark-result artifacts.  A compact ``AdvancedPromotionEvidence`` alone is intentionally
-insufficient for this production handoff.
+authoritative promotion evidence, evaluator-bound advanced evaluation evidence, authoritative
+benchmark/sample-universe contracts, verified v2 benchmark-result artifacts, and complete
+threshold coverage for every directional evaluator metric.
 """
 from __future__ import annotations
 
@@ -22,9 +22,9 @@ from training.advanced_rag_artifact_directory import (
     assert_artifact_directory_matches_manifest,
 )
 from training.advanced_rag_artifacts import AdvancedArtifactManifest
-from training.authoritative_advanced_promotion import (
-    AuthoritativeAdvancedPromotionEvidence,
-    assert_authoritative_advanced_promotion,
+from training.authoritative_advanced_promotion import AuthoritativeAdvancedPromotionEvidence
+from training.strict_authoritative_advanced_promotion import (
+    assert_strict_authoritative_advanced_promotion,
 )
 
 
@@ -54,8 +54,8 @@ def _component_kind(manifest: AdvancedArtifactManifest) -> str:
         return "generator"
     if manifest.kind == "dynamic_rag_policy":
         # Runtime stack authority predates generation-time dynamic retrieval learning. Its
-        # query_router slot is the existing policy-routing authority surface and is kept for
-        # schema compatibility; component_id/contract retain the exact dynamic-policy meaning.
+        # query_router slot is the existing policy-routing authority surface and is retained for
+        # schema compatibility; component_id/contract preserve the exact dynamic-policy meaning.
         return "query_router"
     raise ValueError("unsupported advanced artifact kind")
 
@@ -63,7 +63,7 @@ def _component_kind(manifest: AdvancedArtifactManifest) -> str:
 def _component_contract(manifest: AdvancedArtifactManifest) -> str:
     return _digest(
         {
-            "schema": "rigorousrag-advanced-runtime-component-contract/v2",
+            "schema": "rigorousrag-advanced-runtime-component-contract/v4",
             "artifact_sha256": manifest.artifact_sha256,
             "artifact_kind": manifest.kind,
             "checkpoint_digest": manifest.checkpoint_digest,
@@ -80,7 +80,10 @@ def _component_contract(manifest: AdvancedArtifactManifest) -> str:
             "budget_sha256": manifest.budget_sha256,
             "runtime_config": manifest.runtime_config,
             "evaluation_receipt_sha256": manifest.evaluation_receipt_sha256,
-            "production_evidence_requirement": "authoritative_advanced_promotion/v1",
+            "production_evidence_requirement": (
+                "authoritative_advanced_promotion/v2+"
+                "evaluator_bound_evaluation/v3+directional_policy_coverage"
+            ),
         }
     )
 
@@ -135,7 +138,7 @@ def bind_qualified_advanced_artifact(
     *,
     component_id: str,
 ) -> AdvancedRuntimeComponentBinding:
-    """Create a runtime component only from exact artifact bytes plus authoritative evidence."""
+    """Create a runtime component only from exact bytes plus strict production evidence."""
     if not isinstance(manifest, AdvancedArtifactManifest):
         raise ValueError("manifest must be AdvancedArtifactManifest")
     if not isinstance(promotion, AuthoritativeAdvancedPromotionEvidence):
@@ -143,7 +146,7 @@ def bind_qualified_advanced_artifact(
             "production runtime binding requires AuthoritativeAdvancedPromotionEvidence"
         )
     assert_artifact_directory_matches_manifest(artifact_directory, manifest)
-    assert_authoritative_advanced_promotion(manifest, promotion)
+    assert_strict_authoritative_advanced_promotion(manifest, promotion)
     if not promotion.promoted:
         raise ValueError("runtime binding requires promoted advanced artifact evidence")
     if promotion.artifact_sha256 != manifest.artifact_sha256:
@@ -219,7 +222,7 @@ def advanced_offline_quality_evidence(
     valid_from: float,
     expires_at: float | None = None,
 ) -> RuntimePromotionEvidence:
-    """Bind all authoritative advanced qualifications into one exact stack evidence row."""
+    """Bind all strict authoritative advanced qualifications into one stack evidence row."""
     if not isinstance(stack, RuntimeStackArtifact):
         raise ValueError("stack must be RuntimeStackArtifact")
     selected = tuple(
@@ -248,7 +251,7 @@ def advanced_offline_quality_evidence(
             )
     evidence_sha = _digest(
         {
-            "schema": "rigorousrag-advanced-runtime-offline-quality/v2",
+            "schema": "rigorousrag-advanced-runtime-offline-quality/v4",
             "stack_sha256": stack.stack_sha256,
             "bindings": [
                 {
