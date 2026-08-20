@@ -1,9 +1,9 @@
-"""Production artifact admission guarded by authoritative promotion evidence.
+"""Production artifact admission guarded by strict authoritative promotion evidence.
 
-The generic artifact module exposes a reusable primitive admission helper for research and
-internal composition.  Production admission should use this module: exact artifact bytes are
-re-hashed, authoritative evaluation/result artifacts are re-verified, the embedded promotion
-policy is independently re-run, and only then is the artifact handed to the admission sink.
+The generic artifact module exposes reusable primitive admission helpers for research and
+internal composition. Production admission uses this module: exact artifact bytes are re-hashed,
+evaluator-bound result evidence is re-verified, the embedded promotion policy is independently
+re-run with exact direction coverage, and only then is the artifact handed to the admission sink.
 """
 from __future__ import annotations
 
@@ -14,9 +14,9 @@ from training.advanced_rag_artifact_directory import (
     assert_artifact_directory_matches_manifest,
 )
 from training.advanced_rag_artifacts import AdvancedArtifactManifest, ArtifactAdmissionSink
-from training.authoritative_advanced_promotion import (
-    AuthoritativeAdvancedPromotionEvidence,
-    assert_authoritative_advanced_promotion,
+from training.authoritative_advanced_promotion import AuthoritativeAdvancedPromotionEvidence
+from training.strict_authoritative_advanced_promotion import (
+    assert_strict_authoritative_advanced_promotion,
 )
 
 
@@ -34,7 +34,7 @@ def admit_authoritative_advanced_artifact(
             "production admission requires AuthoritativeAdvancedPromotionEvidence"
         )
     selected = assert_artifact_directory_matches_manifest(directory, manifest)
-    assert_authoritative_advanced_promotion(manifest, promotion)
+    assert_strict_authoritative_advanced_promotion(manifest, promotion)
     if not promotion.promoted:
         raise ValueError("only an authoritatively promoted artifact may enter admission")
     if promotion.artifact_sha256 != manifest.artifact_sha256:
