@@ -1,9 +1,11 @@
 """Production-only semantic restrictions for evaluator contracts.
 
-The current promotion-grade result artifact represents exactly one row per authorized sample
-and recomputes every exposed metric as an arithmetic mean over that exact cohort. Flexible
+The promotion-grade result artifact represents exactly one row per authorized sample and
+recomputes every exposed metric as an arithmetic mean over that exact cohort. Flexible
 research evaluator contracts may describe other semantics, but production evidence must not
-claim unsupported medians/percentiles or per-sample-only metrics.
+claim unsupported medians/percentiles or metrics that exist only per-sample or only at
+aggregate level. Every promotion-grade metric must be represented in both row and aggregate
+views.
 """
 from __future__ import annotations
 
@@ -33,13 +35,13 @@ def assert_strict_production_evaluator_contract(
             "production evaluator aggregation_semantics must be "
             f"{_PRODUCTION_AGGREGATION_SEMANTICS!r}"
         )
-    per_sample_only = sorted(
-        metric.name for metric in evaluator.metrics if metric.scope == "per_sample"
+    unsupported_scope = sorted(
+        metric.name for metric in evaluator.metrics if metric.scope != "both"
     )
-    if per_sample_only:
+    if unsupported_scope:
         raise ValueError(
-            "production result artifacts do not support per-sample-only evaluator metrics; "
-            f"metrics={per_sample_only[:100]}"
+            "production result artifacts require every evaluator metric scope to be 'both'; "
+            f"metrics={unsupported_scope[:100]}"
         )
 
 
