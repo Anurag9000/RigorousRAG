@@ -1,4 +1,10 @@
-"""Production benchmark-result CLI consuming one persisted evaluator-bound cohort."""
+"""Production benchmark-result CLI consuming one persisted evaluator-bound cohort.
+
+Production materialization fails before writing any result artifact unless the evaluator receipt
+uses the exact semantics implemented by the streaming evidence path: one result row per
+authorized sample, arithmetic-mean aggregation over the exact cohort, and row+aggregate
+representation for every metric.
+"""
 from __future__ import annotations
 
 import argparse
@@ -12,6 +18,9 @@ from evaluation.evaluator_bound_evaluation_cohort import (
 from evaluation.evaluator_bound_streaming_benchmark_result_cli import (
     materialize_evaluator_bound_result,
 )
+from evaluation.strict_production_evaluator_contract import (
+    assert_strict_production_evaluator_contract,
+)
 
 
 def materialize_production_result(
@@ -23,9 +32,10 @@ def materialize_production_result(
     repeat_index: int,
     output_dir: str | Path,
 ) -> Mapping[str, object]:
-    binding, _, _ = verify_evaluator_bound_evaluation_cohort(
+    binding, _, evaluator = verify_evaluator_bound_evaluation_cohort(
         evaluator_bound_cohort_path
     )
+    assert_strict_production_evaluator_contract(evaluator)
     result = dict(
         materialize_evaluator_bound_result(
             cohort_contract_path=binding.cohort_contract_path,
@@ -44,7 +54,7 @@ def materialize_production_result(
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="rigorousrag-benchmark-result",
-        description="Stream a local benchmark result into evaluator/cohort-bound v2 result evidence",
+        description="Stream a local benchmark result into strict evaluator/cohort-bound v2 result evidence",
     )
     parser.add_argument("--evaluation-cohort", required=True)
     parser.add_argument("--result-input", required=True)
