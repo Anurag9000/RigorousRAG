@@ -1,9 +1,10 @@
 """Canonical dynamic training-data materialization from one sealed runtime-cohort receipt.
 
-This bridge removes manual provenance transcription.  ``source_shards`` and the full
-``DynamicRuntimeTrainingLineage`` are derived from ``RecordedDynamicCohortReceipt``; operators
-supply only target-supervision artifacts, final dataset governance/splitting and local generator /
-tokenizer bindings.  The resulting call enters the same production canonical-v2 materializer.
+This bridge removes manual provenance transcription. ``source_shards`` and the full
+``DynamicRuntimeTrainingLineage`` are derived from a strictly restart-verified recorded cohort;
+operators supply only target-supervision artifacts, final dataset governance/splitting and local
+generator/tokenizer bindings. The resulting call enters the same production canonical-v2
+materializer.
 """
 from __future__ import annotations
 
@@ -11,7 +12,7 @@ from typing import Any, Mapping
 
 from training.authoritative_canonical_materialization import _closed, _mapping
 from training.production_canonical_materialization import run_production_dynamic_canonical_materialization_config
-from training.recorded_dynamic_cohort_authority import verify_recorded_dynamic_cohort
+from training.strict_recorded_dynamic_cohort import verify_recorded_dynamic_cohort_strict
 
 _SCHEMA = "rigorousrag-authoritative-recorded-dynamic-canonical-materialization-config/v1"
 
@@ -34,7 +35,7 @@ def run_recorded_dynamic_canonical_materialization_config(raw: Mapping[str, Any]
     cohort_path = value["recorded_cohort_receipt"]
     if not isinstance(cohort_path, str) or not cohort_path.strip():
         raise ValueError("recorded_cohort_receipt must be a non-empty path string")
-    cohort = verify_recorded_dynamic_cohort(cohort_path)
+    cohort = verify_recorded_dynamic_cohort_strict(cohort_path)
     delegated = {
         key: item
         for key, item in value.items()
