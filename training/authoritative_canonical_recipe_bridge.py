@@ -2,9 +2,10 @@
 
 Historical bundle v1 readers remain available. New authoritative recipes should enter here: the
 neutral bundle is reopened, its outer canonical receipt is independently verified by the relevant
-Grounded/Dynamic v2 authority (including retained lineage artifacts), bundle identities are
-cross-checked against that authority, and only then is the existing deterministic recipe emitter
-invoked. No model is loaded and no training executes here.
+Grounded/Dynamic v2 authority (including retained lineage artifacts), bundle identities and
+production bounds are cross-checked, and only then is the existing deterministic recipe emitter
+invoked. Recipe source revision must equal the revision sealed by the canonical authority.
+No model is loaded and no training executes here.
 """
 from __future__ import annotations
 
@@ -32,16 +33,11 @@ from training.dynamic_retrieval_policy import DynamicPolicyArchitecture, Dynamic
 from training.grounded_generation import GroundedGenerationArchitectureConfig
 from training.grounded_supervision_pipeline import RetrieverCouplingConfig
 from training.local_artifact_loading import LocalArtifactTreeBinding
+from training.production_canonical_limits import assert_production_split_sequence
 
 
 def _outer_canonical_receipt_path(bundle: CanonicalTrainingDataBundle) -> Path:
-    """Resolve the outer v2 canonical receipt without overloading dataset_receipt_path.
-
-    Grounded v2 has no nested final-dataset publication receipt, so its neutral historical field
-    remains the outer canonical receipt. Dynamic v2 has a nested ``published`` dataset authority;
-    its dataset_receipt_path points there and the outer canonical receipt is the grandparent's
-    canonical root child.
-    """
+    """Resolve the outer v2 canonical receipt without overloading dataset_receipt_path."""
     selected = Path(bundle.dataset_receipt_path)
     if bundle.kind == "grounded_generation":
         return selected
@@ -52,11 +48,40 @@ def _outer_canonical_receipt_path(bundle: CanonicalTrainingDataBundle) -> Path:
     raise ValueError("unsupported canonical training bundle kind")
 
 
+def _canonical_source_commit(bundle: CanonicalTrainingDataBundle) -> str:
+    receipt = bundle.canonical_receipt
+    if bundle.kind == "grounded_generation":
+        value = receipt.get("source_commit")
+    elif bundle.kind == "dynamic_rag_policy":
+        lineage = receipt.get("runtime_lineage")
+        if not isinstance(lineage, Mapping):
+            raise ValueError("dynamic canonical receipt lacks runtime_lineage")
+        value = lineage.get("source_commit")
+        hidden = receipt.get("hidden_cache_source_commit")
+        if hidden != value:
+            raise ValueError("dynamic canonical runtime and hidden-cache source revisions differ")
+    else:  # pragma: no cover
+        raise ValueError("unsupported canonical training bundle kind")
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("canonical receipt lacks source revision")
+    return value.strip().lower()
+
+
+def _assert_source_commit(bundle: CanonicalTrainingDataBundle, source_commit: str) -> str:
+    selected = str(source_commit).strip().lower()
+    expected = _canonical_source_commit(bundle)
+    if selected != expected:
+        raise ValueError("recipe source_commit differs from canonical training-data authority")
+    return selected
+
+
 def read_authoritative_canonical_training_bundle(path: str | Path) -> CanonicalTrainingDataBundle:
     bundle = read_canonical_training_data_bundle(path)
+    assert_production_split_sequence(bundle.splits, label="authoritative canonical bundle splits")
     canonical_receipt_path = _outer_canonical_receipt_path(bundle)
     if bundle.kind == "grounded_generation":
         verified = verify_authoritative_grounded_canonical_training_data(canonical_receipt_path)
+        assert_production_split_sequence(verified.receipt.splits, label="grounded canonical authority splits")
         manifest_sha = verified.manifest.manifest_digest
         canonical_sha = verified.receipt.receipt_sha256
         expected_splits = {
@@ -65,6 +90,7 @@ def read_authoritative_canonical_training_bundle(path: str | Path) -> CanonicalT
         }
     elif bundle.kind == "dynamic_rag_policy":
         verified = verify_authoritative_dynamic_canonical_training_data(canonical_receipt_path)
+        assert_production_split_sequence(verified.dataset.receipt.splits, label="dynamic canonical authority splits")
         manifest_sha = verified.dataset.manifest.manifest_digest
         canonical_sha = verified.receipt.receipt_sha256
         expected_splits = {
@@ -80,6 +106,7 @@ def read_authoritative_canonical_training_bundle(path: str | Path) -> CanonicalT
     actual_splits = {item.name: (item.sha256, item.record_count) for item in bundle.splits}
     if actual_splits != expected_splits:
         raise ValueError("canonical v2 split universe differs from bundle")
+    _canonical_source_commit(bundle)
     return bundle
 
 
@@ -106,13 +133,14 @@ def write_grounded_recipe_from_authoritative_bundle(
     bundle = read_authoritative_canonical_training_bundle(bundle_path)
     if bundle.kind != "grounded_generation":
         raise ValueError("authoritative bundle is not grounded_generation")
+    selected_commit = _assert_source_commit(bundle, source_commit)
     return write_grounded_recipe_from_canonical_bundle(
         bundle,
         train_split_name=train_split_name,
         validation_split_name=validation_split_name,
         output_path=output_path,
         run_id=run_id,
-        source_commit=source_commit,
+        source_commit=selected_commit,
         base_model=base_model,
         tokenizer=tokenizer,
         architecture=architecture,
@@ -149,13 +177,14 @@ def write_dynamic_recipe_from_authoritative_bundle(
     bundle = read_authoritative_canonical_training_bundle(bundle_path)
     if bundle.kind != "dynamic_rag_policy":
         raise ValueError("authoritative bundle is not dynamic_rag_policy")
+    selected_commit = _assert_source_commit(bundle, source_commit)
     return write_dynamic_recipe_from_canonical_bundle(
         bundle,
         train_split_name=train_split_name,
         validation_split_name=validation_split_name,
         output_path=output_path,
         run_id=run_id,
-        source_commit=source_commit,
+        source_commit=selected_commit,
         generator=generator,
         tokenizer=tokenizer,
         retrieval_stack_sha256=retrieval_stack_sha256,
