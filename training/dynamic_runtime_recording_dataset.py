@@ -10,9 +10,8 @@ This module composes existing authorities instead of inventing another dataset f
 
 The adapter requires a coherent runtime cohort: runtime policy, feature provider, policy artifact /
 contract, deterministic behavior-policy contract, training-context provider, terminal-utility
-semantics and complete runtime provider contract must match across every episode. Source-set
-identity is recomputed from exact episode output/receipt digests and compared with the dynamic
-publication receipt on restart.
+semantics and complete runtime provider contract must match across every episode. Every episode
+must also pass strict raw-runtime verification before it can enter the dataset.
 """
 from __future__ import annotations
 
@@ -22,10 +21,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from orchestration.dynamic_training_episode_recording import (
-    RecordedDynamicEpisodeReceipt,
-    verify_recorded_dynamic_episode,
-)
+from orchestration.dynamic_training_episode_recording import RecordedDynamicEpisodeReceipt
+from orchestration.strict_dynamic_training_episode_io import verify_recorded_dynamic_episode_strict
 from training.advanced_rag_supervision import DynamicRewardConfig
 from training.dynamic_canonical_training_data_pipeline import DynamicRuntimeTrainingLineage
 from training.dynamic_dataset_io import VerifiedDynamicDatasetPublication, verify_dynamic_dataset_publication
@@ -74,11 +71,10 @@ def _episode_receipts(paths: Sequence[str | Path]) -> tuple[RecordedDynamicEpiso
     selected = tuple(paths)
     if not selected or len(selected) > _MAX_EPISODE_SOURCES:
         raise ValueError(f"recorded dynamic dataset requires 1..{_MAX_EPISODE_SOURCES} episode receipts")
-    receipts = tuple(verify_recorded_dynamic_episode(path) for path in selected)
+    receipts = tuple(verify_recorded_dynamic_episode_strict(path) for path in selected)
     episode_ids = [item.episode_id for item in receipts]
     if len(episode_ids) != len(set(episode_ids)):
         raise ValueError("recorded dynamic dataset episode ids must be globally unique")
-    # Order by logical episode id so source-set identity is independent of config list order.
     return tuple(sorted(receipts, key=lambda item: item.episode_id))
 
 
@@ -115,8 +111,6 @@ def _lineage(
     feature_sha = _cohort_value(receipts, "feature_provider_sha256")
     behavior_sha = _cohort_value(receipts, "behavior_policy_sha256")
     runtime_contract = _cohort_value(receipts, "runtime_provider_contract_sha256")
-    # Cohort consistency also proves these identities even though DynamicRuntimeTrainingLineage
-    # does not carry them as separate fields.
     _cohort_value(receipts, "runtime_policy_sha256")
     _cohort_value(receipts, "policy_artifact_sha256")
     _cohort_value(receipts, "policy_contract_sha256")
@@ -141,7 +135,6 @@ class VerifiedRecordedDynamicRuntimeDataset:
 
     @property
     def source_shards(self) -> tuple[Mapping[str, Any], ...]:
-        """Config-ready lazy source-shard descriptors for canonical materialization."""
         return tuple({
             "path": item.path,
             "sha256": item.sha256,
@@ -180,7 +173,6 @@ def publish_recorded_dynamic_runtime_dataset(
     output_dir: str | Path,
 ) -> VerifiedRecordedDynamicRuntimeDataset:
     receipts = _episode_receipts(episode_receipt_paths)
-    # Fail before publishing if the cohort is not semantically one runtime behavior family.
     for field in (
         "runtime_policy_sha256", "feature_provider_sha256", "policy_artifact_sha256",
         "policy_contract_sha256", "behavior_policy_sha256", "context_provider_sha256",
