@@ -11,6 +11,9 @@ from training.production_canonical_materialization import (
     run_production_dynamic_canonical_materialization_config,
     run_production_grounded_canonical_materialization_config,
 )
+from training.recorded_dynamic_canonical_materialization import (
+    run_recorded_dynamic_canonical_materialization_config,
+)
 
 _MAX_CONFIG_BYTES = 16 * 1024 * 1024
 
@@ -43,12 +46,14 @@ def run_canonical_materialization_config(path: str | Path) -> Mapping[str, Any]:
         return run_production_grounded_canonical_materialization_config(raw)
     if schema == "rigorousrag-authoritative-dynamic-canonical-materialization-config/v1":
         return run_production_dynamic_canonical_materialization_config(raw)
+    if schema == "rigorousrag-authoritative-recorded-dynamic-canonical-materialization-config/v1":
+        return run_recorded_dynamic_canonical_materialization_config(raw)
     raise ValueError("unsupported authoritative canonical materialization config schema")
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Materialize production Grounded/Dynamic canonical-v2 training data from exact local artifacts"
+        description="Materialize production Grounded/Dynamic canonical-v2 training data from exact local artifacts or a sealed runtime-recording cohort"
     )
     parser.add_argument("config", help="strict canonical materialization JSON config")
     result = run_canonical_materialization_config(parser.parse_args(argv).config)
