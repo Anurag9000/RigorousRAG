@@ -1,8 +1,9 @@
 """Installed production release operator v5.
 
-V5 keeps the evaluator-bound v4 release chain and adds fail-early evaluator semantics at cohort
-creation. Promotion-grade evaluators must use the exact result semantics implemented by the
-streaming evidence path before a governed/retrieval cohort can be published.
+V5 requires strict evaluator semantics at cohort creation, result-backed evaluator-bound v3
+evaluation evidence, and exact directional promotion-policy coverage. The production evidence
+format implements arithmetic-mean aggregation over the exact authorized cohort, so no alternate
+aggregation is exposed here.
 """
 from __future__ import annotations
 
@@ -50,7 +51,6 @@ def _parser() -> argparse.ArgumentParser:
     evaluation.add_argument("--checkpoint-digest", required=True)
     evaluation.add_argument("--evaluation-cohort", required=True)
     evaluation.add_argument("--result-receipt", action="append", required=True)
-    evaluation.add_argument("--aggregation", choices=("mean", "median"), default="mean")
     evaluation.add_argument("--evaluation-receipt-output", required=True)
     evaluation.add_argument("--cohort-evidence-output", required=True)
     evaluation.add_argument("--evidence-output", required=True)
@@ -93,7 +93,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             checkpoint_digest=args.checkpoint_digest,
             evaluator_bound_cohort_path=args.evaluation_cohort,
             result_receipt_paths=tuple(args.result_receipt),
-            aggregation=args.aggregation,
+            aggregation="mean",
             evaluation_receipt_output=args.evaluation_receipt_output,
             cohort_evidence_output=args.cohort_evidence_output,
             evidence_output=args.evidence_output,
