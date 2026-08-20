@@ -1,9 +1,9 @@
 """Production atomic entry for runtime-to-training dynamic episode recording.
 
-The underlying recorder primitives live in ``dynamic_training_episode_recording``.  This entry
-preserves their exact observation semantics but writes the final-path receipt as plain canonical
-JSON while staging, renames the closed directory, and only then instantiates the receipt through
-the strict production verifier. Thus final-path validation never races the publication rename.
+The underlying recorder primitives live in ``dynamic_training_episode_recording``. This entry
+preserves their exact observation semantics, binds structural feature fractions to the exact
+runtime policy, writes the final-path receipt as plain canonical JSON while staging, renames the
+closed directory, and only then instantiates the receipt through the strict production verifier.
 """
 from __future__ import annotations
 
@@ -42,6 +42,7 @@ from orchestration.dynamic_training_episode_recording import (
     _sha,
     _step_payload,
 )
+from orchestration.runtime_bound_dynamic_features import RuntimeBoundDynamicFeatureProvider
 from orchestration.strict_dynamic_training_episode_io import verify_recorded_dynamic_episode_strict
 from training.advanced_path_authority import safe_advanced_path
 
@@ -72,7 +73,8 @@ def run_authoritative_recorded_dynamic_rag_episode(
     context_request = getattr(context_provider, "request_sha256", None)
     if context_request is not None and _sha(context_request, "context provider request_sha256") != selected_request:
         raise ValueError("context-provider request identity differs from runtime request")
-    feature_sha = _sha(getattr(feature_provider, "contract_sha256", None), "feature provider contract_sha256")
+    bound_features = RuntimeBoundDynamicFeatureProvider(feature_provider, runtime_policy)
+    feature_sha = bound_features.contract_sha256
     policy_artifact_sha = _sha(getattr(policy_provider, "artifact_sha256", None), "policy artifact_sha256")
     policy_contract_sha = _sha(getattr(policy_provider, "contract_sha256", None), "policy contract_sha256")
     context_sha = _sha(getattr(context_provider, "contract_sha256", None), "context provider contract_sha256")
@@ -89,7 +91,7 @@ def run_authoritative_recorded_dynamic_rag_episode(
     result = run_dynamic_rag(
         request_sha256=selected_request,
         runtime_policy=runtime_policy,
-        feature_provider=_RecordingFeatureProvider(feature_provider, buffer),
+        feature_provider=_RecordingFeatureProvider(bound_features, buffer),
         policy_provider=_RecordingPolicyProvider(policy_provider, buffer),
         generation_provider=generation_provider,
         query_provider=query_provider,
