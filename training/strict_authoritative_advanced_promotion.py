@@ -1,9 +1,9 @@
 """Strict production policy coverage over authoritative advanced promotion evidence.
 
-The primitive promotion object correctly self-verifies policy hashes and recomputes its
-qualification decision. Production additionally requires the policy to cover the evaluator's
-directional metric contract: maximize -> minimum threshold, minimize -> maximum threshold,
-with no policy keys outside the declared evaluator metric schema.
+Production requires exact policy recomputation and machine-checkable evaluator semantics:
+one result row per authorized sample, arithmetic-mean cohort aggregation, fully representable
+metrics, and one correctly directed threshold for every directional evaluator metric.
+Descriptive metrics cannot participate in qualification.
 """
 from __future__ import annotations
 
@@ -14,6 +14,9 @@ from evaluation.authoritative_advanced_evaluation_verification import (
 )
 from evaluation.evaluator_bound_evaluation_cohort import (
     verify_evaluator_bound_evaluation_cohort,
+)
+from evaluation.strict_production_evaluator_contract import (
+    assert_strict_production_evaluator_contract,
 )
 from training.advanced_rag_artifacts import AdvancedArtifactManifest, MetricQualificationPolicy
 from training.authoritative_advanced_promotion import (
@@ -30,13 +33,14 @@ def _assert_policy_coverage(
 ) -> None:
     if not isinstance(policy, MetricQualificationPolicy):
         raise ValueError("policy must be MetricQualificationPolicy")
-    _, evidence = verify_authoritative_advanced_evaluation_evidence(
-        evaluation_evidence_path
-    )
+    _, evidence = verify_authoritative_advanced_evaluation_evidence(evaluation_evidence_path)
     _, _, evaluator = verify_evaluator_bound_evaluation_cohort(
         evidence.evaluator_bound_cohort_path
     )
-    declared = {metric.name for metric in evaluator.metrics}
+    assert_strict_production_evaluator_contract(evaluator)
+
+    by_name = {metric.name: metric for metric in evaluator.metrics}
+    declared = set(by_name)
     minimum = set(policy.minimum)
     maximum = set(policy.maximum)
     unknown = (minimum | maximum) - declared
@@ -45,19 +49,24 @@ def _assert_policy_coverage(
             "production promotion policy references undeclared evaluator metrics: "
             + ",".join(sorted(unknown))
         )
-    maximize = {metric.name for metric in evaluator.metrics if metric.direction == "maximize"}
-    minimize = {metric.name for metric in evaluator.metrics if metric.direction == "minimize"}
+
+    maximize = {name for name, metric in by_name.items() if metric.direction == "maximize"}
+    minimize = {name for name, metric in by_name.items() if metric.direction == "minimize"}
+    descriptive = declared - maximize - minimize
     if not maximize and not minimize:
-        raise ValueError(
-            "production promotion requires at least one directional evaluator metric"
-        )
+        raise ValueError("production promotion requires at least one directional evaluator metric")
+
     missing_minimum = maximize - minimum
     missing_maximum = minimize - maximum
-    if missing_minimum or missing_maximum:
+    wrong_minimum = minimum & (minimize | descriptive)
+    wrong_maximum = maximum & (maximize | descriptive)
+    if missing_minimum or missing_maximum or wrong_minimum or wrong_maximum:
         raise ValueError(
-            "production promotion policy does not cover all directional evaluator metrics; "
+            "production promotion thresholds differ from evaluator metric directions; "
             f"missing_minimum={sorted(missing_minimum)} "
-            f"missing_maximum={sorted(missing_maximum)}"
+            f"missing_maximum={sorted(missing_maximum)} "
+            f"wrong_minimum={sorted(wrong_minimum)} "
+            f"wrong_maximum={sorted(wrong_maximum)}"
         )
 
 
