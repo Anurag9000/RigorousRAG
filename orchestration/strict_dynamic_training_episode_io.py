@@ -1,17 +1,19 @@
 """Strict production verification for recorded dynamic-RAG training episodes.
 
-The compatibility verifier proves receipt/file SHA, row parsing, order and count.  This layer also
-proves that every row is *raw runtime logging* produced under the identities claimed by the
-receipt.  In particular it rejects pre-filled reward/GAE/cache targets and verifies the exact
-deterministic behavior-policy contract used by the server-owned runtime selector.
+The compatibility verifier proves receipt/file SHA, row parsing, order and count. This layer also
+proves that every row is raw runtime logging produced under the identities claimed by the receipt.
+It rejects pre-filled reward/GAE/cache targets and reconstructs the deterministic server-selected
+action from the exact logged finite action-score map and legal-action set.
 """
 from __future__ import annotations
 
 import hashlib
 import json
+import math
 from pathlib import Path
 from typing import Any, Mapping
 
+from orchestration.dynamic_rag_runtime import _choose_action
 from orchestration.dynamic_training_episode_recording import (
     RecordedDynamicEpisodeReceipt,
     verify_recorded_dynamic_episode,
@@ -49,6 +51,39 @@ def _behavior_sha(receipt: RecordedDynamicEpisodeReceipt) -> str:
     })
 
 
+def _action_scores(metadata: Mapping[str, str], line_number: int) -> Mapping[DynamicRetrievalAction, float]:
+    raw_json = metadata.get("action_scores_json")
+    if not isinstance(raw_json, str) or not raw_json:
+        raise ValueError(f"recorded dynamic episode row {line_number} lacks action_scores_json")
+    try:
+        raw = json.loads(
+            raw_json,
+            parse_constant=lambda token: (_ for _ in ()).throw(ValueError(token)),
+        )
+    except Exception as exc:
+        raise ValueError(f"recorded dynamic episode row {line_number} action_scores_json is invalid") from exc
+    if not isinstance(raw, Mapping) or not raw:
+        raise ValueError(f"recorded dynamic episode row {line_number} action score map is empty")
+    scores: dict[DynamicRetrievalAction, float] = {}
+    normalized: dict[str, float] = {}
+    for key, value in raw.items():
+        action = DynamicRetrievalAction(key)
+        if action in scores or isinstance(value, bool):
+            raise ValueError(f"recorded dynamic episode row {line_number} has duplicate/invalid action score")
+        selected = float(value)
+        if not math.isfinite(selected):
+            raise ValueError(f"recorded dynamic episode row {line_number} action score must be finite")
+        scores[action] = selected
+        normalized[action.value] = selected
+    expected_sha = _digest({
+        "schema": "rigorousrag-recorded-dynamic-action-scores/v1",
+        "scores": dict(sorted(normalized.items())),
+    })
+    if metadata.get("action_scores_sha256") != expected_sha:
+        raise ValueError(f"recorded dynamic episode row {line_number} action-score digest mismatch")
+    return scores
+
+
 def verify_recorded_dynamic_episode_strict(path: str | Path) -> RecordedDynamicEpisodeReceipt:
     receipt = verify_recorded_dynamic_episode(path)
     if _behavior_sha(receipt) != receipt.behavior_policy_sha256:
@@ -77,12 +112,17 @@ def verify_recorded_dynamic_episode_strict(path: str | Path) -> RecordedDynamicE
                 "behavior_policy_sha256": receipt.behavior_policy_sha256,
                 "context_provider_sha256": receipt.context_provider_sha256,
                 "action_scores_sha256": None,
+                "action_scores_json": None,
                 "behavior_selection": "server_argmax_then_action_value_tiebreak",
             }
             for key, expected in expected_metadata.items():
                 actual = metadata.get(key)
                 if expected is None:
-                    _sha(actual, f"recorded row {key}")
+                    if key == "action_scores_json":
+                        if not isinstance(actual, str) or not actual:
+                            raise ValueError("recorded row action_scores_json is required")
+                    else:
+                        _sha(actual, f"recorded row {key}")
                 elif actual != expected:
                     raise ValueError(f"recorded dynamic episode row {line_number} {key} differs from receipt")
             allowed_metadata = set(expected_metadata)
@@ -105,6 +145,10 @@ def verify_recorded_dynamic_episode_strict(path: str | Path) -> RecordedDynamicE
                 raise ValueError("server-deterministic recorded behavior probability must equal 1.0")
             if step.action not in step.valid_actions or not step.valid_actions:
                 raise ValueError("recorded action must be legal under the exact logged action set")
+            scores = _action_scores(metadata, line_number)
+            expected_action = _choose_action(scores, set(step.valid_actions))
+            if expected_action != step.action:
+                raise ValueError("recorded action differs from deterministic choice over exact logged scores/legal actions")
             if step.realized_retrieval_gain != 0.0:
                 raise ValueError("raw recorded runtime episode may not contain realized-gain supervision")
             if step.advantage is not None or step.value_target is not None:
