@@ -13,6 +13,7 @@ rigorousrag-grounded-import = "training.scalable_authoritative_grounded_import_c
 rigorousrag-dynamic-publish = "training.dynamic_dataset_publication_cli:main"
 rigorousrag-dynamic-sidecar = "training.sqlite_dynamic_supervision_sidecar_cli:main"
 rigorousrag-dynamic-feature-sidecar = "orchestration.dynamic_feature_observation_sidecar_cli:main"
+rigorousrag-dynamic-recordings = "training.recorded_dynamic_cohort_cli:main"
 rigorousrag-canonical-materialize = "training.authoritative_canonical_materialization_cli:main"
 rigorousrag-canonical-bundle = "training.authoritative_canonical_bundle_cli:main"
 rigorousrag-canonical-recipe = "training.authoritative_canonical_recipe_v2_cli:main"
