@@ -1,7 +1,7 @@
 """Recipe bridge that admits only restart-verified canonical training-data v2 bundles.
 
 Historical bundle v1 readers remain available. New authoritative recipes should enter here: the
-neutral bundle is reopened, its canonical receipt is then independently verified by the relevant
+neutral bundle is reopened, its outer canonical receipt is independently verified by the relevant
 Grounded/Dynamic v2 authority (including retained lineage artifacts), bundle identities are
 cross-checked against that authority, and only then is the existing deterministic recipe emitter
 invoked. No model is loaded and no training executes here.
@@ -34,10 +34,29 @@ from training.grounded_supervision_pipeline import RetrieverCouplingConfig
 from training.local_artifact_loading import LocalArtifactTreeBinding
 
 
+def _outer_canonical_receipt_path(bundle: CanonicalTrainingDataBundle) -> Path:
+    """Resolve the outer v2 canonical receipt without overloading dataset_receipt_path.
+
+    Grounded v2 has no nested final-dataset publication receipt, so its neutral historical field
+    remains the outer canonical receipt. Dynamic v2 has a nested ``published`` dataset authority;
+    its dataset_receipt_path points there and the outer canonical receipt is the grandparent's
+    canonical root child.
+    """
+    selected = Path(bundle.dataset_receipt_path)
+    if bundle.kind == "grounded_generation":
+        return selected
+    if bundle.kind == "dynamic_rag_policy":
+        if selected.name != "publication_receipt.json" or selected.parent.name != "published":
+            raise ValueError("dynamic canonical bundle dataset receipt is not the canonical published receipt")
+        return selected.parent.parent / "canonical_receipt.json"
+    raise ValueError("unsupported canonical training bundle kind")
+
+
 def read_authoritative_canonical_training_bundle(path: str | Path) -> CanonicalTrainingDataBundle:
     bundle = read_canonical_training_data_bundle(path)
+    canonical_receipt_path = _outer_canonical_receipt_path(bundle)
     if bundle.kind == "grounded_generation":
-        verified = verify_authoritative_grounded_canonical_training_data(bundle.dataset_receipt_path)
+        verified = verify_authoritative_grounded_canonical_training_data(canonical_receipt_path)
         manifest_sha = verified.manifest.manifest_digest
         canonical_sha = verified.receipt.receipt_sha256
         expected_splits = {
@@ -45,7 +64,7 @@ def read_authoritative_canonical_training_bundle(path: str | Path) -> CanonicalT
             for item in verified.receipt.splits
         }
     elif bundle.kind == "dynamic_rag_policy":
-        verified = verify_authoritative_dynamic_canonical_training_data(bundle.dataset_receipt_path)
+        verified = verify_authoritative_dynamic_canonical_training_data(canonical_receipt_path)
         manifest_sha = verified.dataset.manifest.manifest_digest
         canonical_sha = verified.receipt.receipt_sha256
         expected_splits = {
