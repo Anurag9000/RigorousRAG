@@ -9,7 +9,9 @@ from typing import Any, Mapping, Sequence
 
 from orchestration.authoritative_advanced_runtime_bundle import (
     build_authoritative_advanced_runtime_bundle,
-    verify_authoritative_advanced_runtime_bundle,
+)
+from orchestration.strict_advanced_runtime_bundle_verification import (
+    verify_strict_authoritative_advanced_runtime_bundle,
 )
 from training.advanced_path_authority import safe_advanced_path
 
@@ -18,11 +20,19 @@ _MAX_COMPONENTS = 1_000
 
 
 def _read(path: str | Path) -> Mapping[str, Any]:
-    source = safe_advanced_path(path, label="advanced runtime bundle config", must_exist=True, require_file=True)
+    source = safe_advanced_path(
+        path,
+        label="advanced runtime bundle config",
+        must_exist=True,
+        require_file=True,
+    )
     if source.stat().st_size <= 0 or source.stat().st_size > _MAX_CONFIG_BYTES:
         raise ValueError("advanced runtime bundle config exceeds byte safety bound")
     try:
-        value = json.loads(source.read_text(encoding="utf-8", errors="strict"), parse_constant=lambda token: (_ for _ in ()).throw(ValueError(token)))
+        value = json.loads(
+            source.read_text(encoding="utf-8", errors="strict"),
+            parse_constant=lambda token: (_ for _ in ()).throw(ValueError(token)),
+        )
     except Exception as exc:
         raise ValueError("advanced runtime bundle config is not strict JSON") from exc
     if not isinstance(value, Mapping):
@@ -44,12 +54,26 @@ def _finite(value: Any, label: str, *, allow_none: bool = False) -> float | None
 def build_runtime_bundle_from_config(path: str | Path) -> Mapping[str, object]:
     raw = _read(path)
     required = {
-        "schema", "output_dir", "stack_id", "advanced_sources", "other_components",
-        "retrieval_contract_sha256", "generation_contract_sha256", "compatibility_sha256",
-        "source_revision", "valid_from", "expires_at",
+        "schema",
+        "output_dir",
+        "stack_id",
+        "advanced_sources",
+        "other_components",
+        "retrieval_contract_sha256",
+        "generation_contract_sha256",
+        "compatibility_sha256",
+        "source_revision",
+        "valid_from",
+        "expires_at",
     }
-    if set(raw) != required or raw.get("schema") != "rigorousrag-authoritative-advanced-runtime-bundle-config/v1":
-        raise ValueError("config must be rigorousrag-authoritative-advanced-runtime-bundle-config/v1")
+    if (
+        set(raw) != required
+        or raw.get("schema")
+        != "rigorousrag-authoritative-advanced-runtime-bundle-config/v1"
+    ):
+        raise ValueError(
+            "config must be rigorousrag-authoritative-advanced-runtime-bundle-config/v1"
+        )
     advanced = raw["advanced_sources"]
     others = raw["other_components"]
     if not isinstance(advanced, list) or not advanced or len(advanced) > _MAX_COMPONENTS:
@@ -70,11 +94,11 @@ def build_runtime_bundle_from_config(path: str | Path) -> Mapping[str, object]:
         expires_at=expires_at,
         output_dir=raw["output_dir"],
     )
-    verified = verify_authoritative_advanced_runtime_bundle(
+    verified = verify_strict_authoritative_advanced_runtime_bundle(
         Path(raw["output_dir"]) / "bundle_receipt.json"
     )
     if verified.receipt_sha256 != receipt.receipt_sha256:
-        raise RuntimeError("advanced runtime bundle changed during reconstruction")
+        raise RuntimeError("advanced runtime bundle changed during strict reconstruction")
     return {
         "stack_sha256": receipt.stack_sha256,
         "offline_quality_evidence_sha256": receipt.offline_quality_evidence_sha256,
@@ -93,7 +117,7 @@ def build_runtime_bundle_from_config(path: str | Path) -> Mapping[str, object]:
 
 
 def verify_runtime_bundle(path: str | Path) -> Mapping[str, object]:
-    receipt = verify_authoritative_advanced_runtime_bundle(path)
+    receipt = verify_strict_authoritative_advanced_runtime_bundle(path)
     return {
         "stack_sha256": receipt.stack_sha256,
         "offline_quality_evidence_sha256": receipt.offline_quality_evidence_sha256,
@@ -106,7 +130,7 @@ def verify_runtime_bundle(path: str | Path) -> Mapping[str, object]:
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="rigorousrag-runtime-bundle",
-        description="Build or verify a restart-verifiable promoted advanced runtime stack bundle",
+        description="Build or strictly verify a restart-verifiable promoted advanced runtime stack bundle",
     )
     sub = parser.add_subparsers(dest="command", required=True)
     build = sub.add_parser("build")
