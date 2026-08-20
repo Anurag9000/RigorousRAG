@@ -1,10 +1,10 @@
 """Production advanced-evaluation evidence with persisted evaluator provenance.
 
-This v3 envelope binds the existing checkpoint/cohort/result evidence to an
-``EvaluatorBoundEvaluationCohort``.  Restart verification therefore proves the evaluator
-receipt/config/source/metric schema as well as benchmark/sample universe and detailed result
-artifacts.  Historical v1/v2 evidence remains available for research compatibility, while
-production promotion can require this stronger envelope.
+The v3 envelope binds checkpoint/cohort/result evidence to an
+``EvaluatorBoundEvaluationCohort``. Production construction and restart verification also
+require the evaluator semantics implemented by the result authority: one row per authorized
+sample, row+aggregate metrics, and arithmetic-mean aggregation over the exact cohort.
+Historical v1/v2 evidence remains available through its original compatibility modules.
 """
 from __future__ import annotations
 
@@ -24,9 +24,11 @@ from evaluation.cohort_bound_advanced_evaluation import (
     write_cohort_bound_advanced_evaluation_evidence,
 )
 from evaluation.evaluator_bound_evaluation_cohort import (
-    EvaluatorBoundEvaluationCohort,
     verify_evaluator_bound_evaluation_cohort,
     verify_result_against_evaluator_bound_cohort,
+)
+from evaluation.strict_production_evaluator_contract import (
+    assert_strict_production_evaluator_contract,
 )
 from training.advanced_path_authority import safe_advanced_path
 from training.advanced_rag_run_binding import VerifiedAdvancedCheckpointBinding
@@ -85,6 +87,15 @@ def _atomic(path: Path, payload: bytes) -> None:
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)
+
+
+def _strict_aggregation(value: Any) -> str:
+    if value != "mean":
+        raise ValueError(
+            "production evaluator-bound evidence requires aggregation='mean' to match "
+            "arithmetic_mean_over_exact_cohort"
+        )
+    return "mean"
 
 
 @dataclass(frozen=True)
@@ -151,16 +162,21 @@ def build_evaluator_bound_advanced_evaluation_evidence(
     evaluation_receipt_path: str | Path,
     cohort_evidence_path: str | Path,
 ) -> tuple[AdvancedEvaluationReceipt, EvaluatorBoundAdvancedEvaluationEvidence]:
+    aggregation = _strict_aggregation(aggregation)
     evaluator_cohort_path = safe_advanced_path(
         evaluator_bound_cohort_path,
         label="evaluator-bound evaluation cohort",
         must_exist=True,
         require_file=True,
     )
-    evaluator_binding, cohort, _ = verify_evaluator_bound_evaluation_cohort(
+    evaluator_binding, cohort, evaluator = verify_evaluator_bound_evaluation_cohort(
         evaluator_cohort_path
     )
-    for result_path in result_receipt_paths:
+    assert_strict_production_evaluator_contract(evaluator)
+    selected_results = tuple(result_receipt_paths)
+    if not selected_results:
+        raise ValueError("production evaluation evidence requires at least one result receipt")
+    for result_path in selected_results:
         verify_result_against_evaluator_bound_cohort(
             result_path,
             evaluator_bound_cohort_path=evaluator_cohort_path,
@@ -168,10 +184,12 @@ def build_evaluator_bound_advanced_evaluation_evidence(
     evaluation, cohort_evidence = build_cohort_bound_advanced_evaluation_evidence(
         binding,
         cohort_contract_path=evaluator_binding.cohort_contract_path,
-        result_receipt_paths=result_receipt_paths,
+        result_receipt_paths=selected_results,
         aggregation=aggregation,
         evaluation_receipt_path=evaluation_receipt_path,
     )
+    if evaluation.aggregation != "mean":
+        raise RuntimeError("production evaluation receipt escaped strict mean aggregation")
     cohort_output = safe_advanced_path(
         cohort_evidence_path,
         label="cohort-bound advanced evaluation evidence destination",
@@ -187,6 +205,7 @@ def build_evaluator_bound_advanced_evaluation_evidence(
         verified_evaluation.receipt_sha256 != evaluation.receipt_sha256
         or verified_cohort_evidence.evidence_sha256 != cohort_evidence.evidence_sha256
         or verified_cohort_evidence.cohort_contract_sha256 != cohort.contract_sha256
+        or verified_evaluation.aggregation != "mean"
     ):
         raise RuntimeError("cohort-bound evaluation changed during evaluator-bound publication")
     unsigned = {
@@ -204,9 +223,7 @@ def build_evaluator_bound_advanced_evaluation_evidence(
         cohort_evidence_file_sha256=unsigned["cohort_evidence_file_sha256"],
         cohort_evidence_sha256=cohort_evidence.evidence_sha256,
         evaluator_bound_cohort_path=str(evaluator_cohort_path),
-        evaluator_bound_cohort_file_sha256=unsigned[
-            "evaluator_bound_cohort_file_sha256"
-        ],
+        evaluator_bound_cohort_file_sha256=unsigned["evaluator_bound_cohort_file_sha256"],
         evaluator_bound_cohort_sha256=evaluator_binding.contract_sha256,
         evaluation_receipt_sha256=evaluation.receipt_sha256,
         evidence_sha256=_digest(unsigned),
@@ -280,14 +297,17 @@ def verify_evaluator_bound_advanced_evaluation_evidence(
         raise ValueError("cohort evaluation evidence bytes changed after publication")
     if _file_sha(Path(evidence.evaluator_bound_cohort_path)) != evidence.evaluator_bound_cohort_file_sha256:
         raise ValueError("evaluator-bound cohort bytes changed after evaluation publication")
-    evaluator_binding, _, _ = verify_evaluator_bound_evaluation_cohort(
+    evaluator_binding, _, evaluator = verify_evaluator_bound_evaluation_cohort(
         evidence.evaluator_bound_cohort_path
     )
+    assert_strict_production_evaluator_contract(evaluator)
     if evaluator_binding.contract_sha256 != evidence.evaluator_bound_cohort_sha256:
         raise ValueError("evaluator-bound cohort identity changed after evaluation publication")
     evaluation, cohort_evidence = verify_cohort_bound_advanced_evaluation_evidence(
         evidence.cohort_evidence_path
     )
+    if evaluation.aggregation != "mean":
+        raise ValueError("production evaluator-bound evidence requires mean aggregation")
     if (
         cohort_evidence.evidence_sha256 != evidence.cohort_evidence_sha256
         or evaluation.receipt_sha256 != evidence.evaluation_receipt_sha256
