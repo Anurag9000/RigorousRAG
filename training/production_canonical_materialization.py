@@ -47,7 +47,8 @@ def _sidecar(raw: Any, provider_type: Any, label: str, *, required: bool = False
     return provider_type(raw)
 
 
-def _close_sidecars(*providers: Any | None) -> None:
+def _close_sidecars(*providers: Any | None) -> Exception | None:
+    """Attempt all provider closes and return the first cleanup failure, if any."""
     first_error: Exception | None = None
     for provider in providers:
         if provider is None:
@@ -57,11 +58,10 @@ def _close_sidecars(*providers: Any | None) -> None:
             continue
         try:
             closer()
-        except Exception as exc:  # cleanup must attempt every provider before surfacing failure.
+        except Exception as exc:
             if first_error is None:
                 first_error = exc
-    if first_error is not None:
-        raise RuntimeError("failed to close one or more dynamic supervision sidecars") from first_error
+    return first_error
 
 
 def run_production_grounded_canonical_materialization_config(raw: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -141,6 +141,7 @@ def run_production_dynamic_canonical_materialization_config(raw: Mapping[str, An
         WorkerLocalCounterfactualActionProvider,
         "counterfactual_sidecar_receipt",
     )
+    primary_error: BaseException | None = None
     try:
         require_need = _boolean(value.get("require_need_annotations", True), "require_need_annotations")
         if require_need and annotation is None:
@@ -183,8 +184,13 @@ def run_production_dynamic_canonical_materialization_config(raw: Mapping[str, An
             "bundle_sha256": None if bundle is None else bundle.bundle_sha256,
             "sidecar_lookup_authority": "worker_local_immutable_sqlite/v1",
         }
+    except BaseException as exc:
+        primary_error = exc
+        raise
     finally:
-        _close_sidecars(annotation, gain, logged_value, counterfactual)
+        cleanup_error = _close_sidecars(annotation, gain, logged_value, counterfactual)
+        if cleanup_error is not None and primary_error is None:
+            raise RuntimeError("failed to close one or more dynamic supervision sidecars") from cleanup_error
 
 
 __all__ = [
