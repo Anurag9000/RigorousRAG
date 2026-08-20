@@ -2,8 +2,9 @@
 
 The underlying recorder primitives live in ``dynamic_training_episode_recording``. This entry
 preserves their exact observation semantics, binds structural feature fractions to the exact
-runtime policy, writes the final-path receipt as plain canonical JSON while staging, renames the
-closed directory, and only then instantiates the receipt through the strict production verifier.
+runtime policy, retains the exact finite action-score map used by deterministic server selection,
+writes the final-path receipt while staging, renames the closed directory, and only then verifies
+the final publication.
 """
 from __future__ import annotations
 
@@ -14,7 +15,7 @@ import shutil
 import tempfile
 from dataclasses import replace
 from pathlib import Path
-from typing import Sequence
+from typing import Mapping, Sequence
 
 from orchestration.dynamic_feature_authority import BoundDynamicModelContextProvider
 from orchestration.dynamic_rag_runtime import (
@@ -45,8 +46,40 @@ from orchestration.dynamic_training_episode_recording import (
 from orchestration.runtime_bound_dynamic_features import RuntimeBoundDynamicFeatureProvider
 from orchestration.strict_dynamic_training_episode_io import verify_recorded_dynamic_episode_strict
 from training.advanced_path_authority import safe_advanced_path
+from training.dynamic_retrieval_policy import DynamicRetrievalAction
 
 _MAX_LINE_BYTES = 64 * 1024 * 1024
+
+
+class _ScoreProvenEpisodeBuffer(_EpisodeBuffer):
+    """Retain the exact score map consumed by the server selector for restart proof."""
+
+    def observe_scores(
+        self,
+        snapshot_sha256: str,
+        scores: Mapping[DynamicRetrievalAction, float],
+    ) -> None:
+        normalized = {
+            (
+                raw_action
+                if isinstance(raw_action, DynamicRetrievalAction)
+                else DynamicRetrievalAction(raw_action)
+            ).value: _finite(raw_score, "action score")
+            for raw_action, raw_score in scores.items()
+        }
+        super().observe_scores(snapshot_sha256, scores)
+        if not self.steps:
+            raise RuntimeError("recording buffer did not append a step after policy scores")
+        last = self.steps[-1]
+        metadata = dict(last.metadata)
+        metadata["action_scores_json"] = json.dumps(
+            dict(sorted(normalized.items())),
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
+        )
+        self.steps[-1] = replace(last, metadata=metadata)
 
 
 def run_authoritative_recorded_dynamic_rag_episode(
@@ -79,7 +112,7 @@ def run_authoritative_recorded_dynamic_rag_episode(
     policy_contract_sha = _sha(getattr(policy_provider, "contract_sha256", None), "policy contract_sha256")
     context_sha = _sha(getattr(context_provider, "contract_sha256", None), "context provider contract_sha256")
     terminal_sha = None if terminal_utility_provider is None else _sha(getattr(terminal_utility_provider, "contract_sha256", None), "terminal utility provider contract_sha256")
-    buffer = _EpisodeBuffer(
+    buffer = _ScoreProvenEpisodeBuffer(
         episode_id=episode_id,
         request_sha256=selected_request,
         runtime_policy=runtime_policy,
