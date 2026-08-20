@@ -12,7 +12,10 @@ from training.authoritative_canonical_materialization import (
     run_grounded_canonical_materialization_config,
 )
 from training.governed_grounded_io import verify_governed_grounded_import
-from training.production_canonical_limits import assert_production_split_sequence
+from training.production_canonical_limits import (
+    assert_production_split_count,
+    assert_production_split_sequence,
+)
 
 _MAX_CONFIG_BYTES = 16 * 1024 * 1024
 
@@ -52,17 +55,11 @@ def run_canonical_materialization_config(path: str | Path) -> Mapping[str, Any]:
     if schema == "rigorousrag-authoritative-grounded-canonical-materialization-config/v1":
         _assert_grounded_source_limit(raw)
         result = run_grounded_canonical_materialization_config(raw)
-        assert_production_split_sequence(
-            tuple(range(int(result["split_count"]))),
-            label="grounded canonical output splits",
-        )
+        assert_production_split_count(int(result["split_count"]), label="grounded canonical output split count")
         return result
     if schema == "rigorousrag-authoritative-dynamic-canonical-materialization-config/v1":
         result = run_dynamic_canonical_materialization_config(raw)
-        assert_production_split_sequence(
-            tuple(range(int(result["split_count"]))),
-            label="dynamic canonical output splits",
-        )
+        assert_production_split_count(int(result["split_count"]), label="dynamic canonical output split count")
         return result
     raise ValueError("unsupported authoritative canonical materialization config schema")
 
