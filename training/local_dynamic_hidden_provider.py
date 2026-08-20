@@ -65,36 +65,28 @@ def _move(inputs: Mapping[str, Any], device: Any) -> dict[str, Any]:
     }
 
 
-def _hidden(output: Any, *, generator_family: str) -> Any:
-    """Return the final encoder/generator hidden sequence as [B,T,H]."""
+def _hidden(output: Any) -> Any:
+    """Return a final hidden sequence as [B,T,H] from a model/encoder output."""
     _require_torch()
-    if generator_family == "seq2seq_lm":
-        value = (
-            output.get("encoder_last_hidden_state")
-            if isinstance(output, Mapping)
-            else getattr(output, "encoder_last_hidden_state", None)
-        )
-        if value is None:
-            hidden_states = (
-                output.get("encoder_hidden_states")
-                if isinstance(output, Mapping)
-                else getattr(output, "encoder_hidden_states", None)
-            )
-            if hidden_states:
-                value = hidden_states[-1]
-    else:
+    value = (
+        output.get("last_hidden_state")
+        if isinstance(output, Mapping)
+        else getattr(output, "last_hidden_state", None)
+    )
+    if value is None:
         hidden_states = (
             output.get("hidden_states")
             if isinstance(output, Mapping)
             else getattr(output, "hidden_states", None)
         )
-        value = hidden_states[-1] if hidden_states else None
-        if value is None:
-            value = (
-                output.get("last_hidden_state")
-                if isinstance(output, Mapping)
-                else getattr(output, "last_hidden_state", None)
-            )
+        if hidden_states:
+            value = hidden_states[-1]
+    if value is None:
+        value = (
+            output.get("encoder_last_hidden_state")
+            if isinstance(output, Mapping)
+            else getattr(output, "encoder_last_hidden_state", None)
+        )
     if value is None or not torch.is_tensor(value) or value.ndim != 3:
         raise ValueError("local generator must expose a final [B,T,H] hidden sequence")
     return value
@@ -138,8 +130,9 @@ class LocalGeneratorHiddenStateProvider:
 
     ``encode`` accepts a bounded batch of exact context strings and returns:
     ``token_hidden`` [B,T,H], ``state_hidden`` [B,H], and ``attention_mask`` [B,T].
-    The canonical v2 materializer currently calls this with batch size one, while the batch
-    contract keeps the provider useful for future batched materialization without another API.
+    Encoder-decoder models are evaluated through their encoder directly so no synthetic decoder
+    inputs are required.  The canonical v2 materializer currently calls this with batch size one,
+    while the batch contract keeps the provider reusable for later batched materialization.
     """
 
     def __init__(
@@ -203,20 +196,37 @@ class LocalGeneratorHiddenStateProvider:
         device = _device(self.model)
         model_inputs = _move(dict(encoded), device)
         with torch.no_grad():
-            output = self.model(
-                **model_inputs,
-                output_hidden_states=True,
-                return_dict=True,
-            )
-        token_hidden = _hidden(output, generator_family=self.config.generator_family)
+            if self.config.generator_family == "seq2seq_lm":
+                get_encoder = getattr(self.model, "get_encoder", None)
+                if not callable(get_encoder):
+                    raise ValueError("seq2seq local generator must expose get_encoder()")
+                encoder = get_encoder()
+                output = encoder(
+                    **model_inputs,
+                    output_hidden_states=True,
+                    return_dict=True,
+                )
+            else:
+                output = self.model(
+                    **model_inputs,
+                    output_hidden_states=True,
+                    return_dict=True,
+                )
+        token_hidden = _hidden(output)
         if token_hidden.size(0) != len(selected) or token_hidden.size(1) != attention.size(1):
             raise ValueError("generator hidden sequence does not align with tokenizer attention mask")
 
         visible_device = visible.to(device=token_hidden.device)
         if self.config.pooling == "last_visible":
-            positions = visible_device.long().sum(dim=1) - 1
+            positions = torch.arange(
+                token_hidden.size(1),
+                device=token_hidden.device,
+            ).unsqueeze(0).expand(token_hidden.size(0), -1)
+            last_visible = positions.masked_fill(~visible_device, -1).max(dim=1).values
+            if bool((last_visible < 0).any().item()):
+                raise ValueError("local tokenizer produced no visible token for state pooling")
             rows = torch.arange(token_hidden.size(0), device=token_hidden.device)
-            state_hidden = token_hidden[rows, positions]
+            state_hidden = token_hidden[rows, last_visible]
         else:
             weights = visible_device.to(dtype=token_hidden.dtype).unsqueeze(-1)
             denominator = weights.sum(dim=1).clamp_min(1.0)
