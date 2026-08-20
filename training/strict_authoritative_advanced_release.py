@@ -1,4 +1,4 @@
-"""Strict production qualification helper for evaluator-bound advanced releases."""
+"""Strict production qualification and verification helpers for advanced releases."""
 from __future__ import annotations
 
 import json
@@ -46,10 +46,7 @@ def _read_policy(path: str | Path) -> MetricQualificationPolicy:
         raise ValueError(
             "promotion policy must be rigorousrag-advanced-promotion-policy-config/v1"
         )
-    return MetricQualificationPolicy(
-        minimum=raw["minimum"],
-        maximum=raw["maximum"],
-    )
+    return MetricQualificationPolicy(minimum=raw["minimum"], maximum=raw["maximum"])
 
 
 def qualify_artifact_strictly(
@@ -97,4 +94,29 @@ def qualify_artifact_strictly(
     }
 
 
-__all__ = ["qualify_artifact_strictly"]
+def verify_promotion_strictly(
+    artifact_directory: str | Path,
+    promotion_evidence_path: str | Path,
+) -> Mapping[str, Any]:
+    directory = safe_advanced_path(
+        artifact_directory,
+        label="advanced artifact directory",
+        must_exist=True,
+        require_directory=True,
+    )
+    manifest = read_advanced_artifact_manifest(directory)
+    evidence = read_authoritative_advanced_promotion_evidence(promotion_evidence_path)
+    assert_strict_authoritative_advanced_promotion(manifest, evidence)
+    return {
+        "artifact_sha256": manifest.artifact_sha256,
+        "promoted": evidence.promoted,
+        "reason_codes": list(evidence.reason_codes),
+        "policy_sha256": evidence.policy_sha256,
+        "metrics_sha256": evidence.metrics_sha256,
+        "evaluation_receipt_sha256": evidence.evaluation_receipt_sha256,
+        "authoritative_evaluation_evidence_sha256": evidence.authoritative_evaluation_evidence_sha256,
+        "authoritative_promotion_evidence_sha256": evidence.evidence_sha256,
+    }
+
+
+__all__ = ["qualify_artifact_strictly", "verify_promotion_strictly"]
