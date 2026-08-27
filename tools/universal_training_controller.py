@@ -1,4 +1,405 @@
 #!/usr/bin/env python3
-import base64,gzip
-_PAYLOAD = """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"""
-exec(compile(gzip.decompress(base64.b64decode(_PAYLOAD)), __file__, "exec"))
+"""Cross-repository training controller using the literal OPF_ADP scheduler.
+
+The training job catalog is repository-specific. Scheduling is not: after the
+catalog is compiled into OPF JobSpec objects, the original pinned
+utils/opf_massive_suite_runner.py executes unchanged.
+"""
+from __future__ import annotations
+
+import hashlib
+import importlib.util
+import json
+import os
+import re
+import shlex
+import shutil
+import subprocess
+import sys
+import urllib.request
+from pathlib import Path
+from typing import Any, Dict, Iterable, List, Sequence, Tuple
+
+OPF_REFERENCE_REPOSITORY = "Anurag9000/OPF_ADP"
+OPF_REFERENCE_COMMIT = "a3c41f7c25f21977f1ff33e94a65b6450afabee9"
+OPF_RAW_ROOT = f"https://raw.githubusercontent.com/{OPF_REFERENCE_REPOSITORY}/{OPF_REFERENCE_COMMIT}"
+OPF_RUNTIME_BLOBS = {
+    "utils/opf_massive_suite_runner.py": "314dc390955e54c7ca35589e3008068155f9fb44",
+    "utils/runtime_tuning.py": "f1cbfc44e009701a5540a046f2cd6b9f41f16b74",
+    "utils/ml_backends.py": "2fe2b24e530cab3d747c983c4457f4080703512f",
+    "utils/logging_utils.py": "482ba94643aa921f49eebb835f29cf4930bb2498",
+    "utils/opf_shared_defaults.py": "76ad434ecef1f708c835210d4bc86e0717999d99",
+    "DNN/VANILLA/Dyn_DNN4OPF/utils/run_defaults.py": "dacb9a2c44d611c045fbb7512ba5327343f79a85",
+}
+OPF_RUNTIME_FILES = tuple(OPF_RUNTIME_BLOBS)
+CONTROLLER_SCHEMA = 2
+TRAINING_NAME_RE = re.compile(
+    r"(?:^|[_\-.])(train|training|finetune|fine[_-]?tune|fit|experiment|experiments|sweep|search|optimi[sz]e|continual|adapt|ppo|dqn|reinforce|policy|rl)(?:[_\-.]|$)",
+    re.IGNORECASE,
+)
+TRAINING_BODY_RE = re.compile(
+    r"(optimizer\s*=|torch\.optim|\.backward\s*\(|\.fit\s*\(|\bTrainer\s*\(|model\.train\s*\(|loss\.backward\s*\(|\bPPO\s*\(|\bDQN\s*\(|\bREINFORCE\b|\blearn\s*\(|train_one_epoch|training_step)",
+    re.IGNORECASE,
+)
+SKIP_PARTS = {".git", ".training_control", "__pycache__", ".venv", "venv", "env", "node_modules", "results", "result", "outputs", "output", "checkpoints", "artifacts", "dist", "build", "docs", "doc"}
+SCRIPT_SUFFIXES = {".py", ".sh", ".ps1", ".bat", ".cmd"}
+
+
+def _git_blob_sha(data: bytes) -> str:
+    header = f"blob {len(data)}\0".encode("ascii")
+    return hashlib.sha1(header + data).hexdigest()
+
+
+def _verify_reference_file(relative: str, data: bytes) -> None:
+    expected = OPF_RUNTIME_BLOBS[relative]
+    actual = _git_blob_sha(data)
+    if actual != expected:
+        raise RuntimeError(
+            f"Pinned OPF reference blob mismatch for {relative}: "
+            f"expected {expected}, got {actual}"
+        )
+
+
+def _slug(value: str) -> str:
+    text = re.sub(r"[^A-Za-z0-9._-]+", "-", str(value).strip()).strip("-")
+    return text or "job"
+
+
+def _load_profile() -> Dict[str, Any]:
+    raw = os.environ.get("TRAINING_CONTROL_PROFILE", "").strip()
+    if not raw:
+        return {}
+    value = json.loads(raw)
+    if not isinstance(value, dict):
+        raise SystemExit("TRAINING_CONTROL_PROFILE must be a JSON object")
+    return value
+
+
+def _repo_root() -> Path:
+    explicit = os.environ.get("TRAINING_CONTROL_REPO_ROOT", "").strip()
+    return (Path(explicit) if explicit else Path.cwd()).resolve()
+
+
+def _write_atomic(path: Path, data: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_suffix(path.suffix + ".tmp")
+    temp.write_bytes(data)
+    os.replace(temp, path)
+
+
+def _download(url: str) -> bytes:
+    request = urllib.request.Request(url, headers={"User-Agent": "opf-parity-training-controller/2"})
+    with urllib.request.urlopen(request, timeout=120) as response:
+        return response.read()
+
+
+def _prepare_opf_runtime(root: Path) -> Path:
+    cache = root / ".training_control" / "opf_reference" / OPF_REFERENCE_COMMIT
+    marker = cache / "REFERENCE.json"
+    expected_marker = {"repository": OPF_REFERENCE_REPOSITORY, "commit": OPF_REFERENCE_COMMIT, "files": OPF_RUNTIME_BLOBS}
+    if marker.is_file():
+        try:
+            current = json.loads(marker.read_text(encoding="utf-8"))
+        except Exception:
+            current = None
+        if current == expected_marker and all((cache / rel).is_file() for rel in OPF_RUNTIME_FILES):
+            cache_valid = True
+            for relative in OPF_RUNTIME_FILES:
+                try:
+                    _verify_reference_file(relative, (cache / relative).read_bytes())
+                except Exception:
+                    cache_valid = False
+                    break
+            if cache_valid:
+                return cache
+    for relative in OPF_RUNTIME_FILES:
+        destination = cache / relative
+        data = _download(f"{OPF_RAW_ROOT}/{relative}")
+        _verify_reference_file(relative, data)
+        _write_atomic(destination, data)
+    for relative in (
+        "utils/__init__.py",
+        "DNN/__init__.py",
+        "DNN/VANILLA/__init__.py",
+        "DNN/VANILLA/Dyn_DNN4OPF/__init__.py",
+        "DNN/VANILLA/Dyn_DNN4OPF/utils/__init__.py",
+    ):
+        path = cache / relative
+        if not path.exists():
+            _write_atomic(path, b"")
+    _write_atomic(marker, (json.dumps(expected_marker, indent=2, sort_keys=True) + "\n").encode())
+    return cache
+
+
+def _import_opf_scheduler(cache: Path):
+    for name in list(sys.modules):
+        if name == "utils" or name.startswith("utils.") or name == "Dyn_DNN4OPF" or name.startswith("Dyn_DNN4OPF."):
+            del sys.modules[name]
+    sys.path.insert(0, str(cache))
+    sys.path.insert(0, str(cache / "DNN" / "VANILLA"))
+    path = cache / "utils" / "opf_massive_suite_runner.py"
+    spec = importlib.util.spec_from_file_location("opf_reference_massive_suite_runner", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Cannot import OPF reference scheduler from {path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _command_for_path(root: Path, relative: str) -> List[str]:
+    path = (root / relative).resolve()
+    suffix = path.suffix.lower()
+    if suffix == ".py":
+        return [sys.executable, str(path)]
+    if suffix == ".sh":
+        return [shutil.which("bash") or shutil.which("sh") or "bash", str(path)]
+    if suffix == ".ps1":
+        return [shutil.which("pwsh") or shutil.which("powershell") or "pwsh", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(path)]
+    if suffix in {".bat", ".cmd"}:
+        return ["cmd.exe", "/d", "/c", str(path)]
+    return [str(path)]
+
+
+def _normalize_command(root: Path, value: Any) -> List[str]:
+    if isinstance(value, str):
+        parts = shlex.split(value, posix=(os.name != "nt"))
+    elif isinstance(value, (list, tuple)):
+        parts = [str(item) for item in value]
+    else:
+        raise ValueError(f"Unsupported command value: {value!r}")
+    if not parts:
+        raise ValueError("Training job command may not be empty")
+    first = parts[0]
+    candidate = root / first
+    if not os.path.isabs(first) and candidate.exists():
+        if len(parts) == 1:
+            return _command_for_path(root, first)
+        if candidate.suffix.lower() == ".py":
+            return [sys.executable, str(candidate.resolve()), *parts[1:]]
+        if candidate.suffix.lower() == ".sh":
+            return [shutil.which("bash") or "bash", str(candidate.resolve()), *parts[1:]]
+        if candidate.suffix.lower() == ".ps1":
+            return [shutil.which("pwsh") or shutil.which("powershell") or "pwsh", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(candidate.resolve()), *parts[1:]]
+    return parts
+
+
+def _dedupe_jobs(records: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    answer: List[Dict[str, Any]] = []
+    seen: set[Tuple[str, ...]] = set()
+    for record in records:
+        key = tuple(str(part) for part in record["command"])
+        if key not in seen:
+            seen.add(key)
+            answer.append(record)
+    return answer
+
+
+def _job_records(root: Path, profile: Dict[str, Any]) -> List[Dict[str, Any]]:
+    explicit = profile.get("jobs")
+    records: List[Dict[str, Any]] = []
+    if isinstance(explicit, list):
+        for index, item in enumerate(explicit):
+            if not isinstance(item, dict):
+                raise SystemExit(f"profile.jobs[{index}] must be an object")
+            command_value = item.get("command") or item.get("entrypoint")
+            if not command_value:
+                raise SystemExit(f"profile.jobs[{index}] has no command/entrypoint")
+            records.append({
+                "id": str(item.get("id") or item.get("name") or f"job-{index:04d}"),
+                "command": _normalize_command(root, command_value),
+                "device_capable": bool(item.get("device_capable", True)),
+                "phase": str(item.get("phase") or "training"),
+                "family": str(item.get("family") or "generic"),
+                "repeat_index": int(item.get("repeat_index", 0)),
+            })
+        return _dedupe_jobs(records)
+    for relative in profile.get("preferred_training_entrypoints", []) or []:
+        relative = str(relative)
+        if (root / relative).is_file():
+            records.append({"id": relative, "command": _command_for_path(root, relative), "device_capable": True, "phase": "training", "family": "entrypoint", "repeat_index": 0})
+    for index, item in enumerate(profile.get("extra_jobs", []) or []):
+        if isinstance(item, str):
+            records.append({"id": item, "command": _normalize_command(root, item), "device_capable": True, "phase": "training", "family": "extra", "repeat_index": 0})
+        elif isinstance(item, dict):
+            command_value = item.get("command") or item.get("entrypoint")
+            if not command_value:
+                raise SystemExit(f"profile.extra_jobs[{index}] has no command/entrypoint")
+            records.append({
+                "id": str(item.get("id") or item.get("name") or f"extra-{index:04d}"),
+                "command": _normalize_command(root, command_value),
+                "device_capable": bool(item.get("device_capable", True)),
+                "phase": str(item.get("phase") or "training"),
+                "family": str(item.get("family") or "extra"),
+                "repeat_index": int(item.get("repeat_index", 0)),
+            })
+        else:
+            raise SystemExit(f"Unsupported extra job at index {index}")
+    return _dedupe_jobs(records)
+
+
+def _covered_paths(root: Path, profile: Dict[str, Any], jobs: Sequence[Dict[str, Any]]) -> set[str]:
+    covered = {str(item).replace("\\", "/") for item in (profile.get("ignore_entrypoints", []) or [])}
+    covered.update(str(item).replace("\\", "/") for item in (profile.get("dynamic_registry_covers", []) or []))
+    for job in jobs:
+        for part in job["command"]:
+            try:
+                path = Path(part)
+                if path.is_absolute():
+                    covered.add(path.resolve().relative_to(root).as_posix())
+                elif (root / path).exists():
+                    covered.add(path.as_posix())
+            except Exception:
+                pass
+    for item in profile.get("preferred_dataset_entrypoints", []) or []:
+        if (root / str(item)).is_file():
+            covered.add(str(item).replace("\\", "/"))
+    return covered
+
+
+def _candidate_training_entrypoints(root: Path) -> List[str]:
+    candidates: List[str] = []
+    for path in root.rglob("*"):
+        if not path.is_file() or path.suffix.lower() not in SCRIPT_SUFFIXES:
+            continue
+        relative = path.relative_to(root)
+        if any(part.lower() in SKIP_PARTS for part in relative.parts):
+            continue
+        rel = relative.as_posix()
+        if rel == "run_all_training.py":
+            continue
+        name_hit = bool(TRAINING_NAME_RE.search(path.stem))
+        body_hit = False
+        executable_hit = path.suffix.lower() != ".py"
+        try:
+            text = path.read_text(encoding="utf-8", errors="ignore")
+        except Exception:
+            text = ""
+        if path.suffix.lower() == ".py":
+            body_hit = bool(TRAINING_BODY_RE.search(text))
+            executable_hit = "__name__" in text and "__main__" in text
+        else:
+            body_hit = bool(re.search(r"\bpython(?:3)?\b|\btorchrun\b|\baccelerate\b", text, re.I))
+        if executable_hit and (name_hit or body_hit):
+            candidates.append(rel)
+    return sorted(set(candidates))
+
+
+def _coverage_report(root: Path, profile: Dict[str, Any], jobs: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
+    candidates = _candidate_training_entrypoints(root)
+    covered = _covered_paths(root, profile, jobs)
+    missing = [path for path in candidates if path not in covered]
+    preferred = [str(x).replace("\\", "/") for x in profile.get("preferred_training_entrypoints", []) or []]
+    stale_preferred = [path for path in preferred if not (root / path).is_file()]
+    explicit_missing: List[str] = []
+    for job in profile.get("jobs", []) or []:
+        if isinstance(job, dict) and job.get("entrypoint") and not (root / str(job["entrypoint"])).is_file():
+            explicit_missing.append(str(job["entrypoint"]))
+    return {
+        "schema": CONTROLLER_SCHEMA,
+        "repository": profile.get("repository"),
+        "opf_reference_repository": OPF_REFERENCE_REPOSITORY,
+        "opf_reference_commit": OPF_REFERENCE_COMMIT,
+        "compiled_job_count": len(jobs),
+        "compiled_jobs": [{"id": job["id"], "command": job["command"], "device_capable": job["device_capable"], "phase": job["phase"], "family": job["family"]} for job in jobs],
+        "training_candidates": candidates,
+        "uncovered_training_candidates": missing,
+        "stale_preferred_training_entrypoints": stale_preferred,
+        "missing_explicit_entrypoints": explicit_missing,
+        "coverage_ok": not missing and not explicit_missing,
+    }
+
+
+def _run_setup(root: Path, profile: Dict[str, Any]) -> None:
+    if os.environ.get("TRAINING_CONTROL_SKIP_SETUP") == "1":
+        return
+    commands = [_normalize_command(root, value) for value in (profile.get("setup_commands", []) or [])]
+    if not commands:
+        for relative in profile.get("preferred_dataset_entrypoints", []) or []:
+            if (root / str(relative)).is_file():
+                commands.append(_command_for_path(root, str(relative)))
+    seen: set[Tuple[str, ...]] = set()
+    for command in commands:
+        key = tuple(command)
+        if key in seen:
+            continue
+        seen.add(key)
+        print("[training-control] setup:", shlex.join(command), flush=True)
+        subprocess.run(command, cwd=root, check=True)
+
+
+def _custom_flags(argv: Sequence[str]) -> Tuple[Dict[str, bool], List[str]]:
+    flags = {"audit": False, "list_jobs": False, "skip_setup": False, "allow_uncovered": False}
+    forwarded: List[str] = []
+    for arg in argv:
+        if arg == "--audit-training-coverage": flags["audit"] = True
+        elif arg == "--list-training-jobs": flags["list_jobs"] = True
+        elif arg == "--skip-setup": flags["skip_setup"] = True
+        elif arg == "--allow-uncovered-training": flags["allow_uncovered"] = True
+        else: forwarded.append(arg)
+    return flags, forwarded
+
+
+def _ensure_opf_cli(argv: Sequence[str]) -> List[str]:
+    answer = list(argv)
+    if "--mode" not in answer: answer = ["--mode", "massive", *answer]
+    if "--results-dir" not in answer: answer.extend(["--results-dir", "Results/training_control"])
+    if "--post-launch-sample-delay-sec" not in answer: answer.extend(["--post-launch-sample-delay-sec", "60"])
+    if "--scheduler" not in answer: answer.extend(["--scheduler", "gpu_first"])
+    return answer
+
+
+def _builder_factory(root: Path, profile: Dict[str, Any], records: Sequence[Dict[str, Any]], opf):
+    repository = str(profile.get("repository") or root.name)
+    repo_slug = _slug(repository.split("/")[-1])
+    def build_suite_jobs(args, run_root, results_root):
+        specs = []
+        for record in records:
+            label = _slug(record["id"])
+            phase = _slug(record.get("phase") or "training")
+            family = _slug(record.get("family") or repo_slug)
+            repeat_index = int(record.get("repeat_index", 0))
+            case_name = f"{repo_slug}:{label}"
+            seed = opf.derive_suite_seed(int(args.seed), mode=str(args.mode), case_name=case_name, repeat_index=repeat_index, phase=phase, family=family, head_variant="single_head", depth=0, width=0)
+            job_id = opf.build_job_id(phase, case_name, repeat_index, label)
+            result_dir = Path(results_root) / "generic_jobs" / label
+            specs.append(opf.JobSpec(job_id=job_id, phase=phase, family=family, case_name=case_name, repeat_index=repeat_index, depth=0, width=0, seed=int(seed), results_dir=str(result_dir), command=tuple(record["command"]), device_capable=bool(record.get("device_capable", True)), head_variant="single_head"))
+        start = max(0, int(args.job_start_index))
+        specs = specs[start:]
+        if int(args.job_limit) > 0:
+            specs = specs[:int(args.job_limit)]
+        return specs
+    return build_suite_jobs
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    root = _repo_root()
+    profile = _load_profile()
+    flags, forwarded = _custom_flags(list(sys.argv[1:] if argv is None else argv))
+    if flags["skip_setup"]:
+        os.environ["TRAINING_CONTROL_SKIP_SETUP"] = "1"
+    records = _job_records(root, profile)
+    report = _coverage_report(root, profile, records)
+    report_path = root / ".training_control" / "coverage_report.json"
+    _write_atomic(report_path, (json.dumps(report, indent=2, sort_keys=True) + "\n").encode())
+    if flags["audit"] or flags["list_jobs"]:
+        print(json.dumps(report, indent=2, sort_keys=True))
+    if flags["audit"]:
+        return 0 if report["coverage_ok"] else 2
+    strict = bool(profile.get("strict_coverage", True)) and not flags["allow_uncovered"]
+    if strict and not report["coverage_ok"]:
+        raise SystemExit(f"Training coverage audit failed. See {report_path}. Use --allow-uncovered-training only for diagnosis.")
+    if not records:
+        print("[training-control] no trainable jobs declared/discovered; nothing to schedule")
+        return 0
+    _run_setup(root, profile)
+    cache = _prepare_opf_runtime(root)
+    opf = _import_opf_scheduler(cache)
+    opf.build_suite_jobs = _builder_factory(root, profile, records, opf)
+    sys.argv = [str(Path(__file__).resolve()), *_ensure_opf_cli(forwarded)]
+    opf.main()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
