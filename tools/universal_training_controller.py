@@ -278,9 +278,11 @@ def _candidate_training_entrypoints(root: Path) -> List[str]:
         if path.suffix.lower() == ".py":
             body_hit = bool(TRAINING_BODY_RE.search(text))
             executable_hit = "__name__" in text and "__main__" in text
+            candidate = executable_hit and (name_hit or body_hit)
         else:
             body_hit = bool(re.search(r"\bpython(?:3)?\b|\btorchrun\b|\baccelerate\b", text, re.I))
-        if executable_hit and (name_hit or body_hit):
+            candidate = name_hit and body_hit
+        if candidate:
             candidates.append(rel)
     return sorted(set(candidates))
 

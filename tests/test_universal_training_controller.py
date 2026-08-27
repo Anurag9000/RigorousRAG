@@ -62,3 +62,12 @@ def test_uncovered_executable_trainer_fails_audit(tmp_path):
     report = module._coverage_report(tmp_path, profile, jobs)
     assert report["coverage_ok"] is False
     assert "run_experiment.py" in report["uncovered_training_candidates"]
+
+
+def test_non_training_shell_launcher_is_not_a_training_candidate(tmp_path):
+    module = _load()
+    (tmp_path / "start_app.sh").write_text("#!/bin/sh\npython app.py\n", encoding="utf-8")
+    (tmp_path / "run_training.sh").write_text("#!/bin/sh\npython train.py\n", encoding="utf-8")
+    candidates = module._candidate_training_entrypoints(tmp_path)
+    assert "start_app.sh" not in candidates
+    assert "run_training.sh" in candidates
