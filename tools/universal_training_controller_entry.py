@@ -4,10 +4,10 @@ import hashlib, os, subprocess, sys, urllib.request
 from pathlib import Path
 
 HOST_REPO="Anurag9000/RigorousRAG"
-HOST_COMMIT="2439b2e77174164879cfcf5d8dec6e3caad3a19e"
+HOST_COMMIT="9c1d10852490715eb1c39c524ce19c9307c1b413"
 FILES={
  "tools/universal_training_controller.py":"4353000e092ac286158c23500d91e898136fbab3",
- "tools/universal_training_controller_current.py":"04d5a3610faa84d1a8e951464cdd79df7d09f1b0",
+ "tools/universal_training_controller_current.py":"09fe933dd520c7b97cdb0e86f5c5fbdc597336e4",
 }
 def git_blob_sha(data: bytes)->str:
  return hashlib.sha1(f"blob {len(data)}\0".encode()+data).hexdigest()
@@ -19,7 +19,7 @@ def main()->int:
   valid=dst.is_file() and git_blob_sha(dst.read_bytes())==expected
   if not valid:
    url=f"https://raw.githubusercontent.com/{HOST_REPO}/{HOST_COMMIT}/{rel}"
-   req=urllib.request.Request(url,headers={"User-Agent":"opf-training-controller-entry/1"})
+   req=urllib.request.Request(url,headers={"User-Agent":"opf-training-controller-entry/2"})
    with urllib.request.urlopen(req,timeout=120) as r:data=r.read()
    actual=git_blob_sha(data)
    if actual!=expected:raise RuntimeError(f"controller blob mismatch {rel}: {actual} != {expected}")
