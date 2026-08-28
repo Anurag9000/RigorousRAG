@@ -4,10 +4,11 @@ import hashlib,json,os,shutil,subprocess,sys,urllib.parse,urllib.request
 from pathlib import Path
 
 HOST_REPO="Anurag9000/RigorousRAG"
-HOST_COMMIT="9c1d10852490715eb1c39c524ce19c9307c1b413"
+HOST_COMMIT="09a989e4fba09cfd92492c4e41b1c177a342326c"
 FILES={
  "tools/universal_training_controller.py":"4353000e092ac286158c23500d91e898136fbab3",
  "tools/universal_training_controller_current.py":"09fe933dd520c7b97cdb0e86f5c5fbdc597336e4",
+ "tools/universal_training_controller_dag.py":"3621f1fb0aeb843f1fb051cba074eedef67ac81e",
 }
 OPF_REPO="Anurag9000/OPF_ADP"
 OPF_COMMIT="a34c31259bd5d5f58081e3766918f9df63017455"
@@ -24,7 +25,7 @@ def git_blob_sha(data:bytes)->str:return hashlib.sha1(f"blob {len(data)}\0".enco
 def atomic_write(path:Path,data:bytes)->None:
  path.parent.mkdir(parents=True,exist_ok=True);tmp=path.with_suffix(path.suffix+".tmp");tmp.write_bytes(data);os.replace(tmp,path)
 def fetch(url:str,headers:dict[str,str]|None=None)->bytes:
- req=urllib.request.Request(url,headers={"User-Agent":"opf-training-controller-entry/3",**(headers or {})})
+ req=urllib.request.Request(url,headers={"User-Agent":"opf-training-controller-entry/4",**(headers or {})})
  with urllib.request.urlopen(req,timeout=120) as r:return r.read()
 def verified_local(root:Path,rel:str,expected:str)->bytes|None:
  roots=[]
@@ -32,8 +33,7 @@ def verified_local(root:Path,rel:str,expected:str)->bytes|None:
  if explicit:roots.append(Path(explicit).expanduser())
  roots.extend((root.parent/"OPF_ADP",Path.home()/"OPF_ADP",Path.home()/"projects"/"OPF_ADP",Path.home()/"Projects"/"OPF_ADP"))
  for base in roots:
-  try:
-   data=(base/rel).read_bytes()
+  try:data=(base/rel).read_bytes()
   except Exception:continue
   if git_blob_sha(data)==expected:return data
  return None
@@ -54,16 +54,13 @@ def fetch_opf(root:Path,rel:str,expected:str)->bytes:
    if git_blob_sha(data)==expected:return data
   except Exception:pass
  try:
-  raw=f"https://raw.githubusercontent.com/{OPF_REPO}/{OPF_COMMIT}/{rel}"
-  data=fetch(raw)
+  raw=f"https://raw.githubusercontent.com/{OPF_REPO}/{OPF_COMMIT}/{rel}";data=fetch(raw)
   if git_blob_sha(data)==expected:return data
  except Exception:pass
  raise RuntimeError(f"Cannot obtain verified private OPF reference file {rel}. Keep a sibling OPF_ADP checkout, set OPF_REFERENCE_LOCAL_ROOT, export GH_TOKEN/GITHUB_TOKEN, or authenticate the gh CLI.")
 def prepare_opf_cache(root:Path)->None:
- cache=root/".training_control"/"opf_reference"/OPF_COMMIT;marker=cache/"REFERENCE.json"
- expected_marker={"repository":OPF_REPO,"commit":OPF_COMMIT,"files":OPF_FILES}
- try:
-  valid=json.loads(marker.read_text(encoding="utf-8"))==expected_marker and all((cache/rel).is_file() and git_blob_sha((cache/rel).read_bytes())==sha for rel,sha in OPF_FILES.items())
+ cache=root/".training_control"/"opf_reference"/OPF_COMMIT;marker=cache/"REFERENCE.json";expected_marker={"repository":OPF_REPO,"commit":OPF_COMMIT,"files":OPF_FILES}
+ try:valid=json.loads(marker.read_text(encoding="utf-8"))==expected_marker and all((cache/rel).is_file() and git_blob_sha((cache/rel).read_bytes())==sha for rel,sha in OPF_FILES.items())
  except Exception:valid=False
  if valid:return
  for rel,expected in OPF_FILES.items():
@@ -79,11 +76,10 @@ def main()->int:
  for rel,expected in FILES.items():
   dst=cache/Path(rel).name;valid=dst.is_file() and git_blob_sha(dst.read_bytes())==expected
   if not valid:
-   data=fetch(f"https://raw.githubusercontent.com/{HOST_REPO}/{HOST_COMMIT}/{rel}")
-   actual=git_blob_sha(data)
+   data=fetch(f"https://raw.githubusercontent.com/{HOST_REPO}/{HOST_COMMIT}/{rel}");actual=git_blob_sha(data)
    if actual!=expected:raise RuntimeError(f"controller blob mismatch {rel}: {actual} != {expected}")
    atomic_write(dst,data)
  prepare_opf_cache(root)
  env=os.environ.copy();env["TRAINING_CONTROL_REPO_ROOT"]=str(root)
- return subprocess.call([sys.executable,str(cache/"universal_training_controller_current.py"),*sys.argv[1:]],cwd=root,env=env)
+ return subprocess.call([sys.executable,str(cache/"universal_training_controller_dag.py"),*sys.argv[1:]],cwd=root,env=env)
 if __name__=="__main__":raise SystemExit(main())
