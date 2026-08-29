@@ -1,0 +1,85 @@
+name: training-control-static
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'tools/universal_training_controller*.py'
+      - 'tools/account_wide_training_control_audit.py'
+      - 'run_all_training.py'
+      - '.github/workflows/training-control-static.yml'
+  pull_request:
+    paths:
+      - 'tools/universal_training_controller*.py'
+      - 'tools/account_wide_training_control_audit.py'
+      - 'run_all_training.py'
+      - '.github/workflows/training-control-static.yml'
+  workflow_dispatch:
+
+jobs:
+  compile-and-static-invariants:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile controller sources
+        run: |
+          python -m py_compile \
+            tools/universal_training_controller.py \
+            tools/universal_training_controller_current.py \
+            tools/universal_training_controller_dag.py \
+            tools/universal_training_controller_exact_resume.py \
+            tools/universal_training_controller_console.py \
+            tools/universal_training_controller_console_defaults.py \
+            tools/universal_training_controller_subcommands.py \
+            tools/universal_training_controller_restart_exact.py \
+            tools/universal_training_controller_opf_grace.py \
+            tools/universal_training_controller_registry_scheduling.py \
+            tools/universal_training_controller_training_contracts.py \
+            tools/universal_training_controller_profile_file.py \
+            tools/universal_training_controller_job_catalog_v2.py \
+            tools/universal_training_controller_large_catalog.py \
+            tools/universal_training_controller_opf_mechanism_audit.py \
+            tools/universal_training_controller_v17.py \
+            tools/universal_training_controller_entry.py \
+            tools/account_wide_training_control_audit.py \
+            run_all_training.py
+      - name: Check literal-OPF adapter invariants
+        run: |
+          python - <<'PY'
+          import ast
+          from pathlib import Path
+
+          entry = Path('tools/universal_training_controller_entry.py').read_text()
+          assert 'a34c31259bd5d5f58081e3766918f9df63017455' in entry
+          assert 'b97d47499c83bc6ed3a5753f7f3009b624c94868' in entry
+          assert 'universal_training_controller_v17.py' in entry
+
+          tree = ast.parse(Path('tools/universal_training_controller_dag.py').read_text())
+          assignments = set()
+          for node in ast.walk(tree):
+              targets = []
+              if isinstance(node, ast.Assign):
+                  targets = list(node.targets)
+              elif isinstance(node, (ast.AnnAssign, ast.AugAssign)):
+                  targets = [node.target]
+              for target in targets:
+                  if isinstance(target, ast.Attribute) and isinstance(target.value, ast.Name) and target.value.id == 'opf':
+                      assignments.add(target.attr)
+          assert assignments <= {'build_suite_jobs'}, assignments
+
+          v17 = Path('tools/universal_training_controller_v17.py').read_text()
+          for required in (
+              'exact_resume.install()',
+              'large_catalog.install()',
+              'restart_exact.install()',
+              'opf_grace.install()',
+              'training_contracts.install()',
+              'mechanism_audit.install()',
+              'return dag.main()',
+          ):
+              assert required in v17, required
+          print('static controller invariants passed')
+          PY
