@@ -4,7 +4,7 @@ import hashlib,json,os,shutil,subprocess,sys,urllib.parse,urllib.request
 from pathlib import Path
 
 HOST_REPO="Anurag9000/RigorousRAG"
-HOST_COMMIT="b49e2d6ee805716cba9b5b41914652518a4f47e1"
+HOST_COMMIT="b347f40355757d0e7798e4f3ef50daa4de7834a9"
 FILES={
  "tools/universal_training_controller.py":"4353000e092ac286158c23500d91e898136fbab3",
  "tools/universal_training_controller_current.py":"09fe933dd520c7b97cdb0e86f5c5fbdc597336e4",
@@ -18,8 +18,8 @@ FILES={
  "tools/universal_training_controller_registry_scheduling.py":"d69ec5294a876c291f2ac6a210920e8e7233c510",
  "tools/universal_training_controller_training_contracts.py":"dec455d8fa2e2cc88113f4d382f072908cc9b1ac",
  "tools/universal_training_controller_profile_file.py":"43f7ef739ce92f94ea7e3c444d6b0a56c34f61e3",
- "tools/universal_training_controller_job_catalog.py":"7e5acd89875603bdc01888b6e678c117a10952b0",
- "tools/universal_training_controller_v14.py":"745399bcca3a8c5d5f37dd380466caecd8b48d7b",
+ "tools/universal_training_controller_job_catalog_v2.py":"9e0643ae5075e0901ffe28f26024db7b28d37a34",
+ "tools/universal_training_controller_v15.py":"9e81f2b73b223bc7c47025685e7cbb9691f93f0a",
 }
 OPF_REPO="Anurag9000/OPF_ADP"
 OPF_COMMIT="a34c31259bd5d5f58081e3766918f9df63017455"
@@ -36,7 +36,7 @@ def git_blob_sha(data:bytes)->str:return hashlib.sha1(f"blob {len(data)}\0".enco
 def atomic_write(path:Path,data:bytes)->None:
  path.parent.mkdir(parents=True,exist_ok=True);tmp=path.with_suffix(path.suffix+".tmp");tmp.write_bytes(data);os.replace(tmp,path)
 def fetch(url:str,headers:dict[str,str]|None=None)->bytes:
- req=urllib.request.Request(url,headers={"User-Agent":"opf-training-controller-entry/14",**(headers or {})})
+ req=urllib.request.Request(url,headers={"User-Agent":"opf-training-controller-entry/15",**(headers or {})})
  with urllib.request.urlopen(req,timeout=120) as r:return r.read()
 def verified_local(root:Path,rel:str,expected:str)->bytes|None:
  roots=[]
@@ -92,5 +92,5 @@ def main()->int:
    atomic_write(dst,data)
  prepare_opf_cache(root)
  env=os.environ.copy();env["TRAINING_CONTROL_REPO_ROOT"]=str(root)
- return subprocess.call([sys.executable,str(cache/"universal_training_controller_v14.py"),*sys.argv[1:]],cwd=root,env=env)
+ return subprocess.call([sys.executable,str(cache/"universal_training_controller_v15.py"),*sys.argv[1:]],cwd=root,env=env)
 if __name__=="__main__":raise SystemExit(main())
