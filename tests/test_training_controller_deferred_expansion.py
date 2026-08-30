@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -12,6 +13,7 @@ if str(TOOLS) not in sys.path:
 
 import universal_training_controller_deferred as deferred
 import universal_training_controller_deferred_v3 as deferred_v3
+import universal_training_controller_deferred_v4 as deferred_v4
 
 
 def _restart_job(job_id: str, *, depends_on=()) -> dict:
@@ -109,10 +111,19 @@ def _descriptor() -> dict:
     }
 
 
+def _freeze_with_v19(root: Path, profile: dict, descriptors: list[dict]):
+    original = deferred._materialize_one
+    deferred._materialize_one = deferred_v4._repository_root_materialize
+    try:
+        return deferred._freeze_materializations(root, profile, descriptors)
+    finally:
+        deferred._materialize_one = original
+
+
 def test_materialization_freezes_artifact_source_descriptor_and_job_set(tmp_path: Path) -> None:
     _write_expander(tmp_path)
     (tmp_path / "domains.txt").write_text("a\nb\n", encoding="utf-8")
-    records, rows = deferred._freeze_materializations(
+    records, rows = _freeze_with_v19(
         tmp_path,
         {"repository": "owner/repo"},
         [_descriptor()],
@@ -127,11 +138,41 @@ def test_materialization_freezes_artifact_source_descriptor_and_job_set(tmp_path
     # must not be silently mixed with the frozen downstream run.
     (tmp_path / "domains.txt").write_text("a\nc\n", encoding="utf-8")
     with pytest.raises(SystemExit, match="materialization drifted"):
-        deferred._freeze_materializations(
+        _freeze_with_v19(
             tmp_path,
             {"repository": "owner/repo"},
             [_descriptor()],
         )
+
+
+def test_v19_materializer_restores_cwd_after_success(tmp_path: Path) -> None:
+    _write_expander(tmp_path)
+    (tmp_path / "domains.txt").write_text("a\n", encoding="utf-8")
+    caller = Path.cwd()
+    row = deferred_v4._repository_root_materialize(tmp_path, _descriptor())
+    assert Path.cwd() == caller
+    assert row["generated_job_ids"] == ["train:a"]
+
+
+def test_v19_materializer_restores_cwd_after_expander_failure(tmp_path: Path) -> None:
+    (tmp_path / "catalog.py").write_text(
+        "def iter_jobs():\n"
+        "    raise RuntimeError('boom')\n"
+        "    yield\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "domains.txt").write_text("a\n", encoding="utf-8")
+    descriptor = {
+        "id": "broken",
+        "path": "catalog.py",
+        "function": "iter_jobs",
+        "depends_on": [],
+        "artifact_inputs": ["domains.txt"],
+    }
+    caller = Path.cwd()
+    with pytest.raises(RuntimeError, match="boom"):
+        deferred_v4._repository_root_materialize(tmp_path, descriptor)
+    assert Path.cwd() == caller
 
 
 def test_generated_job_ids_and_commands_must_be_unique(tmp_path: Path) -> None:
@@ -150,7 +191,7 @@ def test_generated_job_ids_and_commands_must_be_unique(tmp_path: Path) -> None:
         "artifact_inputs": ["domains.txt"],
     }
     with pytest.raises(SystemExit, match="duplicate id"):
-        deferred._materialize_one(tmp_path, descriptor)
+        deferred_v4._repository_root_materialize(tmp_path, descriptor)
 
 
 def test_completed_producers_are_removed_from_remaining_dependencies() -> None:
