@@ -103,5 +103,5 @@ jobs:
           PY
       - name: Run deferred expansion safety tests
         run: |
-          python -m pip install --disable-pip-version-check -q pytest
+          python -m pip install --disable-pip-version-check -q pytest pytest-cov
           python -m pytest -q tests/test_training_controller_deferred_expansion.py
