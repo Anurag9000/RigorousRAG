@@ -30,8 +30,20 @@ FILES={
  "tools/universal_training_controller_v19.py":"13ce80ca3465250565e54b0d59ae21adb8613808",
 }
 OPF_REPO="Anurag9000/OPF_ADP"
-OPF_COMMIT="a34c31259bd5d5f58081e3766918f9df63017455"
+OPF_COMMIT="a3c41f7c25f21977f1ff33e94a65b6450afabee9"
 OPF_FILES={
+ "utils/opf_massive_suite_runner.py":"314dc390955e54c7ca35589e3008068155f9fb44",
+ "utils/runtime_tuning.py":"f1cbfc44e009701a5540a046f2cd6b9f41f16b74",
+ "utils/ml_backends.py":"2fe2b24e530cab3d747c983c4457f4080703512f",
+ "utils/logging_utils.py":"482ba94643aa921f49eebb835f29cf4930bb2498",
+ "utils/opf_shared_defaults.py":"76ad434ecef1f708c835210d4bc86e0717999d99",
+ "DNN/VANILLA/Dyn_DNN4OPF/utils/run_defaults.py":"dacb9a2c44d611c045fbb7512ba5327343f79a85",
+}
+# Existing repository-local literal-binding audits still reference this historical
+# certificate. Keep it materialized during the estate migration, but never use it
+# as the scheduler executed by v19.
+LEGACY_OPF_COMMIT="a34c31259bd5d5f58081e3766918f9df63017455"
+LEGACY_OPF_FILES={
  "utils/opf_massive_suite_runner.py":"b97d47499c83bc6ed3a5753f7f3009b624c94868",
  "utils/runtime_tuning.py":"f1cbfc44e009701a5540a046f2cd6b9f41f16b74",
  "utils/ml_backends.py":"2fe2b24e530cab3d747c983c4457f4080703512f",
@@ -56,11 +68,11 @@ def verified_local(root:Path,rel:str,expected:str)->bytes|None:
   except Exception:continue
   if git_blob_sha(data)==expected:return data
  return None
-def fetch_opf(root:Path,rel:str,expected:str)->bytes:
+def fetch_opf(root:Path,rel:str,expected:str,commit:str)->bytes:
  data=verified_local(root,rel,expected)
  if data is not None:return data
  token=(os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN") or "").strip()
- api=f"https://api.github.com/repos/{OPF_REPO}/contents/{urllib.parse.quote(rel,safe='/')}?ref={OPF_COMMIT}"
+ api=f"https://api.github.com/repos/{OPF_REPO}/contents/{urllib.parse.quote(rel,safe='/')}?ref={commit}"
  if token:
   try:
    data=fetch(api,{"Accept":"application/vnd.github.raw+json","Authorization":f"Bearer {token}","X-GitHub-Api-Version":"2022-11-28"})
@@ -69,22 +81,22 @@ def fetch_opf(root:Path,rel:str,expected:str)->bytes:
  gh=shutil.which("gh")
  if gh:
   try:
-   data=subprocess.check_output([gh,"api","-H","Accept: application/vnd.github.raw+json",f"repos/{OPF_REPO}/contents/{rel}?ref={OPF_COMMIT}"],stderr=subprocess.DEVNULL)
+   data=subprocess.check_output([gh,"api","-H","Accept: application/vnd.github.raw+json",f"repos/{OPF_REPO}/contents/{rel}?ref={commit}"],stderr=subprocess.DEVNULL)
    if git_blob_sha(data)==expected:return data
   except Exception:pass
  try:
-  raw=f"https://raw.githubusercontent.com/{OPF_REPO}/{OPF_COMMIT}/{rel}";data=fetch(raw)
+  raw=f"https://raw.githubusercontent.com/{OPF_REPO}/{commit}/{rel}";data=fetch(raw)
   if git_blob_sha(data)==expected:return data
  except Exception:pass
- raise RuntimeError(f"Cannot obtain verified private OPF reference file {rel}. Keep a sibling OPF_ADP checkout, set OPF_REFERENCE_LOCAL_ROOT, export GH_TOKEN/GITHUB_TOKEN, or authenticate the gh CLI.")
-def prepare_opf_cache(root:Path)->None:
- cache=root/".training_control"/"opf_reference"/OPF_COMMIT;marker=cache/"REFERENCE.json";expected_marker={"repository":OPF_REPO,"commit":OPF_COMMIT,"files":OPF_FILES}
- try:valid=json.loads(marker.read_text(encoding="utf-8"))==expected_marker and all((cache/rel).is_file() and git_blob_sha((cache/rel).read_bytes())==sha for rel,sha in OPF_FILES.items())
+ raise RuntimeError(f"Cannot obtain verified private OPF reference file {rel}@{commit}. Keep a sibling OPF_ADP checkout, set OPF_REFERENCE_LOCAL_ROOT, export GH_TOKEN/GITHUB_TOKEN, or authenticate the gh CLI.")
+def prepare_reference_cache(root:Path,commit:str,files:dict[str,str])->None:
+ cache=root/".training_control"/"opf_reference"/commit;marker=cache/"REFERENCE.json";expected_marker={"repository":OPF_REPO,"commit":commit,"files":files}
+ try:valid=json.loads(marker.read_text(encoding="utf-8"))==expected_marker and all((cache/rel).is_file() and git_blob_sha((cache/rel).read_bytes())==sha for rel,sha in files.items())
  except Exception:valid=False
  if valid:return
- for rel,expected in OPF_FILES.items():
-  data=fetch_opf(root,rel,expected)
-  if git_blob_sha(data)!=expected:raise RuntimeError(f"Pinned OPF blob mismatch for {rel}")
+ for rel,expected in files.items():
+  data=fetch_opf(root,rel,expected,commit)
+  if git_blob_sha(data)!=expected:raise RuntimeError(f"Pinned OPF blob mismatch for {rel}@{commit}")
   atomic_write(cache/rel,data)
  for rel in INIT_FILES:
   p=cache/rel
@@ -98,7 +110,10 @@ def main()->int:
    data=fetch(f"https://raw.githubusercontent.com/{HOST_REPO}/{HOST_COMMIT}/{rel}");actual=git_blob_sha(data)
    if actual!=expected:raise RuntimeError(f"controller blob mismatch {rel}: {actual} != {expected}")
    atomic_write(dst,data)
- prepare_opf_cache(root)
+ # The first cache is the scheduler actually executed by the frozen host tree.
+ prepare_reference_cache(root,OPF_COMMIT,OPF_FILES)
+ # Compatibility-only certificate for repositories not yet migrated off the old binding script.
+ prepare_reference_cache(root,LEGACY_OPF_COMMIT,LEGACY_OPF_FILES)
  env=os.environ.copy();env["TRAINING_CONTROL_REPO_ROOT"]=str(root)
  return subprocess.call([sys.executable,str(cache/"universal_training_controller_v19.py"),*sys.argv[1:]],cwd=root,env=env)
 if __name__=="__main__":raise SystemExit(main())
