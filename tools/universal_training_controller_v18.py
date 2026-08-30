@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Universal controller v18: v17 plus fail-closed post-producer fan-out.
 
-All resource scheduling remains the literal pinned OPF_ADP implementation.  v18
+All resource scheduling remains the literal pinned OPF_ADP implementation. v18
 adds only repository-job orchestration above that scheduler: deterministic
 non-training producers may materialize an experiment dimension, after which
 concrete jobs are frozen, fully audited and passed individually to the ordinary
@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import universal_training_controller_console as console
 import universal_training_controller_console_defaults as console_defaults
-import universal_training_controller_deferred_v2 as deferred
+import universal_training_controller_deferred_v3 as deferred
 import universal_training_controller_exact_resume as exact_resume
 import universal_training_controller_job_catalog_v2 as job_catalog
 import universal_training_controller_large_catalog as large_catalog
