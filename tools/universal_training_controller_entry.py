@@ -4,7 +4,7 @@ import hashlib,json,os,shutil,subprocess,sys,urllib.parse,urllib.request
 from pathlib import Path
 
 HOST_REPO="Anurag9000/RigorousRAG"
-HOST_COMMIT="3637b9f084d053e61ea773aae5e90770ddfe8246"
+HOST_COMMIT="5592b48bafcac72fee8d0c9eeab7d00dedde1f0a"
 FILES={
  "tools/universal_training_controller.py":"4353000e092ac286158c23500d91e898136fbab3",
  "tools/universal_training_controller_current.py":"09fe933dd520c7b97cdb0e86f5c5fbdc597336e4",
@@ -21,27 +21,25 @@ FILES={
  "tools/universal_training_controller_job_catalog_v2.py":"9e0643ae5075e0901ffe28f26024db7b28d37a34",
  "tools/universal_training_controller_large_catalog.py":"805fbe26d0b6e0251b11a808e629f96e1d210b16",
  "tools/universal_training_controller_opf_mechanism_audit.py":"1f19141e4ba6c15627125716139bb8872b453ec9",
- "tools/universal_training_controller_v17.py":"92994e93acb7a39eb54a8532fa600debd91b1afe",
  "tools/universal_training_controller_deferred.py":"72e33311f00d0d2353c671a4c1663b1e9d0daf6a",
  "tools/universal_training_controller_deferred_v2.py":"f0203b273ad58461178871a728c4ba18f73ab116",
  "tools/universal_training_controller_deferred_v3.py":"865378f887c269602676b1c7ca0859d25fd756b2",
- "tools/universal_training_controller_v18.py":"b1542f3ca5fd82e9813fcf5d47a92281eb60baf9",
  "tools/universal_training_controller_deferred_v4.py":"6dc85929f749cc1d5202d3481509e6db9b6aeb67",
- "tools/universal_training_controller_v19.py":"13ce80ca3465250565e54b0d59ae21adb8613808",
+ "tools/universal_training_controller_opf_reference_v2.py":"3b21bb8f60179e8c1e9b31d164ecf6799f9f9b5d",
+ "tools/universal_training_controller_v20.py":"7ab4318b917fd3276249a02536ac02726ddc8eed",
 }
 OPF_REPO="Anurag9000/OPF_ADP"
-OPF_COMMIT="a3c41f7c25f21977f1ff33e94a65b6450afabee9"
+OPF_COMMIT="2dfe664af88b95981da2b84b60f228a37156749f"
 OPF_FILES={
- "utils/opf_massive_suite_runner.py":"314dc390955e54c7ca35589e3008068155f9fb44",
+ "utils/opf_massive_suite_runner.py":"b2ae3d04f9398df5c18c7c13f4c939bce46b930d",
  "utils/runtime_tuning.py":"f1cbfc44e009701a5540a046f2cd6b9f41f16b74",
- "utils/ml_backends.py":"2fe2b24e530cab3d747c983c4457f4080703512f",
+ "utils/ml_backends.py":"c4cd5eaf783cd7ffbb92ab01ec743ef7cbd13d84",
  "utils/logging_utils.py":"482ba94643aa921f49eebb835f29cf4930bb2498",
- "utils/opf_shared_defaults.py":"76ad434ecef1f708c835210d4bc86e0717999d99",
- "DNN/VANILLA/Dyn_DNN4OPF/utils/run_defaults.py":"dacb9a2c44d611c045fbb7512ba5327343f79a85",
+ "utils/opf_shared_defaults.py":"bd76baa134b07567015d0151d5f14ba81dc667df",
+ "DNN/VANILLA/Dyn_DNN4OPF/utils/run_defaults.py":"ff79e8c51f1fb21a11e4687989198ef0abb07491",
 }
-# Existing repository-local literal-binding audits still reference this historical
-# certificate. Keep it materialized during the estate migration, but never use it
-# as the scheduler executed by v19.
+# Compatibility-only cache for repository-local binding scripts that have not yet
+# been migrated. It is never imported as the scheduler by v20.
 LEGACY_OPF_COMMIT="a34c31259bd5d5f58081e3766918f9df63017455"
 LEGACY_OPF_FILES={
  "utils/opf_massive_suite_runner.py":"b97d47499c83bc6ed3a5753f7f3009b624c94868",
@@ -56,7 +54,7 @@ def git_blob_sha(data:bytes)->str:return hashlib.sha1(f"blob {len(data)}\0".enco
 def atomic_write(path:Path,data:bytes)->None:
  path.parent.mkdir(parents=True,exist_ok=True);tmp=path.with_suffix(path.suffix+".tmp");tmp.write_bytes(data);os.replace(tmp,path)
 def fetch(url:str,headers:dict[str,str]|None=None)->bytes:
- req=urllib.request.Request(url,headers={"User-Agent":"opf-training-controller-entry/19",**(headers or {})})
+ req=urllib.request.Request(url,headers={"User-Agent":"opf-training-controller-entry/20",**(headers or {})})
  with urllib.request.urlopen(req,timeout=120) as r:return r.read()
 def verified_local(root:Path,rel:str,expected:str)->bytes|None:
  roots=[]
@@ -110,10 +108,8 @@ def main()->int:
    data=fetch(f"https://raw.githubusercontent.com/{HOST_REPO}/{HOST_COMMIT}/{rel}");actual=git_blob_sha(data)
    if actual!=expected:raise RuntimeError(f"controller blob mismatch {rel}: {actual} != {expected}")
    atomic_write(dst,data)
- # The first cache is the scheduler actually executed by the frozen host tree.
  prepare_reference_cache(root,OPF_COMMIT,OPF_FILES)
- # Compatibility-only certificate for repositories not yet migrated off the old binding script.
  prepare_reference_cache(root,LEGACY_OPF_COMMIT,LEGACY_OPF_FILES)
  env=os.environ.copy();env["TRAINING_CONTROL_REPO_ROOT"]=str(root)
- return subprocess.call([sys.executable,str(cache/"universal_training_controller_v19.py"),*sys.argv[1:]],cwd=root,env=env)
+ return subprocess.call([sys.executable,str(cache/"universal_training_controller_v20.py"),*sys.argv[1:]],cwd=root,env=env)
 if __name__=="__main__":raise SystemExit(main())
