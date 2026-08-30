@@ -4,7 +4,7 @@ import hashlib,json,os,shutil,subprocess,sys,urllib.parse,urllib.request
 from pathlib import Path
 
 HOST_REPO="Anurag9000/RigorousRAG"
-HOST_COMMIT="38f1e102369b69bc171c72bf4f8a29601133b6c3"
+HOST_COMMIT="a5640a80fde27b45ff933c873388f66cef089f9f"
 FILES={
  "tools/universal_training_controller.py":"4353000e092ac286158c23500d91e898136fbab3",
  "tools/universal_training_controller_current.py":"09fe933dd520c7b97cdb0e86f5c5fbdc597336e4",
@@ -21,7 +21,10 @@ FILES={
  "tools/universal_training_controller_job_catalog_v2.py":"9e0643ae5075e0901ffe28f26024db7b28d37a34",
  "tools/universal_training_controller_large_catalog.py":"805fbe26d0b6e0251b11a808e629f96e1d210b16",
  "tools/universal_training_controller_opf_mechanism_audit.py":"1f19141e4ba6c15627125716139bb8872b453ec9",
- "tools/universal_training_controller_v17.py":"92994e93acb7a39eb54a8532fa600debd91b1afe",
+ "tools/universal_training_controller_deferred.py":"72e33311f00d0d2353c671a4c1663b1e9d0daf6a",
+ "tools/universal_training_controller_deferred_v2.py":"f0203b273ad58461178871a728c4ba18f73ab116",
+ "tools/universal_training_controller_deferred_v3.py":"865378f887c269602676b1c7ca0859d25fd756b2",
+ "tools/universal_training_controller_v18.py":"b1542f3ca5fd82e9813fcf5d47a92281eb60baf9",
 }
 OPF_REPO="Anurag9000/OPF_ADP"
 OPF_COMMIT="a34c31259bd5d5f58081e3766918f9df63017455"
@@ -38,7 +41,7 @@ def git_blob_sha(data:bytes)->str:return hashlib.sha1(f"blob {len(data)}\0".enco
 def atomic_write(path:Path,data:bytes)->None:
  path.parent.mkdir(parents=True,exist_ok=True);tmp=path.with_suffix(path.suffix+".tmp");tmp.write_bytes(data);os.replace(tmp,path)
 def fetch(url:str,headers:dict[str,str]|None=None)->bytes:
- req=urllib.request.Request(url,headers={"User-Agent":"opf-training-controller-entry/17",**(headers or {})})
+ req=urllib.request.Request(url,headers={"User-Agent":"opf-training-controller-entry/18",**(headers or {})})
  with urllib.request.urlopen(req,timeout=120) as r:return r.read()
 def verified_local(root:Path,rel:str,expected:str)->bytes|None:
  roots=[]
@@ -94,5 +97,5 @@ def main()->int:
    atomic_write(dst,data)
  prepare_opf_cache(root)
  env=os.environ.copy();env["TRAINING_CONTROL_REPO_ROOT"]=str(root)
- return subprocess.call([sys.executable,str(cache/"universal_training_controller_v17.py"),*sys.argv[1:]],cwd=root,env=env)
+ return subprocess.call([sys.executable,str(cache/"universal_training_controller_v18.py"),*sys.argv[1:]],cwd=root,env=env)
 if __name__=="__main__":raise SystemExit(main())
