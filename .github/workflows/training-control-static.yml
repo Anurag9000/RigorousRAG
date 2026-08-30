@@ -63,6 +63,10 @@ jobs:
           for required in (
               'a34c31259bd5d5f58081e3766918f9df63017455',
               'b97d47499c83bc6ed3a5753f7f3009b624c94868',
+              '3637b9f084d053e61ea773aae5e90770ddfe8246',
+              '6dc85929f749cc1d5202d3481509e6db9b6aeb67',
+              '13ce80ca3465250565e54b0d59ae21adb8613808',
+              'universal_training_controller_v19.py',
           ):
               assert required in entry, required
 
@@ -95,7 +99,7 @@ jobs:
           rooted = Path('tools/universal_training_controller_deferred_v4.py').read_text()
           for required in ('os.chdir(resolved_root)', 'finally:', 'os.chdir(original_cwd)', 'return strict.main()'):
               assert required in rooted, required
-          print('static v19 controller invariants passed')
+          print('static immutable v19 controller invariants passed')
           PY
       - name: Run deferred expansion safety tests
         run: |
