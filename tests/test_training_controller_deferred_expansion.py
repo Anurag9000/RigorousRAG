@@ -11,6 +11,7 @@ if str(TOOLS) not in sys.path:
     sys.path.insert(0, str(TOOLS))
 
 import universal_training_controller_deferred as deferred
+import universal_training_controller_deferred_v3 as deferred_v3
 
 
 def _restart_job(job_id: str, *, depends_on=()) -> dict:
@@ -38,7 +39,7 @@ def test_producer_closure_is_transitive_and_order_preserving() -> None:
     ]
     descriptors = [{"id": "fanout", "depends_on": ["domains"]}]
     assert deferred._producer_closure(records, descriptors) == ["raw", "features", "domains"]
-    deferred._validate_producers(records, ["raw", "features", "domains"])
+    deferred_v3._strict_validate_producers(records, ["raw", "features", "domains"])
 
 
 def test_training_job_cannot_be_deferred_enumeration_prerequisite() -> None:
@@ -52,14 +53,31 @@ def test_training_job_cannot_be_deferred_enumeration_prerequisite() -> None:
         }
     ]
     with pytest.raises(SystemExit, match="training job cannot"):
-        deferred._validate_producers(records, ["trainer"])
+        deferred_v3._strict_validate_producers(records, ["trainer"])
 
 
 def test_restart_exact_producer_requires_atomic_idempotent_determinism() -> None:
     broken = _restart_job("producer")
     broken["atomic_outputs"] = False
     with pytest.raises(SystemExit, match="restart_exact producer lacks"):
-        deferred._validate_producers([broken], ["producer"])
+        deferred_v3._strict_validate_producers([broken], ["producer"])
+
+
+@pytest.mark.parametrize("strategy", ["exact_checkpoint", "framework_exact_checkpoint"])
+def test_exact_producer_requires_explicit_exact_checkpoint_contract(strategy: str) -> None:
+    producer = {
+        "id": "producer",
+        "command": ["python", "producer.py"],
+        "phase": "features",
+        "family": "dataset",
+        "device_capable": False,
+        "resume_strategy": strategy,
+    }
+    with pytest.raises(SystemExit, match="lacks explicit checkpoint_contract.exact_resume=true"):
+        deferred_v3._strict_validate_producers([producer], ["producer"])
+
+    producer["checkpoint_contract"] = {"exact_resume": True}
+    deferred_v3._strict_validate_producers([producer], ["producer"])
 
 
 def _write_expander(root: Path) -> None:
