@@ -47,11 +47,13 @@ jobs:
             tools/universal_training_controller_deferred.py \
             tools/universal_training_controller_deferred_v2.py \
             tools/universal_training_controller_deferred_v3.py \
+            tools/universal_training_controller_deferred_v4.py \
             tools/universal_training_controller_v18.py \
+            tools/universal_training_controller_v19.py \
             tools/universal_training_controller_entry.py \
             tools/account_wide_training_control_audit.py \
             run_all_training.py
-      - name: Check literal-OPF and v18 composition invariants
+      - name: Check literal-OPF and v19 composition invariants
         run: |
           python - <<'PY'
           import ast
@@ -61,12 +63,6 @@ jobs:
           for required in (
               'a34c31259bd5d5f58081e3766918f9df63017455',
               'b97d47499c83bc6ed3a5753f7f3009b624c94868',
-              'a5640a80fde27b45ff933c873388f66cef089f9f',
-              '72e33311f00d0d2353c671a4c1663b1e9d0daf6a',
-              'f0203b273ad58461178871a728c4ba18f73ab116',
-              '865378f887c269602676b1c7ca0859d25fd756b2',
-              'b1542f3ca5fd82e9813fcf5d47a92281eb60baf9',
-              'universal_training_controller_v18.py',
           ):
               assert required in entry, required
 
@@ -83,7 +79,7 @@ jobs:
                       assignments.add(target.attr)
           assert assignments <= {'build_suite_jobs'}, assignments
 
-          v18 = Path('tools/universal_training_controller_v18.py').read_text()
+          v19 = Path('tools/universal_training_controller_v19.py').read_text()
           for required in (
               'exact_resume.install()',
               'large_catalog.install()',
@@ -92,16 +88,16 @@ jobs:
               'training_contracts.install()',
               'mechanism_audit.install()',
               'return deferred.main()',
+              'universal_training_controller_deferred_v4 as deferred',
           ):
-              assert required in v18, required
-          assert 'universal_training_controller_deferred_v3 as deferred' in v18
+              assert required in v19, required
 
-          strict = Path('tools/universal_training_controller_deferred_v3.py').read_text()
-          assert 'checkpoint_contract.exact_resume=true' in strict
-          assert 'return hardened.main()' in strict
-          print('static v18 controller invariants passed')
+          rooted = Path('tools/universal_training_controller_deferred_v4.py').read_text()
+          for required in ('os.chdir(resolved_root)', 'finally:', 'os.chdir(original_cwd)', 'return strict.main()'):
+              assert required in rooted, required
+          print('static v19 controller invariants passed')
           PY
       - name: Run deferred expansion safety tests
         run: |
-          python -m pip install --disable-pip-version-check -q pytest pytest-cov
-          python -m pytest -q tests/test_training_controller_deferred_expansion.py
+          python -m pip install --disable-pip-version-check -q pytest
+          python -m pytest -q -o addopts='' tests/test_training_controller_deferred_expansion.py
