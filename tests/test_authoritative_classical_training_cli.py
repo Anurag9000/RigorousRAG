@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from training.authoritative_classical_training_cli import SCHEMA, run_config
+from training.authoritative_classical_training_cli_v2 import SCHEMA, run_config
+
+SOURCE = "d" * 40
 
 
 def _write_json(path: Path, value: object) -> None:
@@ -16,7 +18,7 @@ def _write_jsonl(path: Path, rows: list[dict]) -> None:
     path.write_text("".join(json.dumps(row, sort_keys=True) + "\n" for row in rows), encoding="utf-8")
 
 
-def test_fusion_training_is_content_bound_and_repeatable_from_state(tmp_path: Path) -> None:
+def test_fusion_training_is_content_source_bound_and_repeatable_from_state(tmp_path: Path) -> None:
     train = tmp_path / "train.jsonl"
     validation = tmp_path / "validation.jsonl"
     rows = [
@@ -33,13 +35,13 @@ def test_fusion_training_is_content_bound_and_repeatable_from_state(tmp_path: Pa
         {
             "schema": SCHEMA,
             "kind": "fusion_weight",
+            "source_revision": SOURCE,
             "train_data": "train.jsonl",
             "validation_data": "validation.jsonl",
             "output_dir": "out/fusion",
             "profile_ids": ["dense", "sparse"],
             "calibration_contract_sha256": "a" * 64,
             "calibration_artifact_sha256s": {"dense": "b" * 64, "sparse": "c" * 64},
-            "source_revision": "d" * 40,
             "training": {"epochs": 3, "batch_size": 1, "patience": 2, "learning_rate": 0.05},
         },
     )
@@ -47,6 +49,7 @@ def test_fusion_training_is_content_bound_and_repeatable_from_state(tmp_path: Pa
     first = run_config(config)
     second = run_config(config)
 
+    assert first["source_revision"] == SOURCE
     assert first["result_sha256"] == second["result_sha256"]
     assert first["result"]["artifact"]["artifact_sha256"] == second["result"]["artifact"]["artifact_sha256"]
     assert (tmp_path / "out/fusion/state/fusion-weight-latest.json").is_file()
@@ -71,13 +74,13 @@ def test_listwise_training_resumes_from_content_addressed_state(tmp_path: Path) 
         {
             "schema": SCHEMA,
             "kind": "listwise_fusion",
+            "source_revision": SOURCE,
             "train_data": "listwise-train.jsonl",
             "validation_data": "listwise-validation.jsonl",
             "output_dir": "out/listwise",
             "profile_ids": ["dense", "sparse"],
             "calibration_contract_sha256": "a" * 64,
             "calibration_artifact_sha256s": {"dense": "b" * 64, "sparse": "c" * 64},
-            "source_revision": "d" * 40,
             "training": {"epochs": 3, "batch_size": 1, "patience": 2, "learning_rate": 0.05},
         },
     )
@@ -85,12 +88,13 @@ def test_listwise_training_resumes_from_content_addressed_state(tmp_path: Path) 
     first = run_config(config)
     second = run_config(config)
 
+    assert first["source_revision"] == SOURCE
     assert first["result_sha256"] == second["result_sha256"]
     assert first["result"]["artifact"]["artifact_sha256"] == second["result"]["artifact"]["artifact_sha256"]
     assert (tmp_path / "out/listwise/state/listwise-fusion-latest.json").is_file()
 
 
-def test_domain_classifier_reuses_exact_resume_store(tmp_path: Path) -> None:
+def test_domain_classifier_reuses_source_bound_exact_resume_store(tmp_path: Path) -> None:
     train = tmp_path / "domain-train.jsonl"
     validation = tmp_path / "domain-validation.jsonl"
     rows = [
@@ -107,6 +111,7 @@ def test_domain_classifier_reuses_exact_resume_store(tmp_path: Path) -> None:
         {
             "schema": SCHEMA,
             "kind": "domain_classifier",
+            "source_revision": SOURCE,
             "train_data": "domain-train.jsonl",
             "validation_data": "domain-validation.jsonl",
             "output_dir": "out/domain",
@@ -119,12 +124,14 @@ def test_domain_classifier_reuses_exact_resume_store(tmp_path: Path) -> None:
     first = run_config(config)
     second = run_config(config)
 
+    assert first["source_revision"] == SOURCE
+    assert first["result"]["source_revision"] == SOURCE
     assert first["result_sha256"] == second["result_sha256"]
     assert first["result"]["artifact"] == second["result"]["artifact"]
     assert (tmp_path / "out/domain/state/domain-classifier-latest.json").is_file()
 
 
-def test_plan_ranker_reuses_exact_resume_store(tmp_path: Path) -> None:
+def test_plan_ranker_reuses_source_bound_exact_resume_store(tmp_path: Path) -> None:
     train = tmp_path / "plan-train.jsonl"
     validation = tmp_path / "plan-validation.jsonl"
     rows = [
@@ -147,6 +154,7 @@ def test_plan_ranker_reuses_exact_resume_store(tmp_path: Path) -> None:
         {
             "schema": SCHEMA,
             "kind": "plan_ranker",
+            "source_revision": SOURCE,
             "train_data": "plan-train.jsonl",
             "validation_data": "plan-validation.jsonl",
             "output_dir": "out/plan",
@@ -160,6 +168,8 @@ def test_plan_ranker_reuses_exact_resume_store(tmp_path: Path) -> None:
     first = run_config(config)
     second = run_config(config)
 
+    assert first["source_revision"] == SOURCE
+    assert first["result"]["source_revision"] == SOURCE
     assert first["result_sha256"] == second["result_sha256"]
     assert first["result"]["artifact"] == second["result"]["artifact"]
     assert (tmp_path / "out/plan/state/plan-ranker-latest.json").is_file()
