@@ -1,0 +1,93 @@
+name: Training authority repair transaction
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/scripts/repair_training_authorities.py"
+      - ".github/workflows/training-authority-repair.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: training-authority-repair-main
+  cancel-in-progress: false
+
+jobs:
+  repair:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Apply exact source repairs
+        run: python .github/scripts/repair_training_authorities.py
+
+      - name: Install verification dependencies
+        run: python -m pip install --disable-pip-version-check pytest pytest-cov requests
+
+      - name: Compile repaired sources
+        run: |
+          python -m py_compile \
+            training/cross_profile_fusion_fitting.py \
+            training/cross_profile_listwise_fusion.py \
+            training/authoritative_classical_training_cli_v3.py \
+            training/authoritative_retrieval_training_cli_v2.py \
+            tests/test_authoritative_classical_training_cli.py \
+            tests/test_authoritative_classical_training_cli_v3.py \
+            tests/test_authoritative_retrieval_training_cli_v2.py \
+            run_all_training.py
+
+      - name: Verify repaired classical authority
+        run: |
+          python -m pytest -q \
+            -o addopts='-ra --strict-config --strict-markers' \
+            --cov=training.authoritative_classical_training_cli \
+            --cov=training.authoritative_classical_training_cli_v2 \
+            --cov=training.authoritative_classical_training_cli_v3 \
+            --cov=training.cross_profile_fusion_fitting \
+            --cov=training.cross_profile_listwise_fusion \
+            --cov-report=term-missing \
+            --cov-fail-under=50 \
+            tests/test_authoritative_classical_training_cli.py \
+            tests/test_authoritative_classical_training_cli_v3.py
+
+      - name: Verify repaired retrieval preflight
+        run: |
+          python -m pytest -q \
+            -o addopts='-ra --strict-config --strict-markers' \
+            --cov=training.authoritative_retrieval_training_cli_v2 \
+            --cov-report=term-missing \
+            --cov-fail-under=70 \
+            tests/test_authoritative_retrieval_training_cli_v2.py
+
+      - name: Check patch cleanliness
+        run: git diff --check
+
+      - name: Commit verified repairs to main
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add \
+            training/cross_profile_fusion_fitting.py \
+            training/cross_profile_listwise_fusion.py \
+            training/authoritative_classical_training_cli_v3.py \
+            training/authoritative_retrieval_training_cli_v2.py \
+            tests/test_authoritative_classical_training_cli_v3.py \
+            tests/test_authoritative_retrieval_training_cli_v2.py \
+            pyproject.toml
+          if git diff --cached --quiet; then
+            echo "No repairs needed"
+            exit 0
+          fi
+          git commit -m "Repair hardened training authority paths"
+          git push origin HEAD:main
