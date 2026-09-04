@@ -6,9 +6,12 @@ on:
     paths:
       - 'tools/universal_training_controller*.py'
       - 'tools/account_wide_training_control_audit.py'
+      - 'tools/account_wide_training_control_audit_v2.py'
+      - 'tests/test_training_controller_console_registry.py'
       - 'tests/test_training_controller_deferred_expansion.py'
       - 'tests/test_training_controller_entry_diagnostics.py'
       - 'tests/test_training_controller_exact_resume.py'
+      - 'tests/test_training_controller_inventory_scope.py'
       - 'tests/test_training_controller_opf_mechanism_audit_offline.py'
       - 'tests/test_training_controller_opf_reference_v20.py'
       - 'run_all_training.py'
@@ -17,9 +20,12 @@ on:
     paths:
       - 'tools/universal_training_controller*.py'
       - 'tools/account_wide_training_control_audit.py'
+      - 'tools/account_wide_training_control_audit_v2.py'
+      - 'tests/test_training_controller_console_registry.py'
       - 'tests/test_training_controller_deferred_expansion.py'
       - 'tests/test_training_controller_entry_diagnostics.py'
       - 'tests/test_training_controller_exact_resume.py'
+      - 'tests/test_training_controller_inventory_scope.py'
       - 'tests/test_training_controller_opf_mechanism_audit_offline.py'
       - 'tests/test_training_controller_opf_reference_v20.py'
       - 'run_all_training.py'
@@ -44,6 +50,7 @@ jobs:
             tools/universal_training_controller_console.py \
             tools/universal_training_controller_console_defaults.py \
             tools/universal_training_controller_subcommands.py \
+            tools/universal_training_controller_inventory_scope.py \
             tools/universal_training_controller_restart_exact.py \
             tools/universal_training_controller_opf_grace.py \
             tools/universal_training_controller_registry_scheduling.py \
@@ -60,6 +67,7 @@ jobs:
             tools/universal_training_controller_v20.py \
             tools/universal_training_controller_entry.py \
             tools/account_wide_training_control_audit.py \
+            tools/account_wide_training_control_audit_v2.py \
             run_all_training.py
       - name: Check literal-OPF and v20 composition invariants
         run: |
@@ -69,12 +77,16 @@ jobs:
 
           entry = Path('tools/universal_training_controller_entry.py').read_text()
           for required in (
-              'f520aa74de8cce9878fe156dd615e8b6e8df9a77',
+              '9ff595a87ce20ee6320a95cd9278243419cbf85a',
               '2dfe664af88b95981da2b84b60f228a37156749f',
               'b2ae3d04f9398df5c18c7c13f4c939bce46b930d',
+              'a5c5d5ce5bfa719ec8942ca9eeae7d85143cf719',
+              '0ff6e7ba62018a7320f0f7c7daadd48043e0e55d',
+              'b19334a09b52ad67b2e2c28ed36bcc10b6613175',
               'e948bada6dc8f719b18ee20afbca682aae0992e4',
               '3b21bb8f60179e8c1e9b31d164ecf6799f9f9b5d',
-              '7ab4318b917fd3276249a02536ac02726ddc8eed',
+              'a1883045e8ec84d30f49348bc3442ab61c5a567b',
+              'universal_training_controller_inventory_scope.py',
               'universal_training_controller_opf_reference_v2.py',
               'universal_training_controller_v20.py',
               'DIAGNOSTIC_FLAGS',
@@ -101,11 +113,15 @@ jobs:
           v20 = Path('tools/universal_training_controller_v20.py').read_text()
           for required in (
               'universal_training_controller_opf_reference_v2 as opf_reference',
+              'universal_training_controller_inventory_scope as inventory_scope',
               'opf_reference.install()',
               'exact_resume.install()',
               'large_catalog.install()',
+              'subcommands.install()',
+              'inventory_scope.install()',
               'restart_exact.install()',
               'opf_grace.install()',
+              'registry_scheduling.install()',
               'training_contracts.install()',
               'mechanism_audit.install()',
               'universal_training_controller_deferred_v4 as deferred',
@@ -114,6 +130,7 @@ jobs:
               assert required in v20, required
           assert v20.index('opf_reference.install()') < v20.index('profile_file.install()')
           assert v20.index('opf_reference.install()') < v20.index('mechanism_audit.install()')
+          assert v20.index('subcommands.install()') < v20.index('inventory_scope.install()')
 
           reference = Path('tools/universal_training_controller_opf_reference_v2.py').read_text()
           for required in (
@@ -134,14 +151,20 @@ jobs:
           rooted = Path('tools/universal_training_controller_deferred_v4.py').read_text()
           for required in ('os.chdir(resolved_root)', 'finally:', 'os.chdir(original_cwd)', 'return strict.main()'):
               assert required in rooted, required
-          print('static immutable v20 controller invariants passed')
+
+          auditor = Path('tools/account_wide_training_control_audit_v2.py').read_text()
+          assert '16db0d4c6fe886fc204d23b54b61bb7e6590dc13' in auditor
+          assert 'b8af2de3b35cd31f351b5d211d2384c7e96b7ff7' in auditor
+          print('static immutable source-closure v20 controller invariants passed')
           PY
       - name: Run public controller safety tests
         run: |
           python -m pip install --disable-pip-version-check -q pytest psutil
           python -m pytest -q -o addopts='' \
+            tests/test_training_controller_console_registry.py \
             tests/test_training_controller_deferred_expansion.py \
             tests/test_training_controller_entry_diagnostics.py \
             tests/test_training_controller_exact_resume.py \
+            tests/test_training_controller_inventory_scope.py \
             tests/test_training_controller_opf_mechanism_audit_offline.py \
             tests/test_training_controller_opf_reference_v20.py
