@@ -52,6 +52,52 @@ jobs:
             tests/test_authoritative_retrieval_training_cli_v2.py \
             run_all_training.py
 
+      - name: Verify hardened authority routing
+        run: |
+          python - <<'PY'
+          import tomllib
+          from pathlib import Path
+          import run_all_training as runner
+
+          scripts = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))["project"]["scripts"]
+          expected = {
+              "rigorousrag-classical-training": "training.authoritative_classical_training_cli_v3:main",
+              "rigorousrag-retrieval-training": "training.authoritative_retrieval_training_cli_v2:main",
+          }
+          for name, target in expected.items():
+              actual = scripts.get(name)
+              if actual != target:
+                  raise SystemExit(f"{name} must route through {target}, got {actual!r}")
+
+          forbidden_backends = {
+              "training.cross_profile_fusion_fitting",
+              "training.cross_profile_listwise_fusion",
+          }
+          for name, target in scripts.items():
+              module = target.split(":", 1)[0]
+              if module in forbidden_backends:
+                  raise SystemExit(f"console script {name} bypasses hardened classical authority via {module}")
+
+          if runner.CLASSICAL_SOURCE != "training/authoritative_classical_training_cli_v3.py":
+              raise SystemExit(f"unexpected classical runner source: {runner.CLASSICAL_SOURCE}")
+          if runner.RETRIEVAL_SOURCE != "training/authoritative_retrieval_training_cli_v2.py":
+              raise SystemExit(f"unexpected retrieval runner source: {runner.RETRIEVAL_SOURCE}")
+
+          for job in runner.EXTRA_JOBS:
+              family = str(job.get("family", ""))
+              source = str(job.get("entrypoint_source", ""))
+              if family.startswith("classical-") and source != runner.CLASSICAL_SOURCE:
+                  raise SystemExit(f"classical job bypasses v3 authority: {job['id']} -> {source}")
+              if family.startswith("retrieval-") and source != runner.RETRIEVAL_SOURCE:
+                  raise SystemExit(f"retrieval job bypasses v2 authority: {job['id']} -> {source}")
+
+          classical_console = runner.PROFILE["console_subcommand_args"].get("rigorousrag-classical-training:train")
+          retrieval_console = runner.PROFILE["console_subcommand_args"].get("rigorousrag-retrieval-training:train")
+          if not classical_console or not retrieval_console:
+              raise SystemExit("canonical classical/retrieval console jobs must remain explicitly scheduled")
+          print("hardened authority routing verified")
+          PY
+
       - name: Verify classical exact-resume and artifact binding
         run: |
           python -m pytest -q \
