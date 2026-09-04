@@ -4,7 +4,7 @@ import hashlib,json,os,shutil,subprocess,sys,urllib.parse,urllib.request
 from pathlib import Path
 
 HOST_REPO="Anurag9000/RigorousRAG"
-HOST_COMMIT="f520aa74de8cce9878fe156dd615e8b6e8df9a77"
+HOST_COMMIT="60b306ccd2edca43fa92ad1331a75732cdd305e2"
 FILES={
  "tools/universal_training_controller.py":"4353000e092ac286158c23500d91e898136fbab3",
  "tools/universal_training_controller_current.py":"09fe933dd520c7b97cdb0e86f5c5fbdc597336e4",
@@ -12,7 +12,7 @@ FILES={
  "tools/universal_training_controller_exact_resume.py":"6f6311cbb7cdfa46d14ad5eb0adc8749c5080226",
  "tools/universal_training_controller_console.py":"89d4b8fde514ba426993d7068d3e4e6177600670",
  "tools/universal_training_controller_console_defaults.py":"a4aae98c861764e0ece3bdcfb87f72eb531f6381",
- "tools/universal_training_controller_subcommands.py":"969e2ea054c3d2f310d8ddd9a99e230e0f2cafd6",
+ "tools/universal_training_controller_subcommands.py":"9dc1f2b36a9020ffba0ec46784fd82c8e7592beb",
  "tools/universal_training_controller_restart_exact.py":"6994858fc1294b79f0bb479afee7f88f453fb026",
  "tools/universal_training_controller_opf_grace.py":"73db03de6eeb6cdcca685e1ffbfde60f08969f1e",
  "tools/universal_training_controller_registry_scheduling.py":"d69ec5294a876c291f2ac6a210920e8e7233c510",
