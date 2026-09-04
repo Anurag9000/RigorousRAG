@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - 'tools/account_wide_training_control_audit.py'
+      - 'tools/account_wide_training_control_audit_v2.py'
       - 'tools/universal_training_controller*.py'
       - 'run_all_training.py'
       - '.github/workflows/account-wide-training-control-audit.yml'
@@ -28,12 +29,12 @@ jobs:
           python-version: '3.11'
       - name: Verify remote estate wiring
         run: >-
-          python tools/account_wide_training_control_audit.py
+          python tools/account_wide_training_control_audit_v2.py
           --remote-only
           --output .training_control/account-wide-remote.json
       - name: Clone exact main heads and audit every repository
         run: >-
-          python tools/account_wide_training_control_audit.py
+          python tools/account_wide_training_control_audit_v2.py
           --checkout-root "${{ runner.temp }}/training-control-estate"
           --clone-missing
           --output .training_control/account-wide-local.json
