@@ -34,7 +34,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install lightweight test dependencies
-        run: python -m pip install --disable-pip-version-check pytest pytest-cov
+        run: python -m pip install --disable-pip-version-check pytest pytest-cov requests
 
       - name: Compile authoritative surfaces
         run: |
