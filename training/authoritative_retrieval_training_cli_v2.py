@@ -130,7 +130,11 @@ def _reject_placeholder_source_commit(config: Mapping[str, Any]) -> None:
 
 
 def _preflight(config_path: str | Path) -> Mapping[str, Any]:
-    selected = Path(config_path).expanduser().resolve(strict=True)
+    candidate = Path(config_path).expanduser()
+    _reject_symlink_components(candidate, "config")
+    selected = candidate.resolve(strict=True)
+    if not selected.is_file():
+        raise ValueError("config must resolve to a regular file")
     raw = json.loads(selected.read_text(encoding="utf-8"))
     if not isinstance(raw, Mapping):
         raise ValueError("retrieval training config must contain an object")

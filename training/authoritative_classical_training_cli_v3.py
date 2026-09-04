@@ -53,7 +53,15 @@ def _artifact_path(root: Path, value: Any, label: str) -> Path:
 def _profile_sequence(value: Any) -> tuple[str, ...]:
     if isinstance(value, (str, bytes, bytearray)) or not isinstance(value, Sequence):
         raise ValueError("profile_ids must be an array of profile identifiers")
-    profiles = tuple(v1._identifier(item, "profile_id", 200) for item in value)
+    profiles_list: list[str] = []
+    for raw_item in value:
+        if not isinstance(raw_item, str):
+            raise ValueError("profile_ids entries must be strings")
+        profile = v1._identifier(raw_item, "profile_id", 200)
+        if profile != raw_item:
+            raise ValueError("profile_ids entries must use canonical identifiers without surrounding whitespace")
+        profiles_list.append(profile)
+    profiles = tuple(profiles_list)
     if not profiles:
         raise ValueError("profile_ids must contain at least one profile")
     if len(set(profiles)) != len(profiles):
@@ -69,6 +77,8 @@ def _string_keyed_mapping(value: Any, label: str) -> dict[str, Any]:
         if not isinstance(raw_key, str):
             raise ValueError(f"{label} keys must be strings")
         key = v1._identifier(raw_key, f"{label} key", 200)
+        if key != raw_key:
+            raise ValueError(f"{label} keys must use canonical identifiers without surrounding whitespace")
         if key in normalized:
             raise ValueError(f"{label} contains duplicate normalized profile key {key!r}")
         normalized[key] = raw_value

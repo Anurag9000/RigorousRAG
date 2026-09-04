@@ -286,7 +286,9 @@ class LearnedListwiseFusionArtifact:
             "best_epoch": state.best_epoch,
             "validation_listnet_loss": state.best_validation_loss,
         }
-        return cls(**payload, artifact_sha256=_digest(payload))
+        constructor = dict(payload)
+        constructor.pop("schema")
+        return cls(**constructor, artifact_sha256=_digest(payload))
 
     def score(self, probabilities: Mapping[str, float]) -> float:
         if set(probabilities) != {profile for profile, _ in self.profile_weights}:

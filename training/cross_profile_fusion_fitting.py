@@ -437,7 +437,9 @@ class LearnedFusionWeightArtifact:
             "best_epoch": state.best_epoch,
             "validation_loss": state.best_validation_loss,
         }
-        return cls(**payload, artifact_sha256=_canonical_digest(payload))
+        constructor = dict(payload)
+        constructor.pop("schema")
+        return cls(**constructor, artifact_sha256=_canonical_digest(payload))
 
     def probability(self, probabilities: Mapping[str, float]) -> float:
         if set(probabilities) != {profile for profile, _ in self.profile_weights}:

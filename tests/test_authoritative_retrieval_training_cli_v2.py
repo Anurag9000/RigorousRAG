@@ -171,3 +171,26 @@ def test_symlinked_parent_of_model_root_fails_closed(tmp_path: Path) -> None:
     _json(config, payload)
     with pytest.raises(ValueError, match="path contains a symlink component"):
         _preflight(config)
+
+
+def test_symlinked_config_file_fails_closed(tmp_path: Path) -> None:
+    config = _fixture(tmp_path)
+    linked = tmp_path / "linked-config.json"
+    try:
+        os.symlink(config, linked)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks are unavailable on this platform")
+    with pytest.raises(ValueError, match="path contains a symlink component"):
+        _preflight(linked)
+
+
+def test_symlinked_parent_of_config_fails_closed(tmp_path: Path) -> None:
+    real_parent = tmp_path / "real-config-parent"
+    config = _fixture(real_parent)
+    linked_parent = tmp_path / "linked-config-parent"
+    try:
+        os.symlink(real_parent, linked_parent, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks are unavailable on this platform")
+    with pytest.raises(ValueError, match="path contains a symlink component"):
+        _preflight(linked_parent / config.name)

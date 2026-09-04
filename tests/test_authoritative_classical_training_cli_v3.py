@@ -152,7 +152,17 @@ def test_calibration_artifact_keys_must_be_strings(tmp_path: Path) -> None:
     payload["calibration_artifacts"] = {" dense ": "dense-calibration.json", "sparse": "sparse-calibration.json"}
     _write_json(config, payload)
 
-    with pytest.raises(ValueError, match="cover profile_ids exactly"):
+    with pytest.raises(ValueError, match="canonical identifiers"):
+        run_config(config)
+
+
+def test_profile_ids_may_not_have_surrounding_whitespace(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    payload = json.loads(config.read_text(encoding="utf-8"))
+    payload["profile_ids"] = [" dense ", "sparse"]
+    _write_json(config, payload)
+
+    with pytest.raises(ValueError, match="canonical identifiers"):
         run_config(config)
 
 
