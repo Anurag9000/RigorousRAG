@@ -7,6 +7,11 @@ registered training surface into multiple curated jobs (for example one job per
 cross-validation fold). This layer changes no discovery and no scheduling; it
 only evaluates the strict registry scheduling invariant as ``expected -
 scheduled`` regardless of how the jobs were constructed.
+
+A parent console command whose actual training authority is a scheduled argparse
+subcommand is already covered by that child.  Such a parent remains visible in
+the registry as ``satisfied_by_subcommand`` but is not independently required as
+a duplicate executable job.
 """
 from __future__ import annotations
 
@@ -14,7 +19,7 @@ from typing import Any, Dict, Mapping, Sequence
 
 import universal_training_controller_current as current
 
-REGISTRY_SCHEDULING_SCHEMA = 1
+REGISTRY_SCHEDULING_SCHEMA = 2
 
 
 def _active_expected_console(report: Mapping[str, Any]) -> set[str]:
@@ -23,6 +28,8 @@ def _active_expected_console(report: Mapping[str, Any]) -> set[str]:
     expected: set[str] = set()
     for item in entries:
         if not isinstance(item, Mapping) or item.get("ignored") or not item.get("source"):
+            continue
+        if item.get("satisfied_by_subcommand"):
             continue
         if item.get("configured"):
             expected.add(str(item.get("name")))
