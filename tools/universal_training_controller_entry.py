@@ -39,8 +39,8 @@ OPF_FILES={
  "DNN/VANILLA/Dyn_DNN4OPF/utils/run_defaults.py":"ff79e8c51f1fb21a11e4687989198ef0abb07491",
 }
 # Compatibility-only cache for repository-local binding scripts that have not yet
-# been migrated. v20 never imports this scheduler.  It is now opt-in instead of
-# being an unconditional clean-machine dependency.
+# been migrated. v20 never imports this scheduler. It is opt-in instead of an
+# unconditional clean-machine dependency.
 LEGACY_OPF_COMMIT="a34c31259bd5d5f58081e3766918f9df63017455"
 LEGACY_OPF_FILES={
  "utils/opf_massive_suite_runner.py":"b97d47499c83bc6ed3a5753f7f3009b624c94868",
@@ -51,6 +51,10 @@ LEGACY_OPF_FILES={
  "DNN/VANILLA/Dyn_DNN4OPF/utils/run_defaults.py":"dacb9a2c44d611c045fbb7512ba5327343f79a85",
 }
 INIT_FILES=("utils/__init__.py","DNN/__init__.py","DNN/VANILLA/__init__.py","DNN/VANILLA/Dyn_DNN4OPF/__init__.py","DNN/VANILLA/Dyn_DNN4OPF/utils/__init__.py")
+ARG_ALIASES={
+ "--training-control-audit":"--audit-training-coverage",
+ "--training-control-list-jobs":"--list-training-jobs",
+}
 DIAGNOSTIC_FLAGS=frozenset({
  "--training-control-audit","--audit-training-coverage",
  "--list-training-jobs","--training-control-list-jobs",
@@ -107,27 +111,23 @@ def prepare_reference_cache(root:Path,commit:str,files:dict[str,str])->None:
   if not p.exists():atomic_write(p,b"")
  atomic_write(marker,(json.dumps(expected_marker,indent=2,sort_keys=True)+"\n").encode())
 def diagnostic_only(argv:list[str])->bool:
- """Return True only for modes that are contractually non-executing.
-
- Audits/list/help must remain usable on a clean checkout with no OPF credentials.
- A mixed invocation is treated as executing unless every option that can request
- work is absent; this fails closed rather than accidentally bypassing runtime
- materialization for a real training run.
- """
- if not argv:return False
- return any(arg in DIAGNOSTIC_FLAGS for arg in argv)
+ """Return True when the controller command is guaranteed not to launch jobs."""
+ return bool(argv) and any(arg in DIAGNOSTIC_FLAGS for arg in argv)
+def canonical_argv(argv:list[str])->list[str]:
+ """Translate stable launcher-facing aliases to the v20 controller CLI."""
+ return [ARG_ALIASES.get(arg,arg) for arg in argv]
 def main()->int:
- root=Path(os.environ.get("TRAINING_CONTROL_REPO_ROOT") or Path.cwd()).resolve();cache=root/".training_control"/"controller_host"/HOST_COMMIT
+ root=Path(os.environ.get("TRAINING_CONTROL_REPO_ROOT") or Path.cwd()).resolve();cache=root/".training_control"/"controller_host"/HOST_COMMIT;argv=list(sys.argv[1:])
  for rel,expected in FILES.items():
   dst=cache/Path(rel).name;valid=dst.is_file() and git_blob_sha(dst.read_bytes())==expected
   if not valid:
    data=fetch(f"https://raw.githubusercontent.com/{HOST_REPO}/{HOST_COMMIT}/{rel}");actual=git_blob_sha(data)
    if actual!=expected:raise RuntimeError(f"controller blob mismatch {rel}: {actual} != {expected}")
    atomic_write(dst,data)
- if not diagnostic_only(list(sys.argv[1:])):
+ if not diagnostic_only(argv):
   prepare_reference_cache(root,OPF_COMMIT,OPF_FILES)
   if os.environ.get("TRAINING_CONTROL_PREPARE_LEGACY_OPF","").strip().lower() in {"1","true","yes","on"}:
    prepare_reference_cache(root,LEGACY_OPF_COMMIT,LEGACY_OPF_FILES)
  env=os.environ.copy();env["TRAINING_CONTROL_REPO_ROOT"]=str(root)
- return subprocess.call([sys.executable,str(cache/"universal_training_controller_v20.py"),*sys.argv[1:]],cwd=root,env=env)
+ return subprocess.call([sys.executable,str(cache/"universal_training_controller_v20.py"),*canonical_argv(argv)],cwd=root,env=env)
 if __name__=="__main__":raise SystemExit(main())
