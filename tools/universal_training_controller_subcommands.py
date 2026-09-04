@@ -208,6 +208,18 @@ def _jobs(root: Path, profile: Mapping[str, Any]) -> List[Dict[str, Any]]:
     return result
 
 
+def _subcommand_source_paths(root: Path, jobs: Sequence[Mapping[str, Any]]) -> Set[str]:
+    """Resolve direct repository sources hidden behind ``python -c`` trampolines."""
+    paths: Set[str] = set()
+    for job in jobs:
+        if not job.get("console_subcommand"):
+            continue
+        rel = str(job.get("entrypoint_source") or "").replace("\\", "/")
+        if rel and (root / rel).is_file():
+            paths.add(rel)
+    return paths
+
+
 def _delegated_console_scripts(jobs: Sequence[Mapping[str, Any]]) -> Dict[str, list[str]]:
     """Return parent console scripts satisfied by concrete scheduled subcommands."""
     delegated: Dict[str, set[str]] = {}
@@ -253,8 +265,6 @@ def _normalize_delegated_parent_report(report: Dict[str, Any], delegated: Mappin
         name = str(item.get("name") or "")
         if name not in delegated:
             continue
-        # The temporary lower-layer ignore is an implementation detail, not an
-        # exemption.  The parent is covered by a concrete scheduled child.
         item["ignored"] = False
         item["configured"] = True
         item["satisfied_by_subcommand"] = True
@@ -299,18 +309,7 @@ def install() -> None:
         return base._dedupe_jobs([*original_jobs(root, profile), *_jobs(root, profile)])
 
     def command_repo_paths(root: Path, jobs: Sequence[Dict[str, Any]]) -> Set[str]:
-        # Preserve every earlier path-discovery rule, then bind generated
-        # subcommand jobs to the source file that their `python -c` trampoline
-        # imports.  This makes per-job reachability and checkpoint evidence
-        # equivalent to invoking the installed console script directly.
-        paths = set(original_paths(root, jobs))
-        for job in jobs:
-            if not job.get("console_subcommand"):
-                continue
-            rel = str(job.get("entrypoint_source") or "").replace("\\", "/")
-            if rel and (root / rel).is_file():
-                paths.add(rel)
-        return paths
+        return set(original_paths(root, jobs)) | _subcommand_source_paths(root, jobs)
 
     def coverage_report(root: Path, profile: Dict[str, Any], jobs: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
         delegated = _delegated_console_scripts(jobs)
