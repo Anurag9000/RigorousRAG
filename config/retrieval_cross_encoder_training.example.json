@@ -1,8 +1,9 @@
 {
   "schema": "rigorousrag-authoritative-retrieval-training/v1",
   "architecture": "cross_encoder",
+  "step_variant": "listwise",
   "run_id": "retrieval-cross-encoder-listwise",
-  "source_commit": "0000000000000000000000000000000000000000",
+  "source_commit": "auto",
   "model_root": "../local_models/cross_encoder",
   "tokenizer_root": "../local_models/cross_encoder",
   "train_data": "../data/training/retrieval/train.jsonl",
