@@ -1,8 +1,9 @@
 {
   "schema": "rigorousrag-authoritative-retrieval-training/v1",
   "architecture": "dense",
+  "step_variant": "base",
   "run_id": "retrieval-dense-base",
-  "source_commit": "0000000000000000000000000000000000000000",
+  "source_commit": "auto",
   "model_root": "../local_models/dense",
   "tokenizer_root": "../local_models/dense",
   "train_data": "../data/training/retrieval/train.jsonl",
@@ -16,7 +17,7 @@
   "max_grad_norm": 1.0,
   "model": {"pooling": "mean", "projection_dim": null, "normalize": true, "dropout": 0.0},
   "data": {"batch_size": 16, "validation_batch_size": 16, "query_max_length": 64, "document_max_length": 512, "negatives_per_query": 8, "pad_to_multiple_of": 8},
-  "loss": {"retrieval_temperature": 0.05, "teacher_temperature": 1.0, "distillation_weight": 0.0, "minimum_teacher_candidates": 2},
+  "loss": {"retrieval_temperature": 0.05, "label_smoothing": 0.0},
   "early_stopping": {"patience": 8, "min_delta": 0.0001},
   "stages": [{"name": "dense-contrastive", "max_optimizer_steps": 20000, "learning_rate": 0.00002, "weight_decay": 0.01, "warmup_steps": 1000, "scheduler": "linear", "checkpoint_every_steps": 250, "evaluate_every_steps": 250}]
 }
