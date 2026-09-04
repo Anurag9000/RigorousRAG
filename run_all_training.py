@@ -14,78 +14,118 @@ ROOT = Path(__file__).resolve().parent
 CONTROLLER = ROOT / "tools" / "universal_training_controller_entry.py"
 CONTROLLER_BLOB = "16db0d4c6fe886fc204d23b54b61bb7e6590dc13"
 
+
+def _job(
+    job_id: str,
+    source: str,
+    config: str,
+    family: str,
+    *,
+    device_capable: bool,
+) -> dict[str, object]:
+    return {
+        "id": job_id,
+        "command": [source, "train", "--config", config],
+        "entrypoint_source": source,
+        "device_capable": device_capable,
+        "phase": "training",
+        "family": family,
+        "repeat_index": 0,
+        "recipe_config": config,
+    }
+
+
 # Registered console subcommands materialize one canonical recipe per training
 # authority. Additional curricula using the same authority are explicit jobs so
 # the pressure scheduler can admit/pause/resume each recipe independently without
 # duplicating parent console programs.
+EXTRA_JOBS = [
+    _job(
+        "rigorousrag-advanced-training:train:dynamic-rag-policy",
+        "training/authoritative_advanced_training_cli.py",
+        "config/advanced_dynamic_rag_training.example.json",
+        "advanced-rag-dynamic-policy",
+        device_capable=True,
+    ),
+    _job(
+        "rigorousrag-classical-training:train:listwise-fusion",
+        "training/authoritative_classical_training_cli.py",
+        "config/classical_listwise_fusion_training.example.json",
+        "classical-listwise-fusion",
+        device_capable=False,
+    ),
+    _job(
+        "rigorousrag-classical-training:train:domain-classifier",
+        "training/authoritative_classical_training_cli.py",
+        "config/classical_domain_training.example.json",
+        "classical-domain-classifier",
+        device_capable=False,
+    ),
+    _job(
+        "rigorousrag-classical-training:train:plan-ranker",
+        "training/authoritative_classical_training_cli.py",
+        "config/classical_plan_ranker_training.example.json",
+        "classical-plan-ranker",
+        device_capable=False,
+    ),
+    _job(
+        "rigorousrag-retrieval-training:train:dense-distilled",
+        "training/authoritative_retrieval_training_cli.py",
+        "config/retrieval_dense_distilled_training.example.json",
+        "retrieval-dense-distilled",
+        device_capable=True,
+    ),
+    _job(
+        "rigorousrag-retrieval-training:train:splade-base",
+        "training/authoritative_retrieval_training_cli.py",
+        "config/retrieval_splade_base_training.example.json",
+        "retrieval-splade-base",
+        device_capable=True,
+    ),
+    _job(
+        "rigorousrag-retrieval-training:train:splade-distilled",
+        "training/authoritative_retrieval_training_cli.py",
+        "config/retrieval_splade_distilled_training.example.json",
+        "retrieval-splade-distilled",
+        device_capable=True,
+    ),
+    _job(
+        "rigorousrag-retrieval-training:train:unicoil",
+        "training/authoritative_retrieval_training_cli.py",
+        "config/retrieval_unicoil_training.example.json",
+        "retrieval-unicoil",
+        device_capable=True,
+    ),
+    _job(
+        "rigorousrag-retrieval-training:train:colbert-base",
+        "training/authoritative_retrieval_training_cli.py",
+        "config/retrieval_colbert_base_training.example.json",
+        "retrieval-colbert-base",
+        device_capable=True,
+    ),
+    _job(
+        "rigorousrag-retrieval-training:train:colbert-distilled",
+        "training/authoritative_retrieval_training_cli.py",
+        "config/retrieval_colbert_distilled_training.example.json",
+        "retrieval-colbert-distilled",
+        device_capable=True,
+    ),
+    _job(
+        "rigorousrag-retrieval-training:train:cross-encoder-listwise",
+        "training/authoritative_retrieval_training_cli.py",
+        "config/retrieval_cross_encoder_training.example.json",
+        "retrieval-cross-encoder-listwise",
+        device_capable=True,
+    ),
+]
+
 PROFILE = {
     "repository": REPOSITORY,
     "preferred_training_entrypoints": [],
     "preferred_dataset_entrypoints": [],
     "dynamic_registry_covers": [],
     "ignore_entrypoints": ["run_all_training.py"],
-    "extra_jobs": [
-        {
-            "id": "rigorousrag-advanced-training:train:dynamic-rag-policy",
-            "command": [
-                "training/authoritative_advanced_training_cli.py",
-                "train",
-                "--config",
-                "config/advanced_dynamic_rag_training.example.json",
-            ],
-            "entrypoint_source": "training/authoritative_advanced_training_cli.py",
-            "device_capable": True,
-            "phase": "training",
-            "family": "advanced-rag-dynamic-policy",
-            "repeat_index": 0,
-            "recipe_config": "config/advanced_dynamic_rag_training.example.json",
-        },
-        {
-            "id": "rigorousrag-classical-training:train:listwise-fusion",
-            "command": [
-                "training/authoritative_classical_training_cli.py",
-                "train",
-                "--config",
-                "config/classical_listwise_fusion_training.example.json",
-            ],
-            "entrypoint_source": "training/authoritative_classical_training_cli.py",
-            "device_capable": False,
-            "phase": "training",
-            "family": "classical-listwise-fusion",
-            "repeat_index": 0,
-            "recipe_config": "config/classical_listwise_fusion_training.example.json",
-        },
-        {
-            "id": "rigorousrag-classical-training:train:domain-classifier",
-            "command": [
-                "training/authoritative_classical_training_cli.py",
-                "train",
-                "--config",
-                "config/classical_domain_training.example.json",
-            ],
-            "entrypoint_source": "training/authoritative_classical_training_cli.py",
-            "device_capable": False,
-            "phase": "training",
-            "family": "classical-domain-classifier",
-            "repeat_index": 0,
-            "recipe_config": "config/classical_domain_training.example.json",
-        },
-        {
-            "id": "rigorousrag-classical-training:train:plan-ranker",
-            "command": [
-                "training/authoritative_classical_training_cli.py",
-                "train",
-                "--config",
-                "config/classical_plan_ranker_training.example.json",
-            ],
-            "entrypoint_source": "training/authoritative_classical_training_cli.py",
-            "device_capable": False,
-            "phase": "training",
-            "family": "classical-plan-ranker",
-            "repeat_index": 0,
-            "recipe_config": "config/classical_plan_ranker_training.example.json",
-        },
-    ],
+    "extra_jobs": EXTRA_JOBS,
     "auto_console_training_jobs": False,
     "require_registered_training_entrypoints": True,
     "require_registered_training_scheduling": True,
@@ -101,6 +141,10 @@ PROFILE = {
             "--config",
             "config/classical_fusion_training.example.json",
         ],
+        "rigorousrag-retrieval-training:train": [
+            "--config",
+            "config/retrieval_dense_base_training.example.json",
+        ],
     },
     "console_subcommand_metadata": {
         "rigorousrag-advanced-training:train": {
@@ -111,6 +155,11 @@ PROFILE = {
             "recipe_config": "config/classical_fusion_training.example.json",
             "family": "classical-fusion-weight",
             "device_capable": False,
+        },
+        "rigorousrag-retrieval-training:train": {
+            "recipe_config": "config/retrieval_dense_base_training.example.json",
+            "family": "retrieval-dense-base",
+            "device_capable": True,
         },
     },
     "strict_coverage": True,
