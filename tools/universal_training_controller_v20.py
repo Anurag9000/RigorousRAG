@@ -12,6 +12,7 @@ from __future__ import annotations
 import universal_training_controller_console as console
 import universal_training_controller_console_defaults as console_defaults
 import universal_training_controller_deferred_v4 as deferred
+import universal_training_controller_entrypoint_markers as entrypoint_markers
 import universal_training_controller_exact_resume as exact_resume
 import universal_training_controller_inventory_scope as inventory_scope
 import universal_training_controller_job_catalog_v2 as job_catalog
@@ -37,6 +38,7 @@ def main() -> int:
     console.install()
     console_defaults.install()
     subcommands.install()
+    entrypoint_markers.install()
     inventory_scope.install()
     restart_exact.install()
     opf_grace.install()
