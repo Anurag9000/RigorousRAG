@@ -9,7 +9,8 @@ Remote verification (no model/data execution):
   * enumerate the owner's live repositories from GitHub, not a hard-coded list;
   * exclude only the immutable OPF_ADP reference repository;
   * require a ``main`` ref and ``run_all_training.py`` on main;
-  * require every launcher to pin the canonical v17 bootstrap commit/blob;
+  * require every launcher to pin the canonical v20 bootstrap blob; the immutable
+    source commit may differ when it resolves to those exact byte-identical bytes;
   * flag non-main default branches and enumerate all extra branch refs;
   * emit an atomic machine-readable estate certificate.
 
@@ -47,8 +48,8 @@ from typing import Any, Iterable
 OWNER = "Anurag9000"
 REFERENCE_REPO = "OPF_ADP"
 CANONICAL_HOST_REPO = "Anurag9000/RigorousRAG"
-CANONICAL_BOOTSTRAP_COMMIT = "45bfe868867512e7876b2623e641384686591f71"
-CANONICAL_BOOTSTRAP_BLOB = "116c5e7c4694fb0f84e93d397a68f7cea15310e2"
+CANONICAL_BOOTSTRAP_COMMIT = "8080f8c8e55d802d4220bcc1c9b62a4f2e2ce052"
+CANONICAL_BOOTSTRAP_BLOB = "a739ff9e31d9be7b5c9b0fe8d9bcfca6d75c846b"
 SCHEMA = 1
 
 
@@ -173,10 +174,8 @@ def _launcher_remote_audit(repo_row: dict[str, Any]) -> dict[str, Any]:
             errors.append(f"missing/unreadable run_all_training.py on main: {exc}")
 
     if launcher_text:
-        if CANONICAL_BOOTSTRAP_COMMIT not in launcher_text:
-            errors.append("launcher does not pin canonical v17 bootstrap commit")
         if CANONICAL_BOOTSTRAP_BLOB not in launcher_text:
-            errors.append("launcher does not pin canonical v17 bootstrap blob")
+            errors.append("launcher does not pin canonical v20 bootstrap blob")
         if "universal_training_controller_entry.py" not in launcher_text:
             errors.append("launcher does not invoke canonical bootstrap entrypoint")
         if "require_literal_opf_mechanism_parity" not in launcher_text:
