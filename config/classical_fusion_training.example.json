@@ -6,11 +6,11 @@
   "validation_data": "../data/training/classical/fusion_validation.jsonl",
   "output_dir": "../artifacts/training/classical/fusion_weight",
   "profile_ids": ["dense", "sparse", "late_interaction"],
-  "calibration_contract_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
-  "calibration_artifact_sha256s": {
-    "dense": "0000000000000000000000000000000000000000000000000000000000000000",
-    "sparse": "0000000000000000000000000000000000000000000000000000000000000000",
-    "late_interaction": "0000000000000000000000000000000000000000000000000000000000000000"
+  "calibration_contract": "../artifacts/calibration/retrieval/calibration_contract.json",
+  "calibration_artifacts": {
+    "dense": "../artifacts/calibration/retrieval/dense.json",
+    "sparse": "../artifacts/calibration/retrieval/sparse.json",
+    "late_interaction": "../artifacts/calibration/retrieval/late_interaction.json"
   },
   "training": {
     "epochs": 100,
