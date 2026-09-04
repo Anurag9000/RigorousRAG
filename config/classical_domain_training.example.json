@@ -1,6 +1,7 @@
 {
   "schema": "rigorousrag-authoritative-classical-training/v1",
   "kind": "domain_classifier",
+  "source_revision": "auto",
   "train_data": "../data/training/classical/domain_train.jsonl",
   "validation_data": "../data/training/classical/domain_validation.jsonl",
   "output_dir": "../artifacts/training/classical/domain_classifier",
