@@ -1,0 +1,65 @@
+{
+  "schema": "training-control/non-training-surface-accounting/v1",
+  "surfaces": [
+    {
+      "path": "models/local_hf_adapters.py",
+      "category": "inference_adapter",
+      "reason": "Loads digest-pinned learned retrieval models, switches them to eval mode, and serves embeddings/scores under inference_mode without optimization."
+    },
+    {
+      "path": "models/local_hf_multimodal_entailment.py",
+      "category": "inference_adapter",
+      "reason": "Loads an admitted local multimodal sequence-classification artifact and computes entailment probabilities in eval/inference mode only."
+    },
+    {
+      "path": "orchestration/advanced_rag_model_providers.py",
+      "category": "serving_provider",
+      "reason": "Provides runtime generation and action-scoring adapters around already-trained advanced-RAG artifacts using eval/no-grad execution, not parameter fitting."
+    },
+    {
+      "path": "orchestration/dynamic_feature_authority.py",
+      "category": "runtime_feature_provider",
+      "reason": "Computes runtime next-token uncertainty and dynamic features from an admitted causal model in eval/no-grad mode and never updates model parameters."
+    },
+    {
+      "path": "orchestration/grounded_artifact_scoring.py",
+      "category": "post_training_scorer",
+      "reason": "Scores grounded artifacts with previously trained generator/advisory models under no-grad/inference execution and contains no fitting authority."
+    },
+    {
+      "path": "scientific/local_document_model_adapters.py",
+      "category": "scientific_inference_adapter",
+      "reason": "Adapts admitted local scientific document layout/OCR models for inference-time document understanding; model weights are never optimized here."
+    },
+    {
+      "path": "tools/hf_late_interaction_backend.py",
+      "category": "frozen_model_backend",
+      "reason": "Hosts a pinned transformer late-interaction/ColBERT-style encoding backend in eval/no-grad mode for retrieval inference only."
+    },
+    {
+      "path": "tools/hf_sparse_backend.py",
+      "category": "frozen_model_backend",
+      "reason": "Hosts a pinned masked-LM SPLADE-style sparse encoding backend in eval/no-grad mode and performs no optimizer or training-state updates."
+    },
+    {
+      "path": "tools/transformer_entailment.py",
+      "category": "frozen_model_backend",
+      "reason": "Consumes an injected transformer entailment model under torch.inference_mode; the module explicitly neither downloads nor trains model weights."
+    },
+    {
+      "path": "tools/transformer_page_backend.py",
+      "category": "frozen_model_backend",
+      "reason": "Consumes injected page-retrieval processor/model objects and computes embeddings under inference mode without any parameter optimization."
+    },
+    {
+      "path": "training/local_dynamic_hidden_provider.py",
+      "category": "training_data_materializer",
+      "reason": "Materializes detached hidden-state supervision from a frozen admitted generator in eval/no-grad mode; it prepares training data but is not a learner."
+    },
+    {
+      "path": "training/local_supervision_providers.py",
+      "category": "supervision_materializer",
+      "reason": "Runs frozen teacher/reference/value/document-utility providers in eval/no-grad mode to materialize supervision targets without training those providers."
+    }
+  ]
+}
