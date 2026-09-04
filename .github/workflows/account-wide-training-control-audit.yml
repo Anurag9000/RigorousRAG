@@ -1,0 +1,57 @@
+name: Account-wide OPF training-control certificate
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'tools/account_wide_training_control_audit.py'
+      - 'tools/universal_training_controller*.py'
+      - 'run_all_training.py'
+      - '.github/workflows/account-wide-training-control-audit.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: account-wide-training-control-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  estate-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Verify remote estate wiring
+        run: >-
+          python tools/account_wide_training_control_audit.py
+          --remote-only
+          --output .training_control/account-wide-remote.json
+      - name: Clone exact main heads and audit every repository
+        run: >-
+          python tools/account_wide_training_control_audit.py
+          --checkout-root "${{ runner.temp }}/training-control-estate"
+          --clone-missing
+          --output .training_control/account-wide-local.json
+      - name: Print aggregate certificate
+        if: always()
+        shell: bash
+        run: |
+          for report in .training_control/account-wide-*.json; do
+            if [[ -f "$report" ]]; then
+              echo "===== $report ====="
+              cat "$report"
+            fi
+          done
+      - name: Upload estate certificates
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: account-wide-training-control-${{ github.sha }}
+          path: .training_control/account-wide-*.json
+          if-no-files-found: warn
+          retention-days: 30
