@@ -7,6 +7,12 @@ subcommand.  This layer therefore treats a parent training console entrypoint as
 *delegated* (not exempted) when one of its concrete training subcommands has been
 materialized as a job.  Every individual training subcommand remains audited by
 this module, so delegation cannot hide an unscheduled sibling subcommand.
+
+Generated console jobs execute through ``python -c``.  Their command line does
+not itself contain the repository source path, so this layer also preserves the
+resolved ``entrypoint_source`` as a direct reachability root.  Without that
+binding a real trainer could be scheduled while its model/checkpoint source graph
+was incorrectly reported as unreachable.
 """
 from __future__ import annotations
 
@@ -20,7 +26,7 @@ import universal_training_controller as base
 import universal_training_controller_console as console
 import universal_training_controller_current as current
 
-SUBCOMMAND_AUDIT_SCHEMA = 2
+SUBCOMMAND_AUDIT_SCHEMA = 3
 
 
 def _literal(node: ast.AST) -> Any:
@@ -241,8 +247,6 @@ def _normalize_delegated_parent_report(report: Dict[str, Any], delegated: Mappin
         report["console_entrypoints_satisfied_by_subcommands"] = dict(delegated)
         return
     entries = registry.get("entries") or []
-    explicit_ignored_raw = report.get("strict_controls", {}).get("explicit_ignore_console_scripts", [])
-    explicit_ignored = {str(x) for x in explicit_ignored_raw} if isinstance(explicit_ignored_raw, (list, tuple, set)) else set()
     for item in entries:
         if not isinstance(item, dict):
             continue
@@ -251,8 +255,7 @@ def _normalize_delegated_parent_report(report: Dict[str, Any], delegated: Mappin
             continue
         # The temporary lower-layer ignore is an implementation detail, not an
         # exemption.  The parent is covered by a concrete scheduled child.
-        if name not in explicit_ignored:
-            item["ignored"] = False
+        item["ignored"] = False
         item["configured"] = True
         item["satisfied_by_subcommand"] = True
         item["satisfied_by_subcommands"] = list(delegated[name])
@@ -271,26 +274,43 @@ def _normalize_delegated_parent_report(report: Dict[str, Any], delegated: Mappin
         if x.get("name") and not x.get("ignored")
     }
     report["unscheduled_registered_training_entrypoints"] = sorted(active_parents - scheduled_parents - set(delegated))
-    missing = [
+    report["missing_console_job_materialization"] = sorted({
         str(x) for x in report.get("missing_console_job_materialization", []) or []
         if str(x) not in delegated
-    ]
-    report["missing_console_job_materialization"] = sorted(set(missing))
-    unresolved = [
+    })
+    registry["unresolved_targets"] = sorted({
         str(x) for x in registry.get("unresolved_targets", []) or []
         if str(x) not in delegated
-    ]
-    registry["unresolved_targets"] = sorted(set(unresolved))
-    parent_ok = not registry["unresolved_targets"] and not registry["unconfigured_training_entrypoints"] and not report["missing_console_job_materialization"]
+    })
+    parent_ok = (
+        not registry["unresolved_targets"]
+        and not registry["unconfigured_training_entrypoints"]
+        and not report["missing_console_job_materialization"]
+    )
     report["strict_registered_training_entrypoints_pass"] = parent_ok
 
 
 def install() -> None:
     original_jobs = current._enhanced_job_records
     original_report = current._enhanced_coverage_report
+    original_paths = current._command_repo_paths
 
     def job_records(root: Path, profile: Dict[str, Any]) -> List[Dict[str, Any]]:
         return base._dedupe_jobs([*original_jobs(root, profile), *_jobs(root, profile)])
+
+    def command_repo_paths(root: Path, jobs: Sequence[Dict[str, Any]]) -> Set[str]:
+        # Preserve every earlier path-discovery rule, then bind generated
+        # subcommand jobs to the source file that their `python -c` trampoline
+        # imports.  This makes per-job reachability and checkpoint evidence
+        # equivalent to invoking the installed console script directly.
+        paths = set(original_paths(root, jobs))
+        for job in jobs:
+            if not job.get("console_subcommand"):
+                continue
+            rel = str(job.get("entrypoint_source") or "").replace("\\", "/")
+            if rel and (root / rel).is_file():
+                paths.add(rel)
+        return paths
 
     def coverage_report(root: Path, profile: Dict[str, Any], jobs: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
         delegated = _delegated_console_scripts(jobs)
@@ -331,3 +351,4 @@ def install() -> None:
 
     current._enhanced_job_records = job_records
     current._enhanced_coverage_report = coverage_report
+    current._command_repo_paths = command_repo_paths
