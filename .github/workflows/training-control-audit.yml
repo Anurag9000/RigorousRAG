@@ -12,6 +12,10 @@ concurrency:
   group: training-control-audit-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  PYTHONHASHSEED: '0'
+  PYTHONUNBUFFERED: '1'
+
 jobs:
   strict-training-control-audit:
     runs-on: ubuntu-latest
@@ -21,8 +25,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Compile central launcher
-        run: python -m py_compile run_all_training.py
+      - name: Compile central launcher and immutable bootstrap
+        run: |
+          python -m py_compile run_all_training.py
+          python -m py_compile tools/universal_training_controller_entry.py
       - name: Audit exhaustive training closure and recovery contracts
         run: python run_all_training.py --training-control-audit
       - name: Upload training-control certificate
