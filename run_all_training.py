@@ -35,7 +35,7 @@ def _job(
     }
 
 
-CLASSICAL_SOURCE = "training/authoritative_classical_training_cli_v2.py"
+CLASSICAL_SOURCE = "training/authoritative_classical_training_cli_v3.py"
 RETRIEVAL_SOURCE = "training/authoritative_retrieval_training_cli.py"
 
 # Registered console subcommands materialize one canonical recipe per training
