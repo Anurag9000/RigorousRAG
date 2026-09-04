@@ -8,7 +8,7 @@ readme = "README.md"
 
 [project.scripts]
 rigorousrag-advanced-training = "training.authoritative_advanced_training_cli:main"
-rigorousrag-classical-training = "training.authoritative_classical_training_cli:main"
+rigorousrag-classical-training = "training.authoritative_classical_training_cli_v2:main"
 rigorousrag-retrieval-training = "training.authoritative_retrieval_training_cli:main"
 rigorousrag-advanced-release = "training.authoritative_advanced_release_operator_v5:main"
 rigorousrag-grounded-import = "training.scalable_authoritative_grounded_import_cli:main"
