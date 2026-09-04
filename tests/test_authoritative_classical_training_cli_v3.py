@@ -133,6 +133,29 @@ def test_profile_artifact_coverage_must_be_exact(tmp_path: Path) -> None:
         run_config(config)
 
 
+def test_profile_ids_may_not_be_bare_string(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    payload = json.loads(config.read_text(encoding="utf-8"))
+    payload["profile_ids"] = "dense"
+    payload["calibration_artifacts"] = {"d": "dense-calibration.json", "e": "dense-calibration.json", "n": "dense-calibration.json", "s": "sparse-calibration.json"}
+    _write_json(config, payload)
+
+    with pytest.raises(ValueError, match="must be an array"):
+        run_config(config)
+
+
+def test_calibration_artifact_keys_must_be_strings(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    payload = json.loads(config.read_text(encoding="utf-8"))
+    # JSON object keys are always strings, so exercise the stricter helper indirectly via
+    # an invalid normalized key that cannot be silently coerced into a profile id.
+    payload["calibration_artifacts"] = {" dense ": "dense-calibration.json", "sparse": "sparse-calibration.json"}
+    _write_json(config, payload)
+
+    with pytest.raises(ValueError, match="cover profile_ids exactly"):
+        run_config(config)
+
+
 def test_zero_source_revision_is_not_an_alias_for_auto(tmp_path: Path) -> None:
     config = _config(tmp_path)
     payload = json.loads(config.read_text(encoding="utf-8"))
