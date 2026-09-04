@@ -4,7 +4,7 @@ import hashlib,json,os,shutil,subprocess,sys,urllib.parse,urllib.request
 from pathlib import Path
 
 HOST_REPO="Anurag9000/RigorousRAG"
-HOST_COMMIT="5592b48bafcac72fee8d0c9eeab7d00dedde1f0a"
+HOST_COMMIT="f520aa74de8cce9878fe156dd615e8b6e8df9a77"
 FILES={
  "tools/universal_training_controller.py":"4353000e092ac286158c23500d91e898136fbab3",
  "tools/universal_training_controller_current.py":"09fe933dd520c7b97cdb0e86f5c5fbdc597336e4",
@@ -20,7 +20,7 @@ FILES={
  "tools/universal_training_controller_profile_file.py":"43f7ef739ce92f94ea7e3c444d6b0a56c34f61e3",
  "tools/universal_training_controller_job_catalog_v2.py":"9e0643ae5075e0901ffe28f26024db7b28d37a34",
  "tools/universal_training_controller_large_catalog.py":"805fbe26d0b6e0251b11a808e629f96e1d210b16",
- "tools/universal_training_controller_opf_mechanism_audit.py":"1f19141e4ba6c15627125716139bb8872b453ec9",
+ "tools/universal_training_controller_opf_mechanism_audit.py":"e948bada6dc8f719b18ee20afbca682aae0992e4",
  "tools/universal_training_controller_deferred.py":"72e33311f00d0d2353c671a4c1663b1e9d0daf6a",
  "tools/universal_training_controller_deferred_v2.py":"f0203b273ad58461178871a728c4ba18f73ab116",
  "tools/universal_training_controller_deferred_v3.py":"865378f887c269602676b1c7ca0859d25fd756b2",
@@ -38,9 +38,6 @@ OPF_FILES={
  "utils/opf_shared_defaults.py":"bd76baa134b07567015d0151d5f14ba81dc667df",
  "DNN/VANILLA/Dyn_DNN4OPF/utils/run_defaults.py":"ff79e8c51f1fb21a11e4687989198ef0abb07491",
 }
-# Compatibility-only cache for repository-local binding scripts that have not yet
-# been migrated. v20 never imports this scheduler. It is opt-in instead of an
-# unconditional clean-machine dependency.
 LEGACY_OPF_COMMIT="a34c31259bd5d5f58081e3766918f9df63017455"
 LEGACY_OPF_FILES={
  "utils/opf_massive_suite_runner.py":"b97d47499c83bc6ed3a5753f7f3009b624c94868",
@@ -51,15 +48,8 @@ LEGACY_OPF_FILES={
  "DNN/VANILLA/Dyn_DNN4OPF/utils/run_defaults.py":"dacb9a2c44d611c045fbb7512ba5327343f79a85",
 }
 INIT_FILES=("utils/__init__.py","DNN/__init__.py","DNN/VANILLA/__init__.py","DNN/VANILLA/Dyn_DNN4OPF/__init__.py","DNN/VANILLA/Dyn_DNN4OPF/utils/__init__.py")
-ARG_ALIASES={
- "--training-control-audit":"--audit-training-coverage",
- "--training-control-list-jobs":"--list-training-jobs",
-}
-DIAGNOSTIC_FLAGS=frozenset({
- "--training-control-audit","--audit-training-coverage",
- "--list-training-jobs","--training-control-list-jobs",
- "--help","-h","--version",
-})
+ARG_ALIASES={"--training-control-audit":"--audit-training-coverage","--training-control-list-jobs":"--list-training-jobs"}
+DIAGNOSTIC_FLAGS=frozenset({"--training-control-audit","--audit-training-coverage","--list-training-jobs","--training-control-list-jobs","--help","-h","--version"})
 def git_blob_sha(data:bytes)->str:return hashlib.sha1(f"blob {len(data)}\0".encode()+data).hexdigest()
 def atomic_write(path:Path,data:bytes)->None:
  path.parent.mkdir(parents=True,exist_ok=True);tmp=path.with_suffix(path.suffix+".tmp");tmp.write_bytes(data);os.replace(tmp,path)
@@ -110,12 +100,8 @@ def prepare_reference_cache(root:Path,commit:str,files:dict[str,str])->None:
   p=cache/rel
   if not p.exists():atomic_write(p,b"")
  atomic_write(marker,(json.dumps(expected_marker,indent=2,sort_keys=True)+"\n").encode())
-def diagnostic_only(argv:list[str])->bool:
- """Return True when the controller command is guaranteed not to launch jobs."""
- return bool(argv) and any(arg in DIAGNOSTIC_FLAGS for arg in argv)
-def canonical_argv(argv:list[str])->list[str]:
- """Translate stable launcher-facing aliases to the v20 controller CLI."""
- return [ARG_ALIASES.get(arg,arg) for arg in argv]
+def diagnostic_only(argv:list[str])->bool:return bool(argv) and any(arg in DIAGNOSTIC_FLAGS for arg in argv)
+def canonical_argv(argv:list[str])->list[str]:return [ARG_ALIASES.get(arg,arg) for arg in argv]
 def main()->int:
  root=Path(os.environ.get("TRAINING_CONTROL_REPO_ROOT") or Path.cwd()).resolve();cache=root/".training_control"/"controller_host"/HOST_COMMIT;argv=list(sys.argv[1:])
  for rel,expected in FILES.items():
@@ -126,8 +112,7 @@ def main()->int:
    atomic_write(dst,data)
  if not diagnostic_only(argv):
   prepare_reference_cache(root,OPF_COMMIT,OPF_FILES)
-  if os.environ.get("TRAINING_CONTROL_PREPARE_LEGACY_OPF","").strip().lower() in {"1","true","yes","on"}:
-   prepare_reference_cache(root,LEGACY_OPF_COMMIT,LEGACY_OPF_FILES)
+  if os.environ.get("TRAINING_CONTROL_PREPARE_LEGACY_OPF","").strip().lower() in {"1","true","yes","on"}:prepare_reference_cache(root,LEGACY_OPF_COMMIT,LEGACY_OPF_FILES)
  env=os.environ.copy();env["TRAINING_CONTROL_REPO_ROOT"]=str(root)
  return subprocess.call([sys.executable,str(cache/"universal_training_controller_v20.py"),*canonical_argv(argv)],cwd=root,env=env)
 if __name__=="__main__":raise SystemExit(main())
