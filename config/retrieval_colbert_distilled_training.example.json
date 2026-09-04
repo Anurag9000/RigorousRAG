@@ -1,8 +1,9 @@
 {
   "schema": "rigorousrag-authoritative-retrieval-training/v1",
   "architecture": "colbert",
+  "step_variant": "distilled",
   "run_id": "retrieval-colbert-distilled",
-  "source_commit": "0000000000000000000000000000000000000000",
+  "source_commit": "auto",
   "model_root": "../local_models/colbert",
   "tokenizer_root": "../local_models/colbert",
   "train_data": "../data/training/retrieval/train.jsonl",
