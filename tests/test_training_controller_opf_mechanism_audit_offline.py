@@ -21,9 +21,13 @@ def test_mechanism_certificate_is_offline_when_cache_absent(monkeypatch, tmp_pat
     _install_reference()
 
     def forbidden(*_args, **_kwargs):
-        raise AssertionError("coverage audit attempted to materialize the private OPF runtime")
+        raise AssertionError("coverage audit attempted to download/materialize the private OPF runtime")
 
-    monkeypatch.setattr(base, "_prepare_opf_runtime", forbidden)
+    # Keep _prepare_opf_runtime itself intact because the mechanism certificate
+    # intentionally inspects that function's source to prove the execution-time
+    # Git-blob integrity gate.  Blocking its download primitive still guarantees
+    # this empty-cache audit would fail immediately if preparation were invoked.
+    monkeypatch.setattr(base, "_download", forbidden)
     certificate = mechanism._mechanism_certificate(tmp_path)
 
     assert certificate["pass"] is True
@@ -53,7 +57,7 @@ def test_partial_local_reference_cache_fails_closed(tmp_path: Path) -> None:
 def test_complete_local_cache_is_hash_verified_before_optional_scheduler_introspection(tmp_path: Path) -> None:
     _install_reference()
     cache = tmp_path / ".training_control" / "opf_reference" / current.OPF_REFERENCE_COMMIT
-    # Deliberately create every expected path with invalid bytes.  The certificate
+    # Deliberately create every expected path with invalid bytes. The certificate
     # must fail on the first integrity layer and must not treat file presence as
     # equivalent to a verified literal runtime.
     for relative in current.OPF_RUNTIME_BLOBS:
