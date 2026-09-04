@@ -1,6 +1,7 @@
 {
   "schema": "rigorousrag-authoritative-classical-training/v1",
   "kind": "plan_ranker",
+  "source_revision": "auto",
   "train_data": "../data/training/classical/plan_ranker_train.jsonl",
   "validation_data": "../data/training/classical/plan_ranker_validation.jsonl",
   "output_dir": "../artifacts/training/classical/plan_ranker",
