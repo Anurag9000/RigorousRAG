@@ -4,7 +4,7 @@ import hashlib,json,os,shutil,subprocess,sys,urllib.parse,urllib.request
 from pathlib import Path
 
 HOST_REPO="Anurag9000/RigorousRAG"
-HOST_COMMIT="60b306ccd2edca43fa92ad1331a75732cdd305e2"
+HOST_COMMIT="9ff595a87ce20ee6320a95cd9278243419cbf85a"
 FILES={
  "tools/universal_training_controller.py":"4353000e092ac286158c23500d91e898136fbab3",
  "tools/universal_training_controller_current.py":"09fe933dd520c7b97cdb0e86f5c5fbdc597336e4",
@@ -12,10 +12,11 @@ FILES={
  "tools/universal_training_controller_exact_resume.py":"6f6311cbb7cdfa46d14ad5eb0adc8749c5080226",
  "tools/universal_training_controller_console.py":"89d4b8fde514ba426993d7068d3e4e6177600670",
  "tools/universal_training_controller_console_defaults.py":"a4aae98c861764e0ece3bdcfb87f72eb531f6381",
- "tools/universal_training_controller_subcommands.py":"9dc1f2b36a9020ffba0ec46784fd82c8e7592beb",
+ "tools/universal_training_controller_subcommands.py":"a5c5d5ce5bfa719ec8942ca9eeae7d85143cf719",
+ "tools/universal_training_controller_inventory_scope.py":"0ff6e7ba62018a7320f0f7c7daadd48043e0e55d",
  "tools/universal_training_controller_restart_exact.py":"6994858fc1294b79f0bb479afee7f88f453fb026",
  "tools/universal_training_controller_opf_grace.py":"73db03de6eeb6cdcca685e1ffbfde60f08969f1e",
- "tools/universal_training_controller_registry_scheduling.py":"d69ec5294a876c291f2ac6a210920e8e7233c510",
+ "tools/universal_training_controller_registry_scheduling.py":"b19334a09b52ad67b2e2c28ed36bcc10b6613175",
  "tools/universal_training_controller_training_contracts.py":"dec455d8fa2e2cc88113f4d382f072908cc9b1ac",
  "tools/universal_training_controller_profile_file.py":"43f7ef739ce92f94ea7e3c444d6b0a56c34f61e3",
  "tools/universal_training_controller_job_catalog_v2.py":"9e0643ae5075e0901ffe28f26024db7b28d37a34",
@@ -26,7 +27,7 @@ FILES={
  "tools/universal_training_controller_deferred_v3.py":"865378f887c269602676b1c7ca0859d25fd756b2",
  "tools/universal_training_controller_deferred_v4.py":"6dc85929f749cc1d5202d3481509e6db9b6aeb67",
  "tools/universal_training_controller_opf_reference_v2.py":"3b21bb8f60179e8c1e9b31d164ecf6799f9f9b5d",
- "tools/universal_training_controller_v20.py":"7ab4318b917fd3276249a02536ac02726ddc8eed",
+ "tools/universal_training_controller_v20.py":"a1883045e8ec84d30f49348bc3442ab61c5a567b",
 }
 OPF_REPO="Anurag9000/OPF_ADP"
 OPF_COMMIT="2dfe664af88b95981da2b84b60f228a37156749f"
