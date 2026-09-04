@@ -1,15 +1,15 @@
 """Fail-closed external-input contract for learned retrieval training.
 
 The v1 retrieval authority already binds the complete admitted train/validation bytes and
-local model/tokenizer trees into its exact-resume architecture identity.  This v2 entry
+local model/tokenizer trees into its exact-resume architecture identity. This v2 entry
 adds a lightweight preflight before importing any heavy training dependency:
 
 * all-zero ``source_commit`` placeholders are rejected (``auto`` is the only automatic
   source-revision spelling);
-* every required dataset/model/tokenizer input must exist, be regular, and be free of
-  symlinks;
+* every required dataset/model/tokenizer input must exist, be regular, and be reachable
+  through a lexical path containing no symlink component;
 * an optional ``expected_inputs`` object can pin the SHA-256 identities supplied by an
-  upstream producer/materializer.  When present it is closed-world and must cover every
+  upstream producer/materializer. When present it is closed-world and must cover every
   admitted input exactly.
 
 The authoritative optimizer/checkpoint implementation remains v1; this module deliberately
@@ -54,15 +54,32 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _reject_symlink_components(path: Path, label: str) -> None:
+    """Reject every symlink in the configured lexical path, including parents.
+
+    ``Path.resolve()`` intentionally follows symlinks, so checking only the resolved
+    target cannot prove which bytes the caller actually named. Walk the absolute lexical
+    path first and reject any component that is itself a symlink; only then resolve
+    strictly for existence/type checks.
+    """
+
+    absolute = path.absolute()
+    parts = absolute.parts
+    if not parts:
+        raise ValueError(f"{label} path is invalid")
+    current = Path(parts[0])
+    if current.is_symlink():
+        raise ValueError(f"{label} path contains a symlink component: {current}")
+    for part in parts[1:]:
+        current = current / part
+        if current.is_symlink():
+            raise ValueError(f"{label} path contains a symlink component: {current}")
+
+
 def _path(base: Path, value: Any, label: str, *, directory: bool = False) -> Path:
     selected = Path(_identifier(value, label)).expanduser()
     candidate = selected if selected.is_absolute() else base / selected
-    # Check the lexical path before resolve so a final symlink cannot disappear into its
-    # target.  Resolve then also protects against symlinked parents by comparing each
-    # lexical component below.
-    absolute = candidate.absolute()
-    if absolute.is_symlink():
-        raise ValueError(f"{label} may not be a symlink")
+    _reject_symlink_components(candidate, label)
     resolved = candidate.resolve(strict=True)
     if directory:
         if not resolved.is_dir():
@@ -172,7 +189,7 @@ def _preflight(config_path: str | Path) -> Mapping[str, Any]:
 def run_config(config_path: str | Path) -> Mapping[str, Any]:
     _preflight(config_path)
     # Heavy torch/transformers imports happen only after the fail-closed byte-identity
-    # preflight.  v1 remains the sole optimizer/checkpoint authority.
+    # preflight. v1 remains the sole optimizer/checkpoint authority.
     from training import authoritative_retrieval_training_cli as v1
 
     return v1.run_config(config_path)
