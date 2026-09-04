@@ -1,8 +1,9 @@
 {
   "schema": "rigorousrag-authoritative-retrieval-training/v1",
   "architecture": "dense",
+  "step_variant": "distilled",
   "run_id": "retrieval-dense-distilled",
-  "source_commit": "0000000000000000000000000000000000000000",
+  "source_commit": "auto",
   "model_root": "../local_models/dense",
   "tokenizer_root": "../local_models/dense",
   "train_data": "../data/training/retrieval/train.jsonl",
