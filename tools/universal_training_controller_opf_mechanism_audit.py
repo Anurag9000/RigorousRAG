@@ -1,22 +1,19 @@
 #!/usr/bin/env python3
-"""Prove that every repository controller delegates scheduling to literal OPF_ADP.
+"""Audit literal-OPF delegation without making coverage depend on network access.
 
-The universal controller is intentionally an adapter around the *unchanged* pinned
-OPF scheduler.  This layer makes that claim mechanically auditable rather than a
-comment:
+There are deliberately two integrity gates:
 
-* all pinned OPF runtime blobs are re-hashed with Git's blob algorithm;
-* the scheduler's complete top-level function/class inventory and AST are
-  fingerprinted;
-* every OPF CLI option string visible in the pinned scheduler source is recorded;
-* the universal DAG adapter source is parsed and every assignment to the imported
-  ``opf`` module is enumerated.  Only ``opf.build_suite_jobs`` may be replaced;
-  pressure/resource/retry/pause/resume/reporting functions may not be monkey-patched;
-* the current repository's training-relevant source set is content-hashed so a
-  coverage certificate is tied to the exact trainer/model tree it audited.
+* coverage-time proves the selected OPF repository/commit/blob manifest is
+  synchronized across the controller layers, proves the adapter mutates only
+  ``opf.build_suite_jobs``, and proves execution still contains the Git-blob
+  verification gate;
+* execution-time ``base._prepare_opf_runtime`` verifies every materialized OPF
+  file against that manifest before the scheduler is imported.
 
-This module changes no scheduling, admission, retry, pause/resume, resource or
-process-control behavior.
+If a verified local OPF cache is already present, coverage also fingerprints the
+literal scheduler AST, symbols and CLI.  A malformed or mismatched local cache is
+never ignored: it fails the mechanism certificate.  A missing cache is simply
+reported as ``deferred_to_execution`` and is not downloaded by an audit.
 """
 from __future__ import annotations
 
@@ -26,13 +23,13 @@ import inspect
 import json
 import re
 from pathlib import Path
-from typing import Any, Dict, Iterable, Mapping, Sequence
+from typing import Any, Dict, Mapping, Sequence
 
 import universal_training_controller as base
 import universal_training_controller_current as current
 import universal_training_controller_dag as dag
 
-MECHANISM_AUDIT_SCHEMA = 1
+MECHANISM_AUDIT_SCHEMA = 2
 _ALLOWED_OPF_ASSIGNMENTS = {"build_suite_jobs"}
 _CLI_RE = re.compile(r"add_argument\(\s*(['\"])(--?[A-Za-z0-9][A-Za-z0-9_-]*)\1")
 
@@ -81,11 +78,7 @@ def _training_snapshot(root: Path, report: Mapping[str, Any]) -> Dict[str, Any]:
     reachability = report.get("reachability") or {}
     paths: set[str] = set()
     if isinstance(inventory, Mapping):
-        for key in (
-            "executable_training_candidates",
-            "model_surfaces",
-            "training_logic_surfaces",
-        ):
+        for key in ("executable_training_candidates", "model_surfaces", "training_logic_surfaces"):
             value = inventory.get(key, []) or []
             if isinstance(value, list):
                 paths.update(str(item) for item in value)
@@ -110,55 +103,135 @@ def _training_snapshot(root: Path, report: Mapping[str, Any]) -> Dict[str, Any]:
         aggregate.update(b"\0")
         aggregate.update(digest.encode("ascii"))
         aggregate.update(b"\0")
-    return {
-        "schema": 1,
-        "path_count": len(rows),
-        "digest": aggregate.hexdigest(),
-        "files": rows,
+    return {"schema": 1, "path_count": len(rows), "digest": aggregate.hexdigest(), "files": rows}
+
+
+def _local_reference_cache(root: Path) -> Path:
+    return root / ".training_control" / "opf_reference" / str(current.OPF_REFERENCE_COMMIT)
+
+
+def _execution_integrity_gate() -> Dict[str, Any]:
+    verify_source = inspect.getsource(base._verify_reference_file)
+    prepare_source = inspect.getsource(base._prepare_opf_runtime)
+    checks = {
+        "verifier_uses_git_blob_sha": "_git_blob_sha" in verify_source,
+        "verifier_reads_expected_manifest": "OPF_RUNTIME_BLOBS" in verify_source,
+        "verifier_rejects_mismatch": "raise RuntimeError" in verify_source and "mismatch" in verify_source.lower(),
+        "prepare_verifies_cached_files": "_verify_reference_file" in prepare_source,
+        "prepare_verifies_downloaded_files": prepare_source.count("_verify_reference_file") >= 2,
+        "prepare_iterates_runtime_manifest": "OPF_RUNTIME_FILES" in prepare_source,
     }
+    return {"checks": checks, "pass": all(checks.values())}
 
 
-def _mechanism_certificate(root: Path) -> Dict[str, Any]:
-    cache = base._prepare_opf_runtime(root)
-    observed_blobs: Dict[str, str | None] = {}
-    blob_errors: list[str] = []
-    for relative, expected in current.OPF_RUNTIME_BLOBS.items():
+def _inspect_local_runtime(cache: Path) -> Dict[str, Any]:
+    expected = dict(current.OPF_RUNTIME_BLOBS)
+    observed: Dict[str, str | None] = {}
+    errors: list[str] = []
+    for relative, wanted in expected.items():
         path = cache / relative
         try:
             actual = base._git_blob_sha(path.read_bytes())
         except Exception as exc:
             actual = None
-            blob_errors.append(f"{relative}: {exc}")
-        observed_blobs[relative] = actual
-        if actual != expected:
-            blob_errors.append(f"{relative}: {actual} != {expected}")
+            errors.append(f"{relative}: {exc}")
+        observed[relative] = actual
+        if actual != wanted:
+            errors.append(f"{relative}: {actual} != {wanted}")
+
+    result: Dict[str, Any] = {
+        "status": "verified_local_cache" if not errors else "invalid_local_cache",
+        "observed_runtime_blobs": observed,
+        "runtime_blob_errors": errors,
+        "pass": not errors,
+        "scheduler_git_blob_sha": None,
+        "scheduler_sha256": None,
+        "scheduler_ast_sha256": None,
+        "scheduler_top_level_symbols": {"functions": [], "classes": []},
+        "scheduler_cli_options": [],
+        "scheduler_cli_option_count": 0,
+    }
+    if errors:
+        return result
 
     scheduler_path = cache / "utils" / "opf_massive_suite_runner.py"
-    scheduler_text = scheduler_path.read_text(encoding="utf-8")
-    scheduler_symbols = _top_level_symbols(scheduler_text)
+    scheduler_data = scheduler_path.read_bytes()
+    scheduler_text = scheduler_data.decode("utf-8")
     cli_options = sorted({match.group(2) for match in _CLI_RE.finditer(scheduler_text)})
+    result.update(
+        {
+            "scheduler_git_blob_sha": base._git_blob_sha(scheduler_data),
+            "scheduler_sha256": _sha256(scheduler_data),
+            "scheduler_ast_sha256": _ast_digest(scheduler_text),
+            "scheduler_top_level_symbols": _top_level_symbols(scheduler_text),
+            "scheduler_cli_options": cli_options,
+            "scheduler_cli_option_count": len(cli_options),
+        }
+    )
+    return result
+
+
+def _mechanism_certificate(root: Path) -> Dict[str, Any]:
+    expected_blobs = dict(current.OPF_RUNTIME_BLOBS)
+    reference_synchronized = (
+        base.OPF_REFERENCE_REPOSITORY == current.OPF_REFERENCE_REPOSITORY
+        and base.OPF_REFERENCE_COMMIT == current.OPF_REFERENCE_COMMIT
+        and dict(base.OPF_RUNTIME_BLOBS) == expected_blobs
+        and tuple(base.OPF_RUNTIME_FILES) == tuple(expected_blobs)
+    )
+    execution_gate = _execution_integrity_gate()
     opf_assignments = _opf_attribute_assignments()
     forbidden_assignments = sorted(set(opf_assignments) - _ALLOWED_OPF_ASSIGNMENTS)
 
+    cache = _local_reference_cache(root)
+    any_cached_runtime_file = any((cache / relative).exists() for relative in expected_blobs)
+    marker_exists = (cache / "REFERENCE.json").is_file()
+    if any_cached_runtime_file or marker_exists:
+        local_runtime = _inspect_local_runtime(cache)
+    else:
+        local_runtime = {
+            "status": "deferred_to_execution",
+            "observed_runtime_blobs": {},
+            "runtime_blob_errors": [],
+            "pass": True,
+            "scheduler_git_blob_sha": None,
+            "scheduler_sha256": None,
+            "scheduler_ast_sha256": None,
+            "scheduler_top_level_symbols": {"functions": [], "classes": []},
+            "scheduler_cli_options": [],
+            "scheduler_cli_option_count": 0,
+        }
+
+    certificate_pass = (
+        reference_synchronized
+        and bool(execution_gate.get("pass"))
+        and bool(local_runtime.get("pass"))
+        and not forbidden_assignments
+        and set(opf_assignments) <= _ALLOWED_OPF_ASSIGNMENTS
+    )
     return {
         "schema": MECHANISM_AUDIT_SCHEMA,
         "reference_repository": current.OPF_REFERENCE_REPOSITORY,
         "reference_commit": current.OPF_REFERENCE_COMMIT,
-        "expected_runtime_blobs": dict(current.OPF_RUNTIME_BLOBS),
-        "observed_runtime_blobs": observed_blobs,
-        "runtime_blob_errors": blob_errors,
-        "scheduler_git_blob_sha": base._git_blob_sha(scheduler_path.read_bytes()),
-        "scheduler_sha256": _sha256(scheduler_path.read_bytes()),
-        "scheduler_ast_sha256": _ast_digest(scheduler_text),
-        "scheduler_top_level_symbols": scheduler_symbols,
-        "scheduler_cli_options": cli_options,
-        "scheduler_cli_option_count": len(cli_options),
+        "expected_runtime_blobs": expected_blobs,
+        "reference_synchronized": reference_synchronized,
+        "runtime_validation_status": local_runtime["status"],
+        "runtime_validation_deferred_to_execution": local_runtime["status"] == "deferred_to_execution",
+        "observed_runtime_blobs": local_runtime["observed_runtime_blobs"],
+        "runtime_blob_errors": local_runtime["runtime_blob_errors"],
+        "execution_integrity_gate": execution_gate,
+        "scheduler_git_blob_sha": local_runtime["scheduler_git_blob_sha"],
+        "scheduler_sha256": local_runtime["scheduler_sha256"],
+        "scheduler_ast_sha256": local_runtime["scheduler_ast_sha256"],
+        "scheduler_top_level_symbols": local_runtime["scheduler_top_level_symbols"],
+        "scheduler_cli_options": local_runtime["scheduler_cli_options"],
+        "scheduler_cli_option_count": local_runtime["scheduler_cli_option_count"],
         "adapter_opf_attribute_assignments": opf_assignments,
         "allowed_adapter_assignments": sorted(_ALLOWED_OPF_ASSIGNMENTS),
         "forbidden_adapter_assignments": forbidden_assignments,
         "only_job_catalog_builder_is_replaced": not forbidden_assignments and set(opf_assignments) <= _ALLOWED_OPF_ASSIGNMENTS,
         "literal_scheduler_source_modified": False,
-        "pass": not blob_errors and not forbidden_assignments and set(opf_assignments) <= _ALLOWED_OPF_ASSIGNMENTS,
+        "pass": certificate_pass,
     }
 
 
