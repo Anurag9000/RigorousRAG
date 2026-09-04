@@ -139,3 +139,35 @@ def test_symlink_inside_model_tree_fails_closed(tmp_path: Path) -> None:
         pytest.skip("symlinks are unavailable on this platform")
     with pytest.raises(ValueError, match="contains a symlink"):
         _preflight(config)
+
+
+def test_symlinked_parent_of_dataset_fails_closed(tmp_path: Path) -> None:
+    config = _fixture(tmp_path)
+    real_parent = tmp_path / "real-data"
+    _text(real_parent / "train.jsonl", '{"query":"linked","positive":"data"}\n')
+    link_parent = tmp_path / "linked-data"
+    try:
+        os.symlink(real_parent, link_parent, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks are unavailable on this platform")
+    payload = json.loads(config.read_text(encoding="utf-8"))
+    payload["train_data"] = "linked-data/train.jsonl"
+    _json(config, payload)
+    with pytest.raises(ValueError, match="path contains a symlink component"):
+        _preflight(config)
+
+
+def test_symlinked_parent_of_model_root_fails_closed(tmp_path: Path) -> None:
+    config = _fixture(tmp_path)
+    real_parent = tmp_path / "real-model-parent"
+    _text(real_parent / "model" / "weights.bin", "linked-model\n")
+    link_parent = tmp_path / "linked-model-parent"
+    try:
+        os.symlink(real_parent, link_parent, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks are unavailable on this platform")
+    payload = json.loads(config.read_text(encoding="utf-8"))
+    payload["model_root"] = "linked-model-parent/model"
+    _json(config, payload)
+    with pytest.raises(ValueError, match="path contains a symlink component"):
+        _preflight(config)
