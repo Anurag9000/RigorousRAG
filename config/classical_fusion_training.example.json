@@ -1,0 +1,26 @@
+{
+  "schema": "rigorousrag-authoritative-classical-training/v1",
+  "kind": "fusion_weight",
+  "train_data": "../data/training/classical/fusion_train.jsonl",
+  "validation_data": "../data/training/classical/fusion_validation.jsonl",
+  "output_dir": "../artifacts/training/classical/fusion_weight",
+  "profile_ids": ["dense", "sparse", "late_interaction"],
+  "calibration_contract_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "calibration_artifact_sha256s": {
+    "dense": "0000000000000000000000000000000000000000000000000000000000000000",
+    "sparse": "0000000000000000000000000000000000000000000000000000000000000000",
+    "late_interaction": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "source_revision": "0000000000000000000000000000000000000000",
+  "training": {
+    "epochs": 100,
+    "batch_size": 64,
+    "learning_rate": 0.05,
+    "l2": 0.0001,
+    "gradient_clip_norm": 5.0,
+    "positive_class_weight": 1.0,
+    "patience": 10,
+    "min_delta": 0.00001,
+    "seed": 17
+  }
+}
