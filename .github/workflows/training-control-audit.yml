@@ -1,0 +1,35 @@
+name: OPF v20 training-control audit
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: training-control-audit-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  strict-training-control-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile central launcher
+        run: python -m py_compile run_all_training.py
+      - name: Audit exhaustive training closure and recovery contracts
+        run: python run_all_training.py --training-control-audit
+      - name: Upload training-control certificate
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: training-control-certificate-${{ github.sha }}
+          path: .training_control/coverage_report.json
+          if-no-files-found: warn
+          retention-days: 30
