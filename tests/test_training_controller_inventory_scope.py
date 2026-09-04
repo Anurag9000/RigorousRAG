@@ -147,3 +147,82 @@ def test_nontraining_accounting_rejects_training_logic_and_globs(tmp_path: Path)
     assert len(filtered["non_training_surface_accounting_errors"]) == 2
     assert "cannot be declared non-training" in filtered["non_training_surface_accounting_errors"][0]
     assert "glob/meta characters are forbidden" in filtered["non_training_surface_accounting_errors"][1]
+
+
+def test_quiet_learner_detector_finds_plain_python_optimizer(tmp_path: Path) -> None:
+    root = tmp_path / "quiet"
+    learner = root / "training" / "fusion_fitting.py"
+    learner.parent.mkdir(parents=True, exist_ok=True)
+    learner.write_text(
+        """
+from dataclasses import dataclass
+
+@dataclass
+class FusionTrainingState:
+    epoch: int
+    batch_index: int
+    best_loss: float
+    stale_epochs: int
+
+def fit_fusion(training, validation, *, epochs=10, batch_size=2, learning_rate=0.1, patience=2, min_delta=1e-4):
+    weights = [0.0, 0.0]
+    best_loss = 1e9
+    stale_epochs = 0
+    for epoch in range(epochs):
+        for batch_index in range(0, len(training), batch_size):
+            gradient = [1.0, -1.0]
+            weights = [value - learning_rate * gradient[index] for index, value in enumerate(weights)]
+        validation_loss = sum(weights)
+        if validation_loss < best_loss - min_delta:
+            best_loss = validation_loss
+            stale_epochs = 0
+        else:
+            stale_epochs += 1
+        if stale_epochs >= patience:
+            break
+    return weights
+""",
+        encoding="utf-8",
+    )
+    result = inventory_scope._filter_inventory(
+        root,
+        {
+            "training_files": [],
+            "executable_training_candidates": [],
+            "model_surfaces": [],
+            "training_logic_surfaces": [],
+        },
+    )
+    assert result["quiet_training_logic_surfaces"] == ["training/fusion_fitting.py"]
+    assert result["training_logic_surfaces"] == ["training/fusion_fitting.py"]
+    assert result["quiet_learner_count"] == 1
+    evidence = result["quiet_learner_evidence"][0]
+    assert evidence["apis"] == ["fit_fusion"]
+    assert evidence["state_types"] == ["FusionTrainingState"]
+    assert evidence["parameter_update"] is True
+
+
+def test_quiet_learner_detector_rejects_fit_named_inference_helper(tmp_path: Path) -> None:
+    root = tmp_path / "not-quiet"
+    helper = root / "tools" / "fit_adapter.py"
+    helper.parent.mkdir(parents=True, exist_ok=True)
+    helper.write_text(
+        """
+def fit_adapter(model, request):
+    # Name alone is insufficient: there is no optimization state or parameter update.
+    validation = request.get('validation')
+    return model(validation)
+""",
+        encoding="utf-8",
+    )
+    result = inventory_scope._filter_inventory(
+        root,
+        {
+            "training_files": [],
+            "executable_training_candidates": [],
+            "model_surfaces": [],
+            "training_logic_surfaces": [],
+        },
+    )
+    assert result["quiet_training_logic_surfaces"] == []
+    assert result["quiet_learner_count"] == 0
