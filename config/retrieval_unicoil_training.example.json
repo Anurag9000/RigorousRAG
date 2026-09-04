@@ -1,8 +1,9 @@
 {
   "schema": "rigorousrag-authoritative-retrieval-training/v1",
   "architecture": "unicoil",
+  "step_variant": "base",
   "run_id": "retrieval-unicoil",
-  "source_commit": "0000000000000000000000000000000000000000",
+  "source_commit": "auto",
   "model_root": "../local_models/unicoil",
   "tokenizer_root": "../local_models/unicoil",
   "train_data": "../data/training/retrieval/train.jsonl",
@@ -15,7 +16,7 @@
   "max_grad_norm": 1.0,
   "model": {"aggregation": "max", "nonnegative": true, "exclude_token_ids": []},
   "data": {"batch_size": 8, "validation_batch_size": 8, "query_max_length": 64, "document_max_length": 512, "negatives_per_query": 8, "pad_to_multiple_of": 8},
-  "loss": {"retrieval_temperature": 1.0, "teacher_temperature": 1.0, "distillation_weight": 0.0, "minimum_teacher_candidates": 2, "sparse_penalties": {"query_l1": 0.0001, "document_l1": 0.0001, "query_flops": 0.000001, "document_flops": 0.000001}},
+  "loss": {"retrieval_temperature": 1.0, "teacher_temperature": 1.0, "sparse_penalties": {"query_l1": 0.0001, "document_l1": 0.0001, "query_flops": 0.000001, "document_flops": 0.000001}},
   "early_stopping": {"patience": 8, "min_delta": 0.0001},
   "stages": [{"name": "unicoil-sparse-contrastive", "max_optimizer_steps": 20000, "learning_rate": 0.00002, "weight_decay": 0.01, "warmup_steps": 1000, "scheduler": "linear", "checkpoint_every_steps": 250, "evaluate_every_steps": 250}]
 }
