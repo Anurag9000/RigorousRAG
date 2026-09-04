@@ -1,6 +1,7 @@
 {
   "schema": "rigorousrag-authoritative-classical-training/v1",
   "kind": "fusion_weight",
+  "source_revision": "auto",
   "train_data": "../data/training/classical/fusion_train.jsonl",
   "validation_data": "../data/training/classical/fusion_validation.jsonl",
   "output_dir": "../artifacts/training/classical/fusion_weight",
@@ -11,7 +12,6 @@
     "sparse": "0000000000000000000000000000000000000000000000000000000000000000",
     "late_interaction": "0000000000000000000000000000000000000000000000000000000000000000"
   },
-  "source_revision": "0000000000000000000000000000000000000000",
   "training": {
     "epochs": 100,
     "batch_size": 64,
