@@ -36,7 +36,7 @@ def _job(
 
 
 CLASSICAL_SOURCE = "training/authoritative_classical_training_cli_v3.py"
-RETRIEVAL_SOURCE = "training/authoritative_retrieval_training_cli.py"
+RETRIEVAL_SOURCE = "training/authoritative_retrieval_training_cli_v2.py"
 
 # Registered console subcommands materialize one canonical recipe per training
 # authority. Additional curricula using the same authority are explicit jobs so
