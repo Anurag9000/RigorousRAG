@@ -35,6 +35,9 @@ def _job(
     }
 
 
+CLASSICAL_SOURCE = "training/authoritative_classical_training_cli_v2.py"
+RETRIEVAL_SOURCE = "training/authoritative_retrieval_training_cli.py"
+
 # Registered console subcommands materialize one canonical recipe per training
 # authority. Additional curricula using the same authority are explicit jobs so
 # the pressure scheduler can admit/pause/resume each recipe independently without
@@ -49,70 +52,70 @@ EXTRA_JOBS = [
     ),
     _job(
         "rigorousrag-classical-training:train:listwise-fusion",
-        "training/authoritative_classical_training_cli.py",
+        CLASSICAL_SOURCE,
         "config/classical_listwise_fusion_training.example.json",
         "classical-listwise-fusion",
         device_capable=False,
     ),
     _job(
         "rigorousrag-classical-training:train:domain-classifier",
-        "training/authoritative_classical_training_cli.py",
+        CLASSICAL_SOURCE,
         "config/classical_domain_training.example.json",
         "classical-domain-classifier",
         device_capable=False,
     ),
     _job(
         "rigorousrag-classical-training:train:plan-ranker",
-        "training/authoritative_classical_training_cli.py",
+        CLASSICAL_SOURCE,
         "config/classical_plan_ranker_training.example.json",
         "classical-plan-ranker",
         device_capable=False,
     ),
     _job(
         "rigorousrag-retrieval-training:train:dense-distilled",
-        "training/authoritative_retrieval_training_cli.py",
+        RETRIEVAL_SOURCE,
         "config/retrieval_dense_distilled_training.example.json",
         "retrieval-dense-distilled",
         device_capable=True,
     ),
     _job(
         "rigorousrag-retrieval-training:train:splade-base",
-        "training/authoritative_retrieval_training_cli.py",
+        RETRIEVAL_SOURCE,
         "config/retrieval_splade_base_training.example.json",
         "retrieval-splade-base",
         device_capable=True,
     ),
     _job(
         "rigorousrag-retrieval-training:train:splade-distilled",
-        "training/authoritative_retrieval_training_cli.py",
+        RETRIEVAL_SOURCE,
         "config/retrieval_splade_distilled_training.example.json",
         "retrieval-splade-distilled",
         device_capable=True,
     ),
     _job(
         "rigorousrag-retrieval-training:train:unicoil",
-        "training/authoritative_retrieval_training_cli.py",
+        RETRIEVAL_SOURCE,
         "config/retrieval_unicoil_training.example.json",
         "retrieval-unicoil",
         device_capable=True,
     ),
     _job(
         "rigorousrag-retrieval-training:train:colbert-base",
-        "training/authoritative_retrieval_training_cli.py",
+        RETRIEVAL_SOURCE,
         "config/retrieval_colbert_base_training.example.json",
         "retrieval-colbert-base",
         device_capable=True,
     ),
     _job(
         "rigorousrag-retrieval-training:train:colbert-distilled",
-        "training/authoritative_retrieval_training_cli.py",
+        RETRIEVAL_SOURCE,
         "config/retrieval_colbert_distilled_training.example.json",
         "retrieval-colbert-distilled",
         device_capable=True,
     ),
     _job(
         "rigorousrag-retrieval-training:train:cross-encoder-listwise",
-        "training/authoritative_retrieval_training_cli.py",
+        RETRIEVAL_SOURCE,
         "config/retrieval_cross_encoder_training.example.json",
         "retrieval-cross-encoder-listwise",
         device_capable=True,
