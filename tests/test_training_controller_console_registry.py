@@ -8,6 +8,7 @@ if str(TOOLS) not in sys.path:
     sys.path.insert(0, str(TOOLS))
 
 import universal_training_controller_console as console
+import universal_training_controller_registry_scheduling as registry_scheduling
 import universal_training_controller_subcommands as subcommands
 
 
@@ -98,6 +99,7 @@ def test_training_subcommand_materializes_once_and_delegates_parent(tmp_path: Pa
     assert jobs[0]["console_script"] == "fixture-training"
     assert jobs[0]["console_subcommand"] == "train"
     assert jobs[0]["command"][-3:] == ["train", "--config", "config/train.json"]
+    assert subcommands._subcommand_source_paths(root, jobs) == {"src/fixturepkg/training_cli.py"}
 
     delegated = subcommands._delegated_console_scripts(jobs)
     assert delegated == {"fixture-training": ["train"]}
@@ -111,6 +113,7 @@ def test_training_subcommand_materializes_once_and_delegates_parent(tmp_path: Pa
             "entries": [
                 {
                     "name": "fixture-training",
+                    "source": "src/fixturepkg/training_cli.py",
                     "training_surface": True,
                     "ignored": True,
                     "configured": True,
@@ -121,9 +124,9 @@ def test_training_subcommand_materializes_once_and_delegates_parent(tmp_path: Pa
             "unconfigured_training_entrypoints": [],
         },
         "compiled_console_training_jobs": [],
-        "missing_console_job_materialization": [],
-        "unscheduled_registered_training_entrypoints": [],
-        "strict_registered_training_entrypoints_pass": True,
+        "missing_console_job_materialization": ["fixture-training"],
+        "unscheduled_registered_training_entrypoints": ["fixture-training"],
+        "strict_registered_training_entrypoints_pass": False,
         "strict_controls": {},
     }
     subcommands._normalize_delegated_parent_report(report, delegated)
@@ -132,5 +135,11 @@ def test_training_subcommand_materializes_once_and_delegates_parent(tmp_path: Pa
     assert parent["satisfied_by_subcommand"] is True
     assert parent["satisfied_by_subcommands"] == ["train"]
     assert report["console_entrypoints_satisfied_by_subcommands"] == {"fixture-training": ["train"]}
+    assert report["missing_console_job_materialization"] == []
     assert report["unscheduled_registered_training_entrypoints"] == []
     assert report["strict_registered_training_entrypoints_pass"] is True
+
+    # The final registry scheduling layer must not reintroduce the delegated
+    # parent as a second required job.  The concrete child remains independently
+    # required by the subcommand registry.
+    assert registry_scheduling._active_expected_console(report) == set()
