@@ -9,7 +9,7 @@ on:
       - 'tests/test_training_controller_deferred_expansion.py'
       - 'tests/test_training_controller_entry_diagnostics.py'
       - 'tests/test_training_controller_exact_resume.py'
-      - 'tests/test_training_controller_literal_opf_scheduler_behavior.py'
+      - 'tests/test_training_controller_opf_mechanism_audit_offline.py'
       - 'tests/test_training_controller_opf_reference_v20.py'
       - 'run_all_training.py'
       - '.github/workflows/training-control-static.yml'
@@ -20,7 +20,7 @@ on:
       - 'tests/test_training_controller_deferred_expansion.py'
       - 'tests/test_training_controller_entry_diagnostics.py'
       - 'tests/test_training_controller_exact_resume.py'
-      - 'tests/test_training_controller_literal_opf_scheduler_behavior.py'
+      - 'tests/test_training_controller_opf_mechanism_audit_offline.py'
       - 'tests/test_training_controller_opf_reference_v20.py'
       - 'run_all_training.py'
       - '.github/workflows/training-control-static.yml'
@@ -69,14 +69,16 @@ jobs:
 
           entry = Path('tools/universal_training_controller_entry.py').read_text()
           for required in (
-              '5592b48bafcac72fee8d0c9eeab7d00dedde1f0a',
+              'f520aa74de8cce9878fe156dd615e8b6e8df9a77',
               '2dfe664af88b95981da2b84b60f228a37156749f',
               'b2ae3d04f9398df5c18c7c13f4c939bce46b930d',
+              'e948bada6dc8f719b18ee20afbca682aae0992e4',
               '3b21bb8f60179e8c1e9b31d164ecf6799f9f9b5d',
               '7ab4318b917fd3276249a02536ac02726ddc8eed',
               'universal_training_controller_opf_reference_v2.py',
               'universal_training_controller_v20.py',
               'DIAGNOSTIC_FLAGS',
+              'ARG_ALIASES',
               'TRAINING_CONTROL_PREPARE_LEGACY_OPF',
           ):
               assert required in entry, required
@@ -124,17 +126,22 @@ jobs:
           ):
               assert required in reference, required
 
+          mechanism = Path('tools/universal_training_controller_opf_mechanism_audit.py').read_text()
+          assert 'base._prepare_opf_runtime(root)' not in mechanism
+          for required in ('_execution_integrity_gate', 'deferred_to_execution', 'invalid_local_cache'):
+              assert required in mechanism, required
+
           rooted = Path('tools/universal_training_controller_deferred_v4.py').read_text()
           for required in ('os.chdir(resolved_root)', 'finally:', 'os.chdir(original_cwd)', 'return strict.main()'):
               assert required in rooted, required
           print('static immutable v20 controller invariants passed')
           PY
-      - name: Run controller safety tests
+      - name: Run public controller safety tests
         run: |
           python -m pip install --disable-pip-version-check -q pytest psutil
           python -m pytest -q -o addopts='' \
             tests/test_training_controller_deferred_expansion.py \
             tests/test_training_controller_entry_diagnostics.py \
             tests/test_training_controller_exact_resume.py \
-            tests/test_training_controller_literal_opf_scheduler_behavior.py \
+            tests/test_training_controller_opf_mechanism_audit_offline.py \
             tests/test_training_controller_opf_reference_v20.py
