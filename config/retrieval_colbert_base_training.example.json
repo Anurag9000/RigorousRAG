@@ -1,0 +1,21 @@
+{
+  "schema": "rigorousrag-authoritative-retrieval-training/v1",
+  "architecture": "colbert",
+  "run_id": "retrieval-colbert-base",
+  "source_commit": "0000000000000000000000000000000000000000",
+  "model_root": "../local_models/colbert",
+  "tokenizer_root": "../local_models/colbert",
+  "train_data": "../data/training/retrieval/train.jsonl",
+  "validation_data": "../data/training/retrieval/validation.jsonl",
+  "output_dir": "../artifacts/training/retrieval/colbert_base",
+  "device": "auto",
+  "precision": "fp32",
+  "seed": 127,
+  "gradient_accumulation_steps": 1,
+  "max_grad_norm": 1.0,
+  "model": {"projection_dim": 128, "dropout": 0.0, "normalize": true, "exclude_token_ids": []},
+  "data": {"batch_size": 8, "validation_batch_size": 8, "query_max_length": 64, "document_max_length": 384, "negatives_per_query": 8, "pad_to_multiple_of": 8},
+  "loss": {"retrieval_temperature": 0.05, "teacher_temperature": 1.0, "distillation_weight": 0.0, "minimum_teacher_candidates": 2},
+  "early_stopping": {"patience": 8, "min_delta": 0.0001},
+  "stages": [{"name": "colbert-contrastive", "max_optimizer_steps": 20000, "learning_rate": 0.00002, "weight_decay": 0.01, "warmup_steps": 1000, "scheduler": "linear", "checkpoint_every_steps": 250, "evaluate_every_steps": 250}]
+}
