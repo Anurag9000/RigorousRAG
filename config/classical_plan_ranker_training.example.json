@@ -1,0 +1,20 @@
+{
+  "schema": "rigorousrag-authoritative-classical-training/v1",
+  "kind": "plan_ranker",
+  "train_data": "../data/training/classical/plan_ranker_train.jsonl",
+  "validation_data": "../data/training/classical/plan_ranker_validation.jsonl",
+  "output_dir": "../artifacts/training/classical/plan_ranker",
+  "latency_penalty": 0.0,
+  "cost_penalty": 0.0,
+  "risk_penalty": 0.0,
+  "training": {
+    "learning_rate": 0.05,
+    "epochs": 100,
+    "batch_size": 64,
+    "l2": 0.0001,
+    "seed": 0,
+    "patience": 10,
+    "min_delta": 0.00001,
+    "checkpoint_every_epochs": 1
+  }
+}
