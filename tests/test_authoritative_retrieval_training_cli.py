@@ -10,7 +10,12 @@ from training.distilled_steps import (
     DistilledDenseContrastiveStep,
     DistilledSparseContrastiveStep,
 )
-from training.torch_engine import ListwiseCrossEncoderStep
+from training.torch_engine import (
+    ColBERTContrastiveStep,
+    DenseContrastiveStep,
+    ListwiseCrossEncoderStep,
+    SparseContrastiveStep,
+)
 
 
 def test_local_artifact_tree_digest_is_deterministic_and_content_bound(tmp_path: Path) -> None:
@@ -59,17 +64,31 @@ def test_retrieval_stages_must_evaluate_for_early_stopping() -> None:
         )
 
 
-def test_architecture_step_mapping_covers_all_trainable_retrieval_families() -> None:
-    dense = _step("dense", {"loss": {"distillation_weight": 0.5}})
-    splade = _step("splade", {"loss": {"distillation_weight": 0.5}})
-    unicoil = _step("unicoil", {"loss": {"distillation_weight": 0.5}})
-    colbert = _step("colbert", {"loss": {"distillation_weight": 0.5}})
-    cross = _step("cross_encoder", {"loss": {"listwise_temperature": 0.7}})
+def test_architecture_step_mapping_covers_base_and_distilled_paths() -> None:
+    dense_base = _step("dense", {"step_variant": "base", "loss": {"retrieval_temperature": 0.2}})
+    dense_distilled = _step("dense", {"step_variant": "distilled", "loss": {"distillation_weight": 0.5}})
+    splade_base = _step("splade", {"step_variant": "base", "loss": {}})
+    splade_distilled = _step("splade", {"step_variant": "distilled", "loss": {"distillation_weight": 0.5}})
+    unicoil_base = _step("unicoil", {"step_variant": "base", "loss": {}})
+    colbert_base = _step("colbert", {"step_variant": "base", "loss": {}})
+    colbert_distilled = _step("colbert", {"step_variant": "distilled", "loss": {"distillation_weight": 0.5}})
+    cross = _step("cross_encoder", {"step_variant": "listwise", "loss": {"listwise_temperature": 0.7}})
 
-    assert isinstance(dense, DistilledDenseContrastiveStep)
-    assert dense.config.distillation_weight == 0.5
-    assert isinstance(splade, DistilledSparseContrastiveStep)
-    assert isinstance(unicoil, DistilledSparseContrastiveStep)
-    assert isinstance(colbert, DistilledColBERTContrastiveStep)
+    assert isinstance(dense_base, DenseContrastiveStep)
+    assert dense_base.temperature == 0.2
+    assert isinstance(dense_distilled, DistilledDenseContrastiveStep)
+    assert dense_distilled.config.distillation_weight == 0.5
+    assert isinstance(splade_base, SparseContrastiveStep)
+    assert isinstance(splade_distilled, DistilledSparseContrastiveStep)
+    assert isinstance(unicoil_base, SparseContrastiveStep)
+    assert isinstance(colbert_base, ColBERTContrastiveStep)
+    assert isinstance(colbert_distilled, DistilledColBERTContrastiveStep)
     assert isinstance(cross, ListwiseCrossEncoderStep)
     assert cross.temperature == 0.7
+
+
+def test_invalid_step_variants_fail_closed() -> None:
+    with pytest.raises(ValueError, match="base or distilled"):
+        _step("dense", {"step_variant": "mystery", "loss": {}})
+    with pytest.raises(ValueError, match="base or listwise"):
+        _step("cross_encoder", {"step_variant": "distilled", "loss": {}})
