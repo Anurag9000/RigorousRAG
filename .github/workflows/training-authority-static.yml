@@ -10,6 +10,7 @@ on:
       - "config/classical_*training.example.json"
       - "config/retrieval_*training.example.json"
       - "run_all_training.py"
+      - "pyproject.toml"
       - ".github/workflows/training-authority-static.yml"
   workflow_dispatch:
 
@@ -44,16 +45,32 @@ jobs:
             training/authoritative_classical_training_cli_v3.py \
             training/authoritative_retrieval_training_cli.py \
             training/authoritative_retrieval_training_cli_v2.py \
+            training/cross_profile_fusion_fitting.py \
+            training/cross_profile_listwise_fusion.py \
             tests/test_authoritative_classical_training_cli.py \
             tests/test_authoritative_classical_training_cli_v3.py \
             tests/test_authoritative_retrieval_training_cli_v2.py \
             run_all_training.py
 
-      - name: Verify pure-Python exact-resume and artifact binding
+      - name: Verify classical exact-resume and artifact binding
         run: |
           python -m pytest -q \
+            -o addopts='-ra --strict-config --strict-markers' \
+            --cov=training.authoritative_classical_training_cli \
+            --cov=training.authoritative_classical_training_cli_v2 \
+            --cov=training.authoritative_classical_training_cli_v3 \
+            --cov=training.cross_profile_fusion_fitting \
+            --cov=training.cross_profile_listwise_fusion \
+            --cov-report=term-missing \
+            --cov-fail-under=50 \
             tests/test_authoritative_classical_training_cli.py \
             tests/test_authoritative_classical_training_cli_v3.py
 
       - name: Verify retrieval input contract without model downloads
-        run: python -m pytest -q tests/test_authoritative_retrieval_training_cli_v2.py
+        run: |
+          python -m pytest -q \
+            -o addopts='-ra --strict-config --strict-markers' \
+            --cov=training.authoritative_retrieval_training_cli_v2 \
+            --cov-report=term-missing \
+            --cov-fail-under=70 \
+            tests/test_authoritative_retrieval_training_cli_v2.py
