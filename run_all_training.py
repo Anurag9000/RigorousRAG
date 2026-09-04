@@ -12,7 +12,7 @@ from pathlib import Path
 REPOSITORY = "Anurag9000/RigorousRAG"
 ROOT = Path(__file__).resolve().parent
 CONTROLLER = ROOT / "tools" / "universal_training_controller_entry.py"
-CONTROLLER_BLOB = "b1dd61a2288a8140b327173317b132e1b2527d1f"
+CONTROLLER_BLOB = "16db0d4c6fe886fc204d23b54b61bb7e6590dc13"
 
 # The installed training authority exposes one argparse `train` subcommand, but
 # the repository ships two independent curricula.  The console-subcommand job
