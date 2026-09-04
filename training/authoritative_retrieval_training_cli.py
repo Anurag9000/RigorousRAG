@@ -1,23 +1,29 @@
 """Authoritative local-only learned-retrieval training CLI.
 
 This module turns the repository's existing learned retrieval architectures, governed
-JSONL data pipeline, distilled losses and :class:`TorchTrainingEngine` into one explicit
-execution authority.  It does **not** implement a second optimizer/checkpoint loop.
-Instead it constructs the requested architecture/collator/step and delegates execution
-to the existing engine, whose checkpoint captures model, optimizer, scheduler, scaler,
-trainer cursor, Python/NumPy/Torch/CUDA RNG, resumable sampler and collator state.
+JSONL data pipeline, base/distilled losses and :class:`TorchTrainingEngine` into one
+explicit execution authority. It does **not** implement a second optimizer/checkpoint
+loop. Instead it constructs the requested architecture/collator/step and delegates
+execution to the existing engine, whose checkpoint captures model, optimizer, scheduler,
+scaler, trainer cursor, Python/NumPy/Torch/CUDA RNG, resumable sampler and collator state.
 
-Supported trainable families are dense bi-encoder, SPLADE, uniCOIL, ColBERT and
-listwise cross-encoder reranking. Dense/SPLADE/uniCOIL/ColBERT use the repository's
-masked teacher-distillation steps; setting ``distillation_weight`` to zero recovers the
-ordinary contrastive objective without changing the execution path.
+Supported trainable families are dense bi-encoder, SPLADE, uniCOIL, ColBERT and listwise
+cross-encoder reranking. Dense/SPLADE/uniCOIL/ColBERT expose explicit ``base`` and
+``distilled`` step variants where applicable, making both ordinary contrastive and masked
+teacher-distillation implementations reachable training surfaces.
 
 All pretrained artifacts are local-only and remote code is disabled. The complete local
-model/tokenizer trees are SHA-256 bound into the checkpoint architecture identity so an
-exact resume fails if the admitted base artifacts change between invocations. Validation
-uses a fresh deterministic collator derived from ``optimizer_step``; evaluation state is
-therefore independent of interruption history while training sampler/collator state remains
-checkpointed exactly.
+model/tokenizer trees (and an optional untied dense document encoder) are SHA-256 bound
+into the checkpoint architecture identity together with the complete recipe digest. An
+exact resume therefore fails if the admitted base artifacts, loss/collator recipe or other
+configuration changes between invocations. Validation uses a fresh deterministic collator
+derived from ``optimizer_step``; evaluation state is independent of interruption history
+while training sampler/collator state remains checkpointed exactly.
+
+DDP is intentionally rejected here until this authority has a rank-sharded *resumable*
+sampler and coordinated checkpoint semantics. Silent sample duplication is worse than a
+fail-closed single-process job; the outer OPF scheduler may still run independent GPU jobs
+concurrently.
 """
 from __future__ import annotations
 
@@ -25,6 +31,7 @@ import argparse
 import hashlib
 import json
 import os
+import subprocess
 import tempfile
 from dataclasses import asdict
 from pathlib import Path
@@ -59,7 +66,10 @@ from training.model_architectures import (
     UniCOILEncoder,
 )
 from training.torch_engine import (
+    ColBERTContrastiveStep,
+    DenseContrastiveStep,
     ListwiseCrossEncoderStep,
+    SparseContrastiveStep,
     StageRuntime,
     TorchTrainingEngine,
     TrainerConfig,
@@ -71,6 +81,8 @@ from training.torch_losses import SparsePenaltyWeights
 SCHEMA = "rigorousrag-authoritative-retrieval-training/v1"
 RESULT_SCHEMA = "rigorousrag-authoritative-retrieval-training-result/v1"
 _ARCHITECTURES = {"dense", "splade", "unicoil", "colbert", "cross_encoder"}
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+_HEX = frozenset("0123456789abcdef")
 
 
 def _canonical(value: Any) -> bytes:
@@ -88,6 +100,23 @@ def _identifier(value: Any, label: str, maximum: int = 2000) -> str:
     if not selected or len(selected) > maximum or any(ord(ch) < 32 or ord(ch) == 127 for ch in selected):
         raise ValueError(f"{label} is invalid")
     return selected
+
+
+def _source_commit(value: Any) -> str:
+    requested = _identifier(value, "source_commit", 64).lower()
+    if requested == "auto" or requested in {"0" * 40, "0" * 64}:
+        try:
+            requested = subprocess.check_output(
+                ["git", "rev-parse", "HEAD"],
+                cwd=_REPO_ROOT,
+                stderr=subprocess.STDOUT,
+                text=True,
+            ).strip().lower()
+        except Exception as exc:
+            raise RuntimeError("source_commit=auto requires an exact Git checkout") from exc
+    if len(requested) not in {40, 64} or any(ch not in _HEX for ch in requested):
+        raise ValueError("source_commit must be auto or a 40/64-character hexadecimal Git object id")
+    return requested
 
 
 def _path(base: Path, value: Any, label: str, *, directory: bool = False) -> Path:
@@ -172,7 +201,14 @@ def _load_tokenizer(root: Path, revision: str | None) -> Any:
     )
 
 
-def _architecture_model(architecture: str, model_root: Path, revision: str | None, config: Mapping[str, Any]) -> Any:
+def _architecture_model(
+    architecture: str,
+    model_root: Path,
+    revision: str | None,
+    config: Mapping[str, Any],
+    *,
+    untied_document_model_root: Path | None = None,
+) -> Any:
     model_config = dict(config.get("model", {}))
     if architecture == "dense":
         encoder = EncoderConfig(
@@ -181,20 +217,19 @@ def _architecture_model(architecture: str, model_root: Path, revision: str | Non
             normalize=bool(model_config.get("normalize", True)),
             dropout=float(model_config.get("dropout", 0.0)),
         )
-        untied = model_config.get("untied_document_model_root")
-        untied_path = None
-        if untied is not None:
-            base = Path(str(untied)).expanduser()
-            untied_path = str(base.resolve(strict=True))
         return DenseBiEncoder.from_local_pretrained(
             str(model_root),
             config=encoder,
             revision=revision,
-            untied_document_model_name_or_path=untied_path,
+            untied_document_model_name_or_path=(
+                None if untied_document_model_root is None else str(untied_document_model_root)
+            ),
             untied_document_revision=model_config.get("untied_document_revision"),
             local_files_only=True,
             trust_remote_code=False,
         )
+    if untied_document_model_root is not None:
+        raise ValueError("untied_document_model_root is supported only for dense retrieval")
     if architecture == "splade":
         return SpladeEncoder.from_local_pretrained(
             str(model_root),
@@ -248,22 +283,47 @@ def _distillation_config(loss: Mapping[str, Any], *, sparse: bool) -> Distillati
     return DistillationConfig(
         retrieval_temperature=float(loss.get("retrieval_temperature", 1.0 if sparse else 0.05)),
         teacher_temperature=float(loss.get("teacher_temperature", 1.0)),
-        distillation_weight=float(loss.get("distillation_weight", 0.0)),
+        distillation_weight=float(loss.get("distillation_weight", 1.0)),
         minimum_teacher_candidates=int(loss.get("minimum_teacher_candidates", 2)),
     )
 
 
 def _step(architecture: str, config: Mapping[str, Any]) -> Any:
     loss = dict(config.get("loss", {}))
+    variant = str(config.get("step_variant", "base")).strip().lower()
+    if architecture == "cross_encoder":
+        if variant not in {"base", "listwise"}:
+            raise ValueError("cross_encoder step_variant must be base or listwise")
+        return ListwiseCrossEncoderStep(temperature=float(loss.get("listwise_temperature", 1.0)))
+    if variant not in {"base", "distilled"}:
+        raise ValueError("retrieval step_variant must be base or distilled")
+
+    penalties = SparsePenaltyWeights(**dict(loss.get("sparse_penalties", {})))
     if architecture == "dense":
+        if variant == "base":
+            return DenseContrastiveStep(
+                temperature=float(loss.get("retrieval_temperature", 0.05)),
+                label_smoothing=float(loss.get("label_smoothing", 0.0)),
+            )
         return DistilledDenseContrastiveStep(_distillation_config(loss, sparse=False))
     if architecture in {"splade", "unicoil"}:
-        penalties = SparsePenaltyWeights(**dict(loss.get("sparse_penalties", {})))
-        return DistilledSparseContrastiveStep(_distillation_config(loss, sparse=True), penalties=penalties)
+        if variant == "base":
+            return SparseContrastiveStep(
+                temperature=float(loss.get("retrieval_temperature", 1.0)),
+                penalties=penalties,
+                distillation_weight=0.0,
+                teacher_temperature=float(loss.get("teacher_temperature", 1.0)),
+            )
+        return DistilledSparseContrastiveStep(
+            _distillation_config(loss, sparse=True),
+            penalties=penalties,
+        )
     if architecture == "colbert":
+        if variant == "base":
+            return ColBERTContrastiveStep(
+                temperature=float(loss.get("retrieval_temperature", 0.05))
+            )
         return DistilledColBERTContrastiveStep(_distillation_config(loss, sparse=False))
-    if architecture == "cross_encoder":
-        return ListwiseCrossEncoderStep(temperature=float(loss.get("listwise_temperature", 1.0)))
     raise ValueError(f"unsupported retrieval architecture {architecture}")
 
 
@@ -326,8 +386,6 @@ def _validation_evaluator(
         raise RuntimeError("learned retrieval validation requires PyTorch DataLoader") from exc
 
     def evaluate(model: Any, *, stage_index: int, optimizer_step: int) -> Mapping[str, float]:
-        # Recreate the stateful collator on every evaluation from immutable run
-        # identity + optimizer step. This removes evaluation-history dependence.
         factory = _collator_factory(
             architecture,
             tokenizer,
@@ -382,12 +440,33 @@ def run_config(config_path: str | Path) -> Mapping[str, Any]:
     architecture = _identifier(config.get("architecture"), "architecture", 100).lower()
     if architecture not in _ARCHITECTURES:
         raise ValueError(f"unsupported retrieval architecture {architecture!r}")
+    if bool(config.get("ddp", False)):
+        raise ValueError(
+            "ddp=true is disabled for exact-resumable retrieval jobs until a rank-sharded "
+            "resumable sampler and coordinated checkpoint protocol are installed"
+        )
 
     train_path = _path(base, config.get("train_data"), "train_data")
     validation_path = _path(base, config.get("validation_data"), "validation_data")
     model_root = _path(base, config.get("model_root"), "model_root", directory=True)
     tokenizer_root = _path(base, config.get("tokenizer_root", config.get("model_root")), "tokenizer_root", directory=True)
     output_dir = _output_path(base, config.get("output_dir"))
+    source_commit = _source_commit(config.get("source_commit", "auto"))
+
+    model_config = dict(config.get("model", {}))
+    raw_untied = model_config.get("untied_document_model_root")
+    untied_document_model_root = None
+    untied_document_model_tree_sha256 = None
+    if raw_untied is not None:
+        if architecture != "dense":
+            raise ValueError("untied_document_model_root is supported only for dense retrieval")
+        untied_document_model_root = _path(
+            base,
+            raw_untied,
+            "untied_document_model_root",
+            directory=True,
+        )
+        untied_document_model_tree_sha256 = _tree_sha256(untied_document_model_root)
 
     config_sha256 = sha256_file(selected)
     train_sha256 = sha256_file(train_path)
@@ -401,7 +480,11 @@ def run_config(config_path: str | Path) -> Mapping[str, Any]:
             "validation_sha256": validation_sha256,
         }
     )
-    artifact_identity = f"{architecture}:model={model_tree_sha256}:tokenizer={tokenizer_tree_sha256}"
+    artifact_identity = (
+        f"{architecture}:config={config_sha256}:model={model_tree_sha256}:"
+        f"tokenizer={tokenizer_tree_sha256}:"
+        f"untied_document={untied_document_model_tree_sha256 or 'tied'}"
+    )
 
     result_path = output_dir / "training_result.json"
     if result_path.is_file():
@@ -410,16 +493,24 @@ def run_config(config_path: str | Path) -> Mapping[str, Any]:
             isinstance(previous, Mapping)
             and previous.get("schema") == RESULT_SCHEMA
             and previous.get("config_sha256") == config_sha256
+            and previous.get("source_commit") == source_commit
             and previous.get("train_data_sha256") == train_sha256
             and previous.get("validation_data_sha256") == validation_sha256
             and previous.get("model_tree_sha256") == model_tree_sha256
             and previous.get("tokenizer_tree_sha256") == tokenizer_tree_sha256
+            and previous.get("untied_document_model_tree_sha256") == untied_document_model_tree_sha256
             and previous.get("complete") is True
         ):
             return previous
 
     tokenizer = _load_tokenizer(tokenizer_root, config.get("tokenizer_revision"))
-    model = _architecture_model(architecture, model_root, config.get("model_revision"), config)
+    model = _architecture_model(
+        architecture,
+        model_root,
+        config.get("model_revision"),
+        config,
+        untied_document_model_root=untied_document_model_root,
+    )
     step = _step(architecture, config)
 
     train_dataset = ManifestBoundJsonlDataset(
@@ -470,7 +561,7 @@ def run_config(config_path: str | Path) -> Mapping[str, Any]:
     early = dict(config.get("early_stopping", {}))
     trainer_config = TrainerConfig(
         run_id=_identifier(config.get("run_id", f"retrieval-{architecture}"), "run_id", 500),
-        source_commit=config["source_commit"],
+        source_commit=source_commit,
         dataset_manifest_digest=dataset_manifest_digest,
         model_architecture=artifact_identity,
         stages=stages,
@@ -480,8 +571,8 @@ def run_config(config_path: str | Path) -> Mapping[str, Any]:
         max_grad_norm=None if config.get("max_grad_norm", 1.0) is None else float(config.get("max_grad_norm", 1.0)),
         seed=seed,
         deterministic_algorithms=bool(config.get("deterministic_algorithms", False)),
-        ddp=bool(config.get("ddp", False)),
-        find_unused_parameters=bool(config.get("find_unused_parameters", False)),
+        ddp=False,
+        find_unused_parameters=False,
         early_stopping_metric="validation_loss",
         early_stopping_mode="min",
         early_stopping_patience=int(early.get("patience", 10)),
@@ -509,12 +600,15 @@ def run_config(config_path: str | Path) -> Mapping[str, Any]:
         "schema": RESULT_SCHEMA,
         "complete": True,
         "architecture": architecture,
+        "step_variant": str(config.get("step_variant", "base")).strip().lower(),
+        "source_commit": source_commit,
         "config_sha256": config_sha256,
         "train_data_sha256": train_sha256,
         "validation_data_sha256": validation_sha256,
         "dataset_manifest_digest": dataset_manifest_digest,
         "model_tree_sha256": model_tree_sha256,
         "tokenizer_tree_sha256": tokenizer_tree_sha256,
+        "untied_document_model_tree_sha256": untied_document_model_tree_sha256,
         "model_architecture_identity": artifact_identity,
         "trainer_config_digest": trainer_config.digest,
         "summary": asdict(summary),
