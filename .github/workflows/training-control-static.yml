@@ -7,6 +7,7 @@ on:
       - 'tools/universal_training_controller*.py'
       - 'tools/account_wide_training_control_audit.py'
       - 'tests/test_training_controller_deferred_expansion.py'
+      - 'tests/test_training_controller_entry_diagnostics.py'
       - 'tests/test_training_controller_exact_resume.py'
       - 'tests/test_training_controller_literal_opf_scheduler_behavior.py'
       - 'tests/test_training_controller_opf_reference_v20.py'
@@ -17,6 +18,7 @@ on:
       - 'tools/universal_training_controller*.py'
       - 'tools/account_wide_training_control_audit.py'
       - 'tests/test_training_controller_deferred_expansion.py'
+      - 'tests/test_training_controller_entry_diagnostics.py'
       - 'tests/test_training_controller_exact_resume.py'
       - 'tests/test_training_controller_literal_opf_scheduler_behavior.py'
       - 'tests/test_training_controller_opf_reference_v20.py'
@@ -74,6 +76,8 @@ jobs:
               '7ab4318b917fd3276249a02536ac02726ddc8eed',
               'universal_training_controller_opf_reference_v2.py',
               'universal_training_controller_v20.py',
+              'DIAGNOSTIC_FLAGS',
+              'TRAINING_CONTROL_PREPARE_LEGACY_OPF',
           ):
               assert required in entry, required
           assert 'universal_training_controller_v19.py' not in entry.split('FILES={', 1)[1].split('}', 1)[0]
@@ -130,6 +134,7 @@ jobs:
           python -m pip install --disable-pip-version-check -q pytest psutil
           python -m pytest -q -o addopts='' \
             tests/test_training_controller_deferred_expansion.py \
+            tests/test_training_controller_entry_diagnostics.py \
             tests/test_training_controller_exact_resume.py \
             tests/test_training_controller_literal_opf_scheduler_behavior.py \
             tests/test_training_controller_opf_reference_v20.py
