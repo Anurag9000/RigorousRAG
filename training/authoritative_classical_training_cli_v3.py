@@ -2,8 +2,8 @@
 
 Version 3 preserves the source-revision and exact-resume guarantees introduced by
 ``authoritative_classical_training_cli_v2`` and closes the remaining fusion/ListNet
-artifact-identity gap.  Fusion learners must now name the real calibration contract
-file and one real calibration artifact per profile.  Their SHA-256 digests are derived
+artifact-identity gap. Fusion learners must now name the real calibration contract
+file and one real calibration artifact per profile. Their SHA-256 digests are derived
 from admitted bytes at launch and become part of the immutable training specification;
 optional expected digests are verification constraints, never substitutes for files.
 
@@ -50,19 +50,38 @@ def _artifact_path(root: Path, value: Any, label: str) -> Path:
     return path
 
 
-def _bind_calibration_inputs(root: Path, config: Mapping[str, Any]) -> tuple[dict[str, Any], Mapping[str, Any]]:
-    bound = dict(config)
-    profiles = tuple(v1._identifier(value, "profile_id", 200) for value in config.get("profile_ids", ()))
+def _profile_sequence(value: Any) -> tuple[str, ...]:
+    if isinstance(value, (str, bytes, bytearray)) or not isinstance(value, Sequence):
+        raise ValueError("profile_ids must be an array of profile identifiers")
+    profiles = tuple(v1._identifier(item, "profile_id", 200) for item in value)
     if not profiles:
         raise ValueError("profile_ids must contain at least one profile")
     if len(set(profiles)) != len(profiles):
         raise ValueError("profile_ids must be unique")
+    return profiles
+
+
+def _string_keyed_mapping(value: Any, label: str) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        raise ValueError(f"{label} must be a profile->value object")
+    normalized: dict[str, Any] = {}
+    for raw_key, raw_value in value.items():
+        if not isinstance(raw_key, str):
+            raise ValueError(f"{label} keys must be strings")
+        key = v1._identifier(raw_key, f"{label} key", 200)
+        if key in normalized:
+            raise ValueError(f"{label} contains duplicate normalized profile key {key!r}")
+        normalized[key] = raw_value
+    return normalized
+
+
+def _bind_calibration_inputs(root: Path, config: Mapping[str, Any]) -> tuple[dict[str, Any], Mapping[str, Any]]:
+    bound = dict(config)
+    profiles = _profile_sequence(config.get("profile_ids"))
 
     contract_path = _artifact_path(root, config.get("calibration_contract"), "calibration_contract")
-    raw_artifacts = config.get("calibration_artifacts")
-    if not isinstance(raw_artifacts, Mapping):
-        raise ValueError("calibration_artifacts must be a profile->file object")
-    artifact_keys = {str(key) for key in raw_artifacts}
+    raw_artifacts = _string_keyed_mapping(config.get("calibration_artifacts"), "calibration_artifacts")
+    artifact_keys = set(raw_artifacts)
     if artifact_keys != set(profiles):
         missing = sorted(set(profiles) - artifact_keys)
         unexpected = sorted(artifact_keys - set(profiles))
@@ -88,11 +107,10 @@ def _bind_calibration_inputs(root: Path, config: Mapping[str, Any]) -> tuple[dic
                 f"expected {expected}, actual {contract_sha}"
             )
 
-    expected_artifacts = config.get("calibration_artifact_sha256s")
-    if expected_artifacts is not None:
-        if not isinstance(expected_artifacts, Mapping):
-            raise ValueError("calibration_artifact_sha256s must be a profile->SHA256 object")
-        expected_keys = {str(key) for key in expected_artifacts}
+    expected_artifacts_raw = config.get("calibration_artifact_sha256s")
+    if expected_artifacts_raw is not None:
+        expected_artifacts = _string_keyed_mapping(expected_artifacts_raw, "calibration_artifact_sha256s")
+        expected_keys = set(expected_artifacts)
         if expected_keys != set(profiles):
             raise ValueError("calibration_artifact_sha256s must cover profile_ids exactly when supplied")
         for profile in profiles:
@@ -103,7 +121,7 @@ def _bind_calibration_inputs(root: Path, config: Mapping[str, Any]) -> tuple[dic
                     f"expected {expected}, actual {artifact_shas[profile]}"
                 )
 
-    # v1's tested training implementations consume immutable digests.  Replace any
+    # v1's tested training implementations consume immutable digests. Replace any
     # caller-supplied values with digests computed from the admitted files.
     bound["profile_ids"] = list(profiles)
     bound["calibration_contract_sha256"] = contract_sha
