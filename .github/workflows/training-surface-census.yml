@@ -44,7 +44,7 @@ jobs:
       - name: Compile census engines
         run: python -m py_compile tools/training_surface_census.py tools/training_surface_semantic_scan.py tests/test_training_surface_semantic_scan.py
       - name: Verify semantic census language/category behavior
-        run: python -m pytest -q -c /dev/null tests/test_training_surface_semantic_scan.py
+        run: python -m pytest -q -o addopts='' tests/test_training_surface_semantic_scan.py
       - name: Enumerate framework learner and training-adjacent surfaces
         run: python tools/training_surface_census.py --fail-on-parse-error
       - name: Enumerate semantic learners and launch surfaces
