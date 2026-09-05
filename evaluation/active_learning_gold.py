@@ -181,7 +181,13 @@ def build_active_learning_gold_manifest(
         "materialization_receipt_sha256s": tuple(sorted(receipt.receipt_sha256 for receipt in receipts)),
         "examples": [asdict(row) for row in sorted(examples, key=lambda row: (row.task_id, row.item_sha256, row.case_id))],
     }
-    return ActiveLearningGoldManifest(**payload, manifest_sha256=_digest(payload))
+    return ActiveLearningGoldManifest(
+        owner_id=payload["owner_id"],
+        label_contract_sha256=payload["label_contract_sha256"],
+        materialization_receipt_sha256s=payload["materialization_receipt_sha256s"],
+        examples=tuple(examples),
+        manifest_sha256=_digest(payload),
+    )
 
 
 @dataclass(frozen=True)
