@@ -75,12 +75,17 @@ def main() -> int:
         '__all__ = ["AdjudicationCase", "AdjudicationPolicy", "CaseRecord", "ExpertAdjudicationStore", "ExpertJudgment", "GoldLabel", "GoldLabelManifest", "GoldLabelRecord", "LabelSchema", "ResolutionReceipt", "ReviewClaim", "write_gold_manifest"]',
     )
 
-    # Keep schema discriminators and serialized nested values in the content-addressed
-    # digest payload, but construct dataclasses from their typed runtime values.
+    # Keep schema discriminators and serialized nested values in content-addressed
+    # payloads, but construct dataclasses from their typed runtime values.
     replace_once(
         "evaluation/active_learning.py",
         "    return ActiveLearningBatch(**payload, batch_sha256=_digest(payload))",
         '''    return ActiveLearningBatch(\n        owner_id=payload[\"owner_id\"],\n        policy_sha256=payload[\"policy_sha256\"],\n        candidate_pool_sha256=payload[\"candidate_pool_sha256\"],\n        blocked_items_sha256=payload[\"blocked_items_sha256\"],\n        selected=tuple(selected_rows),\n        total_estimated_cost=total_cost,\n        batch_sha256=_digest(payload),\n    )''',
+    )
+    replace_once(
+        "evaluation/active_learning_gold.py",
+        "    return ActiveLearningGoldManifest(**payload, manifest_sha256=_digest(payload))",
+        '''    return ActiveLearningGoldManifest(\n        owner_id=payload[\"owner_id\"],\n        label_contract_sha256=payload[\"label_contract_sha256\"],\n        materialization_receipt_sha256s=payload[\"materialization_receipt_sha256s\"],\n        examples=tuple(examples),\n        manifest_sha256=_digest(payload),\n    )''',
     )
     replace_once(
         "orchestration/active_learning_cycle.py",
