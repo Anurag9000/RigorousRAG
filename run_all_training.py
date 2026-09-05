@@ -12,116 +12,27 @@ from pathlib import Path
 REPOSITORY = "Anurag9000/RigorousRAG"
 ROOT = Path(__file__).resolve().parent
 CONTROLLER = ROOT / "tools" / "universal_training_controller_entry.py"
-CONTROLLER_BLOB = "31318081eda84ea27bcf10eb18e6467da0ec8dd1"
+CONTROLLER_BLOB = "e91ff436662b93927a4c34fbaf78700876cd34a6"
 
 
-def _job(
-    job_id: str,
-    source: str,
-    config: str,
-    family: str,
-    *,
-    device_capable: bool,
-) -> dict[str, object]:
-    return {
-        "id": job_id,
-        "command": [source, "train", "--config", config],
-        "entrypoint_source": source,
-        "device_capable": device_capable,
-        "phase": "training",
-        "family": family,
-        "repeat_index": 0,
-        "recipe_config": config,
-    }
-
+def _job(job_id: str, source: str, config: str, family: str, *, device_capable: bool) -> dict[str, object]:
+    return {"id": job_id, "command": [source, "train", "--config", config], "entrypoint_source": source, "device_capable": device_capable, "phase": "training", "family": family, "repeat_index": 0, "recipe_config": config}
 
 CLASSICAL_SOURCE = "training/authoritative_classical_training_cli_v3.py"
 RETRIEVAL_SOURCE = "training/authoritative_retrieval_training_cli_v2.py"
-
-# Registered console subcommands materialize one canonical recipe per training
-# authority. Additional curricula using the same authority are explicit jobs so
-# the pressure scheduler can admit/pause/resume each recipe independently without
-# duplicating parent console programs.
 EXTRA_JOBS = [
-    _job(
-        "rigorousrag-advanced-training:train:dynamic-rag-policy",
-        "training/authoritative_advanced_training_cli.py",
-        "config/advanced_dynamic_rag_training.example.json",
-        "advanced-rag-dynamic-policy",
-        device_capable=True,
-    ),
-    _job(
-        "rigorousrag-classical-training:train:listwise-fusion",
-        CLASSICAL_SOURCE,
-        "config/classical_listwise_fusion_training.example.json",
-        "classical-listwise-fusion",
-        device_capable=False,
-    ),
-    _job(
-        "rigorousrag-classical-training:train:domain-classifier",
-        CLASSICAL_SOURCE,
-        "config/classical_domain_training.example.json",
-        "classical-domain-classifier",
-        device_capable=False,
-    ),
-    _job(
-        "rigorousrag-classical-training:train:plan-ranker",
-        CLASSICAL_SOURCE,
-        "config/classical_plan_ranker_training.example.json",
-        "classical-plan-ranker",
-        device_capable=False,
-    ),
-    _job(
-        "rigorousrag-retrieval-training:train:dense-distilled",
-        RETRIEVAL_SOURCE,
-        "config/retrieval_dense_distilled_training.example.json",
-        "retrieval-dense-distilled",
-        device_capable=True,
-    ),
-    _job(
-        "rigorousrag-retrieval-training:train:splade-base",
-        RETRIEVAL_SOURCE,
-        "config/retrieval_splade_base_training.example.json",
-        "retrieval-splade-base",
-        device_capable=True,
-    ),
-    _job(
-        "rigorousrag-retrieval-training:train:splade-distilled",
-        RETRIEVAL_SOURCE,
-        "config/retrieval_splade_distilled_training.example.json",
-        "retrieval-splade-distilled",
-        device_capable=True,
-    ),
-    _job(
-        "rigorousrag-retrieval-training:train:unicoil",
-        RETRIEVAL_SOURCE,
-        "config/retrieval_unicoil_training.example.json",
-        "retrieval-unicoil",
-        device_capable=True,
-    ),
-    _job(
-        "rigorousrag-retrieval-training:train:colbert-base",
-        RETRIEVAL_SOURCE,
-        "config/retrieval_colbert_base_training.example.json",
-        "retrieval-colbert-base",
-        device_capable=True,
-    ),
-    _job(
-        "rigorousrag-retrieval-training:train:colbert-distilled",
-        RETRIEVAL_SOURCE,
-        "config/retrieval_colbert_distilled_training.example.json",
-        "retrieval-colbert-distilled",
-        device_capable=True,
-    ),
-    _job(
-        "rigorousrag-retrieval-training:train:cross-encoder-listwise",
-        RETRIEVAL_SOURCE,
-        "config/retrieval_cross_encoder_training.example.json",
-        "retrieval-cross-encoder-listwise",
-        device_capable=True,
-    ),
+    _job("rigorousrag-advanced-training:train:dynamic-rag-policy", "training/authoritative_advanced_training_cli.py", "config/advanced_dynamic_rag_training.example.json", "advanced-rag-dynamic-policy", device_capable=True),
+    _job("rigorousrag-classical-training:train:listwise-fusion", CLASSICAL_SOURCE, "config/classical_listwise_fusion_training.example.json", "classical-listwise-fusion", device_capable=False),
+    _job("rigorousrag-classical-training:train:domain-classifier", CLASSICAL_SOURCE, "config/classical_domain_training.example.json", "classical-domain-classifier", device_capable=False),
+    _job("rigorousrag-classical-training:train:plan-ranker", CLASSICAL_SOURCE, "config/classical_plan_ranker_training.example.json", "classical-plan-ranker", device_capable=False),
+    _job("rigorousrag-retrieval-training:train:dense-distilled", RETRIEVAL_SOURCE, "config/retrieval_dense_distilled_training.example.json", "retrieval-dense-distilled", device_capable=True),
+    _job("rigorousrag-retrieval-training:train:splade-base", RETRIEVAL_SOURCE, "config/retrieval_splade_base_training.example.json", "retrieval-splade-base", device_capable=True),
+    _job("rigorousrag-retrieval-training:train:splade-distilled", RETRIEVAL_SOURCE, "config/retrieval_splade_distilled_training.example.json", "retrieval-splade-distilled", device_capable=True),
+    _job("rigorousrag-retrieval-training:train:unicoil", RETRIEVAL_SOURCE, "config/retrieval_unicoil_training.example.json", "retrieval-unicoil", device_capable=True),
+    _job("rigorousrag-retrieval-training:train:colbert-base", RETRIEVAL_SOURCE, "config/retrieval_colbert_base_training.example.json", "retrieval-colbert-base", device_capable=True),
+    _job("rigorousrag-retrieval-training:train:colbert-distilled", RETRIEVAL_SOURCE, "config/retrieval_colbert_distilled_training.example.json", "retrieval-colbert-distilled", device_capable=True),
+    _job("rigorousrag-retrieval-training:train:cross-encoder-listwise", RETRIEVAL_SOURCE, "config/retrieval_cross_encoder_training.example.json", "retrieval-cross-encoder-listwise", device_capable=True),
 ]
-
 PROFILE = {
     "repository": REPOSITORY,
     "preferred_training_entrypoints": [],
@@ -136,34 +47,14 @@ PROFILE = {
     "require_registered_training_subcommands": True,
     "require_registered_training_subcommand_scheduling": True,
     "console_subcommand_args": {
-        "rigorousrag-advanced-training:train": [
-            "--config",
-            "config/advanced_grounded_training.example.json",
-        ],
-        "rigorousrag-classical-training:train": [
-            "--config",
-            "config/classical_fusion_training.example.json",
-        ],
-        "rigorousrag-retrieval-training:train": [
-            "--config",
-            "config/retrieval_dense_base_training.example.json",
-        ],
+        "rigorousrag-advanced-training:train": ["--config", "config/advanced_grounded_training.example.json"],
+        "rigorousrag-classical-training:train": ["--config", "config/classical_fusion_training.example.json"],
+        "rigorousrag-retrieval-training:train": ["--config", "config/retrieval_dense_base_training.example.json"],
     },
     "console_subcommand_metadata": {
-        "rigorousrag-advanced-training:train": {
-            "recipe_config": "config/advanced_grounded_training.example.json",
-            "family": "advanced-rag-grounded-generation",
-        },
-        "rigorousrag-classical-training:train": {
-            "recipe_config": "config/classical_fusion_training.example.json",
-            "family": "classical-fusion-weight",
-            "device_capable": False,
-        },
-        "rigorousrag-retrieval-training:train": {
-            "recipe_config": "config/retrieval_dense_base_training.example.json",
-            "family": "retrieval-dense-base",
-            "device_capable": True,
-        },
+        "rigorousrag-advanced-training:train": {"recipe_config": "config/advanced_grounded_training.example.json", "family": "advanced-rag-grounded-generation"},
+        "rigorousrag-classical-training:train": {"recipe_config": "config/classical_fusion_training.example.json", "family": "classical-fusion-weight", "device_capable": False},
+        "rigorousrag-retrieval-training:train": {"recipe_config": "config/retrieval_dense_base_training.example.json", "family": "retrieval-dense-base", "device_capable": True},
     },
     "strict_coverage": True,
     "require_native_resume": True,
@@ -176,31 +67,20 @@ PROFILE = {
     "require_well_formed_training_exemptions": True,
 }
 
-
 def _git_blob_sha(data: bytes) -> str:
     return hashlib.sha1(f"blob {len(data)}\0".encode("ascii") + data).hexdigest()
-
 
 def main() -> int:
     if not CONTROLLER.is_file():
         raise RuntimeError(f"Pinned training controller is missing: {CONTROLLER}")
     actual = _git_blob_sha(CONTROLLER.read_bytes())
     if actual != CONTROLLER_BLOB:
-        raise RuntimeError(
-            "Pinned local training controller bootstrap checksum mismatch: "
-            f"expected {CONTROLLER_BLOB}, got {actual}"
-        )
-
+        raise RuntimeError(f"Pinned local training controller bootstrap checksum mismatch: expected {CONTROLLER_BLOB}, got {actual}")
     env = os.environ.copy()
     env["TRAINING_CONTROL_PROFILE"] = json.dumps(PROFILE, separators=(",", ":"))
     env["TRAINING_CONTROL_REPO_ROOT"] = str(ROOT)
     env.setdefault("TRAINING_CONTROL_TERMINATION_GRACE_SEC", "30")
-    return subprocess.call(
-        [sys.executable, str(CONTROLLER), *sys.argv[1:]],
-        cwd=ROOT,
-        env=env,
-    )
-
+    return subprocess.call([sys.executable, str(CONTROLLER), *sys.argv[1:]], cwd=ROOT, env=env)
 
 if __name__ == "__main__":
     raise SystemExit(main())
