@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
 """Deterministic multi-language semantic census for learner and launch surfaces.
 
-The lower-level :mod:`tools.training_surface_census` finds framework calls and
-training-adjacent Python source.  This pass adds deliberately different
+The lower-level ``training_surface_census`` finds framework calls and
+training-adjacent Python source. This pass adds deliberately different
 coverage: hand-written learner symbols plus non-Python optimization and launch
-surfaces.  Evidence is typed so a shell/workflow that *launches* training is
+surfaces. Evidence is typed so a shell/workflow that *launches* training is
 not mistaken for an independent learner implementation.
 
 The scanner has no third-party dependencies and is safe to execute directly as
 ``python tools/training_surface_semantic_scan.py`` from a repository checkout.
+It deliberately imports its sibling scanner without importing ``tools`` as an
+application package, because ``tools/__init__.py`` has runtime security
+initialization that must not be a dependency of a static source audit.
 """
 from __future__ import annotations
 
@@ -22,13 +25,11 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Iterable
 
-# Direct execution places ``tools/`` rather than the repository root on
-# sys.path.  Make the package import deterministic without depending on an
-# installed RigorousRAG wheel.
-if __package__ in {None, ""}:
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+TOOLS_DIR = Path(__file__).resolve().parent
+if str(TOOLS_DIR) not in sys.path:
+    sys.path.insert(0, str(TOOLS_DIR))
 
-from tools.training_surface_census import _git_blob_sha1, _iter_files, build_report
+from training_surface_census import _iter_files, build_report
 
 SCHEMA = "rigorousrag.training_surface_semantic_scan.v2"
 VERB_PREFIXES = (
@@ -62,8 +63,6 @@ CLASS_TOKENS = (
     "optimizer",
 )
 
-# Non-Python patterns intentionally require recognizable ML/optimization APIs;
-# a generic method named ``fit`` in application JavaScript is not enough.
 TEXT_LEARNER_PATTERNS: dict[str, tuple[tuple[str, re.Pattern[str]], ...]] = {
     "javascript": (
         ("tensorflow-js-fit", re.compile(r"\b(?:model|network|net)\.fit(?:Dataset)?\s*\(")),
@@ -119,7 +118,7 @@ WORKFLOW_SUFFIXES = frozenset({".yml", ".yaml"})
 
 @dataclass(frozen=True)
 class Evidence:
-    category: str  # learner | launcher | workflow
+    category: str
     language: str
     kind: str
     line: int
@@ -172,12 +171,19 @@ def _strip_text_comment(line: str, language: str) -> str:
         return ""
     if language in {"shell", "r", "julia"} and stripped.startswith("#"):
         return ""
-    if language == "javascript" and (stripped.startswith("//") or stripped.startswith("/*") or stripped.startswith("*")):
+    if language == "javascript" and (
+        stripped.startswith("//") or stripped.startswith("/*") or stripped.startswith("*")
+    ):
         return ""
     return line
 
 
-def _scan_text(text: str, language: str, category: str, patterns: tuple[tuple[str, re.Pattern[str]], ...]) -> list[Evidence]:
+def _scan_text(
+    text: str,
+    language: str,
+    category: str,
+    patterns: tuple[tuple[str, re.Pattern[str]], ...],
+) -> list[Evidence]:
     evidence: list[Evidence] = []
     for lineno, raw in enumerate(text.splitlines(), start=1):
         line = _strip_text_comment(raw, language)
@@ -202,11 +208,12 @@ def _scan_notebook(path: Path, rel: str) -> tuple[list[Evidence], str | None]:
         if not isinstance(cell, dict) or cell.get("cell_type") != "code":
             continue
         source = cell.get("source", "")
-        if isinstance(source, list):
-            text = "".join(str(item) for item in source)
-        else:
-            text = str(source)
-        cell_evidence, error = _scan_python_text(text, f"{rel}#cell-{index}", line_offset=pseudo_line)
+        text = "".join(str(item) for item in source) if isinstance(source, list) else str(source)
+        cell_evidence, error = _scan_python_text(
+            text,
+            f"{rel}#cell-{index}",
+            line_offset=pseudo_line,
+        )
         if error:
             return [], error
         evidence.extend(cell_evidence)
@@ -252,7 +259,12 @@ def scan(root: Path) -> dict[str, object]:
                 if language == "shell":
                     evidence = _scan_text(text, language, "launcher", SHELL_LAUNCH_PATTERNS)
                 else:
-                    evidence = _scan_text(text, language, "learner", TEXT_LEARNER_PATTERNS[language])
+                    evidence = _scan_text(
+                        text,
+                        language,
+                        "learner",
+                        TEXT_LEARNER_PATTERNS[language],
+                    )
         elif _workflow_file(rel, suffix):
             language = "workflow"
             try:
@@ -260,7 +272,12 @@ def scan(root: Path) -> dict[str, object]:
             except Exception as exc:
                 error = f"{rel}: utf-8 decode error: {exc}"
             else:
-                evidence = _scan_text(text, language, "workflow", WORKFLOW_LAUNCH_PATTERNS)
+                evidence = _scan_text(
+                    text,
+                    language,
+                    "workflow",
+                    WORKFLOW_LAUNCH_PATTERNS,
+                )
         else:
             continue
 
@@ -270,21 +287,33 @@ def scan(root: Path) -> dict[str, object]:
         if evidence:
             evidence_by_path[rel] = evidence
 
-    # Base direct files are concrete mutating/fitting surfaces even if their
-    # function names do not satisfy the semantic name heuristic.
     for rel in base["direct_files"]:
         existing = evidence_by_path.setdefault(rel, [])
-        existing.append(Evidence("learner", "python", "base-direct-signal", 0, "training_surface_census.direct"))
+        existing.append(
+            Evidence(
+                "learner",
+                "python",
+                "base-direct-signal",
+                0,
+                "training_surface_census.direct",
+            )
+        )
         evidence_by_path[rel] = _dedupe(existing)
 
     learner_files = sorted(
-        rel for rel, items in evidence_by_path.items() if any(item.category == "learner" for item in items)
+        rel
+        for rel, items in evidence_by_path.items()
+        if any(item.category == "learner" for item in items)
     )
     launcher_files = sorted(
-        rel for rel, items in evidence_by_path.items() if any(item.category == "launcher" for item in items)
+        rel
+        for rel, items in evidence_by_path.items()
+        if any(item.category == "launcher" for item in items)
     )
     workflow_files = sorted(
-        rel for rel, items in evidence_by_path.items() if any(item.category == "workflow" for item in items)
+        rel
+        for rel, items in evidence_by_path.items()
+        if any(item.category == "workflow" for item in items)
     )
     candidate_files = sorted(evidence_by_path)
 
@@ -317,7 +346,10 @@ def scan(root: Path) -> dict[str, object]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", default=".")
-    parser.add_argument("--output", default=".training_control/training_surface_semantic_scan.json")
+    parser.add_argument(
+        "--output",
+        default=".training_control/training_surface_semantic_scan.json",
+    )
     parser.add_argument("--fail-on-parse-error", action="store_true", default=False)
     args = parser.parse_args(argv)
 
@@ -326,7 +358,16 @@ def main(argv: list[str] | None = None) -> int:
     out = root / args.output
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    print(json.dumps({"schema": payload["schema"], **payload["summary"], "inventory_sha256": payload["inventory_sha256"]}, sort_keys=True))
+    print(
+        json.dumps(
+            {
+                "schema": payload["schema"],
+                **payload["summary"],
+                "inventory_sha256": payload["inventory_sha256"],
+            },
+            sort_keys=True,
+        )
+    )
     for key in ("learner_files", "launcher_files", "workflow_files"):
         print(f"\n[{key}]")
         for path in payload[key]:
