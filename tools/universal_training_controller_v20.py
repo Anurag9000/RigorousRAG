@@ -9,6 +9,7 @@ still executed by the unchanged literal OPF_ADP scheduler.
 """
 from __future__ import annotations
 
+import universal_training_controller_audit_infrastructure as audit_infrastructure
 import universal_training_controller_console as console
 import universal_training_controller_console_defaults as console_defaults
 import universal_training_controller_deferred_v4 as deferred
@@ -41,6 +42,7 @@ def main() -> int:
     subcommands.install()
     entrypoint_markers.install()
     inventory_scope.install()
+    audit_infrastructure.install()
     semantic_inventory.install()
     restart_exact.install()
     opf_grace.install()
