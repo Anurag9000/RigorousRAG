@@ -3,6 +3,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 TOOLS = ROOT / "tools"
 if str(TOOLS) not in sys.path:
@@ -53,3 +55,27 @@ def test_install_wraps_training_inventory_and_preserves_real_learner():
     assert ledger["tools/training_surface_semantic_scan.py"] == "training_audit_infrastructure"
     assert ledger["tests/example.py"] == "test_source"
     assert report["audit_infrastructure_scope_schema"] == scope.AUDIT_INFRASTRUCTURE_SCHEMA
+
+
+def test_install_is_idempotent_and_does_not_stack_wrappers():
+    original = current._training_inventory
+    try:
+        current._training_inventory = _sample_inventory
+        scope.install()
+        once = current._training_inventory
+        scope.install()
+        twice = current._training_inventory
+        assert twice is once
+        report = twice(ROOT)
+    finally:
+        current._training_inventory = original
+
+    ledger_paths = [row["path"] for row in report["excluded_nontraining_sources"]]
+    assert ledger_paths.count("tools/training_surface_census.py") == 1
+    assert ledger_paths.count("tools/training_surface_semantic_scan.py") == 1
+
+
+def test_install_fails_explicitly_when_inventory_hook_drifts(monkeypatch):
+    monkeypatch.setattr(current, "_training_inventory", None)
+    with pytest.raises(RuntimeError, match="_training_inventory is missing/non-callable"):
+        scope.install()
