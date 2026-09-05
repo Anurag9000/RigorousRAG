@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import json
+import runpy
 from pathlib import Path
 
-from tools.training_surface_semantic_scan import scan
+_MODULE = runpy.run_path(
+    str(Path(__file__).resolve().parents[1] / "tools" / "training_surface_semantic_scan.py")
+)
+scan = _MODULE["scan"]
 
 
 def _write(root: Path, rel: str, text: str) -> None:
