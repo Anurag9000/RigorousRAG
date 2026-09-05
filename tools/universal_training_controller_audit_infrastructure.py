@@ -13,7 +13,7 @@ from typing import Any, Dict
 
 import universal_training_controller_current as current
 
-AUDIT_INFRASTRUCTURE_SCHEMA = 1
+AUDIT_INFRASTRUCTURE_SCHEMA = 2
 _EXACT_AUDIT_INFRASTRUCTURE = frozenset(
     {
         "tools/training_surface_census.py",
@@ -26,6 +26,7 @@ _FILTER_KEYS = (
     "training_logic_surfaces",
     "quiet_training_logic_surfaces",
 )
+_INSTALL_MARKER = "__training_control_audit_infrastructure_scope_v2__"
 
 
 def _normalized(value: Any) -> str:
@@ -76,12 +77,26 @@ def _filter_report(report: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def install() -> None:
-    """Wrap the same training-inventory hook used by inventory_scope.install()."""
-    original_inventory = current._training_inventory
+    """Wrap the exact inventory hook used by ``inventory_scope.install()``.
+
+    Installation is intentionally idempotent because the universal controller may be
+    imported by diagnostics/tests more than once in a process.  Missing/renamed hooks
+    fail with a targeted error instead of an opaque attribute failure before certificate
+    creation.
+    """
+    original_inventory = getattr(current, "_training_inventory", None)
+    if not callable(original_inventory):
+        raise RuntimeError(
+            "universal_training_controller_current._training_inventory is missing/non-callable; "
+            "audit infrastructure scope cannot be installed safely"
+        )
+    if getattr(original_inventory, _INSTALL_MARKER, False):
+        return
 
     def training_inventory(root):
         return _filter_report(original_inventory(root))
 
+    setattr(training_inventory, _INSTALL_MARKER, True)
     current._training_inventory = training_inventory
 
 
