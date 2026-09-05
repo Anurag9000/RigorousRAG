@@ -12,6 +12,10 @@ on:
       - "**/*.ps1"
       - "**/*.r"
       - "**/*.jl"
+      - "**/*.js"
+      - "**/*.jsx"
+      - "**/*.ts"
+      - "**/*.tsx"
       - "pyproject.toml"
       - ".github/workflows/training-surface-census.yml"
   workflow_dispatch:
@@ -33,13 +37,17 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - name: Compile census engine
-        run: python -m py_compile tools/training_surface_census.py
-      - name: Enumerate learner and training-adjacent surfaces
+      - name: Compile census engines
+        run: python -m py_compile tools/training_surface_census.py tools/training_surface_semantic_scan.py
+      - name: Enumerate framework learner and training-adjacent surfaces
         run: python tools/training_surface_census.py --fail-on-parse-error
+      - name: Enumerate hand-written and semantic learner surfaces
+        run: python tools/training_surface_semantic_scan.py
       - name: Upload deterministic census
         uses: actions/upload-artifact@v4
         with:
           name: training-surface-census
-          path: .training_control/training_surface_census.json
+          path: |
+            .training_control/training_surface_census.json
+            .training_control/training_surface_semantic_scan.json
           if-no-files-found: error
