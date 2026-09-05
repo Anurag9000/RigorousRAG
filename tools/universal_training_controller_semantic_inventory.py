@@ -16,6 +16,7 @@ proved non-training.
 from __future__ import annotations
 
 import importlib.util
+import sys
 from pathlib import Path
 from typing import Any, Dict, Mapping, Sequence
 
@@ -42,15 +43,27 @@ _STRUCTURAL_TEST_PARTS = {"test", "tests", "testing", "__pycache__"}
 
 
 def _load_scanner():
-    spec = importlib.util.spec_from_file_location(
-        "_training_control_semantic_scan_runtime", _SCANNER_PATH
-    )
+    module_name = "_training_control_semantic_scan_runtime"
+    spec = importlib.util.spec_from_file_location(module_name, _SCANNER_PATH)
     if spec is None or spec.loader is None:
         raise RuntimeError(f"unable to load semantic training scanner: {_SCANNER_PATH}")
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    previous = sys.modules.get(module_name)
+    sys.modules[module_name] = module
+    try:
+        spec.loader.exec_module(module)
+    except Exception:
+        if previous is None:
+            sys.modules.pop(module_name, None)
+        else:
+            sys.modules[module_name] = previous
+        raise
     scan = getattr(module, "scan", None)
     if not callable(scan):
+        if previous is None:
+            sys.modules.pop(module_name, None)
+        else:
+            sys.modules[module_name] = previous
         raise RuntimeError("semantic training scanner does not expose callable scan(root)")
     return scan
 
