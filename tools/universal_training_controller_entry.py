@@ -4,8 +4,9 @@ import hashlib,json,os,shutil,subprocess,sys,urllib.parse,urllib.request
 from pathlib import Path
 
 HOST_REPO="Anurag9000/RigorousRAG"
-HOST_COMMIT="9ff595a87ce20ee6320a95cd9278243419cbf85a"
+HOST_COMMIT="293972fe27573c3f5b9d9aac657925c32b58a5fa"
 FILES={
+ "tools/training_surface_semantic_scan.py":"d6185607102353f8d18b993427065832f3fb374b",
  "tools/universal_training_controller.py":"4353000e092ac286158c23500d91e898136fbab3",
  "tools/universal_training_controller_current.py":"09fe933dd520c7b97cdb0e86f5c5fbdc597336e4",
  "tools/universal_training_controller_dag.py":"3621f1fb0aeb843f1fb051cba074eedef67ac81e",
@@ -13,7 +14,10 @@ FILES={
  "tools/universal_training_controller_console.py":"89d4b8fde514ba426993d7068d3e4e6177600670",
  "tools/universal_training_controller_console_defaults.py":"a4aae98c861764e0ece3bdcfb87f72eb531f6381",
  "tools/universal_training_controller_subcommands.py":"a5c5d5ce5bfa719ec8942ca9eeae7d85143cf719",
- "tools/universal_training_controller_inventory_scope.py":"0ff6e7ba62018a7320f0f7c7daadd48043e0e55d",
+ "tools/universal_training_controller_entrypoint_markers.py":"d629e35d7bc1735bad841cc200d0ae532e16401a",
+ "tools/universal_training_controller_inventory_scope.py":"2b2795fb53bb4e5fb8bb28c546229151d60b292b",
+ "tools/universal_training_controller_audit_infrastructure.py":"2fba75f8a313198c13a9b175bee0a50756b741af",
+ "tools/universal_training_controller_semantic_inventory.py":"d4097817b26ad64baaf5d36a99455dac1b2adfa9",
  "tools/universal_training_controller_restart_exact.py":"6994858fc1294b79f0bb479afee7f88f453fb026",
  "tools/universal_training_controller_opf_grace.py":"73db03de6eeb6cdcca685e1ffbfde60f08969f1e",
  "tools/universal_training_controller_registry_scheduling.py":"b19334a09b52ad67b2e2c28ed36bcc10b6613175",
@@ -27,7 +31,7 @@ FILES={
  "tools/universal_training_controller_deferred_v3.py":"865378f887c269602676b1c7ca0859d25fd756b2",
  "tools/universal_training_controller_deferred_v4.py":"6dc85929f749cc1d5202d3481509e6db9b6aeb67",
  "tools/universal_training_controller_opf_reference_v2.py":"3b21bb8f60179e8c1e9b31d164ecf6799f9f9b5d",
- "tools/universal_training_controller_v20.py":"a1883045e8ec84d30f49348bc3442ab61c5a567b",
+ "tools/universal_training_controller_v20.py":"12976c36d4df375387876411dbc102661b5d9d04",
 }
 OPF_REPO="Anurag9000/OPF_ADP"
 OPF_COMMIT="2dfe664af88b95981da2b84b60f228a37156749f"
@@ -55,8 +59,12 @@ def git_blob_sha(data:bytes)->str:return hashlib.sha1(f"blob {len(data)}\0".enco
 def atomic_write(path:Path,data:bytes)->None:
  path.parent.mkdir(parents=True,exist_ok=True);tmp=path.with_suffix(path.suffix+".tmp");tmp.write_bytes(data);os.replace(tmp,path)
 def fetch(url:str,headers:dict[str,str]|None=None)->bytes:
- req=urllib.request.Request(url,headers={"User-Agent":"opf-training-controller-entry/20",**(headers or {})})
+ req=urllib.request.Request(url,headers={"User-Agent":"opf-training-controller-entry/21",**(headers or {})})
  with urllib.request.urlopen(req,timeout=120) as r:return r.read()
+def verified_host_local(root:Path,rel:str,expected:str)->bytes|None:
+ try:data=(root/rel).read_bytes()
+ except Exception:return None
+ return data if git_blob_sha(data)==expected else None
 def verified_local(root:Path,rel:str,expected:str)->bytes|None:
  roots=[]
  explicit=os.environ.get("OPF_REFERENCE_LOCAL_ROOT","").strip()
@@ -108,7 +116,9 @@ def main()->int:
  for rel,expected in FILES.items():
   dst=cache/Path(rel).name;valid=dst.is_file() and git_blob_sha(dst.read_bytes())==expected
   if not valid:
-   data=fetch(f"https://raw.githubusercontent.com/{HOST_REPO}/{HOST_COMMIT}/{rel}");actual=git_blob_sha(data)
+   data=verified_host_local(root,rel,expected)
+   if data is None:data=fetch(f"https://raw.githubusercontent.com/{HOST_REPO}/{HOST_COMMIT}/{rel}")
+   actual=git_blob_sha(data)
    if actual!=expected:raise RuntimeError(f"controller blob mismatch {rel}: {actual} != {expected}")
    atomic_write(dst,data)
  if not diagnostic_only(argv):
