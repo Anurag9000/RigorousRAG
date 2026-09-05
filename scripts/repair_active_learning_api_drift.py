@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """One-shot, fail-closed repair for active-learning/authority API and artifact drift.
 
-This script is intentionally transactional: every textual precondition must match the
-expected count before files are changed. CI runs the affected tests before committing
-the resulting tree. Delete this script and its workflow after the repair lands.
+Every textual precondition must match exactly before files are changed. CI runs the
+focused suites before the repaired tree may be committed. Delete this script and its
+write-capable workflow after the verified repair lands.
 """
 from __future__ import annotations
 
@@ -29,9 +29,7 @@ def replace_once(path: str, old: str, new: str) -> None:
 
 
 def main() -> int:
-    # The current adjudication authority names the policy AdjudicationPolicy and
-    # applies it during reconciliation. Active-learning materialization only creates
-    # immutable cases, so it must not pass the removed policy argument to create_case.
+    # Reconcile the active-learning route with the current adjudication API.
     replace_once(
         "orchestration/active_learning_adjudication.py",
         "from evaluation.expert_adjudication import CasePolicy, ExpertAdjudicationStore, LabelSchema",
@@ -52,8 +50,6 @@ def main() -> int:
         "            schema=route.schema,\n            policy=route.policy,\n            now=timestamp,",
         "            schema=route.schema,\n            now=timestamp,",
     )
-
-    # Keep the active-learning test on the current public policy contract.
     replace_once(
         "tests/unit/test_active_learning.py",
         "from evaluation.expert_adjudication import CasePolicy, ExpertAdjudicationStore, LabelSchema",
@@ -65,31 +61,31 @@ def main() -> int:
         "        AdjudicationPolicy(minimum_independent_reviews=2),",
     )
 
-    # Re-introduce the compact immutable resolved-gold lineage value object consumed
-    # by evaluation.active_learning_gold. It is distinct from GoldLabelRecord, which
-    # is the store's richer governed-manifest record.
-    anchor = "@dataclass(frozen=True)\nclass GoldLabelRecord:\n"
-    insertion = '''@dataclass(frozen=True)\nclass GoldLabel:\n    \"\"\"Compact resolved-label lineage used by active-learning derived datasets.\"\"\"\n\n    case_id: str\n    item_sha256: str\n    round_index: int\n    label: str\n    resolution_revision: int\n    resolution_digest: str\n\n    def __post_init__(self) -> None:\n        object.__setattr__(self, \"case_id\", _text(self.case_id, \"case_id\", 1000))\n        object.__setattr__(self, \"item_sha256\", _sha(self.item_sha256, \"item_sha256\"))\n        object.__setattr__(self, \"label\", _text(self.label, \"label\", 300))\n        for name in (\"round_index\", \"resolution_revision\"):\n            value = getattr(self, name)\n            if isinstance(value, bool) or not isinstance(value, int) or value < 0:\n                raise ValueError(f\"{name} must be non-negative\")\n        object.__setattr__(\n            self, \"resolution_digest\", _sha(self.resolution_digest, \"resolution_digest\")\n        )\n\n\n@dataclass(frozen=True)\nclass GoldLabelRecord:\n'''
-    replace_once("evaluation/expert_adjudication.py", anchor, insertion)
+    # Restore the compact immutable resolved-gold lineage value used by the
+    # active-learning derived-dataset builder. This is deliberately separate from
+    # the store's richer governed GoldLabelRecord.
+    replace_once(
+        "evaluation/expert_adjudication.py",
+        "@dataclass(frozen=True)\nclass GoldLabelRecord:\n",
+        '''@dataclass(frozen=True)\nclass GoldLabel:\n    \"\"\"Compact resolved-label lineage used by active-learning derived datasets.\"\"\"\n\n    case_id: str\n    item_sha256: str\n    round_index: int\n    label: str\n    resolution_revision: int\n    resolution_digest: str\n\n    def __post_init__(self) -> None:\n        object.__setattr__(self, \"case_id\", _text(self.case_id, \"case_id\", 1000))\n        object.__setattr__(self, \"item_sha256\", _sha(self.item_sha256, \"item_sha256\"))\n        object.__setattr__(self, \"label\", _text(self.label, \"label\", 300))\n        for name in (\"round_index\", \"resolution_revision\"):\n            value = getattr(self, name)\n            if isinstance(value, bool) or not isinstance(value, int) or value < 0:\n                raise ValueError(f\"{name} must be non-negative\")\n        object.__setattr__(\n            self, \"resolution_digest\", _sha(self.resolution_digest, \"resolution_digest\")\n        )\n\n\n@dataclass(frozen=True)\nclass GoldLabelRecord:\n''',
+    )
     replace_once(
         "evaluation/expert_adjudication.py",
         '__all__ = ["AdjudicationCase", "AdjudicationPolicy", "CaseRecord", "ExpertAdjudicationStore", "ExpertJudgment", "GoldLabelManifest", "GoldLabelRecord", "LabelSchema", "ResolutionReceipt", "ReviewClaim", "write_gold_manifest"]',
         '__all__ = ["AdjudicationCase", "AdjudicationPolicy", "CaseRecord", "ExpertAdjudicationStore", "ExpertJudgment", "GoldLabel", "GoldLabelManifest", "GoldLabelRecord", "LabelSchema", "ResolutionReceipt", "ReviewClaim", "write_gold_manifest"]',
     )
 
-    # Schema discriminators belong in the content-addressed digest payload but are
-    # intentionally not dataclass constructor fields. Preserve the digest domain while
-    # passing only declared value-object fields into constructors.
+    # Keep schema discriminators and serialized nested values in the content-addressed
+    # digest payload, but construct dataclasses from their typed runtime values.
     replace_once(
         "evaluation/active_learning.py",
         "    return ActiveLearningBatch(**payload, batch_sha256=_digest(payload))",
-        "    constructor = dict(payload)\n    constructor.pop(\"schema\")\n    return ActiveLearningBatch(**constructor, batch_sha256=_digest(payload))",
+        '''    return ActiveLearningBatch(\n        owner_id=payload[\"owner_id\"],\n        policy_sha256=payload[\"policy_sha256\"],\n        candidate_pool_sha256=payload[\"candidate_pool_sha256\"],\n        blocked_items_sha256=payload[\"blocked_items_sha256\"],\n        selected=tuple(selected_rows),\n        total_estimated_cost=total_cost,\n        batch_sha256=_digest(payload),\n    )''',
     )
-    replace_count(
+    replace_once(
         "orchestration/active_learning_cycle.py",
         "        receipt = ActiveLearningCycleReceipt(**payload, receipt_sha256=_digest(payload))",
         "        constructor = dict(payload)\n        constructor.pop(\"schema\")\n        receipt = ActiveLearningCycleReceipt(**constructor, receipt_sha256=_digest(payload))",
-        expected=1,
     )
     replace_once(
         "orchestration/active_learning_cycle.py",
@@ -107,8 +103,8 @@ def main() -> int:
         "        constructor = dict(payload)\n        constructor.pop(\"schema\")\n        return RegionAuthorityDecision(**constructor, decision_sha256=_digest(payload))",
     )
 
-    # Pytest's default import mode cannot collect two same-basename test modules in
-    # tests/ and tests/unit/. Preserve both suites but give the unit module a unique name.
+    # Preserve both multi-region suites while avoiding pytest's duplicate-basename
+    # import collision under its default import mode.
     old_test = ROOT / "tests/unit/test_multi_region_authority.py"
     new_test = ROOT / "tests/unit/test_multi_region_authority_unit.py"
     if not old_test.is_file() or new_test.exists():
@@ -117,9 +113,7 @@ def main() -> int:
 
     subprocess.run(
         [
-            "python",
-            "-m",
-            "py_compile",
+            "python", "-m", "py_compile",
             "evaluation/active_learning.py",
             "evaluation/expert_adjudication.py",
             "evaluation/active_learning_gold.py",
@@ -136,12 +130,7 @@ def main() -> int:
     )
     subprocess.run(
         [
-            "python",
-            "-m",
-            "pytest",
-            "-q",
-            "-o",
-            "addopts=",
+            "python", "-m", "pytest", "-q", "-o", "addopts=",
             "tests/unit/test_expert_adjudication.py",
             "tests/unit/test_active_learning.py",
             "tests/unit/test_active_learning_cycle.py",
