@@ -12,7 +12,7 @@ from pathlib import Path
 REPOSITORY = "Anurag9000/RigorousRAG"
 ROOT = Path(__file__).resolve().parent
 CONTROLLER = ROOT / "tools" / "universal_training_controller_entry.py"
-CONTROLLER_BLOB = "9504ca6b3d2c7bba60d47e4c209e8bd7da107a57"
+CONTROLLER_BLOB = "749abc8bf0b441f3aa2f33d8454d0bb07349e6c5"
 
 
 def _job(job_id: str, source: str, config: str, family: str, *, device_capable: bool) -> dict[str, object]:
