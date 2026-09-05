@@ -5,6 +5,8 @@ on:
     branches: [main]
     paths:
       - 'tools/universal_training_controller*.py'
+      - 'tools/training_surface_census.py'
+      - 'tools/training_surface_semantic_scan.py'
       - 'tools/account_wide_training_control_audit.py'
       - 'tools/account_wide_training_control_audit_v2.py'
       - 'tests/test_training_controller_console_registry.py'
@@ -12,13 +14,17 @@ on:
       - 'tests/test_training_controller_entry_diagnostics.py'
       - 'tests/test_training_controller_exact_resume.py'
       - 'tests/test_training_controller_inventory_scope.py'
+      - 'tests/test_training_controller_semantic_inventory.py'
       - 'tests/test_training_controller_opf_mechanism_audit_offline.py'
       - 'tests/test_training_controller_opf_reference_v20.py'
+      - 'tests/test_training_surface_semantic_scan.py'
       - 'run_all_training.py'
       - '.github/workflows/training-control-static.yml'
   pull_request:
     paths:
       - 'tools/universal_training_controller*.py'
+      - 'tools/training_surface_census.py'
+      - 'tools/training_surface_semantic_scan.py'
       - 'tools/account_wide_training_control_audit.py'
       - 'tools/account_wide_training_control_audit_v2.py'
       - 'tests/test_training_controller_console_registry.py'
@@ -26,8 +32,10 @@ on:
       - 'tests/test_training_controller_entry_diagnostics.py'
       - 'tests/test_training_controller_exact_resume.py'
       - 'tests/test_training_controller_inventory_scope.py'
+      - 'tests/test_training_controller_semantic_inventory.py'
       - 'tests/test_training_controller_opf_mechanism_audit_offline.py'
       - 'tests/test_training_controller_opf_reference_v20.py'
+      - 'tests/test_training_surface_semantic_scan.py'
       - 'run_all_training.py'
       - '.github/workflows/training-control-static.yml'
   workflow_dispatch:
@@ -43,6 +51,8 @@ jobs:
       - name: Compile controller sources
         run: |
           python -m py_compile \
+            tools/training_surface_census.py \
+            tools/training_surface_semantic_scan.py \
             tools/universal_training_controller.py \
             tools/universal_training_controller_current.py \
             tools/universal_training_controller_dag.py \
@@ -51,6 +61,7 @@ jobs:
             tools/universal_training_controller_console_defaults.py \
             tools/universal_training_controller_subcommands.py \
             tools/universal_training_controller_inventory_scope.py \
+            tools/universal_training_controller_semantic_inventory.py \
             tools/universal_training_controller_restart_exact.py \
             tools/universal_training_controller_opf_grace.py \
             tools/universal_training_controller_registry_scheduling.py \
@@ -114,11 +125,13 @@ jobs:
           for required in (
               'universal_training_controller_opf_reference_v2 as opf_reference',
               'universal_training_controller_inventory_scope as inventory_scope',
+              'universal_training_controller_semantic_inventory as semantic_inventory',
               'opf_reference.install()',
               'exact_resume.install()',
               'large_catalog.install()',
               'subcommands.install()',
               'inventory_scope.install()',
+              'semantic_inventory.install()',
               'restart_exact.install()',
               'opf_grace.install()',
               'registry_scheduling.install()',
@@ -131,6 +144,8 @@ jobs:
           assert v20.index('opf_reference.install()') < v20.index('profile_file.install()')
           assert v20.index('opf_reference.install()') < v20.index('mechanism_audit.install()')
           assert v20.index('subcommands.install()') < v20.index('inventory_scope.install()')
+          assert v20.index('inventory_scope.install()') < v20.index('semantic_inventory.install()')
+          assert v20.index('semantic_inventory.install()') < v20.index('training_contracts.install()')
 
           reference = Path('tools/universal_training_controller_opf_reference_v2.py').read_text()
           for required in (
@@ -166,5 +181,7 @@ jobs:
             tests/test_training_controller_entry_diagnostics.py \
             tests/test_training_controller_exact_resume.py \
             tests/test_training_controller_inventory_scope.py \
+            tests/test_training_controller_semantic_inventory.py \
             tests/test_training_controller_opf_mechanism_audit_offline.py \
-            tests/test_training_controller_opf_reference_v20.py
+            tests/test_training_controller_opf_reference_v20.py \
+            tests/test_training_surface_semantic_scan.py
