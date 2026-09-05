@@ -60,7 +60,9 @@ jobs:
             tools/universal_training_controller_console.py \
             tools/universal_training_controller_console_defaults.py \
             tools/universal_training_controller_subcommands.py \
+            tools/universal_training_controller_entrypoint_markers.py \
             tools/universal_training_controller_inventory_scope.py \
+            tools/universal_training_controller_audit_infrastructure.py \
             tools/universal_training_controller_semantic_inventory.py \
             tools/universal_training_controller_restart_exact.py \
             tools/universal_training_controller_opf_grace.py \
@@ -88,16 +90,23 @@ jobs:
 
           entry = Path('tools/universal_training_controller_entry.py').read_text()
           for required in (
-              '9ff595a87ce20ee6320a95cd9278243419cbf85a',
+              '293972fe27573c3f5b9d9aac657925c32b58a5fa',
               '2dfe664af88b95981da2b84b60f228a37156749f',
               'b2ae3d04f9398df5c18c7c13f4c939bce46b930d',
-              'a5c5d5ce5bfa719ec8942ca9eeae7d85143cf719',
-              '0ff6e7ba62018a7320f0f7c7daadd48043e0e55d',
+              'd629e35d7bc1735bad841cc200d0ae532e16401a',
+              '2b2795fb53bb4e5fb8bb28c546229151d60b292b',
+              '2fba75f8a313198c13a9b175bee0a50756b741af',
+              'd4097817b26ad64baaf5d36a99455dac1b2adfa9',
+              'd6185607102353f8d18b993427065832f3fb374b',
               'b19334a09b52ad67b2e2c28ed36bcc10b6613175',
               'e948bada6dc8f719b18ee20afbca682aae0992e4',
               '3b21bb8f60179e8c1e9b31d164ecf6799f9f9b5d',
-              'a1883045e8ec84d30f49348bc3442ab61c5a567b',
+              '12976c36d4df375387876411dbc102661b5d9d04',
+              'universal_training_controller_entrypoint_markers.py',
               'universal_training_controller_inventory_scope.py',
+              'universal_training_controller_audit_infrastructure.py',
+              'universal_training_controller_semantic_inventory.py',
+              'training_surface_semantic_scan.py',
               'universal_training_controller_opf_reference_v2.py',
               'universal_training_controller_v20.py',
               'DIAGNOSTIC_FLAGS',
@@ -124,13 +133,17 @@ jobs:
           v20 = Path('tools/universal_training_controller_v20.py').read_text()
           for required in (
               'universal_training_controller_opf_reference_v2 as opf_reference',
+              'universal_training_controller_entrypoint_markers as entrypoint_markers',
               'universal_training_controller_inventory_scope as inventory_scope',
+              'universal_training_controller_audit_infrastructure as audit_infrastructure',
               'universal_training_controller_semantic_inventory as semantic_inventory',
               'opf_reference.install()',
               'exact_resume.install()',
               'large_catalog.install()',
               'subcommands.install()',
+              'entrypoint_markers.install()',
               'inventory_scope.install()',
+              'audit_infrastructure.install()',
               'semantic_inventory.install()',
               'restart_exact.install()',
               'opf_grace.install()',
@@ -143,8 +156,10 @@ jobs:
               assert required in v20, required
           assert v20.index('opf_reference.install()') < v20.index('profile_file.install()')
           assert v20.index('opf_reference.install()') < v20.index('mechanism_audit.install()')
-          assert v20.index('subcommands.install()') < v20.index('inventory_scope.install()')
-          assert v20.index('inventory_scope.install()') < v20.index('semantic_inventory.install()')
+          assert v20.index('subcommands.install()') < v20.index('entrypoint_markers.install()')
+          assert v20.index('entrypoint_markers.install()') < v20.index('inventory_scope.install()')
+          assert v20.index('inventory_scope.install()') < v20.index('audit_infrastructure.install()')
+          assert v20.index('audit_infrastructure.install()') < v20.index('semantic_inventory.install()')
           assert v20.index('semantic_inventory.install()') < v20.index('training_contracts.install()')
 
           reference = Path('tools/universal_training_controller_opf_reference_v2.py').read_text()
@@ -167,10 +182,16 @@ jobs:
           for required in ('os.chdir(resolved_root)', 'finally:', 'os.chdir(original_cwd)', 'return strict.main()'):
               assert required in rooted, required
 
+          audit_scope = Path('tools/universal_training_controller_audit_infrastructure.py').read_text()
+          for required in ('tools/training_surface_census.py', 'tools/training_surface_semantic_scan.py', 'training_audit_infrastructure'):
+              assert required in audit_scope, required
+
           auditor = Path('tools/account_wide_training_control_audit_v2.py').read_text()
-          assert '16db0d4c6fe886fc204d23b54b61bb7e6590dc13' in auditor
-          assert 'b8af2de3b35cd31f351b5d211d2384c7e96b7ff7' in auditor
-          print('static immutable source-closure v20 controller invariants passed')
+          assert '31318081eda84ea27bcf10eb18e6467da0ec8dd1' in auditor
+          assert '0ca36b9dec059eb6fd762f303158d118fae0b12b' in auditor
+          launcher = Path('run_all_training.py').read_text()
+          assert '31318081eda84ea27bcf10eb18e6467da0ec8dd1' in launcher
+          print('static immutable semantic source-closure v20 controller invariants passed')
           PY
       - name: Run public controller safety tests
         run: |
