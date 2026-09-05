@@ -6,6 +6,7 @@ from pathlib import Path
 HOST_REPO="Anurag9000/RigorousRAG"
 HOST_COMMIT="227cb9348cfc6d9803b3bd1ec891e2f88c9d0692"
 FILES={
+ "tools/training_surface_census.py":"4db28f36151bdace4cdde9d3e429dac49c306129",
  "tools/training_surface_semantic_scan.py":"d6185607102353f8d18b993427065832f3fb374b",
  "tools/universal_training_controller.py":"4353000e092ac286158c23500d91e898136fbab3",
  "tools/universal_training_controller_current.py":"09fe933dd520c7b97cdb0e86f5c5fbdc597336e4",
