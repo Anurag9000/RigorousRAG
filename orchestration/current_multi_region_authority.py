@@ -92,7 +92,9 @@ def decide_current_region_authority(
             "observation_sha256s": observation_ids,
             "reason_codes": (),
         }
-        return RegionAuthorityDecision(**payload, decision_sha256=_digest(payload))
+        constructor = dict(payload)
+        constructor.pop("schema")
+        return RegionAuthorityDecision(**constructor, decision_sha256=_digest(payload))
 
     return decide_region_authority(
         owner_id=owner_id,

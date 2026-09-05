@@ -5,7 +5,7 @@ import hashlib
 import pytest
 
 from evaluation.active_learning import AcquisitionSignals, ActiveLearningCandidate, ActiveLearningPolicy, select_active_learning_batch
-from evaluation.expert_adjudication import CasePolicy, ExpertAdjudicationStore, LabelSchema
+from evaluation.expert_adjudication import AdjudicationPolicy, ExpertAdjudicationStore, LabelSchema
 from orchestration.active_learning_adjudication import ActiveLearningRoute, SQLiteActiveLearningJournal, materialize_active_learning_batch
 
 
@@ -100,7 +100,7 @@ def route(task: str = "support") -> ActiveLearningRoute:
     return ActiveLearningRoute(
         task,
         LabelSchema(task, "1", ("entailed", "neutral", "contradicted")),
-        CasePolicy(min_independent_reviews=2, require_adjudicator_on_disagreement=True),
+        AdjudicationPolicy(minimum_independent_reviews=2),
     )
 
 

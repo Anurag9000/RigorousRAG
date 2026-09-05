@@ -392,7 +392,15 @@ def select_active_learning_batch(
         "selected": [asdict(item) for item in selected_rows],
         "total_estimated_cost": total_cost,
     }
-    return ActiveLearningBatch(**payload, batch_sha256=_digest(payload))
+    return ActiveLearningBatch(
+        owner_id=payload["owner_id"],
+        policy_sha256=payload["policy_sha256"],
+        candidate_pool_sha256=payload["candidate_pool_sha256"],
+        blocked_items_sha256=payload["blocked_items_sha256"],
+        selected=tuple(selected_rows),
+        total_estimated_cost=total_cost,
+        batch_sha256=_digest(payload),
+    )
 
 
 __all__ = [

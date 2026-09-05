@@ -244,6 +244,30 @@ class ResolutionReceipt:
 
 
 @dataclass(frozen=True)
+class GoldLabel:
+    """Compact resolved-label lineage used by active-learning derived datasets."""
+
+    case_id: str
+    item_sha256: str
+    round_index: int
+    label: str
+    resolution_revision: int
+    resolution_digest: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "case_id", _text(self.case_id, "case_id", 1000))
+        object.__setattr__(self, "item_sha256", _sha(self.item_sha256, "item_sha256"))
+        object.__setattr__(self, "label", _text(self.label, "label", 300))
+        for name in ("round_index", "resolution_revision"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(f"{name} must be non-negative")
+        object.__setattr__(
+            self, "resolution_digest", _sha(self.resolution_digest, "resolution_digest")
+        )
+
+
+@dataclass(frozen=True)
 class GoldLabelRecord:
     case_id: str
     item_sha256: str
@@ -608,4 +632,4 @@ def write_gold_manifest(path: str | os.PathLike[str], manifest: GoldLabelManifes
     return destination
 
 
-__all__ = ["AdjudicationCase", "AdjudicationPolicy", "CaseRecord", "ExpertAdjudicationStore", "ExpertJudgment", "GoldLabelManifest", "GoldLabelRecord", "LabelSchema", "ResolutionReceipt", "ReviewClaim", "write_gold_manifest"]
+__all__ = ["AdjudicationCase", "AdjudicationPolicy", "CaseRecord", "ExpertAdjudicationStore", "ExpertJudgment", "GoldLabel", "GoldLabelManifest", "GoldLabelRecord", "LabelSchema", "ResolutionReceipt", "ReviewClaim", "write_gold_manifest"]

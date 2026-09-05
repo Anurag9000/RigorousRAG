@@ -191,7 +191,9 @@ def run_active_learning_cycle(
             "selected_count": 0,
             "materialized_count": 0,
         }
-        receipt = ActiveLearningCycleReceipt(**payload, receipt_sha256=_digest(payload))
+        constructor = dict(payload)
+        constructor.pop("schema")
+        receipt = ActiveLearningCycleReceipt(**constructor, receipt_sha256=_digest(payload))
         return ActiveLearningCycleResult(page.next_cursor, None, None, receipt)
 
     blocked = journal.blocked_item_keys(owner_id=spec.owner_id)
@@ -217,7 +219,9 @@ def run_active_learning_cycle(
         "selected_count": len(batch.selected),
         "materialized_count": len(materialization.cases),
     }
-    receipt = ActiveLearningCycleReceipt(**payload, receipt_sha256=_digest(payload))
+    constructor = dict(payload)
+    constructor.pop("schema")
+    receipt = ActiveLearningCycleReceipt(**constructor, receipt_sha256=_digest(payload))
     return ActiveLearningCycleResult(page.next_cursor, batch, materialization, receipt)
 
 

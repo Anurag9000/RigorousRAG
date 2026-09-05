@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from evaluation.active_learning import ActiveLearningBatch, ActiveLearningCandidate
-from evaluation.expert_adjudication import CasePolicy, ExpertAdjudicationStore, LabelSchema
+from evaluation.expert_adjudication import AdjudicationPolicy, ExpertAdjudicationStore, LabelSchema
 
 
 def _digest(value: Any) -> str:
@@ -61,14 +61,14 @@ def _time(value: Any, label: str) -> float:
 class ActiveLearningRoute:
     task_id: str
     schema: LabelSchema
-    policy: CasePolicy = CasePolicy()
+    policy: AdjudicationPolicy = AdjudicationPolicy()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "task_id", _text(self.task_id, "task_id"))
         if not isinstance(self.schema, LabelSchema):
             raise ValueError("schema must be LabelSchema")
-        if not isinstance(self.policy, CasePolicy):
-            raise ValueError("policy must be CasePolicy")
+        if not isinstance(self.policy, AdjudicationPolicy):
+            raise ValueError("policy must be AdjudicationPolicy")
 
     @property
     def route_sha256(self) -> str:
@@ -305,7 +305,6 @@ def materialize_active_learning_batch(
             item_sha256=candidate.item_sha256,
             evidence_sha256=candidate.evidence_sha256s,
             schema=route.schema,
-            policy=route.policy,
             now=timestamp,
         )
         materialized.append(
