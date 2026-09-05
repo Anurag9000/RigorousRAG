@@ -3,9 +3,9 @@
 
 v20 changes no resource-scheduling algorithm.  It first synchronizes every
 controller/audit layer to one byte-pinned OPF_ADP reference, then installs the
-same repository-job discovery, exact-resume, DAG, mechanism-audit and deferred
-fan-out layers used by v19.  Concrete jobs are still executed by the unchanged
-literal OPF_ADP scheduler.
+same repository-job discovery, exact-resume, DAG, semantic-inventory,
+mechanism-audit and deferred fan-out layers used by v19.  Concrete jobs are
+still executed by the unchanged literal OPF_ADP scheduler.
 """
 from __future__ import annotations
 
@@ -23,6 +23,7 @@ import universal_training_controller_opf_reference_v2 as opf_reference
 import universal_training_controller_profile_file as profile_file
 import universal_training_controller_registry_scheduling as registry_scheduling
 import universal_training_controller_restart_exact as restart_exact
+import universal_training_controller_semantic_inventory as semantic_inventory
 import universal_training_controller_subcommands as subcommands
 import universal_training_controller_training_contracts as training_contracts
 
@@ -40,6 +41,7 @@ def main() -> int:
     subcommands.install()
     entrypoint_markers.install()
     inventory_scope.install()
+    semantic_inventory.install()
     restart_exact.install()
     opf_grace.install()
     registry_scheduling.install()
