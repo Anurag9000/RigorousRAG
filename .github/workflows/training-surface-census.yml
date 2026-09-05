@@ -11,13 +11,15 @@ on:
       - "**/*.zsh"
       - "**/*.ps1"
       - "**/*.r"
+      - "**/*.R"
       - "**/*.jl"
       - "**/*.js"
       - "**/*.jsx"
       - "**/*.ts"
       - "**/*.tsx"
+      - ".github/workflows/**/*.yml"
+      - ".github/workflows/**/*.yaml"
       - "pyproject.toml"
-      - ".github/workflows/training-surface-census.yml"
   workflow_dispatch:
 
 permissions:
@@ -37,12 +39,16 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+      - name: Install census test dependency
+        run: python -m pip install --disable-pip-version-check pytest
       - name: Compile census engines
-        run: python -m py_compile tools/training_surface_census.py tools/training_surface_semantic_scan.py
+        run: python -m py_compile tools/training_surface_census.py tools/training_surface_semantic_scan.py tests/test_training_surface_semantic_scan.py
+      - name: Verify semantic census language/category behavior
+        run: python -m pytest -q -c /dev/null tests/test_training_surface_semantic_scan.py
       - name: Enumerate framework learner and training-adjacent surfaces
         run: python tools/training_surface_census.py --fail-on-parse-error
-      - name: Enumerate hand-written and semantic learner surfaces
-        run: python tools/training_surface_semantic_scan.py
+      - name: Enumerate semantic learners and launch surfaces
+        run: python tools/training_surface_semantic_scan.py --fail-on-parse-error
       - name: Upload deterministic census
         uses: actions/upload-artifact@v4
         with:
