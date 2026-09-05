@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""One-shot, fail-closed repair for active-learning/adjudication API drift.
+"""One-shot, fail-closed repair for active-learning/authority API and artifact drift.
 
-This script is intentionally transactional: every textual precondition must match
-exactly once before files are changed. CI runs the affected tests before committing
+This script is intentionally transactional: every textual precondition must match the
+expected count before files are changed. CI runs the affected tests before committing
 the resulting tree. Delete this script and its workflow after the repair lands.
 """
 from __future__ import annotations
@@ -13,13 +13,19 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def replace_once(path: str, old: str, new: str) -> None:
+def replace_count(path: str, old: str, new: str, *, expected: int = 1) -> None:
     target = ROOT / path
     text = target.read_text(encoding="utf-8")
     count = text.count(old)
-    if count != 1:
-        raise RuntimeError(f"{path}: expected exactly one repair anchor, found {count}: {old!r}")
-    target.write_text(text.replace(old, new, 1), encoding="utf-8")
+    if count != expected:
+        raise RuntimeError(
+            f"{path}: expected exactly {expected} repair anchor(s), found {count}: {old!r}"
+        )
+    target.write_text(text.replace(old, new, expected), encoding="utf-8")
+
+
+def replace_once(path: str, old: str, new: str) -> None:
+    replace_count(path, old, new, expected=1)
 
 
 def main() -> int:
@@ -71,6 +77,36 @@ def main() -> int:
         '__all__ = ["AdjudicationCase", "AdjudicationPolicy", "CaseRecord", "ExpertAdjudicationStore", "ExpertJudgment", "GoldLabel", "GoldLabelManifest", "GoldLabelRecord", "LabelSchema", "ResolutionReceipt", "ReviewClaim", "write_gold_manifest"]',
     )
 
+    # Schema discriminators belong in the content-addressed digest payload but are
+    # intentionally not dataclass constructor fields. Preserve the digest domain while
+    # passing only declared value-object fields into constructors.
+    replace_once(
+        "evaluation/active_learning.py",
+        "    return ActiveLearningBatch(**payload, batch_sha256=_digest(payload))",
+        "    constructor = dict(payload)\n    constructor.pop(\"schema\")\n    return ActiveLearningBatch(**constructor, batch_sha256=_digest(payload))",
+    )
+    replace_count(
+        "orchestration/active_learning_cycle.py",
+        "        receipt = ActiveLearningCycleReceipt(**payload, receipt_sha256=_digest(payload))",
+        "        constructor = dict(payload)\n        constructor.pop(\"schema\")\n        receipt = ActiveLearningCycleReceipt(**constructor, receipt_sha256=_digest(payload))",
+        expected=1,
+    )
+    replace_once(
+        "orchestration/active_learning_cycle.py",
+        "    receipt = ActiveLearningCycleReceipt(**payload, receipt_sha256=_digest(payload))",
+        "    constructor = dict(payload)\n    constructor.pop(\"schema\")\n    receipt = ActiveLearningCycleReceipt(**constructor, receipt_sha256=_digest(payload))",
+    )
+    replace_once(
+        "orchestration/multi_region_authority.py",
+        "    return RegionAuthorityDecision(**payload, decision_sha256=_digest(payload))",
+        "    constructor = dict(payload)\n    constructor.pop(\"schema\")\n    return RegionAuthorityDecision(**constructor, decision_sha256=_digest(payload))",
+    )
+    replace_once(
+        "orchestration/current_multi_region_authority.py",
+        "        return RegionAuthorityDecision(**payload, decision_sha256=_digest(payload))",
+        "        constructor = dict(payload)\n        constructor.pop(\"schema\")\n        return RegionAuthorityDecision(**constructor, decision_sha256=_digest(payload))",
+    )
+
     # Pytest's default import mode cannot collect two same-basename test modules in
     # tests/ and tests/unit/. Preserve both suites but give the unit module a unique name.
     old_test = ROOT / "tests/unit/test_multi_region_authority.py"
@@ -84,9 +120,13 @@ def main() -> int:
             "python",
             "-m",
             "py_compile",
+            "evaluation/active_learning.py",
             "evaluation/expert_adjudication.py",
             "evaluation/active_learning_gold.py",
             "orchestration/active_learning_adjudication.py",
+            "orchestration/active_learning_cycle.py",
+            "orchestration/multi_region_authority.py",
+            "orchestration/current_multi_region_authority.py",
             "tests/unit/test_active_learning.py",
             "tests/unit/test_active_learning_gold.py",
             "tests/unit/test_multi_region_authority_unit.py",
