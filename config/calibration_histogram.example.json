@@ -1,0 +1,11 @@
+{
+  "schema": "rigorousrag-authoritative-calibration-job/v1",
+  "kind": "evaluation_histogram",
+  "source_revision": "auto",
+  "input": "../data/calibration/evaluation_histogram.json",
+  "output": "../artifacts/calibration/evaluation_histogram.json",
+  "options": {
+    "bin_count": 10,
+    "smoothing": 1.0
+  }
+}
