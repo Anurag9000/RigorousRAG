@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Align the legacy production inventory with semantic audit infrastructure scope.
 
-The framework-oriented legacy scanner intentionally uses broad training tokens.  The
+The framework-oriented legacy scanner intentionally uses broad training tokens. The
 standalone census and semantic scanner contain those tokens because they inspect training
 code, but they are themselves audit implementation, not executable repository learners.
 This layer removes only those two exact paths from the legacy inventory and records the
@@ -76,12 +76,13 @@ def _filter_report(report: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def install() -> None:
-    original_inventory = current._inventory
+    """Wrap the same training-inventory hook used by inventory_scope.install()."""
+    original_inventory = current._training_inventory
 
-    def inventory(root):
+    def training_inventory(root):
         return _filter_report(original_inventory(root))
 
-    current._inventory = inventory
+    current._training_inventory = training_inventory
 
 
 __all__ = [
