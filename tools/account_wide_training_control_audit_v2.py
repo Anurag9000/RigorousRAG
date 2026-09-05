@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import account_wide_training_control_audit as audit
 
-CANONICAL_BOOTSTRAP_COMMIT = "ac27b17c8cb9551a463b04164949d8dfcfa060d4"
-CANONICAL_BOOTSTRAP_BLOB = "e91ff436662b93927a4c34fbaf78700876cd34a6"
+CANONICAL_BOOTSTRAP_COMMIT = "8a9e9d5d042225c10477c3c7a5fe9fa64c59adbc"
+CANONICAL_BOOTSTRAP_BLOB = "9504ca6b3d2c7bba60d47e4c209e8bd7da107a57"
 
 
 def main() -> int:
