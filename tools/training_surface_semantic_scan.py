@@ -7,6 +7,12 @@ coverage: hand-written learner symbols plus non-Python optimization and launch
 surfaces. Evidence is typed so a shell/workflow that *launches* training is
 not mistaken for an independent learner implementation.
 
+Python evidence is intentionally behavioral rather than noun-based. Names such as
+``CalibrationReceipt`` or ``calibrate_score`` are transformations/data contracts, not
+proof of learning. Concrete fit/train/optimize definitions and calls remain learner
+evidence, while Protocol/abstract placeholders whose body is only ``pass``/``...`` are
+ignored. This keeps the audit fail-closed without manufacturing training jobs for DTOs.
+
 The scanner has no third-party dependencies and is safe to execute directly as
 ``python tools/training_surface_semantic_scan.py`` from a repository checkout.
 It deliberately imports its sibling scanner without importing ``tools`` as an
@@ -31,12 +37,11 @@ if str(TOOLS_DIR) not in sys.path:
 
 from training_surface_census import _iter_files, build_report
 
-SCHEMA = "rigorousrag.training_surface_semantic_scan.v2"
+SCHEMA = "rigorousrag.training_surface_semantic_scan.v3"
 VERB_PREFIXES = (
     "fit_",
     "train_",
     "learn_",
-    "calibrat",
     "optimiz",
     "finetun",
     "fine_tun",
@@ -53,14 +58,6 @@ EXACT_NAMES = frozenset(
         "train_step",
         "backward",
     }
-)
-CLASS_TOKENS = (
-    "trainer",
-    "learner",
-    "fitter",
-    "calibrator",
-    "trainingengine",
-    "optimizer",
 )
 
 TEXT_LEARNER_PATTERNS: dict[str, tuple[tuple[str, re.Pattern[str]], ...]] = {
@@ -139,6 +136,23 @@ def _interesting(name: str) -> bool:
     return low in EXACT_NAMES or low.startswith(VERB_PREFIXES)
 
 
+def _executable_function_body(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    body = list(node.body)
+    # Ignore an initial docstring when deciding whether the declaration implements
+    # behavior. Protocol/abstract stubs commonly use a docstring followed by pass/....
+    if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant) and isinstance(body[0].value.value, str):
+        body = body[1:]
+    if not body:
+        return False
+    for statement in body:
+        if isinstance(statement, ast.Pass):
+            continue
+        if isinstance(statement, ast.Expr) and isinstance(statement.value, ast.Constant) and statement.value.value is Ellipsis:
+            continue
+        return True
+    return False
+
+
 def _dedupe(items: Iterable[Evidence]) -> list[Evidence]:
     return sorted(
         set(items),
@@ -154,10 +168,12 @@ def _scan_python_text(text: str, rel: str, *, line_offset: int = 0) -> tuple[lis
     evidence: list[Evidence] = []
     for node in ast.walk(tree):
         line = int(getattr(node, "lineno", 0)) + line_offset
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and _interesting(node.name):
+        if (
+            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and _interesting(node.name)
+            and _executable_function_body(node)
+        ):
             evidence.append(Evidence("learner", "python", "function", line, node.name))
-        elif isinstance(node, ast.ClassDef) and any(token in node.name.lower() for token in CLASS_TOKENS):
-            evidence.append(Evidence("learner", "python", "class", line, node.name))
         elif isinstance(node, ast.Call):
             called = _name(node.func)
             if called and _interesting(called):
