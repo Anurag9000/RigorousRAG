@@ -68,3 +68,84 @@ def test_parse_errors_are_reported_deterministically(tmp_path: Path) -> None:
     report = scan(tmp_path)
     assert report["parse_errors"]
     assert any("broken.py" in item for item in report["parse_errors"])
+
+
+def test_calibration_data_transforms_and_dto_calls_are_not_learners(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "calibration/contracts.py",
+        """
+def calibration_examples_from_active_learning_gold(rows):
+    return tuple(rows)
+
+def calibrate_score(value):
+    return value
+
+class CalibrationQualificationReceipt:
+    pass
+
+def build_receipt():
+    return CalibrationQualificationReceipt()
+""",
+    )
+    report = scan(tmp_path)
+    assert "calibration/contracts.py" not in report["learner_files"]
+
+
+def test_fit_and_optimize_calibration_functions_remain_learners(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "calibration/fitting.py",
+        """
+def fit_isotonic_calibrator(rows):
+    return sorted(rows)
+
+def optimize_threshold(rows):
+    return min(rows)
+
+class HistogramCalibrator:
+    def fit(self, rows):
+        self.values = tuple(rows)
+        return self
+""",
+    )
+    report = scan(tmp_path)
+    assert "calibration/fitting.py" in report["learner_files"]
+    names = {item["name"] for item in report["evidence"]["calibration/fitting.py"]}
+    assert "fit_isotonic_calibrator" in names
+    assert "optimize_threshold" in names
+    assert "fit" in names
+
+
+def test_protocol_and_abstract_training_stubs_are_not_learners(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "contracts/training.py",
+        """
+from typing import Protocol
+class TrainingProvider(Protocol):
+    def train(self, request): ...
+
+class Backend:
+    def train(self, request):
+        \"\"\"Implement in a concrete provider.\"\"\"
+        pass
+""",
+    )
+    report = scan(tmp_path)
+    assert "contracts/training.py" not in report["learner_files"]
+
+
+def test_concrete_train_method_is_still_a_learner(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "training/backend.py",
+        """
+class Backend:
+    def train(self, request):
+        state = request.state
+        return state.update()
+""",
+    )
+    report = scan(tmp_path)
+    assert "training/backend.py" in report["learner_files"]
