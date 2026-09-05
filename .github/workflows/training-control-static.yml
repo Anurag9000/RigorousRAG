@@ -91,12 +91,12 @@ jobs:
           from pathlib import Path
           entry = Path('tools/universal_training_controller_entry.py').read_text()
           for required in (
-              '7974d281fd8ee2d398cf64e0a38024e8013c37b0',
+              '227cb9348cfc6d9803b3bd1ec891e2f88c9d0692',
               '2dfe664af88b95981da2b84b60f228a37156749f',
               'b2ae3d04f9398df5c18c7c13f4c939bce46b930d',
               'd629e35d7bc1735bad841cc200d0ae532e16401a',
               '2b2795fb53bb4e5fb8bb28c546229151d60b292b',
-              'ee355800367281460367af33ba2c0873dba096bf',
+              '40244bd2fd645bd201b90f107d95c7eefff64ffe',
               'd4097817b26ad64baaf5d36a99455dac1b2adfa9',
               'd6185607102353f8d18b993427065832f3fb374b',
               'b19334a09b52ad67b2e2c28ed36bcc10b6613175',
@@ -152,14 +152,15 @@ jobs:
               assert required in mechanism, required
 
           audit_scope = Path('tools/universal_training_controller_audit_infrastructure.py').read_text()
-          assert 'current._training_inventory' in audit_scope
+          for required in ('current._training_inventory', '_INSTALL_MARKER', 'missing/non-callable'):
+              assert required in audit_scope, required
           assert 'current._inventory' not in audit_scope
 
           auditor = Path('tools/account_wide_training_control_audit_v2.py').read_text()
-          assert 'e91ff436662b93927a4c34fbaf78700876cd34a6' in auditor
-          assert 'ac27b17c8cb9551a463b04164949d8dfcfa060d4' in auditor
+          assert '9504ca6b3d2c7bba60d47e4c209e8bd7da107a57' in auditor
+          assert '8a9e9d5d042225c10477c3c7a5fe9fa64c59adbc' in auditor
           launcher = Path('run_all_training.py').read_text()
-          assert 'e91ff436662b93927a4c34fbaf78700876cd34a6' in launcher
+          assert '9504ca6b3d2c7bba60d47e4c209e8bd7da107a57' in launcher
           print('static immutable semantic source-closure v20 controller invariants passed')
           PY
       - name: Run public controller safety tests
