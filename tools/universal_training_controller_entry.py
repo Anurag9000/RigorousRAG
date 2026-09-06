@@ -1,136 +1,126 @@
 #!/usr/bin/env python3
+"""Immutable bootstrap for exhaustive repository lifecycle orchestration.
+
+The bootstrap reuses the previously pinned universal controller stack and exact
+OPF_ADP runtime, then adds only the v21 exhaustive-lifecycle adapter.  Resource
+admission/scheduling is never reimplemented here: the literal OPF scheduler
+remains solely responsible for pressure-aware/GPU-first/fixed scheduling,
+concurrency, pause/resume, retries, OOM fallback and persistent process state.
+"""
 from __future__ import annotations
-import hashlib,json,os,shutil,subprocess,sys,urllib.parse,urllib.request
+
+import hashlib
+import importlib.util
+import os
+import subprocess
+import sys
+import urllib.request
 from pathlib import Path
 
-HOST_REPO="Anurag9000/RigorousRAG"
-# Immutable controller-host commit containing the modules listed below. The
-# entry point itself may live on a later commit; downloaded modules are always
-# verified by Git blob SHA before import.
-HOST_COMMIT="26c833284c2be2e80af149b1a2d8902b1a5b43ee"
-FILES={
- "tools/training_surface_census.py":"4db28f36151bdace4cdde9d3e429dac49c306129",
- "tools/training_surface_semantic_scan.py":"d6185607102353f8d18b993427065832f3fb374b",
- "tools/universal_training_controller.py":"4353000e092ac286158c23500d91e898136fbab3",
- "tools/universal_training_controller_current.py":"09fe933dd520c7b97cdb0e86f5c5fbdc597336e4",
- "tools/universal_training_controller_dag.py":"3621f1fb0aeb843f1fb051cba074eedef67ac81e",
- "tools/universal_training_controller_exact_resume.py":"6f6311cbb7cdfa46d14ad5eb0adc8749c5080226",
- "tools/universal_training_controller_console.py":"89d4b8fde514ba426993d7068d3e4e6177600670",
- "tools/universal_training_controller_console_defaults.py":"a4aae98c861764e0ece3bdcfb87f72eb531f6381",
- "tools/universal_training_controller_subcommands.py":"a5c5d5ce5bfa719ec8942ca9eeae7d85143cf719",
- "tools/universal_training_controller_entrypoint_markers.py":"d629e35d7bc1735bad841cc200d0ae532e16401a",
- "tools/universal_training_controller_inventory_scope.py":"2b2795fb53bb4e5fb8bb28c546229151d60b292b",
- "tools/universal_training_controller_audit_infrastructure.py":"40244bd2fd645bd201b90f107d95c7eefff64ffe",
- "tools/universal_training_controller_semantic_inventory.py":"d4097817b26ad64baaf5d36a99455dac1b2adfa9",
- "tools/universal_training_controller_restart_exact.py":"436a34c7f87d87122b11d65d6c2cdefb2084fe26",
- "tools/universal_training_controller_opf_grace.py":"73db03de6eeb6cdcca685e1ffbfde60f08969f1e",
- "tools/universal_training_controller_registry_scheduling.py":"b19334a09b52ad67b2e2c28ed36bcc10b6613175",
- "tools/universal_training_controller_training_contracts.py":"dec455d8fa2e2cc88113f4d382f072908cc9b1ac",
- "tools/universal_training_controller_profile_file.py":"43f7ef739ce92f94ea7e3c444d6b0a56c34f61e3",
- "tools/universal_training_controller_job_catalog_v2.py":"9e0643ae5075e0901ffe28f26024db7b28d37a34",
- "tools/universal_training_controller_large_catalog.py":"805fbe26d0b6e0251b11a808e629f96e1d210b16",
- "tools/universal_training_controller_lifecycle.py":"db8f0e93b1739ecf084a3ef8fa4dee7d33cc8452",
- "tools/universal_training_controller_metrics.py":"c1c556ae30cde1fe4c4e913f3054c4d902544657",
- "tools/universal_training_controller_opf_mechanism_audit.py":"93ddb8583e642a2f5195d16f202d7a528ed2f0e2",
- "tools/universal_training_controller_deferred.py":"72e33311f00d0d2353c671a4c1663b1e9d0daf6a",
- "tools/universal_training_controller_deferred_v2.py":"f0203b273ad58461178871a728c4ba18f73ab116",
- "tools/universal_training_controller_deferred_v3.py":"865378f887c269602676b1c7ca0859d25fd756b2",
- "tools/universal_training_controller_deferred_v4.py":"6dc85929f749cc1d5202d3481509e6db9b6aeb67",
- "tools/universal_training_controller_opf_reference_v2.py":"ed59b42d50307fcb7a1c3ed9c8ae951b3ef3bd37",
- "tools/universal_training_controller_v20.py":"b31aa9c11f3aaf19ef3078acfab198fd7df74f3b",
+LEGACY_ENTRY_REPOSITORY = "Anurag9000/RigorousRAG"
+LEGACY_ENTRY_COMMIT = "7b9ceb12d6c5fdef33eefd73eaea4c027b941737"
+LEGACY_ENTRY_BLOB = "4ecb86674c3baa91c88ff57a8699decce26c528d"
+LEGACY_ENTRY_PATH = "tools/universal_training_controller_entry.py"
+
+V21_HOST_COMMIT = "e04e173071073a29911368fc3d9fb9c2645566c2"
+V21_FILES = {
+    "tools/universal_training_controller_lifecycle_exhaustive.py": "8e05a0ab48264cc3a3ffd8834bdf6ba40a9cf460",
+    "tools/universal_training_controller_v21.py": "fe713b83c62bbaa65ea80133c63ca8b43a75113b",
 }
-OPF_REPO="Anurag9000/OPF_ADP"
-OPF_COMMIT="1d1dfbbf7521ac40ee60c1f78f84956bf5f70598"
-OPF_FILES={
- "utils/opf_massive_suite_runner.py":"b2ae3d04f9398df5c18c7c13f4c939bce46b930d",
- "utils/runtime_tuning.py":"f1cbfc44e009701a5540a046f2cd6b9f41f16b74",
- "utils/ml_backends.py":"c4cd5eaf783cd7ffbb92ab01ec743ef7cbd13d84",
- "utils/logging_utils.py":"482ba94643aa921f49eebb835f29cf4930bb2498",
- "utils/opf_shared_defaults.py":"bd76baa134b07567015d0151d5f14ba81dc667df",
- "DNN/VANILLA/Dyn_DNN4OPF/utils/run_defaults.py":"ff79e8c51f1fb21a11e4687989198ef0abb07491",
- "tests/test_massive_scheduler_operational_contract.py":"dec947ef375a346fb7abf06d77cbef1534852746",
-}
-LEGACY_OPF_COMMIT="a34c31259bd5d5f58081e3766918f9df63017455"
-LEGACY_OPF_FILES={
- "utils/opf_massive_suite_runner.py":"b97d47499c83bc6ed3a5753f7f3009b624c94868",
- "utils/runtime_tuning.py":"f1cbfc44e009701a5540a046f2cd6b9f41f16b74",
- "utils/ml_backends.py":"2fe2b24e530cab3d747c983c4457f4080703512f",
- "utils/logging_utils.py":"482ba94643aa921f49eebb835f29cf4930bb2498",
- "utils/opf_shared_defaults.py":"76ad434ecef1f708c835210d4bc86e0717999d99",
- "DNN/VANILLA/Dyn_DNN4OPF/utils/run_defaults.py":"dacb9a2c44d611c045fbb7512ba5327343f79a85",
-}
-INIT_FILES=("utils/__init__.py","DNN/__init__.py","DNN/VANILLA/__init__.py","DNN/VANILLA/Dyn_DNN4OPF/__init__.py","DNN/VANILLA/Dyn_DNN4OPF/utils/__init__.py","tests/__init__.py")
-ARG_ALIASES={"--training-control-audit":"--audit-training-coverage","--training-control-list-jobs":"--list-training-jobs"}
-DIAGNOSTIC_FLAGS=frozenset({"--training-control-audit","--audit-training-coverage","--list-training-jobs","--training-control-list-jobs","--help","-h","--version"})
-def git_blob_sha(data:bytes)->str:return hashlib.sha1(f"blob {len(data)}\0".encode()+data).hexdigest()
-def atomic_write(path:Path,data:bytes)->None:
- path.parent.mkdir(parents=True,exist_ok=True);tmp=path.with_suffix(path.suffix+".tmp");tmp.write_bytes(data);os.replace(tmp,path)
-def fetch(url:str,headers:dict[str,str]|None=None)->bytes:
- req=urllib.request.Request(url,headers={"User-Agent":"opf-training-controller-entry/23",**(headers or {})})
- with urllib.request.urlopen(req,timeout=120) as r:return r.read()
-def verified_host_local(root:Path,rel:str,expected:str)->bytes|None:
- try:data=(root/rel).read_bytes()
- except Exception:return None
- return data if git_blob_sha(data)==expected else None
-def verified_local(root:Path,rel:str,expected:str)->bytes|None:
- roots=[]
- explicit=os.environ.get("OPF_REFERENCE_LOCAL_ROOT","").strip()
- if explicit:roots.append(Path(explicit).expanduser())
- roots.extend((root.parent/"OPF_ADP",Path.home()/"OPF_ADP",Path.home()/"projects"/"OPF_ADP",Path.home()/"Projects"/"OPF_ADP"))
- for base in roots:
-  try:data=(base/rel).read_bytes()
-  except Exception:continue
-  if git_blob_sha(data)==expected:return data
- return None
-def fetch_opf(root:Path,rel:str,expected:str,commit:str)->bytes:
- data=verified_local(root,rel,expected)
- if data is not None:return data
- token=(os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN") or "").strip()
- api=f"https://api.github.com/repos/{OPF_REPO}/contents/{urllib.parse.quote(rel,safe='/')}?ref={commit}"
- if token:
-  try:
-   data=fetch(api,{"Accept":"application/vnd.github.raw+json","Authorization":f"Bearer {token}","X-GitHub-Api-Version":"2022-11-28"})
-   if git_blob_sha(data)==expected:return data
-  except Exception:pass
- gh=shutil.which("gh")
- if gh:
-  try:
-   data=subprocess.check_output([gh,"api","-H","Accept: application/vnd.github.raw+json",f"repos/{OPF_REPO}/contents/{rel}?ref={commit}"],stderr=subprocess.DEVNULL)
-   if git_blob_sha(data)==expected:return data
-  except Exception:pass
- try:
-  raw=f"https://raw.githubusercontent.com/{OPF_REPO}/{commit}/{rel}";data=fetch(raw)
-  if git_blob_sha(data)==expected:return data
- except Exception:pass
- raise RuntimeError(f"Cannot obtain verified private OPF reference file {rel}@{commit}. Keep a sibling OPF_ADP checkout, set OPF_REFERENCE_LOCAL_ROOT, export a cross-repository GH_TOKEN/GITHUB_TOKEN, or authenticate the gh CLI.")
-def prepare_reference_cache(root:Path,commit:str,files:dict[str,str])->None:
- cache=root/".training_control"/"opf_reference"/commit;marker=cache/"REFERENCE.json";expected_marker={"repository":OPF_REPO,"commit":commit,"files":files}
- try:valid=json.loads(marker.read_text(encoding="utf-8"))==expected_marker and all((cache/rel).is_file() and git_blob_sha((cache/rel).read_bytes())==sha for rel,sha in files.items())
- except Exception:valid=False
- if valid:return
- for rel,expected in files.items():
-  data=fetch_opf(root,rel,expected,commit)
-  if git_blob_sha(data)!=expected:raise RuntimeError(f"Pinned OPF blob mismatch for {rel}@{commit}")
-  atomic_write(cache/rel,data)
- for rel in INIT_FILES:
-  p=cache/rel
-  if not p.exists():atomic_write(p,b"")
- atomic_write(marker,(json.dumps(expected_marker,indent=2,sort_keys=True)+"\n").encode())
-def diagnostic_only(argv:list[str])->bool:return bool(argv) and any(arg in DIAGNOSTIC_FLAGS for arg in argv)
-def canonical_argv(argv:list[str])->list[str]:return [ARG_ALIASES.get(arg,arg) for arg in argv]
-def main()->int:
- root=Path(os.environ.get("TRAINING_CONTROL_REPO_ROOT") or Path.cwd()).resolve();cache=root/".training_control"/"controller_host"/HOST_COMMIT;argv=list(sys.argv[1:])
- for rel,expected in FILES.items():
-  dst=cache/Path(rel).name;valid=dst.is_file() and git_blob_sha(dst.read_bytes())==expected
-  if not valid:
-   data=verified_host_local(root,rel,expected)
-   if data is None:data=fetch(f"https://raw.githubusercontent.com/{HOST_REPO}/{HOST_COMMIT}/{rel}")
-   actual=git_blob_sha(data)
-   if actual!=expected:raise RuntimeError(f"controller blob mismatch {rel}: {actual} != {expected}")
-   atomic_write(dst,data)
- if not diagnostic_only(argv):
-  prepare_reference_cache(root,OPF_COMMIT,OPF_FILES)
-  if os.environ.get("TRAINING_CONTROL_PREPARE_LEGACY_OPF","").strip().lower() in {"1","true","yes","on"}:prepare_reference_cache(root,LEGACY_OPF_COMMIT,LEGACY_OPF_FILES)
- env=os.environ.copy();env["TRAINING_CONTROL_REPO_ROOT"]=str(root)
- return subprocess.call([sys.executable,str(cache/"universal_training_controller_v20.py"),*canonical_argv(argv)],cwd=root,env=env)
-if __name__=="__main__":raise SystemExit(main())
+
+
+def git_blob_sha(data: bytes) -> str:
+    return hashlib.sha1(f"blob {len(data)}\0".encode("ascii") + data).hexdigest()
+
+
+def atomic_write(path: Path, data: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_suffix(path.suffix + ".tmp")
+    temp.write_bytes(data)
+    os.replace(temp, path)
+
+
+def fetch(url: str) -> bytes:
+    request = urllib.request.Request(url, headers={"User-Agent": "opf-exhaustive-training-controller/24"})
+    with urllib.request.urlopen(request, timeout=120) as response:
+        return response.read()
+
+
+def verified_fetch(repository: str, commit: str, relative: str, expected: str) -> bytes:
+    url = f"https://raw.githubusercontent.com/{repository}/{commit}/{relative}"
+    data = fetch(url)
+    actual = git_blob_sha(data)
+    if actual != expected:
+        raise RuntimeError(f"Pinned controller blob mismatch for {relative}: {actual} != {expected}")
+    return data
+
+
+def load_legacy_entry(root: Path):
+    cached = root / ".training_control" / "bootstrap" / LEGACY_ENTRY_COMMIT / "universal_training_controller_entry.py"
+    if not cached.is_file() or git_blob_sha(cached.read_bytes()) != LEGACY_ENTRY_BLOB:
+        atomic_write(
+            cached,
+            verified_fetch(LEGACY_ENTRY_REPOSITORY, LEGACY_ENTRY_COMMIT, LEGACY_ENTRY_PATH, LEGACY_ENTRY_BLOB),
+        )
+    spec = importlib.util.spec_from_file_location("_training_control_legacy_entry_v23", cached)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Cannot import pinned legacy controller bootstrap {cached}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def prepare_controller_host(root: Path, legacy) -> Path:
+    cache = root / ".training_control" / "controller_host" / legacy.HOST_COMMIT
+    for relative, expected in legacy.FILES.items():
+        destination = cache / Path(relative).name
+        valid = destination.is_file() and legacy.git_blob_sha(destination.read_bytes()) == expected
+        if valid:
+            continue
+        data = legacy.verified_host_local(root, relative, expected)
+        if data is None:
+            data = legacy.fetch(
+                f"https://raw.githubusercontent.com/{legacy.HOST_REPO}/{legacy.HOST_COMMIT}/{relative}"
+            )
+        actual = legacy.git_blob_sha(data)
+        if actual != expected:
+            raise RuntimeError(f"Legacy controller blob mismatch for {relative}: {actual} != {expected}")
+        legacy.atomic_write(destination, data)
+
+    for relative, expected in V21_FILES.items():
+        destination = cache / Path(relative).name
+        valid = destination.is_file() and git_blob_sha(destination.read_bytes()) == expected
+        if valid:
+            continue
+        local = root / relative
+        if local.is_file() and git_blob_sha(local.read_bytes()) == expected:
+            data = local.read_bytes()
+        else:
+            data = verified_fetch("Anurag9000/RigorousRAG", V21_HOST_COMMIT, relative, expected)
+        atomic_write(destination, data)
+    return cache
+
+
+def main() -> int:
+    root = Path(os.environ.get("TRAINING_CONTROL_REPO_ROOT") or Path.cwd()).resolve()
+    argv = list(sys.argv[1:])
+    legacy = load_legacy_entry(root)
+    cache = prepare_controller_host(root, legacy)
+
+    if not legacy.diagnostic_only(argv):
+        legacy.prepare_reference_cache(root, legacy.OPF_COMMIT, legacy.OPF_FILES)
+        if os.environ.get("TRAINING_CONTROL_PREPARE_LEGACY_OPF", "").strip().lower() in {"1", "true", "yes", "on"}:
+            legacy.prepare_reference_cache(root, legacy.LEGACY_OPF_COMMIT, legacy.LEGACY_OPF_FILES)
+
+    env = os.environ.copy()
+    env["TRAINING_CONTROL_REPO_ROOT"] = str(root)
+    return subprocess.call(
+        [sys.executable, str(cache / "universal_training_controller_v21.py"), *legacy.canonical_argv(argv)],
+        cwd=root,
+        env=env,
+    )
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
