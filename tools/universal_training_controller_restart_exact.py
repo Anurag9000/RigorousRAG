@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Recovery semantics for deterministic non-training jobs.
 
-A dataset/materialization/preprocessing job does not need optimizer checkpoints
-if restarting it from its beginning is itself exact. This module permits that
-contract only when the job explicitly declares deterministic, idempotent,
-atomic-output behavior. It is intentionally forbidden for genuine training.
+A dataset/materialization/preprocessing/validation/testing/metrics job does not
+need optimizer checkpoints if restarting it from its beginning is itself exact.
+This module permits that contract only when the job explicitly declares
+deterministic, idempotent, atomic-output behavior. It is intentionally forbidden
+for genuine training.
 """
 from __future__ import annotations
 
@@ -16,6 +17,9 @@ import universal_training_controller_current as current
 RESTART_EXACT_PHASES = {
     "dataset", "data", "download", "materialize", "setup", "preprocess",
     "preprocessing", "features", "feature", "manifest", "folds", "index",
+    "validation", "validate", "evaluation", "evaluate", "eval",
+    "testing", "test", "inference", "infer", "prediction", "predict",
+    "metrics", "metric", "aggregation", "aggregate", "report", "scoring", "score",
 }
 TRAINING_PHASES = {"training", "train", "pretrain", "finetune", "fine-tune", "adapt", "fit"}
 
