@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Immutable bootstrap for exhaustive repository lifecycle orchestration.
+"""Immutable bootstrap for exhaustive repository workload orchestration v22.
 
 The bootstrap reuses the previously pinned universal controller stack and exact
-OPF_ADP runtime, then adds only the v21 exhaustive-lifecycle adapter.  Resource
-admission/scheduling is never reimplemented here: the literal OPF scheduler
+OPF_ADP runtime, then adds only source-orchestration layers. Resource admission
+and scheduling are never reimplemented here: the literal byte-pinned OPF runner
 remains solely responsible for pressure-aware/GPU-first/fixed scheduling,
-concurrency, pause/resume, retries, OOM fallback and persistent process state.
+concurrency, memory pressure gates, pause/resume, retries, OOM fallback, device
+selection, logging and persistent process state.
 """
 from __future__ import annotations
 
@@ -22,10 +23,16 @@ LEGACY_ENTRY_COMMIT = "7b9ceb12d6c5fdef33eefd73eaea4c027b941737"
 LEGACY_ENTRY_BLOB = "4ecb86674c3baa91c88ff57a8699decce26c528d"
 LEGACY_ENTRY_PATH = "tools/universal_training_controller_entry.py"
 
-V21_HOST_COMMIT = "e04e173071073a29911368fc3d9fb9c2645566c2"
-V21_FILES = {
+V22_HOST_COMMIT = "d741e571dbee8052a7d6d0179ab624b8e5d4cf42"
+V22_FILES = {
     "tools/universal_training_controller_lifecycle_exhaustive.py": "8e05a0ab48264cc3a3ffd8834bdf6ba40a9cf460",
-    "tools/universal_training_controller_v21.py": "fe713b83c62bbaa65ea80133c63ca8b43a75113b",
+    "tools/universal_training_controller_config_matrix.py": "cfdc58f5dea0e5351871bb0adca7b1f39444d756",
+    "tools/universal_training_controller_early_stopping_wiring.py": "fdd00d7b406a77933c827237fb45db9d083001dc",
+    "tools/universal_training_controller_lifecycle_affinity.py": "31e896f6ab10cc902d594e0c21c324d0f4092e8c",
+    "tools/universal_training_controller_workload_closure.py": "622e0a2e3d45df8988613d9275c9478b600b89dc",
+    "tools/universal_training_controller_dag_slicing.py": "b5ecd8fbb152c1da40107cd023af19d1e86ab3e4",
+    "tools/universal_training_controller_metrics_v2.py": "26bac973df28fa37f21c6464031fec2e3ece9908",
+    "tools/universal_training_controller_v22.py": "bb1720e9ba82e8f9977ae52cee6bebb33f86a876",
 }
 
 
@@ -41,7 +48,7 @@ def atomic_write(path: Path, data: bytes) -> None:
 
 
 def fetch(url: str) -> bytes:
-    request = urllib.request.Request(url, headers={"User-Agent": "opf-exhaustive-training-controller/24"})
+    request = urllib.request.Request(url, headers={"User-Agent": "opf-exhaustive-training-controller/25"})
     with urllib.request.urlopen(request, timeout=120) as response:
         return response.read()
 
@@ -62,7 +69,7 @@ def load_legacy_entry(root: Path):
             cached,
             verified_fetch(LEGACY_ENTRY_REPOSITORY, LEGACY_ENTRY_COMMIT, LEGACY_ENTRY_PATH, LEGACY_ENTRY_BLOB),
         )
-    spec = importlib.util.spec_from_file_location("_training_control_legacy_entry_v23", cached)
+    spec = importlib.util.spec_from_file_location("_training_control_legacy_entry_v25", cached)
     if spec is None or spec.loader is None:
         raise RuntimeError(f"Cannot import pinned legacy controller bootstrap {cached}")
     module = importlib.util.module_from_spec(spec)
@@ -88,7 +95,7 @@ def prepare_controller_host(root: Path, legacy) -> Path:
             raise RuntimeError(f"Legacy controller blob mismatch for {relative}: {actual} != {expected}")
         legacy.atomic_write(destination, data)
 
-    for relative, expected in V21_FILES.items():
+    for relative, expected in V22_FILES.items():
         destination = cache / Path(relative).name
         valid = destination.is_file() and git_blob_sha(destination.read_bytes()) == expected
         if valid:
@@ -97,7 +104,7 @@ def prepare_controller_host(root: Path, legacy) -> Path:
         if local.is_file() and git_blob_sha(local.read_bytes()) == expected:
             data = local.read_bytes()
         else:
-            data = verified_fetch("Anurag9000/RigorousRAG", V21_HOST_COMMIT, relative, expected)
+            data = verified_fetch("Anurag9000/RigorousRAG", V22_HOST_COMMIT, relative, expected)
         atomic_write(destination, data)
     return cache
 
@@ -116,7 +123,7 @@ def main() -> int:
     env = os.environ.copy()
     env["TRAINING_CONTROL_REPO_ROOT"] = str(root)
     return subprocess.call(
-        [sys.executable, str(cache / "universal_training_controller_v21.py"), *legacy.canonical_argv(argv)],
+        [sys.executable, str(cache / "universal_training_controller_v22.py"), *legacy.canonical_argv(argv)],
         cwd=root,
         env=env,
     )
