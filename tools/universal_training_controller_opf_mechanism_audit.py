@@ -10,10 +10,16 @@ There are deliberately two integrity gates:
 * execution-time ``base._prepare_opf_runtime`` verifies every materialized OPF
   file against that manifest before the scheduler is imported.
 
-If a verified local OPF cache is already present, coverage also fingerprints the
-literal scheduler AST, symbols and CLI.  A malformed or mismatched local cache is
-never ignored: it fails the mechanism certificate.  A missing cache is simply
-reported as ``deferred_to_execution`` and is not downloaded by an audit.
+The latest OPF_ADP operational-contract test is also mirrored here as a literal
+source certificate. Because the scheduler blob is byte-pinned, these checks are
+not a reimplementation of scheduling: they fail closed if the exact OPF source
+loses any of the pressure/reopen/retry/resume mechanisms guaranteed upstream.
+
+If a verified local OPF cache is already present, coverage fingerprints the
+literal scheduler AST, symbols, CLI, and operational snippets. A malformed or
+mismatched local cache is never ignored: it fails the mechanism certificate. A
+missing cache is reported as ``deferred_to_execution`` and is not downloaded by
+an audit.
 """
 from __future__ import annotations
 
@@ -28,10 +34,33 @@ from typing import Any, Dict, Mapping, Sequence
 import universal_training_controller as base
 import universal_training_controller_current as current
 import universal_training_controller_dag as dag
+import universal_training_controller_opf_reference_v2 as opf_reference
 
-MECHANISM_AUDIT_SCHEMA = 2
+MECHANISM_AUDIT_SCHEMA = 3
 _ALLOWED_OPF_ASSIGNMENTS = {"build_suite_jobs"}
 _CLI_RE = re.compile(r"add_argument\(\s*(['\"])(--?[A-Za-z0-9][A-Za-z0-9_-]*)\1")
+
+# These are copied verbatim from the latest OPF_ADP operational-contract test.
+# The Git blob pin prevents a locally edited look-alike scheduler from passing.
+_REQUIRED_OPERATIONAL_SNIPPETS = (
+    "gpu_child_pressure = (last_child_gpu_vram_mib + gpu_buffer) > float(gpu_free_effective)",
+    "host_child_pressure = (last_child_host_rss_mib + host_buffer) > float(host_available_effective)",
+    "if not gpu_gate_closed and (gpu_pressure or gpu_child_pressure):",
+    "if not host_gate_closed and (host_pressure or swap_pressure or host_child_pressure):",
+    "if gpu_gate_closed and gpu_external_drop:",
+    "if host_gate_closed and host_external_drop:",
+)
+_REQUIRED_OPERATIONAL_SYMBOLS = {
+    "pressure_pause_reopened",
+    "select_launch_device",
+    "should_retry",
+    "_resume_runtime_from_pause",
+    "launch_job",
+    "save_job_state",
+    "sample_non_python_host_memory",
+    "sample_non_python_gpu_memory",
+    "sample_runtime_child_memory",
+}
 
 
 def _sha256(data: bytes) -> str:
@@ -150,6 +179,8 @@ def _inspect_local_runtime(cache: Path) -> Dict[str, Any]:
         "scheduler_top_level_symbols": {"functions": [], "classes": []},
         "scheduler_cli_options": [],
         "scheduler_cli_option_count": 0,
+        "operational_contract_checks": {},
+        "operational_contract_pass": False,
     }
     if errors:
         return result
@@ -158,14 +189,32 @@ def _inspect_local_runtime(cache: Path) -> Dict[str, Any]:
     scheduler_data = scheduler_path.read_bytes()
     scheduler_text = scheduler_data.decode("utf-8")
     cli_options = sorted({match.group(2) for match in _CLI_RE.finditer(scheduler_text)})
+    symbols = _top_level_symbols(scheduler_text)
+    function_names = set(symbols["functions"])
+    operational_checks: Dict[str, bool] = {
+        "scheduler_blob_is_latest_contract_blob": base._git_blob_sha(scheduler_data)
+        == opf_reference.OPF_RUNTIME_BLOBS["utils/opf_massive_suite_runner.py"],
+        "required_operational_symbols_present": _REQUIRED_OPERATIONAL_SYMBOLS <= function_names,
+    }
+    for index, snippet in enumerate(_REQUIRED_OPERATIONAL_SNIPPETS, start=1):
+        operational_checks[f"literal_operational_snippet_{index}"] = snippet in scheduler_text
+    operational_pass = all(operational_checks.values())
+    if not operational_pass:
+        errors.append("latest OPF operational-contract literals/symbols are not all present")
+
     result.update(
         {
+            "status": "verified_local_cache" if operational_pass else "invalid_local_cache",
+            "runtime_blob_errors": errors,
+            "pass": operational_pass,
             "scheduler_git_blob_sha": base._git_blob_sha(scheduler_data),
             "scheduler_sha256": _sha256(scheduler_data),
             "scheduler_ast_sha256": _ast_digest(scheduler_text),
-            "scheduler_top_level_symbols": _top_level_symbols(scheduler_text),
+            "scheduler_top_level_symbols": symbols,
             "scheduler_cli_options": cli_options,
             "scheduler_cli_option_count": len(cli_options),
+            "operational_contract_checks": operational_checks,
+            "operational_contract_pass": operational_pass,
         }
     )
     return result
@@ -178,6 +227,7 @@ def _mechanism_certificate(root: Path) -> Dict[str, Any]:
         and base.OPF_REFERENCE_COMMIT == current.OPF_REFERENCE_COMMIT
         and dict(base.OPF_RUNTIME_BLOBS) == expected_blobs
         and tuple(base.OPF_RUNTIME_FILES) == tuple(expected_blobs)
+        and current.OPF_REFERENCE_COMMIT == opf_reference.OPF_REFERENCE_COMMIT
     )
     execution_gate = _execution_integrity_gate()
     opf_assignments = _opf_attribute_assignments()
@@ -200,6 +250,8 @@ def _mechanism_certificate(root: Path) -> Dict[str, Any]:
             "scheduler_top_level_symbols": {"functions": [], "classes": []},
             "scheduler_cli_options": [],
             "scheduler_cli_option_count": 0,
+            "operational_contract_checks": {},
+            "operational_contract_pass": None,
         }
 
     certificate_pass = (
@@ -214,6 +266,7 @@ def _mechanism_certificate(root: Path) -> Dict[str, Any]:
         "reference_repository": current.OPF_REFERENCE_REPOSITORY,
         "reference_commit": current.OPF_REFERENCE_COMMIT,
         "expected_runtime_blobs": expected_blobs,
+        "latest_operational_contract_blobs": dict(opf_reference.OPF_OPERATIONAL_CONTRACT_BLOBS),
         "reference_synchronized": reference_synchronized,
         "runtime_validation_status": local_runtime["status"],
         "runtime_validation_deferred_to_execution": local_runtime["status"] == "deferred_to_execution",
@@ -226,6 +279,8 @@ def _mechanism_certificate(root: Path) -> Dict[str, Any]:
         "scheduler_top_level_symbols": local_runtime["scheduler_top_level_symbols"],
         "scheduler_cli_options": local_runtime["scheduler_cli_options"],
         "scheduler_cli_option_count": local_runtime["scheduler_cli_option_count"],
+        "operational_contract_checks": local_runtime["operational_contract_checks"],
+        "operational_contract_pass": local_runtime["operational_contract_pass"],
         "adapter_opf_attribute_assignments": opf_assignments,
         "allowed_adapter_assignments": sorted(_ALLOWED_OPF_ASSIGNMENTS),
         "forbidden_adapter_assignments": forbidden_assignments,
