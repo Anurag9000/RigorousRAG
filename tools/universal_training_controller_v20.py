@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Universal controller v20: v19 orchestration on current literal OPF_ADP.
+"""Universal controller v20: full lifecycle orchestration on literal OPF_ADP.
 
-v20 changes no resource-scheduling algorithm.  It first synchronizes every
-controller/audit layer to one byte-pinned OPF_ADP reference, then installs the
-same repository-job discovery, exact-resume, DAG, semantic-inventory,
-mechanism-audit and deferred fan-out layers used by v19.  Concrete jobs are
-still executed by the unchanged literal OPF_ADP scheduler.
+This controller never reimplements the OPF resource scheduler.  It synchronizes
+every controller/audit layer to one byte-pinned OPF_ADP reference, expands each
+repository's concrete dataset -> train -> validation -> testing -> metrics DAG,
+and then passes every dependency-ready wave to the unchanged literal OPF_ADP
+scheduler.  All pressure, concurrency, pause/resume, retry, GPU-selection,
+logging and persistent-state mechanisms therefore remain OPF-owned.
 """
 from __future__ import annotations
 
@@ -18,6 +19,7 @@ import universal_training_controller_exact_resume as exact_resume
 import universal_training_controller_inventory_scope as inventory_scope
 import universal_training_controller_job_catalog_v2 as job_catalog
 import universal_training_controller_large_catalog as large_catalog
+import universal_training_controller_lifecycle as lifecycle
 import universal_training_controller_opf_grace as opf_grace
 import universal_training_controller_opf_mechanism_audit as mechanism_audit
 import universal_training_controller_opf_reference_v2 as opf_reference
@@ -35,6 +37,9 @@ def main() -> int:
     opf_reference.install()
     profile_file.install()
     job_catalog.install()
+    # Expand all repository lifecycle phases before metadata/recovery audits are
+    # installed so every generated job receives the same strict contracts.
+    lifecycle.install()
     exact_resume.install()
     large_catalog.install()
     console.install()
