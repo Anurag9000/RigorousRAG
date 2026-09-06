@@ -20,6 +20,7 @@ import universal_training_controller_inventory_scope as inventory_scope
 import universal_training_controller_job_catalog_v2 as job_catalog
 import universal_training_controller_large_catalog as large_catalog
 import universal_training_controller_lifecycle as lifecycle
+import universal_training_controller_metrics as metrics
 import universal_training_controller_opf_grace as opf_grace
 import universal_training_controller_opf_mechanism_audit as mechanism_audit
 import universal_training_controller_opf_reference_v2 as opf_reference
@@ -54,6 +55,9 @@ def main() -> int:
     registry_scheduling.install()
     training_contracts.install()
     mechanism_audit.install()
+    # Metrics/manifest indexing wraps the dependency executor only; it never
+    # participates in resource admission or process control.
+    metrics.install()
     return deferred.main()
 
 
