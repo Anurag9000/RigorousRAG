@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Account-wide training-control auditor pinned to the semantic source-closure v20 bootstrap."""
+"""Account-wide training-control auditor pinned to the latest OPF contract bootstrap."""
 from __future__ import annotations
 
 import account_wide_training_control_audit as audit
 
-CANONICAL_BOOTSTRAP_COMMIT = "056f649a4a24236d46808a26eeac905ee9ac479d"
-CANONICAL_BOOTSTRAP_BLOB = "749abc8bf0b441f3aa2f33d8454d0bb07349e6c5"
+# tools/universal_training_controller_entry.py at this immutable host commit.
+CANONICAL_BOOTSTRAP_COMMIT = "a3d25bd282d8e2e0d9f2cb3730d4d036703a39ad"
+CANONICAL_BOOTSTRAP_BLOB = "2515a8a2fc2dbed7334a4240438dc095f19636d2"
 
 
 def main() -> int:
