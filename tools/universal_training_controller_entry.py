@@ -4,10 +4,10 @@ import hashlib,json,os,shutil,subprocess,sys,urllib.parse,urllib.request
 from pathlib import Path
 
 HOST_REPO="Anurag9000/RigorousRAG"
-# Immutable controller-host commit containing the modules listed below.  The
-# entry point itself may live on a later commit; downloaded controller modules
-# are always verified by Git blob SHA before import.
-HOST_COMMIT="76a26379707a0565b4ae85f44f09f405fc525acc"
+# Immutable controller-host commit containing the modules listed below. The
+# entry point itself may live on a later commit; downloaded modules are always
+# verified by Git blob SHA before import.
+HOST_COMMIT="26c833284c2be2e80af149b1a2d8902b1a5b43ee"
 FILES={
  "tools/training_surface_census.py":"4db28f36151bdace4cdde9d3e429dac49c306129",
  "tools/training_surface_semantic_scan.py":"d6185607102353f8d18b993427065832f3fb374b",
@@ -22,20 +22,22 @@ FILES={
  "tools/universal_training_controller_inventory_scope.py":"2b2795fb53bb4e5fb8bb28c546229151d60b292b",
  "tools/universal_training_controller_audit_infrastructure.py":"40244bd2fd645bd201b90f107d95c7eefff64ffe",
  "tools/universal_training_controller_semantic_inventory.py":"d4097817b26ad64baaf5d36a99455dac1b2adfa9",
- "tools/universal_training_controller_restart_exact.py":"6994858fc1294b79f0bb479afee7f88f453fb026",
+ "tools/universal_training_controller_restart_exact.py":"436a34c7f87d87122b11d65d6c2cdefb2084fe26",
  "tools/universal_training_controller_opf_grace.py":"73db03de6eeb6cdcca685e1ffbfde60f08969f1e",
  "tools/universal_training_controller_registry_scheduling.py":"b19334a09b52ad67b2e2c28ed36bcc10b6613175",
  "tools/universal_training_controller_training_contracts.py":"dec455d8fa2e2cc88113f4d382f072908cc9b1ac",
  "tools/universal_training_controller_profile_file.py":"43f7ef739ce92f94ea7e3c444d6b0a56c34f61e3",
  "tools/universal_training_controller_job_catalog_v2.py":"9e0643ae5075e0901ffe28f26024db7b28d37a34",
  "tools/universal_training_controller_large_catalog.py":"805fbe26d0b6e0251b11a808e629f96e1d210b16",
+ "tools/universal_training_controller_lifecycle.py":"db8f0e93b1739ecf084a3ef8fa4dee7d33cc8452",
+ "tools/universal_training_controller_metrics.py":"c1c556ae30cde1fe4c4e913f3054c4d902544657",
  "tools/universal_training_controller_opf_mechanism_audit.py":"93ddb8583e642a2f5195d16f202d7a528ed2f0e2",
  "tools/universal_training_controller_deferred.py":"72e33311f00d0d2353c671a4c1663b1e9d0daf6a",
  "tools/universal_training_controller_deferred_v2.py":"f0203b273ad58461178871a728c4ba18f73ab116",
  "tools/universal_training_controller_deferred_v3.py":"865378f887c269602676b1c7ca0859d25fd756b2",
  "tools/universal_training_controller_deferred_v4.py":"6dc85929f749cc1d5202d3481509e6db9b6aeb67",
  "tools/universal_training_controller_opf_reference_v2.py":"ed59b42d50307fcb7a1c3ed9c8ae951b3ef3bd37",
- "tools/universal_training_controller_v20.py":"12976c36d4df375387876411dbc102661b5d9d04",
+ "tools/universal_training_controller_v20.py":"b31aa9c11f3aaf19ef3078acfab198fd7df74f3b",
 }
 OPF_REPO="Anurag9000/OPF_ADP"
 OPF_COMMIT="1d1dfbbf7521ac40ee60c1f78f84956bf5f70598"
@@ -46,9 +48,6 @@ OPF_FILES={
  "utils/logging_utils.py":"482ba94643aa921f49eebb835f29cf4930bb2498",
  "utils/opf_shared_defaults.py":"bd76baa134b07567015d0151d5f14ba81dc667df",
  "DNN/VANILLA/Dyn_DNN4OPF/utils/run_defaults.py":"ff79e8c51f1fb21a11e4687989198ef0abb07491",
- # Latest OPF operational contract. It is cached/verified for provenance but is
- # not imported as scheduler code; the downstream mechanism certificate mirrors
- # its literal requirements against the pinned scheduler blob.
  "tests/test_massive_scheduler_operational_contract.py":"dec947ef375a346fb7abf06d77cbef1534852746",
 }
 LEGACY_OPF_COMMIT="a34c31259bd5d5f58081e3766918f9df63017455"
@@ -67,7 +66,7 @@ def git_blob_sha(data:bytes)->str:return hashlib.sha1(f"blob {len(data)}\0".enco
 def atomic_write(path:Path,data:bytes)->None:
  path.parent.mkdir(parents=True,exist_ok=True);tmp=path.with_suffix(path.suffix+".tmp");tmp.write_bytes(data);os.replace(tmp,path)
 def fetch(url:str,headers:dict[str,str]|None=None)->bytes:
- req=urllib.request.Request(url,headers={"User-Agent":"opf-training-controller-entry/22",**(headers or {})})
+ req=urllib.request.Request(url,headers={"User-Agent":"opf-training-controller-entry/23",**(headers or {})})
  with urllib.request.urlopen(req,timeout=120) as r:return r.read()
 def verified_host_local(root:Path,rel:str,expected:str)->bytes|None:
  try:data=(root/rel).read_bytes()
