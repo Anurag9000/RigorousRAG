@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""Execute a repository's immutable prior launcher with new controller pins.
+"""Execute a repository's immutable prior launcher with v22 controller pins.
 
-This is a bootstrap-preservation utility, not a scheduler.  It retrieves the
-exact previous ``run_all_training.py`` by Git blob identity, executes it with
-``__file__`` bound to the current repository root so all local imports/paths stay
-unchanged, replaces only the universal-controller commit/blob/URL globals, and
-calls its original ``main``.  Thus repository-specific catalogs, policies,
-matrices and lifecycle metadata remain byte-identical to their last committed
-launcher implementation.
+This is a bootstrap-preservation utility, not a scheduler. It retrieves the exact
+previous ``run_all_training.py`` by Git blob identity, executes it with ``__file__``
+bound to the current repository root so all local imports/paths stay unchanged,
+replaces only the universal-controller commit/blob/URL globals, and calls its
+original ``main``. Repository-specific catalogs, policies, matrices and lifecycle
+metadata therefore remain the implementation selected by that repository's prior
+main commit.
 """
 from __future__ import annotations
 
@@ -21,8 +21,8 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-NEW_CONTROLLER_COMMIT = "471388dc1d9fa50eeae6c116a1508503b516c92d"
-NEW_CONTROLLER_BLOB = "14d2fee4e0d505578e97a295dfb662ece82dbee7"
+NEW_CONTROLLER_COMMIT = "257c82a9686d5aeeee765c1ca5d8df168f80129e"
+NEW_CONTROLLER_BLOB = "a164fd06fc2800cd92243a394f2582d0617f814d"
 NEW_CONTROLLER_URL = (
     f"https://raw.githubusercontent.com/Anurag9000/RigorousRAG/{NEW_CONTROLLER_COMMIT}/"
     "tools/universal_training_controller_entry.py"
@@ -41,7 +41,7 @@ def _verified(data: bytes, expected: str, label: str) -> bytes:
 
 
 def _fetch_url(url: str, *, token: str = "") -> bytes:
-    headers = {"User-Agent": "central-training-launcher-adapter/1"}
+    headers = {"User-Agent": "central-training-launcher-adapter/2"}
     if token:
         headers.update({
             "Authorization": f"Bearer {token}",
@@ -54,8 +54,6 @@ def _fetch_url(url: str, *, token: str = "") -> bytes:
 
 
 def _load_previous(root: Path, repository: str, commit: str, expected: str) -> bytes:
-    # Prefer the local clone's immutable Git object: no network/private-repo
-    # assumptions and exact historical content.
     git = shutil.which("git")
     if git and (root / ".git").exists():
         try:
@@ -114,9 +112,6 @@ def execute_previous_launcher(
     code = compile(data.decode("utf-8"), str(root / "run_all_training.py"), "exec")
     exec(code, namespace, namespace)
 
-    # Different historical launchers used different compact names.  Only these
-    # controller locator values are changed; every repository profile/catalog
-    # and every job definition remains exactly the previous implementation.
     for name in ("C", "COMMIT", "CONTROLLER_COMMIT"):
         if name in namespace:
             namespace[name] = NEW_CONTROLLER_COMMIT
