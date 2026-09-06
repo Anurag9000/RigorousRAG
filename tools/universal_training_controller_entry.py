@@ -4,7 +4,10 @@ import hashlib,json,os,shutil,subprocess,sys,urllib.parse,urllib.request
 from pathlib import Path
 
 HOST_REPO="Anurag9000/RigorousRAG"
-HOST_COMMIT="227cb9348cfc6d9803b3bd1ec891e2f88c9d0692"
+# Immutable controller-host commit containing the modules listed below.  The
+# entry point itself may live on a later commit; downloaded controller modules
+# are always verified by Git blob SHA before import.
+HOST_COMMIT="76a26379707a0565b4ae85f44f09f405fc525acc"
 FILES={
  "tools/training_surface_census.py":"4db28f36151bdace4cdde9d3e429dac49c306129",
  "tools/training_surface_semantic_scan.py":"d6185607102353f8d18b993427065832f3fb374b",
@@ -26,16 +29,16 @@ FILES={
  "tools/universal_training_controller_profile_file.py":"43f7ef739ce92f94ea7e3c444d6b0a56c34f61e3",
  "tools/universal_training_controller_job_catalog_v2.py":"9e0643ae5075e0901ffe28f26024db7b28d37a34",
  "tools/universal_training_controller_large_catalog.py":"805fbe26d0b6e0251b11a808e629f96e1d210b16",
- "tools/universal_training_controller_opf_mechanism_audit.py":"e948bada6dc8f719b18ee20afbca682aae0992e4",
+ "tools/universal_training_controller_opf_mechanism_audit.py":"93ddb8583e642a2f5195d16f202d7a528ed2f0e2",
  "tools/universal_training_controller_deferred.py":"72e33311f00d0d2353c671a4c1663b1e9d0daf6a",
  "tools/universal_training_controller_deferred_v2.py":"f0203b273ad58461178871a728c4ba18f73ab116",
  "tools/universal_training_controller_deferred_v3.py":"865378f887c269602676b1c7ca0859d25fd756b2",
  "tools/universal_training_controller_deferred_v4.py":"6dc85929f749cc1d5202d3481509e6db9b6aeb67",
- "tools/universal_training_controller_opf_reference_v2.py":"3b21bb8f60179e8c1e9b31d164ecf6799f9f9b5d",
+ "tools/universal_training_controller_opf_reference_v2.py":"ed59b42d50307fcb7a1c3ed9c8ae951b3ef3bd37",
  "tools/universal_training_controller_v20.py":"12976c36d4df375387876411dbc102661b5d9d04",
 }
 OPF_REPO="Anurag9000/OPF_ADP"
-OPF_COMMIT="2dfe664af88b95981da2b84b60f228a37156749f"
+OPF_COMMIT="1d1dfbbf7521ac40ee60c1f78f84956bf5f70598"
 OPF_FILES={
  "utils/opf_massive_suite_runner.py":"b2ae3d04f9398df5c18c7c13f4c939bce46b930d",
  "utils/runtime_tuning.py":"f1cbfc44e009701a5540a046f2cd6b9f41f16b74",
@@ -43,6 +46,10 @@ OPF_FILES={
  "utils/logging_utils.py":"482ba94643aa921f49eebb835f29cf4930bb2498",
  "utils/opf_shared_defaults.py":"bd76baa134b07567015d0151d5f14ba81dc667df",
  "DNN/VANILLA/Dyn_DNN4OPF/utils/run_defaults.py":"ff79e8c51f1fb21a11e4687989198ef0abb07491",
+ # Latest OPF operational contract. It is cached/verified for provenance but is
+ # not imported as scheduler code; the downstream mechanism certificate mirrors
+ # its literal requirements against the pinned scheduler blob.
+ "tests/test_massive_scheduler_operational_contract.py":"dec947ef375a346fb7abf06d77cbef1534852746",
 }
 LEGACY_OPF_COMMIT="a34c31259bd5d5f58081e3766918f9df63017455"
 LEGACY_OPF_FILES={
@@ -53,14 +60,14 @@ LEGACY_OPF_FILES={
  "utils/opf_shared_defaults.py":"76ad434ecef1f708c835210d4bc86e0717999d99",
  "DNN/VANILLA/Dyn_DNN4OPF/utils/run_defaults.py":"dacb9a2c44d611c045fbb7512ba5327343f79a85",
 }
-INIT_FILES=("utils/__init__.py","DNN/__init__.py","DNN/VANILLA/__init__.py","DNN/VANILLA/Dyn_DNN4OPF/__init__.py","DNN/VANILLA/Dyn_DNN4OPF/utils/__init__.py")
+INIT_FILES=("utils/__init__.py","DNN/__init__.py","DNN/VANILLA/__init__.py","DNN/VANILLA/Dyn_DNN4OPF/__init__.py","DNN/VANILLA/Dyn_DNN4OPF/utils/__init__.py","tests/__init__.py")
 ARG_ALIASES={"--training-control-audit":"--audit-training-coverage","--training-control-list-jobs":"--list-training-jobs"}
 DIAGNOSTIC_FLAGS=frozenset({"--training-control-audit","--audit-training-coverage","--list-training-jobs","--training-control-list-jobs","--help","-h","--version"})
 def git_blob_sha(data:bytes)->str:return hashlib.sha1(f"blob {len(data)}\0".encode()+data).hexdigest()
 def atomic_write(path:Path,data:bytes)->None:
  path.parent.mkdir(parents=True,exist_ok=True);tmp=path.with_suffix(path.suffix+".tmp");tmp.write_bytes(data);os.replace(tmp,path)
 def fetch(url:str,headers:dict[str,str]|None=None)->bytes:
- req=urllib.request.Request(url,headers={"User-Agent":"opf-training-controller-entry/21",**(headers or {})})
+ req=urllib.request.Request(url,headers={"User-Agent":"opf-training-controller-entry/22",**(headers or {})})
  with urllib.request.urlopen(req,timeout=120) as r:return r.read()
 def verified_host_local(root:Path,rel:str,expected:str)->bytes|None:
  try:data=(root/rel).read_bytes()
