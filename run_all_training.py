@@ -45,7 +45,6 @@ PROFILE = {
     "require_registered_training_scheduling": True,
     "auto_console_subcommand_jobs": True,
     "require_registered_training_subcommands": True,
-    "require_registered_training_scheduling": True,
     "require_registered_training_subcommand_scheduling": True,
     "console_subcommand_args": {
         "rigorousrag-advanced-training:train": ["--config", "config/advanced_grounded_training.example.json"],
