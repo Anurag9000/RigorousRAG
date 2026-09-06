@@ -12,7 +12,7 @@ from pathlib import Path
 REPOSITORY = "Anurag9000/RigorousRAG"
 ROOT = Path(__file__).resolve().parent
 CONTROLLER = ROOT / "tools" / "universal_training_controller_entry.py"
-CONTROLLER_BLOB = "2515a8a2fc2dbed7334a4240438dc095f19636d2"
+CONTROLLER_BLOB = "4ecb86674c3baa91c88ff57a8699decce26c528d"
 
 
 def _job(job_id: str, source: str, config: str, family: str, *, device_capable: bool) -> dict[str, object]:
@@ -45,6 +45,7 @@ PROFILE = {
     "require_registered_training_scheduling": True,
     "auto_console_subcommand_jobs": True,
     "require_registered_training_subcommands": True,
+    "require_registered_training_scheduling": True,
     "require_registered_training_subcommand_scheduling": True,
     "console_subcommand_args": {
         "rigorousrag-advanced-training:train": ["--config", "config/advanced_grounded_training.example.json"],
