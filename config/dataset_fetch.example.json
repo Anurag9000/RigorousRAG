@@ -1,0 +1,14 @@
+{
+  "schema": "rigorousrag-authoritative-dataset-fetch/v1",
+  "timeout_seconds": 120,
+  "receipt": "artifacts/dataset_fetch/receipt.json",
+  "downloads": [
+    {
+      "id": "replace-with-governed-source-id",
+      "urls": ["https://example.invalid/replace-with-versioned-dataset-artifact"],
+      "sha256": "REPLACE_WITH_NONZERO_64_HEX_SHA256",
+      "output": "data/downloads/replace-with-dataset-artifact",
+      "max_bytes": 1000000000
+    }
+  ]
+}
