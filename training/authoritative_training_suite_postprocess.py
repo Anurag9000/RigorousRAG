@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
 """Artifact-bound validation, readiness testing and metrics materialization for training suites.
 
-This module is intentionally post-training only.  It never optimizes model parameters and it
-never invents a held-out dataset.  The authoritative trainers remain responsible for their
-native validation loops and early stopping.  This layer gives the central DAG stable executable
+This module is intentionally post-training only. It never optimizes model parameters and it
+never invents a held-out dataset. The authoritative trainers remain responsible for their
+native validation loops and early stopping. This layer gives the central DAG stable executable
 post-training phases by verifying the trainers' persisted result/checkpoint contracts and by
 materializing a normalized metrics index from the native result payload.
 
 ``validate`` verifies result identity against the exact config bytes and, for advanced RAG,
 re-runs the existing authoritative config validation and verifies the best/latest checkpoint.
-``test`` performs artifact/readiness verification.  It is deliberately not mislabeled as a
+``test`` performs artifact/readiness verification. It is deliberately not mislabeled as a
 held-out scientific benchmark: benchmark/test jobs that require external governed cohorts are
 supplied separately through the suite lifecycle manifest.
 ``metrics`` extracts every finite numeric metric already emitted by the native trainer and writes
-one atomic, content-addressed metrics manifest.  It does not replace domain-native metrics.
+one atomic, content-addressed metrics manifest. It does not replace domain-native metrics.
 """
 from __future__ import annotations
 
@@ -124,14 +124,16 @@ def _config_and_result(family: str, config_path: str | Path) -> tuple[Path, Mapp
             raise ValueError(f"{family} config must declare output_dir")
         candidate = Path(output).expanduser()
         root = candidate if candidate.is_absolute() else config.parent / candidate
-        result_path = root.resolve(strict=False) / "training_result.json"
     else:
-        checkpoint_root = raw.get("checkpoint_root")
-        if not isinstance(checkpoint_root, str) or not checkpoint_root.strip():
-            raise ValueError("advanced config must declare checkpoint_root")
-        candidate = Path(checkpoint_root).expanduser()
-        root = candidate if candidate.is_absolute() else config.parent / candidate
-        result_path = root.resolve(strict=False) / "training_result.json"
+        # Advanced-RAG path semantics are authoritative in advanced_rag_config:
+        # relative checkpoint roots resolve from the repository working directory,
+        # not from the configuration file directory. Reuse that loader rather than
+        # duplicating or subtly changing its path contract here.
+        from training.advanced_rag_config import load_advanced_run_config
+
+        configured = load_advanced_run_config(config)
+        root = Path(configured.checkpoint_root)
+    result_path = root.resolve(strict=False) / "training_result.json"
     result = _read_json(_regular(result_path, "training result"), "training result")
     return config, raw, result_path.resolve(strict=True), result
 
@@ -175,9 +177,9 @@ def _advanced_checkpoint(config_path: Path) -> Mapping[str, Any]:
     validation = validate_config(config_path, load_models=False)
     manager = AdvancedCheckpointManager(configured.checkpoint_root)
     pointer = "best" if (manager.root / "best.json").is_file() else "latest"
-    digest = manager.resolve_pointer(pointer)
-    if digest is None:
+    if not (manager.root / f"{pointer}.json").is_file():
         raise ValueError("advanced training has neither a best nor latest checkpoint pointer")
+    digest = manager.resolve_pointer(pointer)
     binding = verify_checkpoint_from_config(config_path, checkpoint_digest=digest)
     return {
         "validation": validation,
@@ -200,9 +202,10 @@ def _retrieval_checkpoint(config: Path, raw: Mapping[str, Any]) -> Mapping[str, 
     output = Path(str(raw["output_dir"])).expanduser()
     output = output if output.is_absolute() else config.parent / output
     manager = CheckpointManager(output.resolve(strict=False) / "checkpoints")
-    digest = manager.resolve_pointer("best") if (manager.root / "best.json").is_file() else manager.resolve_pointer("latest")
-    if digest is None:
+    pointer = "best" if (manager.root / "best.json").is_file() else "latest"
+    if not (manager.root / f"{pointer}.json").is_file():
         raise ValueError("retrieval training has neither a best nor latest checkpoint pointer")
+    digest = manager.resolve_pointer(pointer)
     path, manifest = manager.verify(digest)
     return {
         "checkpoint_digest": digest,
@@ -257,14 +260,11 @@ def test_artifact(family: str, config_path: str | Path, training_job_id: str) ->
     selected_family = _family(family)
     config, raw, result_path, result = _config_and_result(selected_family, config_path)
     identity = _verify_result_identity(selected_family, config, result)
-    evidence: Mapping[str, Any]
     if selected_family == "advanced":
-        evidence = _advanced_checkpoint(config)
+        evidence: Mapping[str, Any] = _advanced_checkpoint(config)
     elif selected_family == "retrieval":
         evidence = _retrieval_checkpoint(config, raw)
     else:
-        # The classical authority is optimizer-free and uses its own transactional state
-        # contract.  The v3 result manifest is the stable externally consumable artifact.
         evidence = {"transactional_result_verified": True, "result_sha256": identity["result_sha256"]}
     payload: dict[str, Any] = {
         "schema": RESULT_SCHEMA,
