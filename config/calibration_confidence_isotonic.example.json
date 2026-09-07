@@ -1,0 +1,8 @@
+{
+  "schema": "rigorousrag-authoritative-calibration-job/v1",
+  "kind": "confidence_isotonic",
+  "source_revision": "auto",
+  "input": "../data/calibration/confidence_isotonic.json",
+  "output": "../artifacts/calibration/confidence_isotonic.json",
+  "options": {}
+}
