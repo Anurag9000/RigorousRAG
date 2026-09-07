@@ -2,7 +2,7 @@
 """One-command exhaustive RigorousRAG scientific workload orchestration.
 
 This root launcher owns no resource scheduler. It selects the repository-owned
-closed-world scientific catalog and invokes the current universal v24 bootstrap;
+closed-world scientific catalog and invokes the current universal v25 bootstrap;
 that bootstrap delegates all admission, GPU selection, RAM/VRAM/swap pressure
 gates, concurrency, pause/resume, retries, CUDA-OOM fallback and persistent
 process state to the literal byte-pinned OPF_ADP scheduler.
@@ -12,7 +12,10 @@ lifecycle discovery is deliberately disabled here because RigorousRAG production
 import/evaluation/release CLIs require content-bound arguments; scheduling them
 with no arguments would be incorrect. Their real contracts are represented in
 ``config/training_suite.example.json`` and become DAG jobs when explicitly
-enabled with production paths/digests.
+enabled with production paths/digests. v25 additionally makes strong scientific
+registries for losses/objectives, optimizers/schedulers, ensembles, workflows,
+metrics and related selectors fail closed when any declared member is not
+centrally reachable.
 """
 from __future__ import annotations
 
@@ -62,6 +65,7 @@ PROFILE = {
     "require_model_surface_accounting": True,
     "require_workload_surface_accounting": True,
     "require_registry_member_accounting": True,
+    "require_dynamic_registry_accounting": True,
     "require_existing_job_targets": True,
     "require_source_proven_training_exact_resume": True,
     "require_source_proven_training_early_stopping": True,
@@ -71,7 +75,7 @@ PROFILE = {
 
 def main() -> int:
     if not CONTROLLER.is_file():
-        raise RuntimeError(f"Universal v24 controller bootstrap is missing: {CONTROLLER}")
+        raise RuntimeError(f"Universal v25 controller bootstrap is missing: {CONTROLLER}")
     if not (ROOT / CATALOG).is_file():
         raise RuntimeError(f"Authoritative RigorousRAG suite catalog is missing: {ROOT / CATALOG}")
     env = os.environ.copy()
