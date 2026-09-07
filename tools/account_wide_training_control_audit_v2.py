@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Account-wide training-control auditor pinned to workload-closure v22."""
+"""Account-wide training-control auditor pinned to scientific-surface v25."""
 from __future__ import annotations
 
 import account_wide_training_control_audit as audit
 
 # tools/universal_training_controller_entry.py at this immutable host commit.
-CANONICAL_BOOTSTRAP_COMMIT = "257c82a9686d5aeeee765c1ca5d8df168f80129e"
-CANONICAL_BOOTSTRAP_BLOB = "a164fd06fc2800cd92243a394f2582d0617f814d"
+CANONICAL_BOOTSTRAP_COMMIT = "5e76048950a8c5531f213a5a7cb3ed71fceda48a"
+CANONICAL_BOOTSTRAP_BLOB = "e538519e846ed4bb9af10fd1b3ad9afa1f40825c"
 
 
 def main() -> int:
