@@ -6,7 +6,7 @@ previous ``run_all_training.py`` by Git blob identity, executes it with ``__file
 bound to the current repository root so all local imports/paths stay unchanged,
 replaces only audited locator globals, and calls its original ``main``.
 
-By default only the universal-controller commit/blob/URL are replaced.  An active
+By default only the universal-controller commit/blob/URL are replaced. An active
 repository may additionally set ``TRAINING_LAUNCHER_FINAL_CATALOG`` together with
 ``TRAINING_LAUNCHER_FINAL_CATALOG_BLOB`` to advance an immutable launcher's
 ``FINAL_CATALOG`` pointer without copying or reconstructing the rest of that
@@ -16,10 +16,10 @@ launcher already exposes both catalog globals.
 Repository-specific policies, matrices, lifecycle metadata and launcher behavior
 therefore remain the exact implementation selected by the pinned historical
 launcher. Resource admission/process control remains exclusively inside the
-literal pinned OPF_ADP scheduler loaded by the central controller. v26 additionally
+literal pinned OPF_ADP scheduler loaded by the central controller. v27 additionally
 requires real local command/config targets, source-proven training resume and
-semantic early-stopping contracts, exhaustive scientific registries, selector
-interfaces and component-config accounting.
+semantic early-stopping contracts, exhaustive scientific registries/selectors,
+component configs, and repository-authored compatible scientific combinations.
 """
 from __future__ import annotations
 
@@ -33,8 +33,8 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-NEW_CONTROLLER_COMMIT = "a0222d8753cddddb87e24c57175487d38158b663"
-NEW_CONTROLLER_BLOB = "a31a729adf4a2ce926cc4277eee06a0b7c7a2f1e"
+NEW_CONTROLLER_COMMIT = "a5caedea0618ecce1cef38e4e9b7d4fe14fe76ab"
+NEW_CONTROLLER_BLOB = "3acfd37ae22e887b5a7bcd42b04c9a288593abae"
 NEW_CONTROLLER_URL = (
     f"https://raw.githubusercontent.com/Anurag9000/RigorousRAG/{NEW_CONTROLLER_COMMIT}/"
     "tools/universal_training_controller_entry.py"
@@ -53,7 +53,7 @@ def _verified(data: bytes, expected: str, label: str) -> bytes:
 
 
 def _fetch_url(url: str, *, token: str = "") -> bytes:
-    headers = {"User-Agent": "central-training-launcher-adapter/6"}
+    headers = {"User-Agent": "central-training-launcher-adapter/7"}
     if token:
         headers.update({
             "Authorization": f"Bearer {token}",
