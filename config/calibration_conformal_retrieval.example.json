@@ -1,0 +1,8 @@
+{
+  "schema": "rigorousrag-authoritative-calibration-job/v1",
+  "kind": "evaluation_conformal_retrieval",
+  "source_revision": "auto",
+  "input": "../data/calibration/evaluation_conformal_retrieval.json",
+  "output": "../artifacts/calibration/evaluation_conformal_retrieval.json",
+  "options": {"alpha": 0.1}
+}
