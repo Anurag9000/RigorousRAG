@@ -1,0 +1,8 @@
+{
+  "schema": "rigorousrag-authoritative-calibration-job/v1",
+  "kind": "cross_profile_isotonic",
+  "source_revision": "auto",
+  "input": "../data/calibration/cross_profile_isotonic.json",
+  "output": "../artifacts/calibration/cross_profile_isotonic.json",
+  "options": {}
+}
