@@ -1,0 +1,12 @@
+{
+  "schema": "rigorousrag-authoritative-calibration-job/v1",
+  "kind": "threshold_decision",
+  "source_revision": "auto",
+  "input": "../data/calibration/threshold_decision.json",
+  "output": "../artifacts/calibration/threshold_decision.json",
+  "options": {
+    "false_positive_cost": 1.0,
+    "false_negative_cost": 1.0,
+    "abstain_cost": 0.0
+  }
+}
