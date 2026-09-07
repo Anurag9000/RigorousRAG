@@ -1,0 +1,8 @@
+{
+  "schema": "rigorousrag-authoritative-calibration-job/v1",
+  "kind": "retrieval_split_conformal",
+  "source_revision": "auto",
+  "input": "../data/calibration/retrieval_split_conformal.json",
+  "output": "../artifacts/calibration/retrieval_split_conformal.json",
+  "options": {"alpha": 0.1}
+}
