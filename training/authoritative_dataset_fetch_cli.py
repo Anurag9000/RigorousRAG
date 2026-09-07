@@ -2,12 +2,12 @@
 """Checksum-pinned upstream dataset acquisition for RigorousRAG.
 
 RigorousRAG's scientific import/materialization authorities intentionally operate on exact local
-bytes.  This small upstream authority closes the acquisition leg without weakening that contract:
+bytes. This upstream authority closes the acquisition leg without weakening that contract:
 only explicitly declared HTTPS mirrors are fetched, every stream is bounded, bytes are accepted
 only when their SHA-256 exactly matches the manifest, writes are atomic, existing matching files
 are reused, and no archive extraction or implicit dataset discovery is performed.
 
-The output of this command is still only an admitted local byte source.  Grounded/dynamic/
+The output of this command is still only an admitted local byte source. Grounded/dynamic/
 benchmark/corpus/qrels governance CLIs remain responsible for licensing, schema conversion,
 provenance and scientific publication.
 """
@@ -61,6 +61,20 @@ def _identifier(value: Any, label: str) -> str:
     return selected
 
 
+def _reject_symlink_components(path: Path, label: str) -> None:
+    absolute = path.expanduser().absolute()
+    parts = absolute.parts
+    if not parts:
+        raise ValueError(f"{label} path is invalid")
+    current = Path(parts[0])
+    if current.exists() and current.is_symlink():
+        raise ValueError(f"{label} traverses a symlink: {current}")
+    for part in parts[1:]:
+        current = current / part
+        if current.exists() and current.is_symlink():
+            raise ValueError(f"{label} traverses a symlink: {current}")
+
+
 def _safe_output(value: Any, label: str) -> Path:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{label} must be a repository-relative path")
@@ -72,11 +86,7 @@ def _safe_output(value: Any, label: str) -> Path:
         candidate.relative_to(_REPO_ROOT.absolute())
     except Exception as exc:
         raise ValueError(f"{label} escapes repository root") from exc
-    current = Path(candidate.anchor)
-    for part in candidate.parts[1:]:
-        current = current / part
-        if current.exists() and current.is_symlink():
-            raise ValueError(f"{label} traverses a symlink: {current}")
+    _reject_symlink_components(candidate, label)
     resolved = candidate.resolve(strict=False)
     try:
         resolved.relative_to(_REPO_ROOT.resolve())
@@ -108,7 +118,9 @@ def _positive_int(value: Any, label: str, maximum: int) -> int:
 
 
 def _read_config(path: str | Path) -> tuple[Path, Mapping[str, Any]]:
-    selected = Path(path).expanduser().resolve(strict=True)
+    raw_path = Path(path).expanduser()
+    _reject_symlink_components(raw_path, "dataset fetch config")
+    selected = raw_path.resolve(strict=True)
     if selected.is_symlink() or not selected.is_file():
         raise ValueError("dataset fetch config must be a regular non-symlink file")
     try:
