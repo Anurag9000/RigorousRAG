@@ -10,13 +10,15 @@ By default only the universal-controller commit/blob/URL are replaced.  An activ
 repository may additionally set ``TRAINING_LAUNCHER_FINAL_CATALOG`` together with
 ``TRAINING_LAUNCHER_FINAL_CATALOG_BLOB`` to advance an immutable launcher's
 ``FINAL_CATALOG`` pointer without copying or reconstructing the rest of that
-launcher.  The override is fail-closed and is allowed only when the historical
+launcher. The override is fail-closed and allowed only when the historical
 launcher already exposes both catalog globals.
 
 Repository-specific policies, matrices, lifecycle metadata and launcher behavior
 therefore remain the exact implementation selected by the pinned historical
-launcher.  Resource admission/process control remains exclusively inside the
-literal pinned OPF_ADP scheduler loaded by the central controller.
+launcher. Resource admission/process control remains exclusively inside the
+literal pinned OPF_ADP scheduler loaded by the central controller. v24 additionally
+requires real local command/config targets plus source-proven training resume and
+semantic early-stopping contracts.
 """
 from __future__ import annotations
 
@@ -30,8 +32,8 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-NEW_CONTROLLER_COMMIT = "d7d4677e494a4d8500ad497e87dfde373793a02f"
-NEW_CONTROLLER_BLOB = "351f4135c72e3de75e4241bc5579ae443b2cac1f"
+NEW_CONTROLLER_COMMIT = "8124ebdda8380263923e439fcce79b3060b9d087"
+NEW_CONTROLLER_BLOB = "9dd4ea79dd9f4abfb9adabefd96925b66f2fe99e"
 NEW_CONTROLLER_URL = (
     f"https://raw.githubusercontent.com/Anurag9000/RigorousRAG/{NEW_CONTROLLER_COMMIT}/"
     "tools/universal_training_controller_entry.py"
@@ -50,7 +52,7 @@ def _verified(data: bytes, expected: str, label: str) -> bytes:
 
 
 def _fetch_url(url: str, *, token: str = "") -> bytes:
-    headers = {"User-Agent": "central-training-launcher-adapter/3"}
+    headers = {"User-Agent": "central-training-launcher-adapter/4"}
     if token:
         headers.update({
             "Authorization": f"Bearer {token}",
@@ -124,11 +126,7 @@ def _apply_catalog_override(namespace: dict[str, Any]) -> None:
 
 
 def execute_previous_launcher(
-    *,
-    repository: str,
-    base_commit: str,
-    base_blob: str,
-    root: Path | None = None,
+    *, repository: str, base_commit: str, base_blob: str, root: Path | None = None,
 ) -> int:
     root = (root or Path.cwd()).resolve()
     data = _load_previous(root, repository, base_commit, base_blob)
@@ -151,23 +149,18 @@ def execute_previous_launcher(
             namespace[name] = NEW_CONTROLLER_URL
 
     _apply_catalog_override(namespace)
-
     target = namespace.get("main")
     if not callable(target):
         raise RuntimeError(f"Pinned prior launcher for {repository} has no callable main()")
-    result = target()
-    return int(result or 0)
+    return int(target() or 0)
 
 
 if __name__ == "__main__":
-    repository = os.environ["TRAINING_LAUNCHER_BASE_REPOSITORY"]
-    base_commit = os.environ["TRAINING_LAUNCHER_BASE_COMMIT"]
-    base_blob = os.environ["TRAINING_LAUNCHER_BASE_BLOB"]
     raise SystemExit(
         execute_previous_launcher(
-            repository=repository,
-            base_commit=base_commit,
-            base_blob=base_blob,
+            repository=os.environ["TRAINING_LAUNCHER_BASE_REPOSITORY"],
+            base_commit=os.environ["TRAINING_LAUNCHER_BASE_COMMIT"],
+            base_blob=os.environ["TRAINING_LAUNCHER_BASE_BLOB"],
             root=Path(os.environ.get("TRAINING_CONTROL_REPO_ROOT") or Path.cwd()),
         )
     )
