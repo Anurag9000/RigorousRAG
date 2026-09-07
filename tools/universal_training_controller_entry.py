@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
-"""Immutable bootstrap for exhaustive repository workload orchestration v22.
+"""Immutable bootstrap for exhaustive repository workload orchestration v23.
 
 The bootstrap reuses the previously pinned universal controller stack and exact
-OPF_ADP runtime, then adds only source-orchestration layers. Resource admission
-and scheduling are never reimplemented here: the literal byte-pinned OPF runner
-remains solely responsible for pressure-aware/GPU-first/fixed scheduling,
-concurrency, memory pressure gates, pause/resume, retries, OOM fallback, device
-selection, logging and persistent process state.
+OPF_ADP runtime, then layers source/workload orchestration above it. Resource
+admission and scheduling are never reimplemented here: the literal byte-pinned
+OPF runner remains solely responsible for pressure-aware/GPU-first/fixed
+scheduling, concurrency, memory pressure gates, pause/resume, retries, OOM
+fallback, device selection, logging and persistent process state.
+
+v23 adds fail-closed member-level registry accounting so a reachable registry
+file cannot hide unscheduled model/backbone/dataset/task members.
 """
 from __future__ import annotations
 
@@ -32,7 +35,11 @@ V22_FILES = {
     "tools/universal_training_controller_workload_closure.py": "622e0a2e3d45df8988613d9275c9478b600b89dc",
     "tools/universal_training_controller_dag_slicing.py": "b5ecd8fbb152c1da40107cd023af19d1e86ab3e4",
     "tools/universal_training_controller_metrics_v2.py": "26bac973df28fa37f21c6464031fec2e3ece9908",
-    "tools/universal_training_controller_v22.py": "bb1720e9ba82e8f9977ae52cee6bebb33f86a876",
+}
+V23_HOST_COMMIT = "8e843c31f76acdda69f8ad427abcea900f144dc2"
+V23_FILES = {
+    "tools/universal_training_controller_registry_member_closure.py": "7bd369e1d27de859ed1278c34f5e5d01613ef9b1",
+    "tools/universal_training_controller_v23.py": "5bddb1957ddf9cbe83e8e948c77d04cdc3edc05e",
 }
 
 
@@ -48,7 +55,7 @@ def atomic_write(path: Path, data: bytes) -> None:
 
 
 def fetch(url: str) -> bytes:
-    request = urllib.request.Request(url, headers={"User-Agent": "opf-exhaustive-training-controller/25"})
+    request = urllib.request.Request(url, headers={"User-Agent": "opf-exhaustive-training-controller/26"})
     with urllib.request.urlopen(request, timeout=120) as response:
         return response.read()
 
@@ -69,7 +76,7 @@ def load_legacy_entry(root: Path):
             cached,
             verified_fetch(LEGACY_ENTRY_REPOSITORY, LEGACY_ENTRY_COMMIT, LEGACY_ENTRY_PATH, LEGACY_ENTRY_BLOB),
         )
-    spec = importlib.util.spec_from_file_location("_training_control_legacy_entry_v25", cached)
+    spec = importlib.util.spec_from_file_location("_training_control_legacy_entry_v26", cached)
     if spec is None or spec.loader is None:
         raise RuntimeError(f"Cannot import pinned legacy controller bootstrap {cached}")
     module = importlib.util.module_from_spec(spec)
@@ -95,17 +102,18 @@ def prepare_controller_host(root: Path, legacy) -> Path:
             raise RuntimeError(f"Legacy controller blob mismatch for {relative}: {actual} != {expected}")
         legacy.atomic_write(destination, data)
 
-    for relative, expected in V22_FILES.items():
-        destination = cache / Path(relative).name
-        valid = destination.is_file() and git_blob_sha(destination.read_bytes()) == expected
-        if valid:
-            continue
-        local = root / relative
-        if local.is_file() and git_blob_sha(local.read_bytes()) == expected:
-            data = local.read_bytes()
-        else:
-            data = verified_fetch("Anurag9000/RigorousRAG", V22_HOST_COMMIT, relative, expected)
-        atomic_write(destination, data)
+    for repository_commit, files in ((V22_HOST_COMMIT, V22_FILES), (V23_HOST_COMMIT, V23_FILES)):
+        for relative, expected in files.items():
+            destination = cache / Path(relative).name
+            valid = destination.is_file() and git_blob_sha(destination.read_bytes()) == expected
+            if valid:
+                continue
+            local = root / relative
+            if local.is_file() and git_blob_sha(local.read_bytes()) == expected:
+                data = local.read_bytes()
+            else:
+                data = verified_fetch("Anurag9000/RigorousRAG", repository_commit, relative, expected)
+            atomic_write(destination, data)
     return cache
 
 
@@ -123,7 +131,7 @@ def main() -> int:
     env = os.environ.copy()
     env["TRAINING_CONTROL_REPO_ROOT"] = str(root)
     return subprocess.call(
-        [sys.executable, str(cache / "universal_training_controller_v22.py"), *legacy.canonical_argv(argv)],
+        [sys.executable, str(cache / "universal_training_controller_v23.py"), *legacy.canonical_argv(argv)],
         cwd=root,
         env=env,
     )
