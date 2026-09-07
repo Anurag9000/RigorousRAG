@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Immutable bootstrap for exhaustive repository workload orchestration v24.
+"""Immutable bootstrap for exhaustive repository workload orchestration v25.
 
 The bootstrap reuses the previously pinned universal controller stack and exact
 OPF_ADP runtime, then layers source/workload orchestration above it. Resource
@@ -8,11 +8,13 @@ OPF runner remains solely responsible for pressure-aware/GPU-first/fixed
 scheduling, concurrency, memory pressure gates, pause/resume, retries, OOM
 fallback, device selection, logging and persistent process state.
 
-v24 retains v23 member-level registry closure and additionally requires compiled
-repository-local command/config targets to exist, source-proven interruption-
-exact resume for training, and source-proven semantic early stopping (or an
-explicit well-formed non-applicable exemption). Metadata alone is not accepted
-as scientific proof.
+v25 retains v24 source-proven command/resume/early-stop contracts and extends
+fail-closed scientific closure to repository-declared models, architectures,
+backbones, heads, losses/objectives, datasets/benchmarks, tasks, methods,
+algorithms/strategies/policies/agents, optimizers/schedulers, samplers,
+preprocessing/tokenization/augmentation/features, ensembles/fusion/cascades,
+pipelines/workflows/recipes/stages, environments/scenarios/regimes, trainers,
+evaluators/metrics/scorers, including dynamically opaque strong registries.
 """
 from __future__ import annotations
 
@@ -36,7 +38,7 @@ V22_FILES = {
     "tools/universal_training_controller_early_stopping_wiring.py": "fdd00d7b406a77933c827237fb45db9d083001dc",
     "tools/universal_training_controller_lifecycle_affinity.py": "31e896f6ab10cc902d594e0c21c324d0f4092e8c",
     "tools/universal_training_controller_workload_closure.py": "622e0a2e3d45df8988613d9275c9478b600b89dc",
-    "tools/universal_training_controller_dag_slicing.py": "b5ecd8fbb152c1da40107cd023af19d1e86ab3e4",
+    "tools/universal_training_controller_dag_slicing.py": "b5ecd8fbb152c1da40107cd023af19d1e86ab3e4c",
     "tools/universal_training_controller_metrics_v2.py": "26bac973df28fa37f21c6464031fec2e3ece9908",
 }
 V23_HOST_COMMIT = "8e843c31f76acdda69f8ad427abcea900f144dc2"
@@ -48,6 +50,11 @@ V24_HOST_COMMIT = "dc5f33373193ce0011336e0b99483670b8549c1c"
 V24_FILES = {
     "tools/universal_training_controller_source_contracts_v24.py": "20e098c7df834ccd5d57eb7daf2056243c580f27",
     "tools/universal_training_controller_v24.py": "6f5e5a0a1478b9f15243b2ca550f96a645a45da0",
+}
+V25_HOST_COMMIT = "fd231a595fdd9fdb87680607bbe2cfb04bede207"
+V25_FILES = {
+    "tools/universal_training_controller_scientific_surface_v25.py": "03ad055faa3d66acff8313083e7b6d1c6a37b977",
+    "tools/universal_training_controller_v25.py": "05e860e652fb1c534b152322771cd90ed263d71f",
 }
 
 
@@ -63,7 +70,7 @@ def atomic_write(path: Path, data: bytes) -> None:
 
 
 def fetch(url: str) -> bytes:
-    request = urllib.request.Request(url, headers={"User-Agent": "opf-exhaustive-training-controller/27"})
+    request = urllib.request.Request(url, headers={"User-Agent": "opf-exhaustive-training-controller/28"})
     with urllib.request.urlopen(request, timeout=120) as response:
         return response.read()
 
@@ -84,7 +91,7 @@ def load_legacy_entry(root: Path):
             cached,
             verified_fetch(LEGACY_ENTRY_REPOSITORY, LEGACY_ENTRY_COMMIT, LEGACY_ENTRY_PATH, LEGACY_ENTRY_BLOB),
         )
-    spec = importlib.util.spec_from_file_location("_training_control_legacy_entry_v27", cached)
+    spec = importlib.util.spec_from_file_location("_training_control_legacy_entry_v28", cached)
     if spec is None or spec.loader is None:
         raise RuntimeError(f"Cannot import pinned legacy controller bootstrap {cached}")
     module = importlib.util.module_from_spec(spec)
@@ -114,6 +121,7 @@ def prepare_controller_host(root: Path, legacy) -> Path:
         (V22_HOST_COMMIT, V22_FILES),
         (V23_HOST_COMMIT, V23_FILES),
         (V24_HOST_COMMIT, V24_FILES),
+        (V25_HOST_COMMIT, V25_FILES),
     ):
         for relative, expected in files.items():
             destination = cache / Path(relative).name
@@ -143,7 +151,7 @@ def main() -> int:
     env = os.environ.copy()
     env["TRAINING_CONTROL_REPO_ROOT"] = str(root)
     return subprocess.call(
-        [sys.executable, str(cache / "universal_training_controller_v24.py"), *legacy.canonical_argv(argv)],
+        [sys.executable, str(cache / "universal_training_controller_v25.py"), *legacy.canonical_argv(argv)],
         cwd=root,
         env=env,
     )
