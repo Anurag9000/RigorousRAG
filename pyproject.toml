@@ -7,6 +7,7 @@ license = { text = "MIT" }
 readme = "README.md"
 
 [project.scripts]
+rigorousrag-dataset-fetch = "training.authoritative_dataset_fetch_cli:main"
 rigorousrag-advanced-training = "training.authoritative_advanced_training_cli:main"
 rigorousrag-classical-training = "training.authoritative_classical_training_cli_v3:main"
 rigorousrag-retrieval-training = "training.authoritative_retrieval_training_cli_v2:main"
