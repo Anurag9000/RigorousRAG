@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
 """One-command exhaustive RigorousRAG scientific workload orchestration.
 
-This root launcher owns no resource scheduler.  It selects the repository-owned closed-world
-scientific catalog and invokes the current universal v23 bootstrap; that bootstrap delegates all
-admission, GPU selection, RAM/VRAM/swap pressure gates, concurrency, pause/resume, retries,
-CUDA-OOM fallback and persistent process state to the literal byte-pinned OPF_ADP scheduler.
+This root launcher owns no resource scheduler. It selects the repository-owned
+closed-world scientific catalog and invokes the current universal v24 bootstrap;
+that bootstrap delegates all admission, GPU selection, RAM/VRAM/swap pressure
+gates, concurrency, pause/resume, retries, CUDA-OOM fallback and persistent
+process state to the literal byte-pinned OPF_ADP scheduler.
 
-The authoritative catalog owns the model/data/task/recipe universe.  Generic lifecycle discovery
-is deliberately disabled here because RigorousRAG's production import/evaluation/release CLIs
-require content-bound arguments; scheduling them with no arguments would be incorrect.  Their
-real command contracts are represented in ``config/training_suite.example.json`` and become DAG
-jobs when explicitly enabled with production paths/digests.
+The authoritative catalog owns the model/data/task/recipe universe. Generic
+lifecycle discovery is deliberately disabled here because RigorousRAG production
+import/evaluation/release CLIs require content-bound arguments; scheduling them
+with no arguments would be incorrect. Their real contracts are represented in
+``config/training_suite.example.json`` and become DAG jobs when explicitly
+enabled with production paths/digests.
 """
 from __future__ import annotations
 
@@ -25,9 +27,6 @@ ROOT = Path(__file__).resolve().parent
 CONTROLLER = ROOT / "tools" / "universal_training_controller_entry.py"
 CATALOG = "training/authoritative_training_suite_catalog.py"
 
-# These PEP-621 console scripts are aliases of the exact source authorities used
-# by the 17 cataloged training recipes.  They are excluded from *duplicate*
-# console-job materialization, not from source/model/workload reachability.
 TRAINING_CONSOLE_ALIASES = [
     "rigorousrag-advanced-training",
     "rigorousrag-classical-training",
@@ -38,10 +37,6 @@ TRAINING_SUBCOMMAND_ALIASES = [f"{name}:train" for name in TRAINING_CONSOLE_ALIA
 PROFILE = {
     "repository": REPOSITORY,
     "job_catalog": {"path": CATALOG, "function": "iter_jobs", "args": ["exhaustive"]},
-
-    # The authoritative suite catalog itself enumerates every executable phase.
-    # This prevents mandatory-argument production CLIs from being auto-launched
-    # as invalid zero-argument jobs by generic filename discovery.
     "disable_lifecycle_orchestration": True,
     "auto_lifecycle_discovery": False,
     "preferred_training_entrypoints": [],
@@ -49,10 +44,6 @@ PROFILE = {
     "setup_commands": [],
     "ignore_entrypoints": ["run_all_training.py"],
     "dynamic_registry_covers": [],
-
-    # Package console names are duplicate aliases of the cataloged file-based
-    # authorities.  Keep the strict console inventory active while preventing a
-    # second invocation of identical training work.
     "auto_console_training_jobs": False,
     "auto_console_subcommand_jobs": False,
     "ignore_console_scripts": TRAINING_CONSOLE_ALIASES,
@@ -61,8 +52,6 @@ PROFILE = {
     "require_registered_training_scheduling": False,
     "require_registered_training_subcommands": True,
     "require_registered_training_subcommand_scheduling": False,
-
-    # Fail-closed source/workload/scientific contracts.
     "strict_coverage": True,
     "require_native_resume": True,
     "require_exact_resume": True,
@@ -73,16 +62,18 @@ PROFILE = {
     "require_model_surface_accounting": True,
     "require_workload_surface_accounting": True,
     "require_registry_member_accounting": True,
+    "require_existing_job_targets": True,
+    "require_source_proven_training_exact_resume": True,
+    "require_source_proven_training_early_stopping": True,
     "require_literal_opf_mechanism_parity": True,
 }
 
 
 def main() -> int:
     if not CONTROLLER.is_file():
-        raise RuntimeError(f"Universal v23 controller bootstrap is missing: {CONTROLLER}")
+        raise RuntimeError(f"Universal v24 controller bootstrap is missing: {CONTROLLER}")
     if not (ROOT / CATALOG).is_file():
         raise RuntimeError(f"Authoritative RigorousRAG suite catalog is missing: {ROOT / CATALOG}")
-
     env = os.environ.copy()
     env["TRAINING_CONTROL_PROFILE"] = json.dumps(PROFILE, separators=(",", ":"), sort_keys=True)
     env["TRAINING_CONTROL_REPO_ROOT"] = str(ROOT)
