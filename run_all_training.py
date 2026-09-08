@@ -2,7 +2,7 @@
 """One-command exhaustive RigorousRAG scientific workload orchestration.
 
 This root launcher owns no resource scheduler. It selects the repository-owned
-closed-world scientific catalog and invokes the current universal v29 bootstrap;
+closed-world scientific catalog and invokes the current universal v30 bootstrap;
 that bootstrap delegates all admission, GPU selection, RAM/VRAM/swap pressure
 gates, concurrency, pause/resume, retries, CUDA-OOM fallback and persistent
 process state to the literal byte-pinned OPF_ADP scheduler.
@@ -12,15 +12,17 @@ lifecycle discovery is deliberately disabled here because RigorousRAG production
 import/evaluation/release CLIs require content-bound arguments; scheduling them
 with no arguments would be incorrect. Their real contracts are represented in
 ``config/training_suite.example.json`` and become DAG jobs when explicitly
-enabled with production paths/digests. v29 makes strong scientific registries,
+enabled with production paths/digests. v30 makes strong scientific registries,
 CLI/Enum/Literal/registration selectors and component config groups for models,
 model families/types/variants, capabilities/functionalities, losses/objectives,
 regularizers, optimizers/schedulers, ensembles, workflows, metrics and related
 surfaces fail closed when any declared member is not centrally reachable. It
-also requires every repository-authored compatible scientific combination to be
-represented together and materializes a missing combination automatically when
-one existing trainer exposes every required selector unambiguously; it never
-invents Cartesian products.
+also closes typed selector annotations, static registry mutation/merge forms,
+structured scientific choice lists, Hydra ``conf`` component groups and concrete
+scientific implementation declarations. Repository-authored compatible
+combinations remain the authority and are materialized only when one existing
+trainer exposes every required selector unambiguously; Cartesian products are
+never invented.
 """
 from __future__ import annotations
 
@@ -74,6 +76,7 @@ PROFILE = {
     "require_scientific_component_config_accounting": True,
     "require_declared_combination_accounting": True,
     "require_scientific_ontology_accounting": True,
+    "require_declarative_scientific_source_accounting": True,
     "require_existing_job_targets": True,
     "require_source_proven_training_exact_resume": True,
     "require_source_proven_training_early_stopping": True,
@@ -83,7 +86,7 @@ PROFILE = {
 
 def main() -> int:
     if not CONTROLLER.is_file():
-        raise RuntimeError(f"Universal v29 controller bootstrap is missing: {CONTROLLER}")
+        raise RuntimeError(f"Universal v30 controller bootstrap is missing: {CONTROLLER}")
     if not (ROOT / CATALOG).is_file():
         raise RuntimeError(f"Authoritative RigorousRAG suite catalog is missing: {ROOT / CATALOG}")
     env = os.environ.copy()
