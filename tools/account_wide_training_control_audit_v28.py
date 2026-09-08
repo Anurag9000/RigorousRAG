@@ -31,6 +31,10 @@ CANONICAL_ADAPTER_BLOB = "3909e826c4054932fc188914a983dac823c0171c"
 CANONICAL_HOST = "Anurag9000/RigorousRAG"
 CERTIFICATE_SCHEMA = 28
 
+# Capture base functions before monkeypatching so the upgraded checkers can
+# delegate without recursion.
+_BASE_STRICT_LOCAL_REPORT = base._strict_local_report
+
 
 def _remote(repo_row: dict[str, Any]) -> dict[str, Any]:
     full_name = str(repo_row.get("full_name") or "")
@@ -98,13 +102,14 @@ def _nonempty(report: dict[str, Any], key: str) -> bool:
 
 
 def _strict(report: dict[str, Any]) -> list[str]:
-    errors = list(base._strict_local_report(report))
+    errors = list(_BASE_STRICT_LOCAL_REPORT(report))
 
-    # v24 source contracts.
+    # v24 source contract emits one aggregate boolean plus concrete blocker lists.
+    if "strict_source_contracts_pass" in report and not bool(report.get("strict_source_contracts_pass")):
+        errors.append("source-proven command/resume/early-stopping contracts failed")
+
     for boolean_key, label in (
-        ("strict_existing_job_targets_pass", "existing job targets failed"),
-        ("strict_source_proven_training_exact_resume_pass", "source-proven exact resume failed"),
-        ("strict_source_proven_training_early_stopping_pass", "source-proven early stopping failed"),
+        ("strict_registry_member_pass", "registry-member accounting failed"),
         ("strict_dynamic_scientific_registry_pass", "dynamic scientific registry accounting failed"),
         ("strict_scientific_component_config_pass", "scientific component config accounting failed"),
         ("strict_declared_combination_pass", "declared scientific combination accounting failed"),
@@ -113,13 +118,13 @@ def _strict(report: dict[str, Any]) -> list[str]:
             errors.append(label)
 
     for key in (
-        "missing_existing_job_targets",
-        "unresolved_source_proven_training_exact_resume_jobs",
-        "unresolved_source_proven_training_early_stopping_jobs",
+        "jobs_with_missing_local_targets",
+        "training_jobs_without_source_exact_resume",
+        "training_jobs_without_source_semantic_early_stopping",
+        "uncovered_registry_members",
         "unaccounted_dynamic_scientific_registries",
         "unaccounted_scientific_component_configs",
         "uncovered_declared_combinations",
-        "unaccounted_registry_members",
     ):
         if _nonempty(report, key):
             value = report.get(key)
@@ -129,19 +134,24 @@ def _strict(report: dict[str, Any]) -> list[str]:
     if isinstance(inventory, dict) and int(inventory.get("uncovered_combination_count") or 0):
         errors.append(f"declared_combination_inventory.uncovered={inventory.get('uncovered_combination_count')}")
 
+    member_inventory = report.get("registry_member_inventory") or {}
+    if isinstance(member_inventory, dict) and int(member_inventory.get("uncovered_registry_member_count") or 0):
+        errors.append(f"registry_member_inventory.uncovered={member_inventory.get('uncovered_registry_member_count')}")
+
     controls = report.get("strict_controls") or {}
     if isinstance(controls, dict):
         required_v28 = (
             "require_existing_job_targets",
             "require_source_proven_training_exact_resume",
             "require_source_proven_training_early_stopping",
+            "require_registry_member_accounting",
             "require_dynamic_registry_accounting",
             "require_scientific_component_config_accounting",
             "require_declared_combination_accounting",
         )
-        # A repository with no applicable training/scientific surfaces may inherit
-        # strictness from ``strict_coverage`` rather than spelling every switch.
-        # Explicit False is a waiver and therefore a certificate blocker.
+        # Strict layers default these controls from strict_coverage. Explicit False
+        # is therefore an intentional waiver and is not acceptable to the estate
+        # completion certificate.
         for key in required_v28:
             if key in controls and controls.get(key) is False:
                 errors.append(f"strict control disabled: {key}")
