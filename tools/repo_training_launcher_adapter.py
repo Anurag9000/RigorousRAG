@@ -16,17 +16,18 @@ launcher already exposes both catalog globals.
 Repository-specific policies, matrices, lifecycle metadata and launcher behavior
 therefore remain the exact implementation selected by the pinned historical
 launcher. Resource admission/process control remains exclusively inside the
-literal pinned OPF_ADP scheduler loaded by the central controller. v32 requires
+literal pinned OPF_ADP scheduler loaded by the central controller. v33 requires
 real local command/config targets, source-proven training resume and semantic
 early-stopping contracts, exhaustive scientific registries/selectors/component
 configs/repository-authored compatible combinations, typed/declarative scientific
 selectors, registry mutations, structured choices, Hydra component configs,
-concrete scientific implementation sources, extended architecture/PEFT/
-compression/retrieval/generative/continual-learning/diffusion/graph/data-protocol
-surfaces, and the full v32 scientific-choice ontology for probabilistic,
-regularization, gradient, federated/meta-learning, sweep/ablation, data-pipeline,
-decoding/selection, kernel/latent, robustness/modality and teacher/student choices.
-It never invents arbitrary Cartesian products.
+concrete scientific implementation sources, architecture/PEFT/compression/
+retrieval/generative/continual-learning/diffusion/graph/data-protocol surfaces,
+probabilistic/regularization/gradient/federated/meta-learning/search/ablation/
+data-pipeline/decoding/kernel/robustness/modality/teacher-student choices, and the
+v33 model-role/open-world/adaptation/supervision/ensemble/sampling/RL/control/
+evaluation/decision/deployment scientific-choice ontology. It never invents
+arbitrary Cartesian products.
 """
 from __future__ import annotations
 
@@ -40,8 +41,8 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-NEW_CONTROLLER_COMMIT = "e16946686d09a2b2c3afdba5a18162d6f0aaeaf9"
-NEW_CONTROLLER_BLOB = "e794a90b6d681a7b275f92deadce82861f303bbf"
+NEW_CONTROLLER_COMMIT = "985379f540edc92517955f07c3f81ef942364917"
+NEW_CONTROLLER_BLOB = "f100cf8363b9ebb45a4ae53e7260a3924e20e134"
 NEW_CONTROLLER_URL = (
     f"https://raw.githubusercontent.com/Anurag9000/RigorousRAG/{NEW_CONTROLLER_COMMIT}/"
     "tools/universal_training_controller_entry.py"
@@ -60,7 +61,7 @@ def _verified(data: bytes, expected: str, label: str) -> bytes:
 
 
 def _fetch_url(url: str, *, token: str = "") -> bytes:
-    headers = {"User-Agent": "central-training-launcher-adapter/12"}
+    headers = {"User-Agent": "central-training-launcher-adapter/13"}
     if token:
         headers.update({
             "Authorization": f"Bearer {token}",
