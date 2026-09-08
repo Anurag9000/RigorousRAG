@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Immutable bootstrap for exhaustive repository workload orchestration v30.
+"""Immutable bootstrap for exhaustive repository workload orchestration v31.
 
-v30 layers immutably on the v29 bootstrap. It preserves the exact pinned
-OPF_ADP scheduler and every v29 lifecycle/source/scientific contract, then adds
-fail-closed accounting for typed scientific selectors, static registry merges
-and mutations, structured config choice surfaces, Hydra conf component groups,
-and concrete scientific implementation declarations.
+v31 layers immutably on the v30 bootstrap. It preserves the exact pinned
+OPF_ADP scheduler and every v30 lifecycle/source/scientific contract, then adds
+fail-closed accounting for extended architecture, adaptation, compression,
+retrieval, generative/RL, continual-learning, diffusion, graph, data-protocol
+and post-processing scientific component selectors.
 
 This bootstrap contains no resource scheduling implementation. GPU-first
 admission, concurrency, live controls, RAM/VRAM/swap pressure hysteresis,
@@ -23,15 +23,15 @@ import sys
 import urllib.request
 from pathlib import Path
 
-V29_BOOTSTRAP_REPOSITORY = "Anurag9000/RigorousRAG"
-V29_BOOTSTRAP_COMMIT = "5fecd0732a6f57741a1ea61b94f196965af5411f"
-V29_BOOTSTRAP_BLOB = "2c76bc3c4b70c511fc4e94aaa1bd0dd145bbadb4"
-V29_BOOTSTRAP_PATH = "tools/universal_training_controller_entry.py"
+V30_BOOTSTRAP_REPOSITORY = "Anurag9000/RigorousRAG"
+V30_BOOTSTRAP_COMMIT = "df5cd8e3b78451c3e9a134cb685d2f90902d8925"
+V30_BOOTSTRAP_BLOB = "ecf809be32092aac6e585e15edb6b5a6f90798bc"
+V30_BOOTSTRAP_PATH = "tools/universal_training_controller_entry.py"
 
-V30_HOST_COMMIT = "b300f8357aaf955a7d03fd2b23523b4ee8f2384a"
-V30_FILES = {
-    "tools/universal_training_controller_declaration_closure_v30.py": "02873be0cca8bf21f739fcb3a4576e5e810df256",
-    "tools/universal_training_controller_v30.py": "a55f4119eaa141a656aa431a7d3fa4767a3d124c",
+V31_HOST_COMMIT = "ba0e71784b0702ebb3208f7ca7362b60eac04dcd"
+V31_FILES = {
+    "tools/universal_training_controller_scientific_ontology_v31.py": "6ae33fbaf4a55e534232bdc9eca3a5727ae4c370",
+    "tools/universal_training_controller_v31.py": "7c3e61a8924a7f88049b54be3654c3e086606bf1",
 }
 
 
@@ -47,7 +47,7 @@ def atomic_write(path: Path, data: bytes) -> None:
 
 
 def fetch(url: str) -> bytes:
-    request = urllib.request.Request(url, headers={"User-Agent": "opf-exhaustive-training-controller/33"})
+    request = urllib.request.Request(url, headers={"User-Agent": "opf-exhaustive-training-controller/34"})
     with urllib.request.urlopen(request, timeout=120) as response:
         return response.read()
 
@@ -61,23 +61,23 @@ def verified_fetch(repository: str, commit: str, relative: str, expected: str) -
     return data
 
 
-def load_v29_bootstrap(root: Path):
-    cached = root / ".training_control" / "bootstrap" / V29_BOOTSTRAP_COMMIT / "universal_training_controller_entry.py"
-    if not cached.is_file() or git_blob_sha(cached.read_bytes()) != V29_BOOTSTRAP_BLOB:
-        atomic_write(cached, verified_fetch(V29_BOOTSTRAP_REPOSITORY, V29_BOOTSTRAP_COMMIT, V29_BOOTSTRAP_PATH, V29_BOOTSTRAP_BLOB))
-    spec = importlib.util.spec_from_file_location("_training_control_bootstrap_v29", cached)
+def load_v30_bootstrap(root: Path):
+    cached = root / ".training_control" / "bootstrap" / V30_BOOTSTRAP_COMMIT / "universal_training_controller_entry.py"
+    if not cached.is_file() or git_blob_sha(cached.read_bytes()) != V30_BOOTSTRAP_BLOB:
+        atomic_write(cached, verified_fetch(V30_BOOTSTRAP_REPOSITORY, V30_BOOTSTRAP_COMMIT, V30_BOOTSTRAP_PATH, V30_BOOTSTRAP_BLOB))
+    spec = importlib.util.spec_from_file_location("_training_control_bootstrap_v30", cached)
     if spec is None or spec.loader is None:
-        raise RuntimeError(f"Cannot import pinned v29 bootstrap {cached}")
+        raise RuntimeError(f"Cannot import pinned v30 bootstrap {cached}")
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
 
 
-def prepare_controller_host(root: Path, v29) -> tuple[Path, object]:
-    v28 = v29.load_v28_bootstrap(root)
-    cache, legacy = v29.prepare_controller_host(root, v28)
-    for relative, expected in V30_FILES.items():
+def prepare_controller_host(root: Path, v30) -> tuple[Path, object]:
+    v29 = v30.load_v29_bootstrap(root)
+    cache, legacy = v30.prepare_controller_host(root, v29)
+    for relative, expected in V31_FILES.items():
         destination = cache / Path(relative).name
         valid = destination.is_file() and git_blob_sha(destination.read_bytes()) == expected
         if valid:
@@ -86,7 +86,7 @@ def prepare_controller_host(root: Path, v29) -> tuple[Path, object]:
         if local.is_file() and git_blob_sha(local.read_bytes()) == expected:
             data = local.read_bytes()
         else:
-            data = verified_fetch("Anurag9000/RigorousRAG", V30_HOST_COMMIT, relative, expected)
+            data = verified_fetch("Anurag9000/RigorousRAG", V31_HOST_COMMIT, relative, expected)
         atomic_write(destination, data)
     return cache, legacy
 
@@ -94,8 +94,8 @@ def prepare_controller_host(root: Path, v29) -> tuple[Path, object]:
 def main() -> int:
     root = Path(os.environ.get("TRAINING_CONTROL_REPO_ROOT") or Path.cwd()).resolve()
     argv = list(sys.argv[1:])
-    v29 = load_v29_bootstrap(root)
-    cache, legacy = prepare_controller_host(root, v29)
+    v30 = load_v30_bootstrap(root)
+    cache, legacy = prepare_controller_host(root, v30)
 
     if not legacy.diagnostic_only(argv):
         legacy.prepare_reference_cache(root, legacy.OPF_COMMIT, legacy.OPF_FILES)
@@ -105,7 +105,7 @@ def main() -> int:
     env = os.environ.copy()
     env["TRAINING_CONTROL_REPO_ROOT"] = str(root)
     return subprocess.call(
-        [sys.executable, str(cache / "universal_training_controller_v30.py"), *legacy.canonical_argv(argv)],
+        [sys.executable, str(cache / "universal_training_controller_v31.py"), *legacy.canonical_argv(argv)],
         cwd=root,
         env=env,
     )
