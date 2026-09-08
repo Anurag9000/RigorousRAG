@@ -2,7 +2,7 @@
 """One-command exhaustive RigorousRAG scientific workload orchestration.
 
 This root launcher owns no resource scheduler. It selects the repository-owned
-closed-world scientific catalog and invokes the current universal v33 bootstrap;
+closed-world scientific catalog and invokes the current universal v34 bootstrap;
 that bootstrap delegates all admission, GPU selection, RAM/VRAM/swap pressure
 gates, concurrency, pause/resume, retries, CUDA-OOM fallback and persistent
 process state to the literal byte-pinned OPF_ADP scheduler.
@@ -12,23 +12,11 @@ lifecycle discovery is deliberately disabled here because RigorousRAG production
 import/evaluation/release CLIs require content-bound arguments; scheduling them
 with no arguments would be incorrect. Their real contracts are represented in
 ``config/training_suite.example.json`` and become DAG jobs when explicitly
-enabled with production paths/digests. v33 makes strong scientific registries,
-CLI/Enum/Literal/registration selectors and component config groups for models,
-model families/types/variants, architectures, losses/objectives/regularizers,
-optimizers/schedulers, PEFT/compression, retrieval/generative/RL, continual
-learning, uncertainty/explainability, diffusion/graph, Bayesian/probabilistic,
-federated/meta-learning, sweeps/ablations, data-pipeline/provenance, decoding,
-selection, kernels/latent spaces, robustness/modality, teacher/student, workflows,
-metrics, model roles, open-world/discovery/adaptation/supervision paradigms,
-ensemble algorithms, sampling/mining/transforms, RL learning components,
-training-control policies, evaluation protocols, decision rules and deployment
-choices fail closed when any declared member is not centrally reachable. It also
-closes typed selector annotations, static registry mutation/merge forms,
-structured scientific choice lists, Hydra ``conf`` component groups and concrete
-scientific implementation declarations. Repository-authored compatible
-combinations remain the authority and are materialized only when one existing
-trainer exposes every required selector unambiguously; Cartesian products are
-never invented.
+enabled with production paths/digests. v34 retains the complete v33 scientific
+ontology and additionally fails closed when any retained trainable/model source
+is outside the central reachability graph; ignore/dynamic/manual/reference labels
+cannot substitute for an actual job/registry path. Repository-authored compatible
+combinations remain the authority and Cartesian products are never invented.
 """
 from __future__ import annotations
 
@@ -89,13 +77,14 @@ PROFILE = {
     "require_existing_job_targets": True,
     "require_source_proven_training_exact_resume": True,
     "require_source_proven_training_early_stopping": True,
+    "require_all_retained_trainable_source_reachability": True,
     "require_literal_opf_mechanism_parity": True,
 }
 
 
 def main() -> int:
     if not CONTROLLER.is_file():
-        raise RuntimeError(f"Universal v33 controller bootstrap is missing: {CONTROLLER}")
+        raise RuntimeError(f"Universal v34 controller bootstrap is missing: {CONTROLLER}")
     if not (ROOT / CATALOG).is_file():
         raise RuntimeError(f"Authoritative RigorousRAG suite catalog is missing: {ROOT / CATALOG}")
     env = os.environ.copy()
