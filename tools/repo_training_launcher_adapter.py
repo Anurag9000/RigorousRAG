@@ -16,15 +16,17 @@ launcher already exposes both catalog globals.
 Repository-specific policies, matrices, lifecycle metadata and launcher behavior
 therefore remain the exact implementation selected by the pinned historical
 launcher. Resource admission/process control remains exclusively inside the
-literal pinned OPF_ADP scheduler loaded by the central controller. v31 requires
+literal pinned OPF_ADP scheduler loaded by the central controller. v32 requires
 real local command/config targets, source-proven training resume and semantic
 early-stopping contracts, exhaustive scientific registries/selectors/component
 configs/repository-authored compatible combinations, typed/declarative scientific
 selectors, registry mutations, structured choices, Hydra component configs,
-concrete scientific implementation sources, and the extended v31 component
-ontology covering architecture modules, PEFT/compression, retrieval/generative,
-continual-learning, uncertainty/explainability, diffusion/graph and data-protocol
-surfaces. It never invents arbitrary Cartesian products.
+concrete scientific implementation sources, extended architecture/PEFT/
+compression/retrieval/generative/continual-learning/diffusion/graph/data-protocol
+surfaces, and the full v32 scientific-choice ontology for probabilistic,
+regularization, gradient, federated/meta-learning, sweep/ablation, data-pipeline,
+decoding/selection, kernel/latent, robustness/modality and teacher/student choices.
+It never invents arbitrary Cartesian products.
 """
 from __future__ import annotations
 
@@ -38,8 +40,8 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-NEW_CONTROLLER_COMMIT = "6bbb504893699aac7ab461767f8170b4ee1797fc"
-NEW_CONTROLLER_BLOB = "8ee1a31f2368f3fa0fad7b0b2896fe6da4613bd3"
+NEW_CONTROLLER_COMMIT = "e16946686d09a2b2c3afdba5a18162d6f0aaeaf9"
+NEW_CONTROLLER_BLOB = "e794a90b6d681a7b275f92deadce82861f303bbf"
 NEW_CONTROLLER_URL = (
     f"https://raw.githubusercontent.com/Anurag9000/RigorousRAG/{NEW_CONTROLLER_COMMIT}/"
     "tools/universal_training_controller_entry.py"
@@ -58,7 +60,7 @@ def _verified(data: bytes, expected: str, label: str) -> bytes:
 
 
 def _fetch_url(url: str, *, token: str = "") -> bytes:
-    headers = {"User-Agent": "central-training-launcher-adapter/11"}
+    headers = {"User-Agent": "central-training-launcher-adapter/12"}
     if token:
         headers.update({
             "Authorization": f"Bearer {token}",
