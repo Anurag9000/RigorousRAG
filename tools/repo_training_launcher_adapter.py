@@ -16,10 +16,12 @@ launcher already exposes both catalog globals.
 Repository-specific policies, matrices, lifecycle metadata and launcher behavior
 therefore remain the exact implementation selected by the pinned historical
 launcher. Resource admission/process control remains exclusively inside the
-literal pinned OPF_ADP scheduler loaded by the central controller. v27 additionally
+literal pinned OPF_ADP scheduler loaded by the central controller. v28 additionally
 requires real local command/config targets, source-proven training resume and
 semantic early-stopping contracts, exhaustive scientific registries/selectors,
-component configs, and repository-authored compatible scientific combinations.
+component configs and repository-authored compatible scientific combinations;
+when a declared combination maps unambiguously to one selector-capable trainer,
+v28 materializes the concrete job instead of merely reporting the omission.
 """
 from __future__ import annotations
 
@@ -33,8 +35,8 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-NEW_CONTROLLER_COMMIT = "a5caedea0618ecce1cef38e4e9b7d4fe14fe76ab"
-NEW_CONTROLLER_BLOB = "3acfd37ae22e887b5a7bcd42b04c9a288593abae"
+NEW_CONTROLLER_COMMIT = "1239f040b7b96dba77f056d16e1b4da9723a42c9"
+NEW_CONTROLLER_BLOB = "4ba01878e41c736c09503040c5498f66beffffa0"
 NEW_CONTROLLER_URL = (
     f"https://raw.githubusercontent.com/Anurag9000/RigorousRAG/{NEW_CONTROLLER_COMMIT}/"
     "tools/universal_training_controller_entry.py"
@@ -53,7 +55,7 @@ def _verified(data: bytes, expected: str, label: str) -> bytes:
 
 
 def _fetch_url(url: str, *, token: str = "") -> bytes:
-    headers = {"User-Agent": "central-training-launcher-adapter/7"}
+    headers = {"User-Agent": "central-training-launcher-adapter/8"}
     if token:
         headers.update({
             "Authorization": f"Bearer {token}",
