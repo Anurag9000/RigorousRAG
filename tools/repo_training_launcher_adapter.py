@@ -16,14 +16,14 @@ launcher already exposes both catalog globals.
 Repository-specific policies, matrices, lifecycle metadata and launcher behavior
 therefore remain the exact implementation selected by the pinned historical
 launcher. Resource admission/process control remains exclusively inside the
-literal pinned OPF_ADP scheduler loaded by the central controller. v29 requires
+literal pinned OPF_ADP scheduler loaded by the central controller. v30 requires
 real local command/config targets, source-proven training resume and semantic
 early-stopping contracts, exhaustive scientific registries/selectors/component
-configs/repository-authored compatible combinations, and also accounts for
-model/architecture/network/learner families, model/architecture/network types,
-variants, capabilities/functionalities and regularization families. When a
-declared combination maps unambiguously to one selector-capable trainer, v29
-materializes the concrete job instead of merely reporting the omission.
+configs/repository-authored compatible combinations, the v29 scientific ontology,
+and v30 typed/declarative selector, registry-mutation, structured-choice, Hydra
+component-config and concrete scientific implementation-source closure. When a
+declared combination maps unambiguously to one selector-capable trainer, the
+controller materializes the concrete job instead of merely reporting omission.
 """
 from __future__ import annotations
 
@@ -37,8 +37,8 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-NEW_CONTROLLER_COMMIT = "5fecd0732a6f57741a1ea61b94f196965af5411f"
-NEW_CONTROLLER_BLOB = "2c76bc3c4b70c511fc4e94aaa1bd0dd145bbadb4"
+NEW_CONTROLLER_COMMIT = "df5cd8e3b78451c3e9a134cb685d2f90902d8925"
+NEW_CONTROLLER_BLOB = "ecf809be32092aac6e585e15edb6b5a6f90798bc"
 NEW_CONTROLLER_URL = (
     f"https://raw.githubusercontent.com/Anurag9000/RigorousRAG/{NEW_CONTROLLER_COMMIT}/"
     "tools/universal_training_controller_entry.py"
@@ -57,7 +57,7 @@ def _verified(data: bytes, expected: str, label: str) -> bytes:
 
 
 def _fetch_url(url: str, *, token: str = "") -> bytes:
-    headers = {"User-Agent": "central-training-launcher-adapter/9"}
+    headers = {"User-Agent": "central-training-launcher-adapter/10"}
     if token:
         headers.update({
             "Authorization": f"Bearer {token}",
