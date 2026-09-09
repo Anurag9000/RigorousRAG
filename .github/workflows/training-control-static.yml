@@ -59,10 +59,13 @@ jobs:
           print(f'compiled {len(paths)} controller/audit sources')
           PY
 
-      - name: Materialize and compile the complete immutable v36 bundle
-        run: python tools/universal_training_controller_entry.py --training-control-bootstrap-self-test
+      - name: Exercise v37 cold bootstrap in an empty repository root
+        run: |
+          tmp="$(mktemp -d)"
+          TRAINING_CONTROL_REPO_ROOT="$tmp" \
+            python tools/universal_training_controller_entry.py --training-control-bootstrap-self-test
 
-      - name: Check v36 flat-bundle and literal-OPF invariants
+      - name: Check v37 archive bootstrap, cumulative stack and literal OPF invariants
         run: |
           python - <<'PY'
           import importlib.util
@@ -70,17 +73,27 @@ jobs:
           from pathlib import Path
           import run_all_training as runner
 
-          spec = importlib.util.spec_from_file_location('_v36_entry', 'tools/universal_training_controller_entry.py')
+          spec = importlib.util.spec_from_file_location('_v37_entry', 'tools/universal_training_controller_entry.py')
           if spec is None or spec.loader is None:
-              raise SystemExit('cannot import v36 entry')
+              raise SystemExit('cannot import v37 entry')
           entry = importlib.util.module_from_spec(spec)
           sys.modules[spec.name] = entry
           spec.loader.exec_module(entry)
 
-          if entry.BUNDLE_VERSION != 'v36':
+          if entry.BUNDLE_VERSION != 'v37':
               raise SystemExit(entry.BUNDLE_VERSION)
-          if len(entry.CONTROLLER_FILES) != 60:
-              raise SystemExit(f'expected 60 cumulative controller files, got {len(entry.CONTROLLER_FILES)}')
+          if entry.HOST_ARCHIVE_COMMIT != 'c65eb3032145c2e38b82506466207187a5ef822b':
+              raise SystemExit('unexpected controller archive host')
+          if entry.V36_COMMIT != 'e498aa3496b1e79c29c4060db4b11433d69bad97':
+              raise SystemExit('unexpected immutable v36 entry')
+          if entry.V36_BLOB != '1840035fdecb5d5fbab06846435cb86787842738':
+              raise SystemExit('unexpected immutable v36 blob')
+          if 'codeload.github.com' not in entry.ARCHIVE_URL:
+              raise SystemExit('v37 does not use the single pinned archive bootstrap')
+
+          v36 = entry.bootstrap()
+          if len(v36.CONTROLLER_FILES) != 60:
+              raise SystemExit(f'expected 60 cumulative controller files, got {len(v36.CONTROLLER_FILES)}')
           expected_controller = {
               'tools/universal_training_controller_v34.py': '90ce5e0425d23c86e8a2b13c21c45b75c0e9ba40',
               'tools/universal_training_controller_retained_training_closure_v34.py': 'afeb885dcbef6d20fe3294600e6ec9a7e191b5ed',
@@ -89,39 +102,32 @@ jobs:
               'tools/universal_training_controller_opf_mechanism_audit.py': '93ddb8583e642a2f5195d16f202d7a528ed2f0e2',
           }
           for path, sha in expected_controller.items():
-              if entry.CONTROLLER_FILES.get(path) != sha:
+              if v36.CONTROLLER_FILES.get(path) != sha:
                   raise SystemExit(f'controller manifest mismatch: {path}')
 
-          if entry.OPF_COMMIT != '1d1dfbbf7521ac40ee60c1f78f84956bf5f70598':
-              raise SystemExit(f'not pinned to current OPF main: {entry.OPF_COMMIT}')
-          expected_opf = {
-              'utils/opf_massive_suite_runner.py': 'b2ae3d04f9398df5c18c7c13f4c939bce46b930d',
-              'utils/runtime_tuning.py': 'f1cbfc44e009701a5540a046f2cd6b9f41f16b74',
-              'utils/ml_backends.py': 'c4cd5eaf783cd7ffbb92ab01ec743ef7cbd13d84',
-              'utils/logging_utils.py': '482ba94643aa921f49eebb835f29cf4930bb2498',
-              'utils/opf_shared_defaults.py': 'bd76baa134b07567015d0151d5f14ba81dc667df',
-              'DNN/VANILLA/Dyn_DNN4OPF/utils/run_defaults.py': 'ff79e8c51f1fb21a11e4687989198ef0abb07491',
-              'tests/test_massive_scheduler_operational_contract.py': 'dec947ef375a346fb7abf06d77cbef1534852746',
-          }
-          if entry.OPF_FILES != expected_opf:
-              raise SystemExit('literal OPF file manifest drifted')
+          if v36.OPF_COMMIT != '1d1dfbbf7521ac40ee60c1f78f84956bf5f70598':
+              raise SystemExit(f'not pinned to current OPF main: {v36.OPF_COMMIT}')
+          if v36.OPF_FILES.get('utils/opf_massive_suite_runner.py') != 'b2ae3d04f9398df5c18c7c13f4c939bce46b930d':
+              raise SystemExit('literal OPF scheduler blob drifted')
+          if v36.OPF_FILES.get('tests/test_massive_scheduler_operational_contract.py') != 'dec947ef375a346fb7abf06d77cbef1534852746':
+              raise SystemExit('literal OPF operational contract test drifted')
 
           source = Path('tools/universal_training_controller_entry.py').read_text(encoding='utf-8')
           for forbidden in ('def resolve_concurrency(', 'def resolve_launch_capacity(', 'def select_launch_device(', 'nvidia-smi'):
               if forbidden in source:
-                  raise SystemExit(f'v36 must not reimplement OPF scheduler mechanism: {forbidden}')
+                  raise SystemExit(f'v37 must not reimplement OPF scheduler mechanism: {forbidden}')
 
           adapter = Path('tools/repo_training_launcher_adapter.py').read_text(encoding='utf-8')
           for value in (
-              'e498aa3496b1e79c29c4060db4b11433d69bad97',
-              '1840035fdecb5d5fbab06846435cb86787842738',
+              '621e0a195f82f770f6db1d447823e4d94090ebc3',
+              'fde85b0176f818d4198541fe9f5bf4f655236366',
               'NEW_CONTROLLER_URL',
           ):
               if value not in adapter:
-                  raise SystemExit(f'adapter not pinned to corrected v36: {value}')
+                  raise SystemExit(f'adapter not pinned to v37: {value}')
 
           if runner.CONTROLLER != runner.ROOT / 'tools' / 'universal_training_controller_entry.py':
-              raise SystemExit('root launcher does not use local v36 entry')
+              raise SystemExit('root launcher does not use local v37 entry')
           if runner.CATALOG != 'training/authoritative_training_suite_catalog.py':
               raise SystemExit(f'unexpected authoritative catalog: {runner.CATALOG}')
           for gate in (
@@ -139,7 +145,7 @@ jobs:
           ):
               if runner.PROFILE.get(gate) is not True:
                   raise SystemExit(f'missing strict root gate: {gate}')
-          print('v36 flat immutable bundle and literal OPF invariants passed')
+          print('v37 archive bootstrap, cumulative stack and literal OPF invariants passed')
           PY
 
       - name: Run public controller safety tests
