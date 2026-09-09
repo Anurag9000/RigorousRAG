@@ -113,12 +113,12 @@ jobs:
 
           adapter = Path('tools/repo_training_launcher_adapter.py').read_text(encoding='utf-8')
           for value in (
-              'a919d4aab88a93e76dd76882c86e34935fb6b953',
-              '4e0d1cb80e2c9a3d8e0c708110d1bbc0366903df',
+              'e498aa3496b1e79c29c4060db4b11433d69bad97',
+              '1840035fdecb5d5fbab06846435cb86787842738',
               'NEW_CONTROLLER_URL',
           ):
               if value not in adapter:
-                  raise SystemExit(f'adapter not pinned to v36: {value}')
+                  raise SystemExit(f'adapter not pinned to corrected v36: {value}')
 
           if runner.CONTROLLER != runner.ROOT / 'tools' / 'universal_training_controller_entry.py':
               raise SystemExit('root launcher does not use local v36 entry')
