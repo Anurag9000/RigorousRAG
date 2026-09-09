@@ -30,8 +30,8 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-NEW_CONTROLLER_COMMIT = "a919d4aab88a93e76dd76882c86e34935fb6b953"
-NEW_CONTROLLER_BLOB = "4e0d1cb80e2c9a3d8e0c708110d1bbc0366903df"
+NEW_CONTROLLER_COMMIT = "e498aa3496b1e79c29c4060db4b11433d69bad97"
+NEW_CONTROLLER_BLOB = "1840035fdecb5d5fbab06846435cb86787842738"
 NEW_CONTROLLER_URL = (
     f"https://raw.githubusercontent.com/Anurag9000/RigorousRAG/{NEW_CONTROLLER_COMMIT}/"
     "tools/universal_training_controller_entry.py"
