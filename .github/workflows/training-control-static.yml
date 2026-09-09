@@ -8,7 +8,6 @@ on:
       - 'tools/repo_training_launcher_adapter.py'
       - 'tools/training_surface_census.py'
       - 'tools/training_surface_semantic_scan.py'
-      - 'tools/training_surface_semantic_scan_legacy_v20.py'
       - 'tools/account_wide_training_control_audit*.py'
       - 'tests/test_training_controller*.py'
       - 'tests/test_training_surface_semantic_scan.py'
@@ -20,7 +19,6 @@ on:
       - 'tools/repo_training_launcher_adapter.py'
       - 'tools/training_surface_census.py'
       - 'tools/training_surface_semantic_scan.py'
-      - 'tools/training_surface_semantic_scan_legacy_v20.py'
       - 'tools/account_wide_training_control_audit*.py'
       - 'tests/test_training_controller*.py'
       - 'tests/test_training_surface_semantic_scan.py'
@@ -31,8 +29,11 @@ on:
 jobs:
   compile-and-static-invariants:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
@@ -47,7 +48,6 @@ jobs:
               Path('tools/repo_training_launcher_adapter.py'),
               Path('tools/training_surface_census.py'),
               Path('tools/training_surface_semantic_scan.py'),
-              Path('tools/training_surface_semantic_scan_legacy_v20.py'),
               *Path('tools').glob('account_wide_training_control_audit*.py'),
               Path('run_all_training.py'),
           })
@@ -59,59 +59,87 @@ jobs:
           print(f'compiled {len(paths)} controller/audit sources')
           PY
 
-      - name: Check v35 compatibility and literal-OPF composition invariants
+      - name: Materialize and compile the complete immutable v36 bundle
+        run: python tools/universal_training_controller_entry.py --training-control-bootstrap-self-test
+
+      - name: Check v36 flat-bundle and literal-OPF invariants
         run: |
           python - <<'PY'
-          import hashlib
+          import importlib.util
+          import sys
           from pathlib import Path
           import run_all_training as runner
 
-          def blob_sha(data: bytes) -> str:
-              return hashlib.sha1(f"blob {len(data)}\0".encode('ascii') + data).hexdigest()
+          spec = importlib.util.spec_from_file_location('_v36_entry', 'tools/universal_training_controller_entry.py')
+          if spec is None or spec.loader is None:
+              raise SystemExit('cannot import v36 entry')
+          entry = importlib.util.module_from_spec(spec)
+          sys.modules[spec.name] = entry
+          spec.loader.exec_module(entry)
 
-          entry = Path('tools/universal_training_controller_entry.py').read_text(encoding='utf-8')
-          required_entry = (
-              'v35',
-              '142587b31ea4097e237cbe4ad756bb595c1591f7',
-              '0c7c6307ca97fbc502b511f845059f345712fc7d',
-              '26c833284c2be2e80af149b1a2d8902b1a5b43ee',
-              'd6185607102353f8d18b993427065832f3fb374b',
-              '2b39c1fb680e608424ba77ed0f7245b0a558f256',
-              'training_surface_semantic_scan_legacy_v20.py',
-              '_preseed_legacy_semantic_scanner',
-              '_load_v34_bootstrap',
-          )
-          for value in required_entry:
-              assert value in entry, value
-          for forbidden in ('resolve_concurrency(', 'resolve_launch_capacity(', 'select_launch_device(', 'nvidia-smi'):
-              assert forbidden not in entry, f'v35 must not reimplement scheduler mechanism {forbidden}'
+          if entry.BUNDLE_VERSION != 'v36':
+              raise SystemExit(entry.BUNDLE_VERSION)
+          if len(entry.CONTROLLER_FILES) != 60:
+              raise SystemExit(f'expected 60 cumulative controller files, got {len(entry.CONTROLLER_FILES)}')
+          expected_controller = {
+              'tools/universal_training_controller_v34.py': '90ce5e0425d23c86e8a2b13c21c45b75c0e9ba40',
+              'tools/universal_training_controller_retained_training_closure_v34.py': 'afeb885dcbef6d20fe3294600e6ec9a7e191b5ed',
+              'tools/universal_training_controller_exact_resume.py': '6f6311cbb7cdfa46d14ad5eb0adc8749c5080226',
+              'tools/universal_training_controller_early_stopping_wiring.py': 'fdd00d7b406a77933c827237fb45db9d083001dc',
+              'tools/universal_training_controller_opf_mechanism_audit.py': '93ddb8583e642a2f5195d16f202d7a528ed2f0e2',
+          }
+          for path, sha in expected_controller.items():
+              if entry.CONTROLLER_FILES.get(path) != sha:
+                  raise SystemExit(f'controller manifest mismatch: {path}')
 
-          helper = Path('tools/training_surface_semantic_scan_legacy_v20.py').read_bytes()
-          assert blob_sha(helper) == 'd6185607102353f8d18b993427065832f3fb374b'
+          if entry.OPF_COMMIT != '1d1dfbbf7521ac40ee60c1f78f84956bf5f70598':
+              raise SystemExit(f'not pinned to current OPF main: {entry.OPF_COMMIT}')
+          expected_opf = {
+              'utils/opf_massive_suite_runner.py': 'b2ae3d04f9398df5c18c7c13f4c939bce46b930d',
+              'utils/runtime_tuning.py': 'f1cbfc44e009701a5540a046f2cd6b9f41f16b74',
+              'utils/ml_backends.py': 'c4cd5eaf783cd7ffbb92ab01ec743ef7cbd13d84',
+              'utils/logging_utils.py': '482ba94643aa921f49eebb835f29cf4930bb2498',
+              'utils/opf_shared_defaults.py': 'bd76baa134b07567015d0151d5f14ba81dc667df',
+              'DNN/VANILLA/Dyn_DNN4OPF/utils/run_defaults.py': 'ff79e8c51f1fb21a11e4687989198ef0abb07491',
+              'tests/test_massive_scheduler_operational_contract.py': 'dec947ef375a346fb7abf06d77cbef1534852746',
+          }
+          if entry.OPF_FILES != expected_opf:
+              raise SystemExit('literal OPF file manifest drifted')
+
+          source = Path('tools/universal_training_controller_entry.py').read_text(encoding='utf-8')
+          for forbidden in ('def resolve_concurrency(', 'def resolve_launch_capacity(', 'def select_launch_device(', 'nvidia-smi'):
+              if forbidden in source:
+                  raise SystemExit(f'v36 must not reimplement OPF scheduler mechanism: {forbidden}')
 
           adapter = Path('tools/repo_training_launcher_adapter.py').read_text(encoding='utf-8')
-          assert '1114e757e30085250889091b50bea3c549ba0c84' in adapter
-          assert 'af5402584d7873e9a54f7f6bde79aa45461d4ccc' in adapter
-          assert 'NEW_CONTROLLER_URL' in adapter
+          for value in (
+              'a919d4aab88a93e76dd76882c86e34935fb6b953',
+              '4e0d1cb80e2c9a3d8e0c708110d1bbc0366903df',
+              'NEW_CONTROLLER_URL',
+          ):
+              if value not in adapter:
+                  raise SystemExit(f'adapter not pinned to v36: {value}')
 
-          assert runner.CONTROLLER == runner.ROOT / 'tools' / 'universal_training_controller_entry.py'
-          assert runner.CATALOG == 'training/authoritative_training_suite_catalog.py'
+          if runner.CONTROLLER != runner.ROOT / 'tools' / 'universal_training_controller_entry.py':
+              raise SystemExit('root launcher does not use local v36 entry')
+          if runner.CATALOG != 'training/authoritative_training_suite_catalog.py':
+              raise SystemExit(f'unexpected authoritative catalog: {runner.CATALOG}')
           for gate in (
               'strict_coverage',
+              'require_exact_resume',
               'require_training_exact_resume',
               'require_training_early_stopping',
               'require_dag_enforcement',
+              'require_model_surface_accounting',
+              'require_workload_surface_accounting',
               'require_source_proven_training_exact_resume',
               'require_source_proven_training_early_stopping',
               'require_all_retained_trainable_source_reachability',
               'require_literal_opf_mechanism_parity',
           ):
-              assert runner.PROFILE.get(gate) is True, gate
-
-          # The v35 layer is intentionally only a cache-compatibility shim; v34
-          # remains the scientific/source closure layer and the immutable v20
-          # ancestry remains the sole literal OPF scheduler loader.
-          print('v35 compatibility/static controller invariants passed')
+              if runner.PROFILE.get(gate) is not True:
+                  raise SystemExit(f'missing strict root gate: {gate}')
+          print('v36 flat immutable bundle and literal OPF invariants passed')
           PY
 
       - name: Run public controller safety tests
