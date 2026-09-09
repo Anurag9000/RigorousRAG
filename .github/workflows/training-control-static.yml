@@ -5,38 +5,24 @@ on:
     branches: [main]
     paths:
       - 'tools/universal_training_controller*.py'
+      - 'tools/repo_training_launcher_adapter.py'
       - 'tools/training_surface_census.py'
       - 'tools/training_surface_semantic_scan.py'
-      - 'tools/account_wide_training_control_audit.py'
-      - 'tools/account_wide_training_control_audit_v2.py'
-      - 'tests/test_training_controller_console_registry.py'
-      - 'tests/test_training_controller_deferred_expansion.py'
-      - 'tests/test_training_controller_entry_diagnostics.py'
-      - 'tests/test_training_controller_exact_resume.py'
-      - 'tests/test_training_controller_inventory_scope.py'
-      - 'tests/test_training_controller_audit_infrastructure.py'
-      - 'tests/test_training_controller_semantic_inventory.py'
-      - 'tests/test_training_controller_opf_mechanism_audit_offline.py'
-      - 'tests/test_training_controller_opf_reference_v20.py'
+      - 'tools/training_surface_semantic_scan_legacy_v20.py'
+      - 'tools/account_wide_training_control_audit*.py'
+      - 'tests/test_training_controller*.py'
       - 'tests/test_training_surface_semantic_scan.py'
       - 'run_all_training.py'
       - '.github/workflows/training-control-static.yml'
   pull_request:
     paths:
       - 'tools/universal_training_controller*.py'
+      - 'tools/repo_training_launcher_adapter.py'
       - 'tools/training_surface_census.py'
       - 'tools/training_surface_semantic_scan.py'
-      - 'tools/account_wide_training_control_audit.py'
-      - 'tools/account_wide_training_control_audit_v2.py'
-      - 'tests/test_training_controller_console_registry.py'
-      - 'tests/test_training_controller_deferred_expansion.py'
-      - 'tests/test_training_controller_entry_diagnostics.py'
-      - 'tests/test_training_controller_exact_resume.py'
-      - 'tests/test_training_controller_inventory_scope.py'
-      - 'tests/test_training_controller_audit_infrastructure.py'
-      - 'tests/test_training_controller_semantic_inventory.py'
-      - 'tests/test_training_controller_opf_mechanism_audit_offline.py'
-      - 'tests/test_training_controller_opf_reference_v20.py'
+      - 'tools/training_surface_semantic_scan_legacy_v20.py'
+      - 'tools/account_wide_training_control_audit*.py'
+      - 'tests/test_training_controller*.py'
       - 'tests/test_training_surface_semantic_scan.py'
       - 'run_all_training.py'
       - '.github/workflows/training-control-static.yml'
@@ -50,119 +36,84 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+
       - name: Compile controller sources
         run: |
-          python -m py_compile \
-            tools/training_surface_census.py \
-            tools/training_surface_semantic_scan.py \
-            tools/universal_training_controller.py \
-            tools/universal_training_controller_current.py \
-            tools/universal_training_controller_dag.py \
-            tools/universal_training_controller_exact_resume.py \
-            tools/universal_training_controller_console.py \
-            tools/universal_training_controller_console_defaults.py \
-            tools/universal_training_controller_subcommands.py \
-            tools/universal_training_controller_entrypoint_markers.py \
-            tools/universal_training_controller_inventory_scope.py \
-            tools/universal_training_controller_audit_infrastructure.py \
-            tools/universal_training_controller_semantic_inventory.py \
-            tools/universal_training_controller_restart_exact.py \
-            tools/universal_training_controller_opf_grace.py \
-            tools/universal_training_controller_registry_scheduling.py \
-            tools/universal_training_controller_training_contracts.py \
-            tools/universal_training_controller_profile_file.py \
-            tools/universal_training_controller_job_catalog_v2.py \
-            tools/universal_training_controller_large_catalog.py \
-            tools/universal_training_controller_opf_mechanism_audit.py \
-            tools/universal_training_controller_deferred.py \
-            tools/universal_training_controller_deferred_v2.py \
-            tools/universal_training_controller_deferred_v3.py \
-            tools/universal_training_controller_deferred_v4.py \
-            tools/universal_training_controller_opf_reference_v2.py \
-            tools/universal_training_controller_v20.py \
-            tools/universal_training_controller_entry.py \
-            tools/account_wide_training_control_audit.py \
-            tools/account_wide_training_control_audit_v2.py \
-            run_all_training.py
-      - name: Check literal-OPF and v20 composition invariants
+          python - <<'PY'
+          import py_compile
+          from pathlib import Path
+          paths = sorted({
+              *Path('tools').glob('universal_training_controller*.py'),
+              Path('tools/repo_training_launcher_adapter.py'),
+              Path('tools/training_surface_census.py'),
+              Path('tools/training_surface_semantic_scan.py'),
+              Path('tools/training_surface_semantic_scan_legacy_v20.py'),
+              *Path('tools').glob('account_wide_training_control_audit*.py'),
+              Path('run_all_training.py'),
+          })
+          missing = [str(path) for path in paths if not path.is_file()]
+          if missing:
+              raise SystemExit(f'missing controller sources: {missing}')
+          for path in paths:
+              py_compile.compile(str(path), doraise=True)
+          print(f'compiled {len(paths)} controller/audit sources')
+          PY
+
+      - name: Check v35 compatibility and literal-OPF composition invariants
         run: |
           python - <<'PY'
-          import ast
+          import hashlib
           from pathlib import Path
-          entry = Path('tools/universal_training_controller_entry.py').read_text()
-          for required in (
-              '227cb9348cfc6d9803b3bd1ec891e2f88c9d0692',
-              '2dfe664af88b95981da2b84b60f228a37156749f',
-              'b2ae3d04f9398df5c18c7c13f4c939bce46b930d',
-              'd629e35d7bc1735bad841cc200d0ae532e16401a',
-              '2b2795fb53bb4e5fb8bb28c546229151d60b292b',
-              '40244bd2fd645bd201b90f107d95c7eefff64ffe',
-              'd4097817b26ad64baaf5d36a99455dac1b2adfa9',
+          import run_all_training as runner
+
+          def blob_sha(data: bytes) -> str:
+              return hashlib.sha1(f"blob {len(data)}\0".encode('ascii') + data).hexdigest()
+
+          entry = Path('tools/universal_training_controller_entry.py').read_text(encoding='utf-8')
+          required_entry = (
+              'v35',
+              '142587b31ea4097e237cbe4ad756bb595c1591f7',
+              '0c7c6307ca97fbc502b511f845059f345712fc7d',
+              '26c833284c2be2e80af149b1a2d8902b1a5b43ee',
               'd6185607102353f8d18b993427065832f3fb374b',
-              'b19334a09b52ad67b2e2c28ed36bcc10b6613175',
-              'e948bada6dc8f719b18ee20afbca682aae0992e4',
-              '3b21bb8f60179e8c1e9b31d164ecf6799f9f9b5d',
-              '12976c36d4df375387876411dbc102661b5d9d04',
-              'universal_training_controller_entrypoint_markers.py',
-              'universal_training_controller_inventory_scope.py',
-              'universal_training_controller_audit_infrastructure.py',
-              'universal_training_controller_semantic_inventory.py',
-              'training_surface_semantic_scan.py',
-              'universal_training_controller_opf_reference_v2.py',
-              'universal_training_controller_v20.py',
-              'DIAGNOSTIC_FLAGS', 'ARG_ALIASES', 'TRAINING_CONTROL_PREPARE_LEGACY_OPF',
+              '2b39c1fb680e608424ba77ed0f7245b0a558f256',
+              'training_surface_semantic_scan_legacy_v20.py',
+              '_preseed_legacy_semantic_scanner',
+              '_load_v34_bootstrap',
+          )
+          for value in required_entry:
+              assert value in entry, value
+          for forbidden in ('resolve_concurrency(', 'resolve_launch_capacity(', 'select_launch_device(', 'nvidia-smi'):
+              assert forbidden not in entry, f'v35 must not reimplement scheduler mechanism {forbidden}'
+
+          helper = Path('tools/training_surface_semantic_scan_legacy_v20.py').read_bytes()
+          assert blob_sha(helper) == 'd6185607102353f8d18b993427065832f3fb374b'
+
+          adapter = Path('tools/repo_training_launcher_adapter.py').read_text(encoding='utf-8')
+          assert '1114e757e30085250889091b50bea3c549ba0c84' in adapter
+          assert 'af5402584d7873e9a54f7f6bde79aa45461d4ccc' in adapter
+          assert 'NEW_CONTROLLER_URL' in adapter
+
+          assert runner.CONTROLLER == runner.ROOT / 'tools' / 'universal_training_controller_entry.py'
+          assert runner.CATALOG == 'training/authoritative_training_suite_catalog.py'
+          for gate in (
+              'strict_coverage',
+              'require_training_exact_resume',
+              'require_training_early_stopping',
+              'require_dag_enforcement',
+              'require_source_proven_training_exact_resume',
+              'require_source_proven_training_early_stopping',
+              'require_all_retained_trainable_source_reachability',
+              'require_literal_opf_mechanism_parity',
           ):
-              assert required in entry, required
-          assert 'universal_training_controller_v19.py' not in entry.split('FILES={', 1)[1].split('}', 1)[0]
-          assert 'cache/"universal_training_controller_v20.py"' in entry
+              assert runner.PROFILE.get(gate) is True, gate
 
-          tree = ast.parse(Path('tools/universal_training_controller_dag.py').read_text())
-          assignments = set()
-          for node in ast.walk(tree):
-              targets = list(node.targets) if isinstance(node, ast.Assign) else [node.target] if isinstance(node, (ast.AnnAssign, ast.AugAssign)) else []
-              for target in targets:
-                  if isinstance(target, ast.Attribute) and isinstance(target.value, ast.Name) and target.value.id == 'opf':
-                      assignments.add(target.attr)
-          assert assignments <= {'build_suite_jobs'}, assignments
-
-          v20 = Path('tools/universal_training_controller_v20.py').read_text()
-          for required in (
-              'universal_training_controller_opf_reference_v2 as opf_reference',
-              'universal_training_controller_entrypoint_markers as entrypoint_markers',
-              'universal_training_controller_inventory_scope as inventory_scope',
-              'universal_training_controller_audit_infrastructure as audit_infrastructure',
-              'universal_training_controller_semantic_inventory as semantic_inventory',
-              'opf_reference.install()', 'exact_resume.install()', 'large_catalog.install()',
-              'subcommands.install()', 'entrypoint_markers.install()', 'inventory_scope.install()',
-              'audit_infrastructure.install()', 'semantic_inventory.install()', 'restart_exact.install()',
-              'opf_grace.install()', 'registry_scheduling.install()', 'training_contracts.install()',
-              'mechanism_audit.install()', 'universal_training_controller_deferred_v4 as deferred',
-              'return deferred.main()',
-          ):
-              assert required in v20, required
-          assert v20.index('subcommands.install()') < v20.index('entrypoint_markers.install()') < v20.index('inventory_scope.install()') < v20.index('audit_infrastructure.install()') < v20.index('semantic_inventory.install()')
-
-          reference = Path('tools/universal_training_controller_opf_reference_v2.py').read_text()
-          for required in ('2dfe664af88b95981da2b84b60f228a37156749f','b2ae3d04f9398df5c18c7c13f4c939bce46b930d','c4cd5eaf783cd7ffbb92ab01ec743ef7cbd13d84','bd76baa134b07567015d0151d5f14ba81dc667df','ff79e8c51f1fb21a11e4687989198ef0abb07491','current._configure_reference()'):
-              assert required in reference, required
-
-          mechanism = Path('tools/universal_training_controller_opf_mechanism_audit.py').read_text()
-          assert 'base._prepare_opf_runtime(root)' not in mechanism
-          for required in ('_execution_integrity_gate', 'deferred_to_execution', 'invalid_local_cache'):
-              assert required in mechanism, required
-
-          audit_scope = Path('tools/universal_training_controller_audit_infrastructure.py').read_text()
-          for required in ('current._training_inventory', '_INSTALL_MARKER', 'missing/non-callable'):
-              assert required in audit_scope, required
-          assert 'current._inventory' not in audit_scope
-
-          auditor = Path('tools/account_wide_training_control_audit_v2.py').read_text()
-          assert '9504ca6b3d2c7bba60d47e4c209e8bd7da107a57' in auditor
-          assert '8a9e9d5d042225c10477c3c7a5fe9fa64c59adbc' in auditor
-          launcher = Path('run_all_training.py').read_text()
-          assert '9504ca6b3d2c7bba60d47e4c209e8bd7da107a57' in launcher
-          print('static immutable semantic source-closure v20 controller invariants passed')
+          # The v35 layer is intentionally only a cache-compatibility shim; v34
+          # remains the scientific/source closure layer and the immutable v20
+          # ancestry remains the sole literal OPF scheduler loader.
+          print('v35 compatibility/static controller invariants passed')
           PY
+
       - name: Run public controller safety tests
         run: |
           python -m pip install --disable-pip-version-check -q pytest psutil
