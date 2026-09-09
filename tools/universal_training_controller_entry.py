@@ -1,39 +1,40 @@
 #!/usr/bin/env python3
-"""Immutable bootstrap for exhaustive repository workload orchestration v34.
+"""Immutable bootstrap for exhaustive repository workload orchestration v35.
 
-v34 layers immutably on the v33 bootstrap. It preserves the exact pinned
-OPF_ADP scheduler and every v33 lifecycle/source/scientific contract, then adds
-fail-closed retained-trainable-source reachability: a real trainer/model source
-cannot disappear from the central workload merely because a repository labels it
-ignored, dynamic, manual, reference or research. Narrow reasoned exclusions are
-reserved for genuinely user-removed/non-trainable/vendor/generated surfaces.
+v35 is a compatibility-only layer above the immutable v34 bootstrap. It fixes one
+historical controller-host map inconsistency in the v25 ancestry: host commit
+26c833284c2be2e80af149b1a2d8902b1a5b43ee contains a newer semantic scanner blob,
+while that immutable layer correctly expects the older d6185607... scanner. A
+clean controller cache therefore failed before v34 could run.
 
-This bootstrap contains no resource scheduling implementation. GPU-first
-admission, concurrency, live controls, RAM/VRAM/swap pressure hysteresis,
-pause/resume, persisted state, retries, CUDA-OOM CPU fallback, polling/backoff,
-device selection and all other scheduler mechanisms remain the literal pinned
-OPF_ADP implementation.
+This layer pre-seeds exactly that historical cache slot from a separately retained,
+Git-blob-verified copy, then delegates to v34 unchanged. It contains no resource
+scheduler and changes no scientific, resume, early-stopping, DAG, source-closure or
+resource-pressure semantics. GPU-first admission, concurrency, RAM/VRAM/swap
+hysteresis, pause/resume, persisted state, retries, CUDA-OOM CPU fallback,
+polling/backoff, device selection and all other scheduling behavior remain the
+literal byte-pinned OPF_ADP implementation reached through v34.
 """
 from __future__ import annotations
 
 import hashlib
 import importlib.util
 import os
-import subprocess
 import sys
 import urllib.request
 from pathlib import Path
 
-V33_BOOTSTRAP_REPOSITORY = "Anurag9000/RigorousRAG"
-V33_BOOTSTRAP_COMMIT = "985379f540edc92517955f07c3f81ef942364917"
-V33_BOOTSTRAP_BLOB = "f100cf8363b9ebb45a4ae53e7260a3924e20e134"
-V33_BOOTSTRAP_PATH = "tools/universal_training_controller_entry.py"
+V34_BOOTSTRAP_REPOSITORY = "Anurag9000/RigorousRAG"
+V34_BOOTSTRAP_COMMIT = "142587b31ea4097e237cbe4ad756bb595c1591f7"
+V34_BOOTSTRAP_BLOB = "0c7c6307ca97fbc502b511f845059f345712fc7d"
+V34_BOOTSTRAP_PATH = "tools/universal_training_controller_entry.py"
 
-V34_HOST_COMMIT = "0d6eb1fed761e876aa7ad00e0af998d5926fb946"
-V34_FILES = {
-    "tools/universal_training_controller_retained_training_closure_v34.py": "afeb885dcbef6d20fe3294600e6ec9a7e191b5ed",
-    "tools/universal_training_controller_v34.py": "90ce5e0425d23c86e8a2b13c21c45b75c0e9ba40",
-}
+BROKEN_LEGACY_HOST_COMMIT = "26c833284c2be2e80af149b1a2d8902b1a5b43ee"
+LEGACY_SCANNER_EXPECTED_BLOB = "d6185607102353f8d18b993427065832f3fb374b"
+LEGACY_SCANNER_CACHE_NAME = "training_surface_semantic_scan.py"
+COMPAT_SOURCE_REPOSITORY = "Anurag9000/RigorousRAG"
+COMPAT_SOURCE_COMMIT = "2b39c1fb680e608424ba77ed0f7245b0a558f256"
+COMPAT_SOURCE_PATH = "tools/training_surface_semantic_scan_legacy_v20.py"
 
 
 def git_blob_sha(data: bytes) -> str:
@@ -48,7 +49,7 @@ def atomic_write(path: Path, data: bytes) -> None:
 
 
 def fetch(url: str) -> bytes:
-    request = urllib.request.Request(url, headers={"User-Agent": "opf-exhaustive-training-controller/37"})
+    request = urllib.request.Request(url, headers={"User-Agent": "opf-exhaustive-training-controller/38"})
     with urllib.request.urlopen(request, timeout=120) as response:
         return response.read()
 
@@ -62,54 +63,67 @@ def verified_fetch(repository: str, commit: str, relative: str, expected: str) -
     return data
 
 
-def load_v33_bootstrap(root: Path):
-    cached = root / ".training_control" / "bootstrap" / V33_BOOTSTRAP_COMMIT / "universal_training_controller_entry.py"
-    if not cached.is_file() or git_blob_sha(cached.read_bytes()) != V33_BOOTSTRAP_BLOB:
-        atomic_write(cached, verified_fetch(V33_BOOTSTRAP_REPOSITORY, V33_BOOTSTRAP_COMMIT, V33_BOOTSTRAP_PATH, V33_BOOTSTRAP_BLOB))
-    spec = importlib.util.spec_from_file_location("_training_control_bootstrap_v33", cached)
+def _preseed_legacy_semantic_scanner(root: Path) -> None:
+    destination = (
+        root
+        / ".training_control"
+        / "controller_host"
+        / BROKEN_LEGACY_HOST_COMMIT
+        / LEGACY_SCANNER_CACHE_NAME
+    )
+    if destination.is_file() and git_blob_sha(destination.read_bytes()) == LEGACY_SCANNER_EXPECTED_BLOB:
+        return
+
+    local = root / COMPAT_SOURCE_PATH
+    if local.is_file() and git_blob_sha(local.read_bytes()) == LEGACY_SCANNER_EXPECTED_BLOB:
+        data = local.read_bytes()
+    else:
+        data = verified_fetch(
+            COMPAT_SOURCE_REPOSITORY,
+            COMPAT_SOURCE_COMMIT,
+            COMPAT_SOURCE_PATH,
+            LEGACY_SCANNER_EXPECTED_BLOB,
+        )
+    atomic_write(destination, data)
+    actual = git_blob_sha(destination.read_bytes())
+    if actual != LEGACY_SCANNER_EXPECTED_BLOB:
+        raise RuntimeError(
+            f"Failed to pre-seed verified legacy semantic scanner: {actual} != {LEGACY_SCANNER_EXPECTED_BLOB}"
+        )
+
+
+def _load_v34_bootstrap(root: Path):
+    cached = (
+        root
+        / ".training_control"
+        / "bootstrap"
+        / V34_BOOTSTRAP_COMMIT
+        / "universal_training_controller_entry.py"
+    )
+    if not cached.is_file() or git_blob_sha(cached.read_bytes()) != V34_BOOTSTRAP_BLOB:
+        atomic_write(
+            cached,
+            verified_fetch(
+                V34_BOOTSTRAP_REPOSITORY,
+                V34_BOOTSTRAP_COMMIT,
+                V34_BOOTSTRAP_PATH,
+                V34_BOOTSTRAP_BLOB,
+            ),
+        )
+    spec = importlib.util.spec_from_file_location("_training_control_bootstrap_v34", cached)
     if spec is None or spec.loader is None:
-        raise RuntimeError(f"Cannot import pinned v33 bootstrap {cached}")
+        raise RuntimeError(f"Cannot import pinned v34 bootstrap {cached}")
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
 
 
-def prepare_controller_host(root: Path, v33) -> tuple[Path, object]:
-    v32 = v33.load_v32_bootstrap(root)
-    cache, legacy = v33.prepare_controller_host(root, v32)
-    for relative, expected in V34_FILES.items():
-        destination = cache / Path(relative).name
-        valid = destination.is_file() and git_blob_sha(destination.read_bytes()) == expected
-        if valid:
-            continue
-        local = root / relative
-        if local.is_file() and git_blob_sha(local.read_bytes()) == expected:
-            data = local.read_bytes()
-        else:
-            data = verified_fetch("Anurag9000/RigorousRAG", V34_HOST_COMMIT, relative, expected)
-        atomic_write(destination, data)
-    return cache, legacy
-
-
 def main() -> int:
     root = Path(os.environ.get("TRAINING_CONTROL_REPO_ROOT") or Path.cwd()).resolve()
-    argv = list(sys.argv[1:])
-    v33 = load_v33_bootstrap(root)
-    cache, legacy = prepare_controller_host(root, v33)
-
-    if not legacy.diagnostic_only(argv):
-        legacy.prepare_reference_cache(root, legacy.OPF_COMMIT, legacy.OPF_FILES)
-        if os.environ.get("TRAINING_CONTROL_PREPARE_LEGACY_OPF", "").strip().lower() in {"1", "true", "yes", "on"}:
-            legacy.prepare_reference_cache(root, legacy.LEGACY_OPF_COMMIT, legacy.LEGACY_OPF_FILES)
-
-    env = os.environ.copy()
-    env["TRAINING_CONTROL_REPO_ROOT"] = str(root)
-    return subprocess.call(
-        [sys.executable, str(cache / "universal_training_controller_v34.py"), *legacy.canonical_argv(argv)],
-        cwd=root,
-        env=env,
-    )
+    _preseed_legacy_semantic_scanner(root)
+    v34 = _load_v34_bootstrap(root)
+    return int(v34.main() or 0)
 
 
 if __name__ == "__main__":
