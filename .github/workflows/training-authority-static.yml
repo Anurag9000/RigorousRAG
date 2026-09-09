@@ -9,6 +9,9 @@ on:
       - "tests/test_authoritative_retrieval_training_cli*.py"
       - "config/classical_*training.example.json"
       - "config/retrieval_*training.example.json"
+      - "config/advanced_*training.example.json"
+      - "config/calibration_*.example.json"
+      - "config/training_suite.example.json"
       - "run_all_training.py"
       - "pyproject.toml"
       - ".github/workflows/training-authority-static.yml"
@@ -40,11 +43,15 @@ jobs:
       - name: Compile authoritative surfaces
         run: |
           python -m py_compile \
+            training/authoritative_training_suite_catalog.py \
             training/authoritative_classical_training_cli.py \
             training/authoritative_classical_training_cli_v2.py \
             training/authoritative_classical_training_cli_v3.py \
             training/authoritative_retrieval_training_cli.py \
             training/authoritative_retrieval_training_cli_v2.py \
+            training/authoritative_advanced_training_cli.py \
+            training/authoritative_training_suite_postprocess.py \
+            training/authoritative_calibration_cli.py \
             training/cross_profile_fusion_fitting.py \
             training/cross_profile_listwise_fusion.py \
             tests/test_authoritative_classical_training_cli.py \
@@ -52,9 +59,10 @@ jobs:
             tests/test_authoritative_retrieval_training_cli_v2.py \
             run_all_training.py
 
-      - name: Verify hardened authority routing
+      - name: Verify hardened authority routing and catalog contracts
         run: |
           python - <<'PY'
+          import importlib.util
           import tomllib
           from pathlib import Path
           import run_all_training as runner
@@ -78,24 +86,78 @@ jobs:
               if module in forbidden_backends:
                   raise SystemExit(f"console script {name} bypasses hardened classical authority via {module}")
 
-          if runner.CLASSICAL_SOURCE != "training/authoritative_classical_training_cli_v3.py":
-              raise SystemExit(f"unexpected classical runner source: {runner.CLASSICAL_SOURCE}")
-          if runner.RETRIEVAL_SOURCE != "training/authoritative_retrieval_training_cli_v2.py":
-              raise SystemExit(f"unexpected retrieval runner source: {runner.RETRIEVAL_SOURCE}")
+          if runner.CATALOG != "training/authoritative_training_suite_catalog.py":
+              raise SystemExit(f"unexpected authoritative catalog: {runner.CATALOG}")
+          catalog_profile = runner.PROFILE.get("job_catalog", {})
+          if catalog_profile.get("path") != runner.CATALOG or catalog_profile.get("function") != "iter_jobs":
+              raise SystemExit(f"root launcher does not route through authoritative catalog: {catalog_profile!r}")
+          if catalog_profile.get("args") != ["exhaustive"]:
+              raise SystemExit(f"root launcher must request exhaustive catalog mode: {catalog_profile!r}")
 
-          for job in runner.EXTRA_JOBS:
+          required_profile_gates = (
+              "strict_coverage",
+              "require_exact_resume",
+              "require_training_exact_resume",
+              "require_training_early_stopping",
+              "require_dag_enforcement",
+              "require_model_surface_accounting",
+              "require_workload_surface_accounting",
+              "require_source_proven_training_exact_resume",
+              "require_source_proven_training_early_stopping",
+              "require_all_retained_trainable_source_reachability",
+              "require_literal_opf_mechanism_parity",
+          )
+          missing = [name for name in required_profile_gates if runner.PROFILE.get(name) is not True]
+          if missing:
+              raise SystemExit(f"root launcher is missing strict authority gates: {missing}")
+          if runner.PROFILE.get("auto_lifecycle_discovery") is not False:
+              raise SystemExit("RigorousRAG lifecycle discovery must remain disabled in favor of content-bound catalog jobs")
+          if runner.PROFILE.get("auto_console_training_jobs") is not False or runner.PROFILE.get("auto_console_subcommand_jobs") is not False:
+              raise SystemExit("generic console auto-scheduling must remain disabled for content-bound authority CLIs")
+
+          spec = importlib.util.spec_from_file_location("_authority_catalog", runner.CATALOG)
+          if spec is None or spec.loader is None:
+              raise SystemExit("cannot import authoritative training catalog")
+          catalog = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(catalog)
+          jobs = tuple(catalog.iter_jobs("exhaustive"))
+          if not jobs:
+              raise SystemExit("authoritative training catalog produced no jobs")
+
+          training = [job for job in jobs if bool(job.get("is_training_job"))]
+          expected_training_ids = {recipe.job_id for recipe in catalog.TRAINING_RECIPES}
+          actual_training_ids = {str(job.get("id")) for job in training}
+          if actual_training_ids != expected_training_ids:
+              raise SystemExit(
+                  f"authoritative training matrix drifted: missing={sorted(expected_training_ids-actual_training_ids)}, "
+                  f"unexpected={sorted(actual_training_ids-expected_training_ids)}"
+              )
+
+          source_for_family = {
+              "classical": catalog.CLASSICAL_SOURCE,
+              "retrieval": catalog.RETRIEVAL_SOURCE,
+              "advanced": catalog.ADVANCED_SOURCE,
+          }
+          for job in training:
+              job_id = str(job["id"])
               family = str(job.get("family", ""))
               source = str(job.get("entrypoint_source", ""))
-              if family.startswith("classical-") and source != runner.CLASSICAL_SOURCE:
-                  raise SystemExit(f"classical job bypasses v3 authority: {job['id']} -> {source}")
-              if family.startswith("retrieval-") and source != runner.RETRIEVAL_SOURCE:
-                  raise SystemExit(f"retrieval job bypasses v2 authority: {job['id']} -> {source}")
+              if source != source_for_family.get(family):
+                  raise SystemExit(f"training job bypasses authoritative family source: {job_id} -> {source}")
+              if job.get("early_stopping") is not True:
+                  raise SystemExit(f"training job lacks early stopping: {job_id}")
+              if str(job.get("resume_strategy", "")) not in {"exact_checkpoint", "native_transactional_state"}:
+                  raise SystemExit(f"training job lacks exact/native resume contract: {job_id}")
+              if not Path(source).is_file():
+                  raise SystemExit(f"training job source is missing: {job_id} -> {source}")
 
-          classical_console = runner.PROFILE["console_subcommand_args"].get("rigorousrag-classical-training:train")
-          retrieval_console = runner.PROFILE["console_subcommand_args"].get("rigorousrag-retrieval-training:train")
-          if not classical_console or not retrieval_console:
-              raise SystemExit("canonical classical/retrieval console jobs must remain explicitly scheduled")
-          print("hardened authority routing verified")
+          ids = {str(job["id"]) for job in jobs}
+          for job in jobs:
+              dangling = sorted(set(map(str, job.get("depends_on", []) or [])) - ids)
+              if dangling:
+                  raise SystemExit(f"job has dangling DAG dependencies: {job['id']} -> {dangling}")
+
+          print(f"hardened authoritative catalog verified: jobs={len(jobs)} training_jobs={len(training)}")
           PY
 
       - name: Verify classical exact-resume and artifact binding
