@@ -1,28 +1,22 @@
 #!/usr/bin/env python3
 """Execute an immutable repository launcher with the current central controller.
 
-This is a bootstrap-preservation utility, not a scheduler. It retrieves the exact
-previous ``run_all_training.py`` by Git blob identity, executes it with ``__file__``
-bound to the current repository root so all local imports/paths stay unchanged,
-replaces only audited locator globals, and calls its original ``main``.
+This bootstrap-preservation utility retrieves the exact previous
+``run_all_training.py`` by Git blob identity, executes it with ``__file__`` bound
+to the current repository root, replaces only audited controller locator globals,
+and calls its original ``main``. Repository-specific policies, matrices, lifecycle
+metadata and scientific catalogs therefore remain the exact implementation chosen
+by the pinned historical launcher.
 
-By default only the universal-controller commit/blob/URL are replaced. An active
-repository may additionally set ``TRAINING_LAUNCHER_FINAL_CATALOG`` together with
+v35 is a compatibility-only layer over v34. It preserves the complete v34
+retained-source/scientific/exact-resume/early-stopping/DAG closure and the literal
+pinned OPF_ADP scheduler, while pre-seeding one verified historical semantic-scan
+blob required by the v25 ancestry on a clean controller cache. No resource
+scheduling behavior is implemented or changed here.
+
+An active repository may additionally set ``TRAINING_LAUNCHER_FINAL_CATALOG`` and
 ``TRAINING_LAUNCHER_FINAL_CATALOG_BLOB`` to advance an immutable launcher's
-``FINAL_CATALOG`` pointer without copying or reconstructing the rest of that
-launcher. The override is fail-closed and allowed only when the historical
-launcher already exposes both catalog globals.
-
-Repository-specific policies, matrices, lifecycle metadata and launcher behavior
-therefore remain the exact implementation selected by the pinned historical
-launcher. Resource admission/process control remains exclusively inside the
-literal pinned OPF_ADP scheduler loaded by the central controller. v34 preserves
-all v33 scientific/source contracts and additionally requires every retained
-trainable/model source to be centrally reachable; broad ignore/dynamic/manual/
-reference/research labels cannot waive a real retained experiment. Narrow
-reasoned exclusions are reserved for genuinely user-removed, non-trainable,
-external-vendor or generated source. It never invents arbitrary Cartesian
-products.
+``FINAL_CATALOG`` pointer without reconstructing the rest of that launcher.
 """
 from __future__ import annotations
 
@@ -36,8 +30,8 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-NEW_CONTROLLER_COMMIT = "142587b31ea4097e237cbe4ad756bb595c1591f7"
-NEW_CONTROLLER_BLOB = "0c7c6307ca97fbc502b511f845059f345712fc7d"
+NEW_CONTROLLER_COMMIT = "1114e757e30085250889091b50bea3c549ba0c84"
+NEW_CONTROLLER_BLOB = "af5402584d7873e9a54f7f6bde79aa45461d4ccc"
 NEW_CONTROLLER_URL = (
     f"https://raw.githubusercontent.com/Anurag9000/RigorousRAG/{NEW_CONTROLLER_COMMIT}/"
     "tools/universal_training_controller_entry.py"
@@ -56,7 +50,7 @@ def _verified(data: bytes, expected: str, label: str) -> bytes:
 
 
 def _fetch_url(url: str, *, token: str = "") -> bytes:
-    headers = {"User-Agent": "central-training-launcher-adapter/14"}
+    headers = {"User-Agent": "central-training-launcher-adapter/15"}
     if token:
         headers.update({
             "Authorization": f"Bearer {token}",
