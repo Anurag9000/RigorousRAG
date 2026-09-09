@@ -3,10 +3,10 @@
 
 v37 preserves the complete byte-pinned v36/v20-v34 scientific/controller stack
 and the literal OPF_ADP runtime, but replaces v36's per-blob public GitHub API
-materialization path with one pinned repository archive fetch. Every extracted
-controller file is still verified against the exact Git blob SHA declared by
-v36 before it is admitted to the cache. The scheduler itself is not
-reimplemented here.
+materialization path with one pinned repository archive fetch. The archive
+contains a bundle-only directory whose entries point directly at the exact 60
+historical Git blobs. Every extracted file is reverified by Git blob SHA before
+admission to the cache. The scheduler itself is not reimplemented here.
 """
 from __future__ import annotations
 
@@ -23,7 +23,8 @@ from types import ModuleType
 
 BUNDLE_VERSION = "v37"
 HOST_REPO = "Anurag9000/RigorousRAG"
-HOST_ARCHIVE_COMMIT = "c65eb3032145c2e38b82506466207187a5ef822b"
+HOST_ARCHIVE_COMMIT = "4e623756ea853eff079104ef5f3483bafc01f0fb"
+HOST_BUNDLE_DIR = "controller_bundle_v36"
 V36_COMMIT = "e498aa3496b1e79c29c4060db4b11433d69bad97"
 V36_BLOB = "1840035fdecb5d5fbab06846435cb86787842738"
 V36_URL = (
@@ -31,7 +32,7 @@ V36_URL = (
     "tools/universal_training_controller_entry.py"
 )
 ARCHIVE_URL = f"https://codeload.github.com/{HOST_REPO}/zip/{HOST_ARCHIVE_COMMIT}"
-USER_AGENT = "opf-exhaustive-training-controller/40"
+USER_AGENT = "opf-exhaustive-training-controller/41"
 
 
 def git_blob_sha(data: bytes) -> str:
@@ -140,6 +141,10 @@ def _archive_members(payload: bytes) -> dict[str, bytes]:
     return members
 
 
+def _bundle_member(relative: str) -> str:
+    return f"{HOST_BUNDLE_DIR}/{Path(relative).name}"
+
+
 def _materialize_bundle(root: Path, module: ModuleType) -> Path:
     cache, files, marker_payload = _bundle_cache(root, module)
     if _cache_valid(cache, files, marker_payload):
@@ -150,19 +155,19 @@ def _materialize_bundle(root: Path, module: ModuleType) -> Path:
     missing = [relative for relative in files if relative not in ready]
     if missing:
         archive = _archive_members(_fetch(ARCHIVE_URL))
-        absent = [relative for relative in missing if relative not in archive]
+        absent = [relative for relative in missing if _bundle_member(relative) not in archive]
         if absent:
             raise RuntimeError(
-                "Pinned RigorousRAG archive does not contain required controller files: "
+                "Pinned RigorousRAG bundle archive does not contain required controller files: "
                 + ", ".join(absent)
             )
         for relative in missing:
-            payload = archive[relative]
+            payload = archive[_bundle_member(relative)]
             expected = files[relative]
             actual = git_blob_sha(payload)
             if actual != expected:
                 raise RuntimeError(
-                    f"Controller archive blob mismatch for {relative}: {actual} != {expected}"
+                    f"Controller bundle blob mismatch for {relative}: {actual} != {expected}"
                 )
             _atomic_write(cache / Path(relative).name, payload)
 
