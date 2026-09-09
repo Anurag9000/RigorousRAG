@@ -13,7 +13,16 @@ import universal_training_controller_entry as entry
 def _isolate_entry(monkeypatch, tmp_path: Path, calls: list | None = None) -> None:
     monkeypatch.setenv("TRAINING_CONTROL_REPO_ROOT", str(tmp_path))
     monkeypatch.delenv("TRAINING_CONTROL_PREPARE_LEGACY_OPF", raising=False)
-    monkeypatch.setattr(entry, "FILES", {})
+
+    # v36 materializes the complete controller stack through one flat immutable
+    # bundle rather than the historical FILES/HOST_COMMIT bootstrap chain. Keep
+    # these diagnostics focused on argument forwarding and OPF-reference policy
+    # by substituting a deterministic synthetic bundle location.
+    bundle = tmp_path / ".training_control" / "controller_bundle" / "test-v36"
+    bundle.mkdir(parents=True, exist_ok=True)
+    (bundle / "universal_training_controller_v34.py").write_text("# synthetic test target\n", encoding="utf-8")
+    monkeypatch.setattr(entry, "prepare_controller_cache", lambda _root: bundle)
+
     if calls is None:
         monkeypatch.setattr(entry.subprocess, "call", lambda *_args, **_kwargs: 0)
     else:
@@ -80,3 +89,24 @@ def test_legacy_reference_is_explicit_opt_in(monkeypatch, tmp_path: Path) -> Non
         (entry.OPF_COMMIT, entry.OPF_FILES),
         (entry.LEGACY_OPF_COMMIT, entry.LEGACY_OPF_FILES),
     ]
+
+
+def test_bootstrap_self_test_does_not_start_scheduler(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("TRAINING_CONTROL_REPO_ROOT", str(tmp_path))
+    monkeypatch.delenv("TRAINING_CONTROL_SELF_TEST_OPF", raising=False)
+    bundle = tmp_path / ".training_control" / "controller_bundle" / "test-v36"
+    bundle.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(entry, "CONTROLLER_FILES", {})
+    monkeypatch.setattr(entry, "prepare_controller_cache", lambda _root: bundle)
+    monkeypatch.setattr(
+        entry.subprocess,
+        "call",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("self-test attempted scheduler execution")),
+    )
+    monkeypatch.setattr(
+        entry,
+        "prepare_reference_cache",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("self-test attempted OPF materialization")),
+    )
+    monkeypatch.setattr(sys, "argv", ["universal_training_controller_entry.py", entry.SELF_TEST_FLAG])
+    assert entry.main() == 0
