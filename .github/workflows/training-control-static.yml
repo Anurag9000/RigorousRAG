@@ -65,7 +65,7 @@ jobs:
           TRAINING_CONTROL_REPO_ROOT="$tmp" \
             python tools/universal_training_controller_entry.py --training-control-bootstrap-self-test
 
-      - name: Check v37 archive bootstrap, cumulative stack and literal OPF invariants
+      - name: Check v37 canonical-bundle bootstrap, cumulative stack and literal OPF invariants
         run: |
           python - <<'PY'
           import importlib.util
@@ -82,8 +82,10 @@ jobs:
 
           if entry.BUNDLE_VERSION != 'v37':
               raise SystemExit(entry.BUNDLE_VERSION)
-          if entry.HOST_ARCHIVE_COMMIT != 'c65eb3032145c2e38b82506466207187a5ef822b':
-              raise SystemExit('unexpected controller archive host')
+          if entry.HOST_ARCHIVE_COMMIT != '4e623756ea853eff079104ef5f3483bafc01f0fb':
+              raise SystemExit('unexpected canonical controller bundle host')
+          if entry.HOST_BUNDLE_DIR != 'controller_bundle_v36':
+              raise SystemExit('unexpected canonical controller bundle directory')
           if entry.V36_COMMIT != 'e498aa3496b1e79c29c4060db4b11433d69bad97':
               raise SystemExit('unexpected immutable v36 entry')
           if entry.V36_BLOB != '1840035fdecb5d5fbab06846435cb86787842738':
@@ -119,12 +121,12 @@ jobs:
 
           adapter = Path('tools/repo_training_launcher_adapter.py').read_text(encoding='utf-8')
           for value in (
-              '621e0a195f82f770f6db1d447823e4d94090ebc3',
-              'fde85b0176f818d4198541fe9f5bf4f655236366',
+              'fd34a95d18892df7fb14d1efbb99076a7810fb91',
+              '05ef472b29933f18e956c69dfb7e543921ddaff5',
               'NEW_CONTROLLER_URL',
           ):
               if value not in adapter:
-                  raise SystemExit(f'adapter not pinned to v37: {value}')
+                  raise SystemExit(f'adapter not pinned to canonical v37: {value}')
 
           if runner.CONTROLLER != runner.ROOT / 'tools' / 'universal_training_controller_entry.py':
               raise SystemExit('root launcher does not use local v37 entry')
@@ -145,7 +147,7 @@ jobs:
           ):
               if runner.PROFILE.get(gate) is not True:
                   raise SystemExit(f'missing strict root gate: {gate}')
-          print('v37 archive bootstrap, cumulative stack and literal OPF invariants passed')
+          print('v37 canonical bundle, cumulative stack and literal OPF invariants passed')
           PY
 
       - name: Run public controller safety tests
