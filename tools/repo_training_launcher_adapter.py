@@ -8,11 +8,11 @@ and calls its original ``main``. Repository-specific policies, matrices, lifecyc
 metadata and scientific catalogs therefore remain the exact implementation chosen
 by the pinned historical launcher.
 
-v35 is a compatibility-only layer over v34. It preserves the complete v34
-retained-source/scientific/exact-resume/early-stopping/DAG closure and the literal
-pinned OPF_ADP scheduler, while pre-seeding one verified historical semantic-scan
-blob required by the v25 ancestry on a clean controller cache. No resource
-scheduling behavior is implemented or changed here.
+v36 is the flat immutable bundle of the complete v20-v34 controller stack. It
+removes historical bootstrap/cache-host drift while retaining byte-identical
+scientific/source/exact-resume/early-stopping/DAG closure modules and the literal
+current OPF_ADP scheduler/runtime. No resource scheduling behavior is implemented
+or changed here.
 
 An active repository may additionally set ``TRAINING_LAUNCHER_FINAL_CATALOG`` and
 ``TRAINING_LAUNCHER_FINAL_CATALOG_BLOB`` to advance an immutable launcher's
@@ -30,8 +30,8 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-NEW_CONTROLLER_COMMIT = "1114e757e30085250889091b50bea3c549ba0c84"
-NEW_CONTROLLER_BLOB = "af5402584d7873e9a54f7f6bde79aa45461d4ccc"
+NEW_CONTROLLER_COMMIT = "a919d4aab88a93e76dd76882c86e34935fb6b953"
+NEW_CONTROLLER_BLOB = "4e0d1cb80e2c9a3d8e0c708110d1bbc0366903df"
 NEW_CONTROLLER_URL = (
     f"https://raw.githubusercontent.com/Anurag9000/RigorousRAG/{NEW_CONTROLLER_COMMIT}/"
     "tools/universal_training_controller_entry.py"
@@ -50,7 +50,7 @@ def _verified(data: bytes, expected: str, label: str) -> bytes:
 
 
 def _fetch_url(url: str, *, token: str = "") -> bytes:
-    headers = {"User-Agent": "central-training-launcher-adapter/15"}
+    headers = {"User-Agent": "central-training-launcher-adapter/16"}
     if token:
         headers.update({
             "Authorization": f"Bearer {token}",
