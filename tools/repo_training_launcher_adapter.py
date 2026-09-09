@@ -30,8 +30,8 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-NEW_CONTROLLER_COMMIT = "621e0a195f82f770f6db1d447823e4d94090ebc3"
-NEW_CONTROLLER_BLOB = "fde85b0176f818d4198541fe9f5bf4f655236366"
+NEW_CONTROLLER_COMMIT = "fd34a95d18892df7fb14d1efbb99076a7810fb91"
+NEW_CONTROLLER_BLOB = "05ef472b29933f18e956c69dfb7e543921ddaff5"
 NEW_CONTROLLER_URL = (
     f"https://raw.githubusercontent.com/Anurag9000/RigorousRAG/{NEW_CONTROLLER_COMMIT}/"
     "tools/universal_training_controller_entry.py"
@@ -50,7 +50,7 @@ def _verified(data: bytes, expected: str, label: str) -> bytes:
 
 
 def _fetch_url(url: str, *, token: str = "") -> bytes:
-    headers = {"User-Agent": "central-training-launcher-adapter/17"}
+    headers = {"User-Agent": "central-training-launcher-adapter/18"}
     if token:
         headers.update({
             "Authorization": f"Bearer {token}",
