@@ -1,7 +1,13 @@
 from __future__ import annotations
 
+import hashlib
+import io
 import sys
+import zipfile
 from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
 
 TOOLS = Path(__file__).resolve().parents[1] / "tools"
 if str(TOOLS) not in sys.path:
@@ -10,103 +16,133 @@ if str(TOOLS) not in sys.path:
 import universal_training_controller_entry as entry
 
 
-def _isolate_entry(monkeypatch, tmp_path: Path, calls: list | None = None) -> None:
+def _blob(data: bytes) -> str:
+    return hashlib.sha1(f"blob {len(data)}\0".encode("ascii") + data).hexdigest()
+
+
+def _delegate(monkeypatch, argv: list[str], result: int = 0):
+    calls: list[list[str]] = []
+
+    class FakeV36:
+        def main(self) -> int:
+            calls.append(list(sys.argv))
+            return result
+
+    monkeypatch.setattr(entry, "bootstrap", lambda: FakeV36())
+    monkeypatch.setattr(sys, "argv", list(argv))
+    return calls
+
+
+def test_audit_flag_is_delegated_unchanged_to_pinned_v36(monkeypatch) -> None:
+    calls = _delegate(
+        monkeypatch,
+        ["universal_training_controller_entry.py", "--training-control-audit"],
+    )
+    assert entry.main() == 0
+    assert calls == [["universal_training_controller_entry.py", "--training-control-audit"]]
+
+
+def test_list_flag_is_delegated_unchanged_to_pinned_v36(monkeypatch) -> None:
+    calls = _delegate(
+        monkeypatch,
+        ["universal_training_controller_entry.py", "--training-control-list-jobs"],
+    )
+    assert entry.main() == 0
+    assert calls == [["universal_training_controller_entry.py", "--training-control-list-jobs"]]
+
+
+def test_native_diagnostic_flag_is_delegated_unchanged(monkeypatch) -> None:
+    calls = _delegate(
+        monkeypatch,
+        ["universal_training_controller_entry.py", "--audit-training-coverage"],
+    )
+    assert entry.main() == 0
+    assert calls == [["universal_training_controller_entry.py", "--audit-training-coverage"]]
+
+
+def test_delegate_exit_code_is_preserved(monkeypatch) -> None:
+    _delegate(monkeypatch, ["universal_training_controller_entry.py", "--skip-setup"], result=17)
+    assert entry.main() == 17
+
+
+def test_bootstrap_only_prepares_entry_loads_v36_and_materializes_bundle(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("TRAINING_CONTROL_REPO_ROOT", str(tmp_path))
-    monkeypatch.delenv("TRAINING_CONTROL_PREPARE_LEGACY_OPF", raising=False)
+    pinned = tmp_path / "pinned-v36.py"
+    fake_v36 = SimpleNamespace()
+    events: list[tuple[str, object]] = []
 
-    # v36 materializes the complete controller stack through one flat immutable
-    # bundle rather than the historical FILES/HOST_COMMIT bootstrap chain. Keep
-    # these diagnostics focused on argument forwarding and OPF-reference policy
-    # by substituting a deterministic synthetic bundle location.
-    bundle = tmp_path / ".training_control" / "controller_bundle" / "test-v36"
-    bundle.mkdir(parents=True, exist_ok=True)
-    (bundle / "universal_training_controller_v34.py").write_text("# synthetic test target\n", encoding="utf-8")
-    monkeypatch.setattr(entry, "prepare_controller_cache", lambda _root: bundle)
+    def prepare(root: Path) -> Path:
+        events.append(("prepare", root))
+        return pinned
 
-    if calls is None:
-        monkeypatch.setattr(entry.subprocess, "call", lambda *_args, **_kwargs: 0)
-    else:
-        def capture(args, **kwargs):
-            calls.append((list(args), kwargs))
-            return 0
-        monkeypatch.setattr(entry.subprocess, "call", capture)
+    def load(path: Path):
+        events.append(("load", path))
+        return fake_v36
 
+    def materialize(root: Path, module):
+        events.append(("materialize", (root, module)))
+        return tmp_path / "bundle"
 
-def test_audit_does_not_materialize_private_opf_and_forwards_canonical_flag(monkeypatch, tmp_path: Path) -> None:
-    calls: list = []
-    _isolate_entry(monkeypatch, tmp_path, calls)
+    monkeypatch.setattr(entry, "_prepare_v36_entry", prepare)
+    monkeypatch.setattr(entry, "_load_v36", load)
+    monkeypatch.setattr(entry, "_materialize_bundle", materialize)
 
-    def forbidden(*_args, **_kwargs):
-        raise AssertionError("diagnostic mode attempted OPF runtime materialization")
-
-    monkeypatch.setattr(entry, "prepare_reference_cache", forbidden)
-    monkeypatch.setattr(sys, "argv", ["universal_training_controller_entry.py", "--training-control-audit"])
-    assert entry.main() == 0
-    assert len(calls) == 1
-    assert calls[0][0][-1] == "--audit-training-coverage"
-    assert "--training-control-audit" not in calls[0][0]
-
-
-def test_list_does_not_materialize_private_opf_and_aliases_consistently(monkeypatch, tmp_path: Path) -> None:
-    calls: list = []
-    _isolate_entry(monkeypatch, tmp_path, calls)
-
-    def forbidden(*_args, **_kwargs):
-        raise AssertionError("list mode attempted OPF runtime materialization")
-
-    monkeypatch.setattr(entry, "prepare_reference_cache", forbidden)
-    monkeypatch.setattr(sys, "argv", ["universal_training_controller_entry.py", "--training-control-list-jobs"])
-    assert entry.main() == 0
-    assert calls[0][0][-1] == "--list-training-jobs"
-
-
-def test_native_diagnostic_flags_are_idempotent(monkeypatch, tmp_path: Path) -> None:
-    calls: list = []
-    _isolate_entry(monkeypatch, tmp_path, calls)
-    monkeypatch.setattr(entry, "prepare_reference_cache", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("unexpected OPF materialization")))
-    monkeypatch.setattr(sys, "argv", ["universal_training_controller_entry.py", "--audit-training-coverage"])
-    assert entry.main() == 0
-    assert calls[0][0][-1] == "--audit-training-coverage"
-
-
-def test_real_run_materializes_only_current_opf_by_default(monkeypatch, tmp_path: Path) -> None:
-    _isolate_entry(monkeypatch, tmp_path)
-    calls: list[tuple[str, dict[str, str]]] = []
-    monkeypatch.setattr(entry, "prepare_reference_cache", lambda _root, commit, files: calls.append((commit, files)))
-    monkeypatch.setattr(sys, "argv", ["universal_training_controller_entry.py", "--skip-setup"])
-    assert entry.main() == 0
-    assert calls == [(entry.OPF_COMMIT, entry.OPF_FILES)]
-
-
-def test_legacy_reference_is_explicit_opt_in(monkeypatch, tmp_path: Path) -> None:
-    _isolate_entry(monkeypatch, tmp_path)
-    monkeypatch.setenv("TRAINING_CONTROL_PREPARE_LEGACY_OPF", "1")
-    calls: list[tuple[str, dict[str, str]]] = []
-    monkeypatch.setattr(entry, "prepare_reference_cache", lambda _root, commit, files: calls.append((commit, files)))
-    monkeypatch.setattr(sys, "argv", ["universal_training_controller_entry.py", "--skip-setup"])
-    assert entry.main() == 0
-    assert calls == [
-        (entry.OPF_COMMIT, entry.OPF_FILES),
-        (entry.LEGACY_OPF_COMMIT, entry.LEGACY_OPF_FILES),
+    assert entry.bootstrap() is fake_v36
+    assert events == [
+        ("prepare", tmp_path.resolve()),
+        ("load", pinned),
+        ("materialize", (tmp_path.resolve(), fake_v36)),
     ]
 
 
-def test_bootstrap_self_test_does_not_start_scheduler(monkeypatch, tmp_path: Path) -> None:
-    monkeypatch.setenv("TRAINING_CONTROL_REPO_ROOT", str(tmp_path))
-    monkeypatch.delenv("TRAINING_CONTROL_SELF_TEST_OPF", raising=False)
-    bundle = tmp_path / ".training_control" / "controller_bundle" / "test-v36"
-    bundle.mkdir(parents=True, exist_ok=True)
-    monkeypatch.setattr(entry, "CONTROLLER_FILES", {})
-    monkeypatch.setattr(entry, "prepare_controller_cache", lambda _root: bundle)
-    monkeypatch.setattr(
-        entry.subprocess,
-        "call",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("self-test attempted scheduler execution")),
+def _zip_with_bundle(name: str, payload: bytes) -> bytes:
+    stream = io.BytesIO()
+    with zipfile.ZipFile(stream, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(f"RigorousRAG-test/{entry.HOST_BUNDLE_DIR}/{name}", payload)
+    return stream.getvalue()
+
+
+def test_materialize_bundle_accepts_only_exact_blob(monkeypatch, tmp_path: Path) -> None:
+    payload = b"print('immutable controller')\n"
+    expected = _blob(payload)
+    module = SimpleNamespace(
+        CONTROLLER_FILES={"tools/example_controller.py": expected},
+        HOST_REPO=entry.HOST_REPO,
     )
-    monkeypatch.setattr(
-        entry,
-        "prepare_reference_cache",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("self-test attempted OPF materialization")),
+    monkeypatch.setattr(entry, "_fetch", lambda _url: _zip_with_bundle("example_controller.py", payload))
+
+    cache = entry._materialize_bundle(tmp_path, module)
+    materialized = cache / "example_controller.py"
+    assert materialized.read_bytes() == payload
+    assert entry.git_blob_sha(materialized.read_bytes()) == expected
+    assert (cache / "BUNDLE.json").is_file()
+
+
+def test_materialize_bundle_rejects_archive_blob_drift(monkeypatch, tmp_path: Path) -> None:
+    expected_payload = b"expected\n"
+    wrong_payload = b"wrong\n"
+    module = SimpleNamespace(
+        CONTROLLER_FILES={"tools/example_controller.py": _blob(expected_payload)},
+        HOST_REPO=entry.HOST_REPO,
     )
-    monkeypatch.setattr(sys, "argv", ["universal_training_controller_entry.py", entry.SELF_TEST_FLAG])
-    assert entry.main() == 0
+    monkeypatch.setattr(entry, "_fetch", lambda _url: _zip_with_bundle("example_controller.py", wrong_payload))
+
+    with pytest.raises(RuntimeError, match="Controller bundle blob mismatch"):
+        entry._materialize_bundle(tmp_path, module)
+
+
+def test_bundle_lookup_flattens_historical_tool_paths() -> None:
+    assert entry._bundle_member("tools/universal_training_controller_v34.py") == (
+        f"{entry.HOST_BUNDLE_DIR}/universal_training_controller_v34.py"
+    )
+
+
+def test_v37_contains_no_scheduler_implementation() -> None:
+    source = Path(entry.__file__).read_text(encoding="utf-8")
+    for forbidden in (
+        "def resolve_concurrency(",
+        "def resolve_launch_capacity(",
+        "def select_launch_device(",
+        "nvidia-smi",
+    ):
+        assert forbidden not in source
