@@ -37,13 +37,14 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Compile v37 estate certificate
+      - name: Compile v38 estate certificate
         run: |
           python -m py_compile \
             tools/account_wide_training_control_audit.py \
             tools/account_wide_training_control_audit_v33.py \
             tools/account_wide_training_control_audit_v34.py \
-            tools/account_wide_training_control_audit_v37.py
+            tools/account_wide_training_control_audit_v37.py \
+            tools/account_wide_training_control_audit_v38.py
 
       - name: Require cross-repository audit credential
         shell: bash
@@ -62,7 +63,7 @@ jobs:
               headers={
                   "Accept": "application/vnd.github+json",
                   "Authorization": f"Bearer {token}",
-                  "User-Agent": "training-control-estate-preflight/37",
+                  "User-Agent": "training-control-estate-preflight/38",
                   "X-GitHub-Api-Version": "2022-11-28",
               },
           )
@@ -82,24 +83,24 @@ jobs:
           print(f"cross-repository credential preflight: visible_owned_repositories={len(names)}")
           PY
 
-      - name: Verify canonical v37 remote estate wiring
+      - name: Verify first-class v38 remote estate authorities
         run: >-
-          python tools/account_wide_training_control_audit_v37.py
+          python tools/account_wide_training_control_audit_v38.py
           --remote-only
-          --output .training_control/account-wide-v37-remote.json
+          --output .training_control/account-wide-v38-remote.json
 
       - name: Clone exact main heads and audit every repository
         run: >-
-          python tools/account_wide_training_control_audit_v37.py
+          python tools/account_wide_training_control_audit_v38.py
           --checkout-root "${{ runner.temp }}/training-control-estate"
           --clone-missing
-          --output .training_control/account-wide-v37-local.json
+          --output .training_control/account-wide-v38-local.json
 
       - name: Print aggregate certificate
         if: always()
         shell: bash
         run: |
-          for report in .training_control/account-wide-v37-*.json; do
+          for report in .training_control/account-wide-v38-*.json; do
             if [[ -f "$report" ]]; then
               echo "===== $report ====="
               cat "$report"
@@ -110,7 +111,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: account-wide-training-control-v37-${{ github.sha }}
-          path: .training_control/account-wide-v37-*.json
+          name: account-wide-training-control-v38-${{ github.sha }}
+          path: .training_control/account-wide-v38-*.json
           if-no-files-found: warn
           retention-days: 30
