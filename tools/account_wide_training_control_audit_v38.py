@@ -1,20 +1,24 @@
 #!/usr/bin/env python3
 """Account-wide static source certificate for exhaustive training-control v38.
 
-v38 inherits the complete v37/v34 retained-trainable scientific closure and adds a
-new estate invariant: a canonical controller pin is not sufficient by itself.
-Every live owner repository except OPF_ADP must expose a first-class repository-
-owned scientific authority from its root launcher.  That authority may be:
+v38 inherits the complete v37/v34 retained-trainable scientific closure and adds
+two estate invariants:
 
-* a trainable scientific/job DAG;
-* a deterministic non-optimizer scientific lifecycle; or
-* a fail-closed no-trainable-surface certificate.
+1. a canonical controller pin is not sufficient by itself; every live owner
+   repository except OPF_ADP must expose a first-class repository-owned scientific
+   authority from its root launcher;
+2. the development topology must match the direct-to-main contract: ``main`` is the
+   default branch and no additional live branch refs remain.
 
-Opaque preservation-adapter roots are rejected.  This prevents a repository from
-appearing estate-complete merely because it can recover some historical launcher.
+A scientific authority may be a trainable scientific/job DAG, a deterministic
+non-optimizer scientific lifecycle, or a fail-closed no-trainable-surface
+certificate. Opaque preservation-adapter roots are rejected. This prevents a
+repository from appearing estate-complete merely because it can recover some
+historical launcher.
+
 The launcher must name its current scientific authority explicitly while still
-pinning the canonical v37 controller and satisfying all inherited local source,
-model, dataset/task/loss/optimizer/scheduler/sampler/augmentation/config/registry/
+pinning canonical v37 and satisfying all inherited local source, model,
+dataset/task/loss/optimizer/scheduler/sampler/augmentation/config/registry/
 combination/ensemble/workflow and exact-resume/early-stopping contracts.
 
 This remains a source/configuration certificate. It does not execute model training
@@ -55,6 +59,17 @@ def _remote(repo_row: dict[str, Any]) -> dict[str, Any]:
     errors = list(row.get("errors") or [])
     authority_kind = "unknown"
     launcher_text = ""
+
+    # The requested estate topology is main-only.  The base audit records these
+    # fields but older schemas treated them as informational; v38 makes them hard
+    # certificate conditions.
+    default_branch = str(row.get("default_branch") or repo_row.get("default_branch") or "")
+    if default_branch != "main":
+        errors.append(f"default branch is not main: {default_branch!r}")
+    extra_branches = [str(value) for value in (row.get("extra_branches") or []) if str(value)]
+    if extra_branches:
+        errors.append("non-main branch refs remain: " + ", ".join(sorted(set(extra_branches))))
+
     try:
         launcher_text = base._raw(full_name, "run_all_training.py", "main").decode(
             "utf-8", errors="replace"
@@ -95,6 +110,7 @@ def _remote(repo_row: dict[str, Any]) -> dict[str, Any]:
         launcher_text
         and any(marker in launcher_text for marker in _FORBIDDEN_OPAQUE_ROOT_MARKERS)
     )
+    row["main_only_topology"] = default_branch == "main" and not extra_branches
     row["errors"] = sorted(set(errors))
     row["pass"] = not row["errors"]
     row["certificate_schema"] = CERTIFICATE_SCHEMA
