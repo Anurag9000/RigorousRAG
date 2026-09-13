@@ -1,0 +1,30 @@
+name: Estate local training-control certificate
+on:
+  push: {branches: [main]}
+  workflow_dispatch:
+permissions: {contents: read}
+jobs:
+  certificate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.11'}
+      - name: Verify canonical repository validator blob
+        run: |
+          python - <<'PY'
+          import hashlib
+          from pathlib import Path
+          p=Path('tools/repository_local_estate_certificate.py'); d=p.read_bytes(); expected='42e6fee5c30b12fb3a502d89288c1f7c71cf6533'; actual=hashlib.sha1(f'blob {len(d)}\0'.encode()+d).hexdigest()
+          if actual!=expected: raise SystemExit(f'canonical validator blob mismatch: {actual} != {expected}')
+          PY
+      - name: Certify this repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python tools/repository_local_estate_certificate.py --repository "$GITHUB_REPOSITORY" --root . --output .training_control/local_estate_certificate.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: {name: 'estate-local-training-control-${{ github.sha }}', path: .training_control/local_estate_certificate.json, if-no-files-found: warn, retention-days: 30}
