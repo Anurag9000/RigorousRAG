@@ -2,9 +2,10 @@
 """Repository-local certificate for the account-wide OPF training-control estate.
 
 This verifier is intentionally safe to run with a repository-scoped GitHub Actions
-token.  It does not enumerate private sibling repositories.  Instead, each target
-repository certifies its own source tree and GitHub topology against the immutable
-shared controller/OPF contract.
+token. It uses that token only for the current repository's private metadata and
+branch topology. Public canonical OPF/controller identities are verified
+anonymously, so a repository-scoped token is never mistaken for cross-repository
+credentials.
 
 Certificate invariants:
 * a first-class repository-owned scientific authority is declared at the root;
@@ -17,7 +18,7 @@ Certificate invariants:
 * the emitted certificate never claims model/data execution or benchmark success.
 
 The repository's own central controller remains responsible for deeper model,
-dataset, task, objective, registry, DAG, resume and early-stopping closure.  This
+dataset, task, objective, registry, DAG, resume and early-stopping closure. This
 program certifies the estate wiring/topology layer and makes those invariants
 independently observable from every private repository.
 """
@@ -29,7 +30,6 @@ import json
 import os
 from pathlib import Path
 import py_compile
-import urllib.parse
 import urllib.request
 from typing import Any
 
@@ -38,7 +38,7 @@ CANONICAL_BOOTSTRAP_BLOB = "05ef472b29933f18e956c69dfb7e543921ddaff5"
 CANONICAL_OPF_COMMIT = "1d1dfbbf7521ac40ee60c1f78f84956bf5f70598"
 CANONICAL_HOST = "Anurag9000/RigorousRAG"
 REFERENCE_REPO = "Anurag9000/OPF_ADP"
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 REQUIRED_ROOT_MARKERS = (
     "scientific_authority",
@@ -77,7 +77,7 @@ def _git_blob_sha(data: bytes) -> str:
 def _headers(token: str, *, raw: bool = False) -> dict[str, str]:
     headers = {
         "Accept": "application/vnd.github.raw+json" if raw else "application/vnd.github+json",
-        "User-Agent": "opf-repository-local-estate-certificate/2",
+        "User-Agent": "opf-repository-local-estate-certificate/3",
         "X-GitHub-Api-Version": "2022-11-28",
     }
     if token:
@@ -85,14 +85,14 @@ def _headers(token: str, *, raw: bool = False) -> dict[str, str]:
     return headers
 
 
-def _json(url: str, token: str) -> Any:
+def _json(url: str, token: str = "") -> Any:
     request = urllib.request.Request(url, headers=_headers(token))
     with urllib.request.urlopen(request, timeout=60) as response:
         return json.loads(response.read().decode("utf-8"))
 
 
-def _bytes(url: str, token: str = "") -> bytes:
-    request = urllib.request.Request(url, headers=_headers(token, raw=True))
+def _bytes(url: str) -> bytes:
+    request = urllib.request.Request(url, headers=_headers("", raw=True))
     with urllib.request.urlopen(request, timeout=60) as response:
         return response.read()
 
@@ -107,7 +107,11 @@ def _branches(repository: str, token: str) -> list[str]:
         )
         if not isinstance(rows, list):
             raise RuntimeError("GitHub branch enumeration did not return a list")
-        names.extend(str(row.get("name")) for row in rows if isinstance(row, dict) and row.get("name"))
+        names.extend(
+            str(row.get("name"))
+            for row in rows
+            if isinstance(row, dict) and row.get("name")
+        )
         if len(rows) < 100:
             break
         page += 1
@@ -136,7 +140,10 @@ def _compile_retained_python(root: Path) -> tuple[int, list[str]]:
 def _atomic_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    temporary.write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
     os.replace(temporary, path)
 
 
@@ -180,7 +187,9 @@ def main() -> int:
                 errors.append("root launcher does not pin canonical v37 blob")
 
     metadata = _json(f"https://api.github.com/repos/{repository}", token)
-    default_branch = str(metadata.get("default_branch") or "") if isinstance(metadata, dict) else ""
+    default_branch = (
+        str(metadata.get("default_branch") or "") if isinstance(metadata, dict) else ""
+    )
     branches = _branches(repository, token)
     extra_branches = sorted(set(branches) - {"main"})
     if default_branch != "main":
@@ -190,7 +199,10 @@ def main() -> int:
     if extra_branches:
         errors.append("extra branch refs remain: " + ", ".join(extra_branches))
 
-    opf_row = _json(f"https://api.github.com/repos/{REFERENCE_REPO}/commits/main", token)
+    # OPF_ADP and RigorousRAG are public canonical references. Verify them
+    # anonymously so repository-scoped GITHUB_TOKEN permissions cannot cause a
+    # false cross-repository failure.
+    opf_row = _json(f"https://api.github.com/repos/{REFERENCE_REPO}/commits/main")
     live_opf = str(opf_row.get("sha") or "") if isinstance(opf_row, dict) else ""
     if live_opf != CANONICAL_OPF_COMMIT:
         errors.append(f"OPF_ADP/main drifted: {live_opf!r} != {CANONICAL_OPF_COMMIT}")
