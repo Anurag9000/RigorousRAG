@@ -1,26 +1,26 @@
 #!/usr/bin/env python3
 """Repository-local certificate for the account-wide OPF training-control estate.
 
-This verifier is intentionally safe to run with a repository-scoped GitHub Actions
-token. It uses that token only for the current repository's private metadata and
-branch topology. Public canonical OPF/controller identities are verified
-anonymously, so a repository-scoped token is never mistaken for cross-repository
-credentials.
+This verifier intentionally requires no cross-repository GitHub API access.  The
+current repository's branch topology is read through the authenticated ``origin``
+remote installed by ``actions/checkout``.  The public immutable RigorousRAG v37
+bootstrap is verified by Git blob identity.  The private OPF_ADP live-head check is
+left to the account-wide v38 certificate, whose credential is explicitly required
+to see private siblings.
 
 Certificate invariants:
 * a first-class repository-owned scientific authority is declared at the root;
 * opaque historical preservation-adapter roots are forbidden;
 * every non-RigorousRAG target pins the exact canonical v37 bootstrap bytes;
-* the repository default branch is ``main`` and no other live branch refs remain;
-* the canonical v37 bootstrap still has its expected Git blob identity;
-* OPF_ADP/main is still the exact scheduler commit certified by v37;
+* the repository remote HEAD/default branch is ``main`` and no other live branch
+  refs remain;
+* the canonical public v37 bootstrap still has its expected Git blob identity;
 * retained Python source (excluding generated/vendor/data trees) compiles;
-* the emitted certificate never claims model/data execution or benchmark success.
+* no model/data execution or benchmark success is claimed by this certificate.
 
-The repository's own central controller remains responsible for deeper model,
-dataset, task, objective, registry, DAG, resume and early-stopping closure. This
-program certifies the estate wiring/topology layer and makes those invariants
-independently observable from every private repository.
+Deeper model/dataset/task/objective/registry/DAG/resume/early-stopping closure stays
+with each repository's own central controller.  Live private OPF drift is checked
+by the account-wide v38 certificate, not guessed from a repository-scoped token.
 """
 from __future__ import annotations
 
@@ -30,6 +30,7 @@ import json
 import os
 from pathlib import Path
 import py_compile
+import subprocess
 import urllib.request
 from typing import Any
 
@@ -37,8 +38,7 @@ CANONICAL_BOOTSTRAP_COMMIT = "fd34a95d18892df7fb14d1efbb99076a7810fb91"
 CANONICAL_BOOTSTRAP_BLOB = "05ef472b29933f18e956c69dfb7e543921ddaff5"
 CANONICAL_OPF_COMMIT = "1d1dfbbf7521ac40ee60c1f78f84956bf5f70598"
 CANONICAL_HOST = "Anurag9000/RigorousRAG"
-REFERENCE_REPO = "Anurag9000/OPF_ADP"
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 REQUIRED_ROOT_MARKERS = (
     "scientific_authority",
@@ -74,48 +74,51 @@ def _git_blob_sha(data: bytes) -> str:
     return hashlib.sha1(f"blob {len(data)}\0".encode("ascii") + data).hexdigest()
 
 
-def _headers(token: str, *, raw: bool = False) -> dict[str, str]:
-    headers = {
-        "Accept": "application/vnd.github.raw+json" if raw else "application/vnd.github+json",
-        "User-Agent": "opf-repository-local-estate-certificate/3",
-        "X-GitHub-Api-Version": "2022-11-28",
-    }
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    return headers
-
-
-def _json(url: str, token: str = "") -> Any:
-    request = urllib.request.Request(url, headers=_headers(token))
-    with urllib.request.urlopen(request, timeout=60) as response:
-        return json.loads(response.read().decode("utf-8"))
-
-
-def _bytes(url: str) -> bytes:
-    request = urllib.request.Request(url, headers=_headers("", raw=True))
+def _public_bytes(url: str) -> bytes:
+    request = urllib.request.Request(
+        url,
+        headers={"User-Agent": "opf-repository-local-estate-certificate/4"},
+    )
     with urllib.request.urlopen(request, timeout=60) as response:
         return response.read()
 
 
-def _branches(repository: str, token: str) -> list[str]:
-    names: list[str] = []
-    page = 1
-    while True:
-        rows = _json(
-            f"https://api.github.com/repos/{repository}/branches?per_page=100&page={page}",
-            token,
+def _git_output(root: Path, *args: str) -> str:
+    completed = subprocess.run(
+        ["git", *args],
+        cwd=root,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if completed.returncode != 0:
+        raise RuntimeError(
+            f"git {' '.join(args)} failed ({completed.returncode}): {completed.stderr.strip()}"
         )
-        if not isinstance(rows, list):
-            raise RuntimeError("GitHub branch enumeration did not return a list")
-        names.extend(
-            str(row.get("name"))
-            for row in rows
-            if isinstance(row, dict) and row.get("name")
-        )
-        if len(rows) < 100:
+    return completed.stdout
+
+
+def _remote_topology(root: Path) -> tuple[str, list[str]]:
+    # actions/checkout persists a current-repository credential in git config, so
+    # these commands work for private repositories without any sibling access.
+    symref = _git_output(root, "ls-remote", "--symref", "origin", "HEAD")
+    default_branch = ""
+    for line in symref.splitlines():
+        fields = line.split()
+        if len(fields) >= 3 and fields[0] == "ref:" and fields[2] == "HEAD":
+            prefix = "refs/heads/"
+            if fields[1].startswith(prefix):
+                default_branch = fields[1][len(prefix):]
             break
-        page += 1
-    return sorted(set(names))
+    heads = _git_output(root, "ls-remote", "--heads", "origin")
+    branches: list[str] = []
+    prefix = "refs/heads/"
+    for line in heads.splitlines():
+        fields = line.split()
+        if len(fields) < 2 or not fields[1].startswith(prefix):
+            continue
+        branches.append(fields[1][len(prefix):])
+    return default_branch, sorted(set(branches))
 
 
 def _compile_retained_python(root: Path) -> tuple[int, list[str]]:
@@ -165,7 +168,6 @@ def main() -> int:
     if not repository or "/" not in repository:
         raise SystemExit("--repository or GITHUB_REPOSITORY must be owner/name")
     root = args.root.resolve()
-    token = (os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN") or "").strip()
     errors: list[str] = []
 
     launcher = root / "run_all_training.py"
@@ -186,11 +188,11 @@ def main() -> int:
             if CANONICAL_BOOTSTRAP_BLOB not in launcher_text:
                 errors.append("root launcher does not pin canonical v37 blob")
 
-    metadata = _json(f"https://api.github.com/repos/{repository}", token)
-    default_branch = (
-        str(metadata.get("default_branch") or "") if isinstance(metadata, dict) else ""
-    )
-    branches = _branches(repository, token)
+    try:
+        default_branch, branches = _remote_topology(root)
+    except Exception as exc:
+        default_branch, branches = "", []
+        errors.append(f"cannot inspect authenticated origin topology: {type(exc).__name__}: {exc}")
     extra_branches = sorted(set(branches) - {"main"})
     if default_branch != "main":
         errors.append(f"default branch is {default_branch!r}, not 'main'")
@@ -199,15 +201,7 @@ def main() -> int:
     if extra_branches:
         errors.append("extra branch refs remain: " + ", ".join(extra_branches))
 
-    # OPF_ADP and RigorousRAG are public canonical references. Verify them
-    # anonymously so repository-scoped GITHUB_TOKEN permissions cannot cause a
-    # false cross-repository failure.
-    opf_row = _json(f"https://api.github.com/repos/{REFERENCE_REPO}/commits/main")
-    live_opf = str(opf_row.get("sha") or "") if isinstance(opf_row, dict) else ""
-    if live_opf != CANONICAL_OPF_COMMIT:
-        errors.append(f"OPF_ADP/main drifted: {live_opf!r} != {CANONICAL_OPF_COMMIT}")
-
-    bootstrap = _bytes(
+    bootstrap = _public_bytes(
         f"https://raw.githubusercontent.com/{CANONICAL_HOST}/{CANONICAL_BOOTSTRAP_COMMIT}/"
         "tools/universal_training_controller_entry.py"
     )
@@ -235,7 +229,8 @@ def main() -> int:
         "canonical_v37_blob": CANONICAL_BOOTSTRAP_BLOB,
         "observed_v37_blob": observed_bootstrap_blob,
         "canonical_opf_commit": CANONICAL_OPF_COMMIT,
-        "observed_opf_main": live_opf,
+        "live_private_opf_head_checked_here": False,
+        "live_private_opf_head_check_authority": "account-wide-v38-with-cross-repository-credential",
         "compiled_retained_python_files": compiled,
         "compile_failures": compile_failures,
         "errors": sorted(set(errors)),
