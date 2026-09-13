@@ -2,13 +2,16 @@
 """Account-wide static source certificate for exhaustive training-control v38.
 
 v38 inherits the complete v37/v34 retained-trainable scientific closure and adds
-two estate invariants:
+three estate invariants:
 
 1. a canonical controller pin is not sufficient by itself; every live owner
    repository except OPF_ADP must expose a first-class repository-owned scientific
    authority from its root launcher;
 2. the development topology must match the direct-to-main contract: ``main`` is the
-   default branch and no additional live branch refs remain.
+   default branch and no additional live branch refs remain; and
+3. the literal OPF_ADP scheduler reference must still be the live ``main`` head.
+   Any future OPF scheduler change therefore invalidates this certificate until the
+   shared controller is deliberately reviewed, repinned and revalidated.
 
 A scientific authority may be a trainable scientific/job DAG, a deterministic
 non-optimizer scientific lifecycle, or a fail-closed no-trainable-surface
@@ -26,6 +29,8 @@ or claim empirical/runtime correctness.
 """
 from __future__ import annotations
 
+import re
+import sys
 from typing import Any
 
 import account_wide_training_control_audit as base
@@ -35,6 +40,7 @@ CANONICAL_BOOTSTRAP_COMMIT = "fd34a95d18892df7fb14d1efbb99076a7810fb91"
 CANONICAL_BOOTSTRAP_BLOB = "05ef472b29933f18e956c69dfb7e543921ddaff5"
 CANONICAL_ADAPTER_COMMIT = "ab4ad585a3cfd0b0350a163983ead9ad7a51d559"
 CANONICAL_ADAPTER_BLOB = "046ef85de71ac2d9852cd43d615d4db8c8ee5f1c"
+LITERAL_OPF_REFERENCE_COMMIT = "1d1dfbbf7521ac40ee60c1f78f84956bf5f70598"
 CERTIFICATE_SCHEMA = 38
 
 _AUTHORITY_MARKERS = (
@@ -47,6 +53,7 @@ _FORBIDDEN_OPAQUE_ROOT_MARKERS = (
     "TRAINING_LAUNCHER_BASE_COMMIT",
     "repo_training_launcher_adapter.py",
 )
+_STRICT_TRUE = re.compile(r"[\"']strict_coverage[\"']\s*:\s*True\b")
 
 
 def _remote(repo_row: dict[str, Any]) -> dict[str, Any]:
@@ -60,7 +67,7 @@ def _remote(repo_row: dict[str, Any]) -> dict[str, Any]:
     authority_kind = "unknown"
     launcher_text = ""
 
-    # The requested estate topology is main-only.  The base audit records these
+    # The requested estate topology is main-only. The base audit records these
     # fields but older schemas treated them as informational; v38 makes them hard
     # certificate conditions.
     default_branch = str(row.get("default_branch") or repo_row.get("default_branch") or "")
@@ -96,9 +103,10 @@ def _remote(repo_row: dict[str, Any]) -> dict[str, Any]:
             authority_kind = "non_optimizer_scientific_lifecycle"
 
         # Strict roots must not turn the repository-owned authority into generic
-        # auto-discovery again. Explicit catalog/authority logic remains primary.
-        if '"strict_coverage": True' not in launcher_text and "'strict_coverage': True" not in launcher_text:
-            errors.append("root scientific authority does not visibly enable strict_coverage")
+        # auto-discovery again.  Accept normal Python formatting, compact literals,
+        # and either quote style while still requiring a literal True value.
+        if _STRICT_TRUE.search(launcher_text) is None:
+            errors.append("root scientific authority does not visibly enable strict_coverage=True")
         if "require_literal_opf_mechanism_parity" not in launcher_text:
             errors.append("root scientific authority does not require literal OPF mechanism parity")
         if "require_all_retained_trainable_source_reachability" not in launcher_text:
@@ -119,10 +127,37 @@ def _remote(repo_row: dict[str, Any]) -> dict[str, Any]:
 
 def _strict(report: dict[str, Any]) -> list[str]:
     # Retain the complete v34 local retained-source scientific closure unchanged.
-    return retained._strict(report)
+    errors = list(retained._strict(report))
+    controls = report.get("strict_controls") or {}
+    if not isinstance(controls, dict):
+        errors.append("strict_controls missing/not an object")
+    else:
+        for key in (
+            "require_literal_opf_mechanism_parity",
+            "require_all_retained_trainable_source_reachability",
+            "require_source_proven_training_exact_resume",
+            "require_source_proven_training_early_stopping",
+            "require_full_scientific_choice_accounting",
+            "require_role_paradigm_protocol_accounting",
+        ):
+            if controls.get(key) is not True:
+                errors.append(f"strict control absent/disabled: {key}")
+    return sorted(set(errors))
 
 
 def main() -> int:
+    # Estate certification is always relative to the live literal OPF scheduler.
+    # A new OPF commit intentionally makes v38 fail until the shared authority is
+    # reviewed and repinned; this prevents a stale "ditto" claim across 40 repos.
+    live_opf = base._main_sha(f"{base.OWNER}/{base.REFERENCE_REPO}")
+    if live_opf != LITERAL_OPF_REFERENCE_COMMIT:
+        print(
+            "v38 refuses stale OPF parity: "
+            f"live OPF_ADP/main={live_opf!r}, pinned={LITERAL_OPF_REFERENCE_COMMIT}",
+            file=sys.stderr,
+        )
+        return 2
+
     base.CANONICAL_BOOTSTRAP_COMMIT = CANONICAL_BOOTSTRAP_COMMIT
     base.CANONICAL_BOOTSTRAP_BLOB = CANONICAL_BOOTSTRAP_BLOB
     base.SCHEMA = CERTIFICATE_SCHEMA
