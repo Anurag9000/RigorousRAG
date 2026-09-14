@@ -1,0 +1,45 @@
+name: dataset-cohort-source-audit
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'training/dataset_cohort_*.py'
+      - 'training/rigorousrag_*_cohort.py'
+      - 'training/run_rigorousrag_*_cohort.py'
+      - 'tools/dataset_cohort_runtime_entry.py'
+      - '.github/workflows/dataset-cohort-source-audit.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile cohort sources
+        run: |
+          python -m py_compile \
+            training/dataset_cohort_runtime.py \
+            training/dataset_cohort_contract.py \
+            training/rigorousrag_retrieval_cohort.py \
+            training/run_rigorousrag_retrieval_cohort.py \
+            tools/dataset_cohort_runtime_entry.py
+      - name: Static cohort invariants
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          runtime = Path('training/dataset_cohort_runtime.py').read_text()
+          adapter = Path('training/rigorousrag_retrieval_cohort.py').read_text()
+          worker = Path('training/run_rigorousrag_retrieval_cohort.py').read_text()
+          required_runtime = ['OVERLAP_DATASET_KEY', 'uniform_batch_size', 'BackendMode', 'SharedBatch', 'CohortExecutor']
+          required_adapter = ['effective_accum', 'RetrievalDatasetAdapter', 'RetrievalModelAdapter', 'gradients.pt', '_model_rng']
+          required_worker = ['--backend', '--audit-only', 'member_count', 'uniform_physical_batch_size']
+          missing = [x for x in required_runtime if x not in runtime] + [x for x in required_adapter if x not in adapter] + [x for x in required_worker if x not in worker]
+          if missing:
+              raise SystemExit(f'missing cohort invariants: {missing}')
+          PY
