@@ -1,10 +1,10 @@
 """Fail-closed scientific contract for dataset-cohort training.
 
 The contract converts repository-owned training-job metadata into the canonical
-runtime's ``ModelSpec`` records.  It is intentionally strict: a retained training
+runtime's ``ModelSpec`` records. It is intentionally strict: a retained training
 job may not become cohort-scheduled unless its dataset identity, model family,
 view contract, physical batch size, backend capabilities and exact-resume adapter
-are explicit.  Non-training jobs are left to the outer OPF DAG unchanged.
+are explicit. Non-training jobs are left to the outer OPF DAG unchanged.
 """
 from __future__ import annotations
 
@@ -90,8 +90,12 @@ def model_spec_from_job(job: Mapping[str, Any]) -> Any:
     metadata = {
         "task": job.get("task"),
         "architecture": job.get("architecture"),
+        "model": job.get("model"),
         "recipe": job.get("recipe"),
+        "recipe_config": job.get("recipe_config") or job.get("config") or job.get("config_path"),
         "source": job.get("entrypoint_source"),
+        "command": list(job.get("command") or ()),
+        "repeat_index": job.get("repeat_index"),
         "restart_exact_monolithic": bool(job.get("cohort_restart_exact_monolithic", False)),
     }
     return runtime.ModelSpec(
