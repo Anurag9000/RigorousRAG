@@ -36,6 +36,10 @@ _BLOCKED: dict[str, str] = {
         "repository write was blocked by the connected GitHub action safety gate; "
         "no bypass is permitted, so the cohort migration remains explicitly open"
     ),
+    "Anurag9000/IndoDocFusion": (
+        "transactional v2 runtime repin was blocked by the connected GitHub action "
+        "safety gate; no bypass is permitted, so its adapter promotion remains open"
+    ),
 }
 
 _ACTIVE_TRUE = re.compile(
