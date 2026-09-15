@@ -2,21 +2,16 @@
 """One-command exhaustive RigorousRAG scientific workload orchestration.
 
 This root launcher owns no resource scheduler. It selects the repository-owned
-closed-world scientific catalog and invokes the canonical v37 bootstrap; that
-bootstrap delegates all admission, GPU selection, RAM/VRAM/swap pressure gates,
+closed-world scientific catalog and invokes the canonical controller bootstrap;
+that bootstrap delegates admission, GPU selection, RAM/VRAM/swap pressure gates,
 concurrency, pause/resume, retries, CUDA-OOM fallback and persistent process state
 to the literal byte-pinned OPF_ADP scheduler.
 
-The authoritative catalog owns the model/data/task/recipe universe. Generic
-lifecycle discovery is deliberately disabled here because RigorousRAG production
-import/evaluation/release CLIs require content-bound arguments; scheduling them
-with no arguments would be incorrect. Their real contracts are represented in
-``config/training_suite.example.json`` and become DAG jobs when explicitly enabled
-with production paths/digests. The shared source-closure stack fails closed when
-any retained trainable/model source is outside the central reachability graph;
-ignore/dynamic/manual/reference labels cannot substitute for an actual job/registry
-path. Repository-authored compatible combinations remain the authority and
-Cartesian products are never invented.
+The v2 scientific authority preserves the complete logical model/data/task/recipe
+inventory while compiling same-dataset learned retrieval recipes into one
+synchronized shared-batch physical cohort. Generic lifecycle discovery remains
+disabled: production import/evaluation/release CLIs require content-bound
+arguments and are admitted only through explicit governed lifecycle jobs.
 """
 from __future__ import annotations
 
@@ -29,7 +24,7 @@ from pathlib import Path
 REPOSITORY = "Anurag9000/RigorousRAG"
 ROOT = Path(__file__).resolve().parent
 CONTROLLER = ROOT / "tools" / "universal_training_controller_entry.py"
-CATALOG = "training/authoritative_training_suite_catalog.py"
+CATALOG = "training/authoritative_training_suite_catalog_v2.py"
 
 TRAINING_CONSOLE_ALIASES = [
     "rigorousrag-advanced-training",
@@ -41,7 +36,7 @@ TRAINING_SUBCOMMAND_ALIASES = [f"{name}:train" for name in TRAINING_CONSOLE_ALIA
 PROFILE = {
     "repository": REPOSITORY,
     "scientific_authority": CATALOG,
-    "scientific_authority_version": 37,
+    "scientific_authority_version": 39,
     "job_catalog": {"path": CATALOG, "function": "iter_jobs", "args": ["exhaustive"]},
     "disable_lifecycle_orchestration": True,
     "auto_lifecycle_discovery": False,
@@ -81,12 +76,17 @@ PROFILE = {
     "require_source_proven_training_early_stopping": True,
     "require_all_retained_trainable_source_reachability": True,
     "require_literal_opf_mechanism_parity": True,
+    "require_dataset_cohort_execution": True,
+    "require_cpu_gpu_backend_variants": True,
+    "require_shared_batch_views": True,
+    "require_uniform_cohort_batch_size": True,
+    "require_cohort_exact_resume": True,
 }
 
 
 def main() -> int:
     if not CONTROLLER.is_file():
-        raise RuntimeError(f"Canonical v37 controller bootstrap is missing: {CONTROLLER}")
+        raise RuntimeError(f"Canonical controller bootstrap is missing: {CONTROLLER}")
     if not (ROOT / CATALOG).is_file():
         raise RuntimeError(f"Authoritative RigorousRAG suite catalog is missing: {ROOT / CATALOG}")
     env = os.environ.copy()
