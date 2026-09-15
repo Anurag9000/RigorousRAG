@@ -7,6 +7,7 @@ on:
       - 'training/rigorousrag_*_cohort.py'
       - 'training/run_rigorousrag_*_cohort.py'
       - 'tools/dataset_cohort_runtime_entry*.py'
+      - 'tools/account_wide_training_control_audit_v39.py'
       - '.github/workflows/dataset-cohort-source-audit.yml'
   workflow_dispatch:
 
@@ -31,7 +32,8 @@ jobs:
             training/rigorousrag_retrieval_cohort.py \
             training/run_rigorousrag_retrieval_cohort.py \
             tools/dataset_cohort_runtime_entry.py \
-            tools/dataset_cohort_runtime_entry_v2.py
+            tools/dataset_cohort_runtime_entry_v2.py \
+            tools/account_wide_training_control_audit_v39.py
       - name: Static cohort invariants
         run: |
           python - <<'PY'
@@ -42,6 +44,7 @@ jobs:
           compatibility = Path('training/dataset_cohort_compatibility.py').read_text()
           adapter = Path('training/rigorousrag_retrieval_cohort.py').read_text()
           worker = Path('training/run_rigorousrag_retrieval_cohort.py').read_text()
+          estate = Path('tools/account_wide_training_control_audit_v39.py').read_text()
           required_runtime = [
               'OVERLAP_DATASET_KEY', 'uniform_batch_size', 'BackendMode',
               'SharedBatch', 'CohortExecutor',
@@ -55,9 +58,7 @@ jobs:
               '9364847538404151966b3719b10a1a9dc5f0f400',
               'load_v1_runtime', 'V1_BLOB', 'git_blob_sha',
           ]
-          required_compatibility = [
-              'sample_stream', 'batch_contract', 'overlap',
-          ]
+          required_compatibility = ['sample_stream', 'batch_contract', 'overlap']
           required_adapter = [
               'effective_accum', 'RetrievalDatasetAdapter',
               'RetrievalModelAdapter', 'gradients.pt', '_model_rng',
@@ -66,6 +67,10 @@ jobs:
               '--backend', '--audit-only', 'member_count',
               'uniform_physical_batch_size',
           ]
+          required_estate = [
+              'ACTIVE', 'PINNED_PENDING_ADAPTER', 'N/A', 'BLOCKED',
+              'dataset_cohort_migration_complete', '_V38_REMOTE',
+          ]
           checks = [
               (runtime, required_runtime, 'v1 runtime'),
               (runtime_v2, required_v2, 'v2 runtime'),
@@ -73,6 +78,7 @@ jobs:
               (compatibility, required_compatibility, 'compatibility planner'),
               (adapter, required_adapter, 'retrieval adapter'),
               (worker, required_worker, 'retrieval worker'),
+              (estate, required_estate, 'estate v39'),
           ]
           missing = [
               f'{label}:{token}'
