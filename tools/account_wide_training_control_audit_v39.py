@@ -29,6 +29,7 @@ import account_wide_training_control_audit as base
 import account_wide_training_control_audit_v38 as v38
 
 CERTIFICATE_SCHEMA = 39
+_V38_REMOTE = v38._remote
 
 _BLOCKED: dict[str, str] = {
     "Anurag9000/existential-coordination-games": (
@@ -91,7 +92,7 @@ def _na_evidence(full_name: str) -> tuple[bool, str | None]:
 
 
 def _remote(repo_row: dict[str, Any]) -> dict[str, Any]:
-    row = v38._remote(repo_row)
+    row = _V38_REMOTE(repo_row)
     full_name = str(repo_row.get("full_name") or "")
     errors = list(row.get("errors") or [])
     launcher = _try_raw(full_name, "run_all_training.py") or ""
