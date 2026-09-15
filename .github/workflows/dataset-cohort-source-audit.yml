@@ -6,7 +6,7 @@ on:
       - 'training/dataset_cohort_*.py'
       - 'training/rigorousrag_*_cohort.py'
       - 'training/run_rigorousrag_*_cohort.py'
-      - 'tools/dataset_cohort_runtime_entry.py'
+      - 'tools/dataset_cohort_runtime_entry*.py'
       - '.github/workflows/dataset-cohort-source-audit.yml'
   workflow_dispatch:
 
@@ -25,21 +25,61 @@ jobs:
         run: |
           python -m py_compile \
             training/dataset_cohort_runtime.py \
+            training/dataset_cohort_runtime_v2.py \
             training/dataset_cohort_contract.py \
+            training/dataset_cohort_compatibility.py \
             training/rigorousrag_retrieval_cohort.py \
             training/run_rigorousrag_retrieval_cohort.py \
-            tools/dataset_cohort_runtime_entry.py
+            tools/dataset_cohort_runtime_entry.py \
+            tools/dataset_cohort_runtime_entry_v2.py
       - name: Static cohort invariants
         run: |
           python - <<'PY'
           from pathlib import Path
           runtime = Path('training/dataset_cohort_runtime.py').read_text()
+          runtime_v2 = Path('training/dataset_cohort_runtime_v2.py').read_text()
+          loader_v2 = Path('tools/dataset_cohort_runtime_entry_v2.py').read_text()
+          compatibility = Path('training/dataset_cohort_compatibility.py').read_text()
           adapter = Path('training/rigorousrag_retrieval_cohort.py').read_text()
           worker = Path('training/run_rigorousrag_retrieval_cohort.py').read_text()
-          required_runtime = ['OVERLAP_DATASET_KEY', 'uniform_batch_size', 'BackendMode', 'SharedBatch', 'CohortExecutor']
-          required_adapter = ['effective_accum', 'RetrievalDatasetAdapter', 'RetrievalModelAdapter', 'gradients.pt', '_model_rng']
-          required_worker = ['--backend', '--audit-only', 'member_count', 'uniform_physical_batch_size']
-          missing = [x for x in required_runtime if x not in runtime] + [x for x in required_adapter if x not in adapter] + [x for x in required_worker if x not in worker]
+          required_runtime = [
+              'OVERLAP_DATASET_KEY', 'uniform_batch_size', 'BackendMode',
+              'SharedBatch', 'CohortExecutor',
+          ]
+          required_v2 = [
+              'completed_models', 'COHORT_MAX_RESIDENT_MODELS',
+              'transactional_batch_safe', 'transactional_batch_commit',
+              'versions', '_adapter_complete',
+          ]
+          required_loader_v2 = [
+              '9364847538404151966b3719b10a1a9dc5f0f400',
+              'load_v1_runtime', 'V1_BLOB', 'git_blob_sha',
+          ]
+          required_compatibility = [
+              'sample_stream', 'batch_contract', 'overlap',
+          ]
+          required_adapter = [
+              'effective_accum', 'RetrievalDatasetAdapter',
+              'RetrievalModelAdapter', 'gradients.pt', '_model_rng',
+          ]
+          required_worker = [
+              '--backend', '--audit-only', 'member_count',
+              'uniform_physical_batch_size',
+          ]
+          checks = [
+              (runtime, required_runtime, 'v1 runtime'),
+              (runtime_v2, required_v2, 'v2 runtime'),
+              (loader_v2, required_loader_v2, 'v2 loader'),
+              (compatibility, required_compatibility, 'compatibility planner'),
+              (adapter, required_adapter, 'retrieval adapter'),
+              (worker, required_worker, 'retrieval worker'),
+          ]
+          missing = [
+              f'{label}:{token}'
+              for text, tokens, label in checks
+              for token in tokens
+              if token not in text
+          ]
           if missing:
               raise SystemExit(f'missing cohort invariants: {missing}')
           PY
