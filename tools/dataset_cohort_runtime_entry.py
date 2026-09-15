@@ -1,8 +1,10 @@
-"""Byte-pinned loader for the canonical dataset-cohort runtime.
+"""Canonical dataset-cohort runtime entry.
 
-Repository-specific scientific authorities should import ``load_runtime`` from a
-copy of this file rather than fork the runtime.  The runtime is immutable by Git
-blob identity; changing it requires a deliberate repin and estate re-audit.
+The immutable v1 loader remains available as ``load_v1_runtime`` because the
+transactional v2 runtime extends that exact base.  ``load_runtime`` is the active
+estate entry and lazily delegates to the blob-verified v2 loader.  Existing
+repositories pinned to the historical v1 commit are unaffected until explicitly
+repinned.
 """
 from __future__ import annotations
 
@@ -30,6 +32,7 @@ def _root() -> Path:
 
 
 def materialize_runtime(root: Path | None = None) -> Path:
+    """Materialize the reviewed immutable v1 base runtime."""
     repository_root = (root or _root()).resolve()
     target = repository_root / ".training_control" / "dataset_cohort" / RUNTIME_COMMIT / "dataset_cohort_runtime.py"
     if target.is_file() and git_blob_sha(target.read_bytes()) == RUNTIME_BLOB:
@@ -47,7 +50,7 @@ def materialize_runtime(root: Path | None = None) -> Path:
     return target
 
 
-def load_runtime(root: Path | None = None) -> ModuleType:
+def load_v1_runtime(root: Path | None = None) -> ModuleType:
     path = materialize_runtime(root)
     name = f"_opf_dataset_cohort_runtime_{RUNTIME_COMMIT[:12]}"
     existing = sys.modules.get(name)
@@ -55,11 +58,26 @@ def load_runtime(root: Path | None = None) -> ModuleType:
         return existing
     spec = importlib.util.spec_from_file_location(name, path)
     if spec is None or spec.loader is None:
-        raise RuntimeError(f"Cannot import dataset-cohort runtime: {path}")
+        raise RuntimeError(f"Cannot import dataset-cohort v1 runtime: {path}")
     module = importlib.util.module_from_spec(spec)
     sys.modules[name] = module
     spec.loader.exec_module(module)
     return module
 
 
-__all__ = ["RUNTIME_BLOB", "RUNTIME_COMMIT", "RUNTIME_PATH", "RUNTIME_REPOSITORY", "load_runtime", "materialize_runtime"]
+def load_runtime(root: Path | None = None) -> ModuleType:
+    """Load the active transactional v2 runtime through its verified entry."""
+    from tools.dataset_cohort_runtime_entry_v2 import load_runtime as load_v2_runtime
+
+    return load_v2_runtime(root or _root())
+
+
+__all__ = [
+    "RUNTIME_BLOB",
+    "RUNTIME_COMMIT",
+    "RUNTIME_PATH",
+    "RUNTIME_REPOSITORY",
+    "load_runtime",
+    "load_v1_runtime",
+    "materialize_runtime",
+]
