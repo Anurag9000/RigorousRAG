@@ -17,7 +17,7 @@ jobs:
           python - <<'PY'
           import hashlib
           from pathlib import Path
-          p=Path('tools/repository_local_estate_certificate.py'); d=p.read_bytes(); expected='42e6fee5c30b12fb3a502d89288c1f7c71cf6533'; actual=hashlib.sha1(f'blob {len(d)}\0'.encode()+d).hexdigest()
+          p=Path('tools/repository_local_estate_certificate.py'); d=p.read_bytes(); expected='ac684a407049b0272e91df97e0de72b4c318c48d'; actual=hashlib.sha1(f'blob {len(d)}\0'.encode()+d).hexdigest()
           if actual!=expected: raise SystemExit(f'canonical validator blob mismatch: {actual} != {expected}')
           PY
       - name: Certify this repository
