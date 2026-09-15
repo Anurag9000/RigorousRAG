@@ -19,7 +19,7 @@ from types import ModuleType
 from tools.dataset_cohort_runtime_entry import (
     RUNTIME_BLOB as V1_BLOB,
     RUNTIME_COMMIT as V1_COMMIT,
-    load_runtime as load_v1_runtime,
+    load_v1_runtime,
 )
 
 RUNTIME_REPOSITORY = "Anurag9000/RigorousRAG"
