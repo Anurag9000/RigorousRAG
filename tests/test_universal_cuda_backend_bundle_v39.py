@@ -37,7 +37,7 @@ def test_v39_bundle_exact_source_and_opf_pins():
 
 
 def test_outer_entry_pins_immutable_v39_stage_and_v38_snapshot():
-    outer = _values(ROOT / "tools" / "universal_training_controller_entry.py", {
+    outer = _values(ROOT / "tools" / "universal_training_controller_entry_v39.py", {
         "BUNDLE_VERSION", "HOST_ARCHIVE_COMMIT", "HOST_BUNDLE_DIR", "V36_COMMIT", "V36_BLOB",
     })
     assert outer == {
