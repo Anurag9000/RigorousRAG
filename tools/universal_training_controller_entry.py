@@ -84,7 +84,9 @@ def _bundle_cache(root: Path, module: ModuleType) -> tuple[Path, dict[str, str],
     digest = hashlib.sha256(
         json.dumps(files, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()[:16]
-    cache = root / ".training_control" / "controller_bundle" / f"v36-{digest}"
+    # Match the immutable inner bootstrap's BUNDLE_VERSION cache key. Otherwise
+    # it ignores this verified archive and makes 60 unauthenticated API blob calls.
+    cache = root / ".training_control" / "controller_bundle" / f"{module.BUNDLE_VERSION}-{digest}"
     marker = {
         "schema": "rigorousrag.training_control.bundle.v36",
         "repository": module.HOST_REPO,
