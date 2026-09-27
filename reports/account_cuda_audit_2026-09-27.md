@@ -261,3 +261,17 @@ mask/return algebra check passed. Neither real CUDA execution nor complete
 PPO/real-world training validation has been established. Exact rollout and
 optimizer/RNG checkpoint-resume, dataset/source governance, and account-wide
 library/device-path coverage remain OPEN.
+
+
+### Synthetic PPO batch-boundary follow-up
+
+A subsequent source review found that the initial 40-transition synthetic loop
+would optimize at 32 and leave eight pre-update-policy observations in the
+next update's buffer. The epoch and standalone demonstration now both use
+exactly one 32-transition rollout per update; the source contract test was
+updated accordingly. Evidence:
+`NutriFlavorOS` commits `44b62301b12e1f2603687a17cbaf3ddcb838364d`,
+`ebce2f8cfc234876307272ee06474f1f22323d3a`,
+`7b5241dafa9e891a7b4459d281a53a7bce42591d`.
+This is a synthetic on-policy contract correction, not real CUDA execution
+or generalized exact-resume certification.
