@@ -1,0 +1,110 @@
+#!/usr/bin/env python3
+"""Universal controller v34: exhaustive retained-trainable-source closure.
+
+v34 preserves the complete v33 lifecycle, scientific ontology, compatible
+combination, exact-resume, semantic early-stopping and source-contract stack.
+It adds one stricter acceptance rule: retained trainable/model source must be
+reachable from the central job graph and cannot be waived merely by broad
+ignore/dynamic-cover/manual/reference accounting labels.
+
+No resource scheduling logic is implemented here. Every ready job continues to
+execute only through the exact byte-pinned OPF_ADP scheduler.
+"""
+from __future__ import annotations
+
+import universal_training_controller_audit_infrastructure as audit_infrastructure
+import universal_training_controller_combination_closure_v27 as combination_closure
+import universal_training_controller_config_matrix as config_matrix
+import universal_training_controller_console as console
+import universal_training_controller_console_defaults as console_defaults
+import universal_training_controller_dag_slicing as dag_slicing
+import universal_training_controller_declared_combination_materializer_v28 as combination_materializer
+import universal_training_controller_declaration_closure_v30 as declaration_closure
+import universal_training_controller_deferred_v4 as deferred
+import universal_training_controller_early_stopping_wiring as early_stopping_wiring
+import universal_training_controller_entrypoint_markers as entrypoint_markers
+import universal_training_controller_exact_resume as exact_resume
+import universal_training_controller_inventory_scope as inventory_scope
+import universal_training_controller_job_catalog_v2 as job_catalog
+import universal_training_controller_large_catalog as large_catalog
+import universal_training_controller_lifecycle as lifecycle
+import universal_training_controller_lifecycle_affinity as lifecycle_affinity
+import universal_training_controller_lifecycle_exhaustive as lifecycle_exhaustive
+import universal_training_controller_metrics as metrics
+import universal_training_controller_metrics_v2 as metrics_v2
+import universal_training_controller_opf_grace as opf_grace
+import universal_training_controller_opf_mechanism_audit as mechanism_audit
+import universal_training_controller_opf_reference_v2 as opf_reference
+import universal_training_controller_profile_file as profile_file
+import universal_training_controller_registry_member_closure as registry_member_closure
+import universal_training_controller_registry_scheduling as registry_scheduling
+import universal_training_controller_restart_exact as restart_exact
+import universal_training_controller_retained_training_closure_v34 as retained_training_closure
+import universal_training_controller_scientific_ontology_v29 as ontology
+import universal_training_controller_scientific_ontology_v31 as ontology_v31
+import universal_training_controller_scientific_ontology_v32 as ontology_v32
+import universal_training_controller_scientific_ontology_v33 as ontology_v33
+import universal_training_controller_scientific_surface_v25 as scientific_surface
+import universal_training_controller_selector_closure_v26 as selector_closure
+import universal_training_controller_semantic_inventory as semantic_inventory
+import universal_training_controller_source_contracts_v24 as source_contracts
+import universal_training_controller_subcommands as subcommands
+import universal_training_controller_training_contracts as training_contracts
+import universal_training_controller_workload_closure as workload_closure
+
+
+def main() -> int:
+    # Build the complete scientific vocabulary before inventory/declaration closure.
+    scientific_surface.install_primitives()
+    selector_closure.install_primitives()
+    ontology.install_primitives()
+    ontology_v31.install_primitives()
+    ontology_v32.install_primitives()
+    ontology_v33.install_primitives()
+    declaration_closure.install_primitives()
+
+    opf_reference.install()
+    profile_file.install()
+    job_catalog.install()
+    lifecycle.install()
+    lifecycle_exhaustive.install()
+    config_matrix.install()
+    combination_materializer.install()
+    early_stopping_wiring.install()
+    lifecycle_affinity.install()
+
+    exact_resume.install()
+    large_catalog.install()
+    console.install()
+    console_defaults.install()
+    subcommands.install()
+    entrypoint_markers.install()
+    inventory_scope.install()
+    audit_infrastructure.install()
+    semantic_inventory.install()
+    workload_closure.install()
+    registry_member_closure.install()
+    scientific_surface.install_contract()
+    selector_closure.install_contract()
+    ontology.install_contract()
+    ontology_v31.install_contract()
+    ontology_v32.install_contract()
+    ontology_v33.install_contract()
+    declaration_closure.install_contract()
+    combination_closure.install()
+    restart_exact.install()
+    opf_grace.install()
+    registry_scheduling.install()
+    training_contracts.install()
+    source_contracts.install()
+    retained_training_closure.install()
+    mechanism_audit.install()
+
+    dag_slicing.install()
+    metrics.install()
+    metrics_v2.install()
+    return deferred.main()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

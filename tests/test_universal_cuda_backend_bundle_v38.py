@@ -29,7 +29,7 @@ def test_v38_bundle_filenames_and_blobs():
         assert blob(path.read_bytes()) == expected, relative
 
 def test_v38_loader_pins_same_bundle_release():
-    tree = ast.parse((ROOT / "tools" / "universal_training_controller_entry.py").read_text())
+    tree = ast.parse((ROOT / "tools" / "universal_training_controller_entry_v38.py").read_text())
     values = {}
     for node in tree.body:
         if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
@@ -50,7 +50,7 @@ def test_outer_archive_cache_reused_by_inner_v38(tmp_path):
     import json
     from types import ModuleType
 
-    outer_path = ROOT / "tools" / "universal_training_controller_entry.py"
+    outer_path = ROOT / "tools" / "universal_training_controller_entry_v38.py"
     inner_path = ROOT / "tools" / "universal_training_controller_entry_v38_bundle.py"
     outer_spec = importlib.util.spec_from_file_location("outer_v38_cache_test", outer_path)
     inner_spec = importlib.util.spec_from_file_location("inner_v38_cache_test", inner_path)
