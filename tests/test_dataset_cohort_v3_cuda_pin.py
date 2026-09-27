@@ -19,7 +19,7 @@ BASE_COMMIT = "955a092e4a3e2cc04adfd8007206acd6d1341dce"
 
 def _blob(path: Path) -> str:
     data = path.read_bytes()
-    return hashlib.sha1(f"blob {len(data)}\\0".encode("ascii") + data).hexdigest()
+    return hashlib.sha1(f"blob {len(data)}\0".encode("ascii") + data).hexdigest()
 
 
 def test_release_has_pinned_corrected_base_and_preserves_v2_state():
