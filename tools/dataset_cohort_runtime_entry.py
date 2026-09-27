@@ -1,8 +1,8 @@
 """Canonical dataset-cohort runtime entry.
 
 The immutable v1 loader remains available as ``load_v1_runtime`` because the
-transactional v2 runtime extends that exact base.  ``load_runtime`` is the active
-estate entry and lazily delegates to the blob-verified v2 loader.  Existing
+transactional v2/v3 runtimes extend pinned bases. ``load_runtime`` selects the
+verified, CUDA-policy-corrected v3 loader; explicit old loaders remain intact. Existing
 repositories pinned to the historical v1 commit are unaffected until explicitly
 repinned.
 """
@@ -66,10 +66,14 @@ def load_v1_runtime(root: Path | None = None) -> ModuleType:
 
 
 def load_runtime(root: Path | None = None) -> ModuleType:
-    """Load the active transactional v2 runtime through its verified entry."""
-    from tools.dataset_cohort_runtime_entry_v2 import load_runtime as load_v2_runtime
+    """Load the active CUDA-policy-corrected v3 transactional runtime.
 
-    return load_v2_runtime(root or _root())
+    Historical v1 and v2 revisions remain independently addressable by their
+    explicit loaders; this does not mutate old experiment/cache identities.
+    """
+    from tools.dataset_cohort_runtime_entry_v3 import load_runtime as load_v3_runtime
+
+    return load_v3_runtime(root or _root())
 
 
 __all__ = [
