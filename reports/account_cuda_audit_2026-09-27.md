@@ -197,3 +197,30 @@ in `9207bc4eaf55da57d410ccd75608154945589809` and
 `6bd6b4dd942e8cb6a0fb2d9c62d10e6f8685646c`. Their original
 no-trainable gate is intentionally still fail-closed: documentation corrections
 do not imply that the retained optimizer workloads have been catalogued.
+
+
+### 2026-09-28 next continuation — NutriFlavor source-level training-path work
+
+The repository-specific audit was extended in
+`NutriFlavorOS/docs/cuda_trainable_surface_audit_2026-09-28.md`
+(commit `9eee84412a0364b9b9c7bfa97ff17e8cb019fb32`).
+Online taste and health minibatches now have explicit shapes, shared inference
+normalization, selected Torch placement and missing-label masking. The synthetic
+PPO script previously ran 20 transitions into a 32-minimum trainer and silently
+saved a no-op; the demo now collects 40 and requires explicit update evidence.
+These are source fixes and synthetic/CPU-contract evidence, **not** real-data
+or CUDA training certificates.
+
+Further inventory identified a distinct retained governed PyTorch research
+trainer under `backend/research/training`, with architecture registries,
+optimizers, stateful loaders, checkpointing and experimental adapters. Its
+auto-device selector originally bypassed CPU admission. Commits
+`bb1720ca0cb803af2263ed2b112d8ba7ce11d906`,
+`7e90fe8c39adc8323871d9a582f83954dfe6f678` and
+`6fb71059b81720c6eacec7ac0b49b572f4b840f9` establish CPU admission
+and usable-CUDA checks in training/evaluation, while
+`307b552d72405c46f4763360ad5e3026a5ca6e46` prevents CPU-admitted
+checkpoint RNG handling from accessing CUDA. Focused simulated-device tests
+are committed. Real training, checkpoint/resume and CPU/GPU numerical parity
+remain OPEN. The prior account-level “no-trainable” description must not be
+used as a whole-software closure statement.
