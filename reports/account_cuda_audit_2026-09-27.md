@@ -363,3 +363,97 @@ and explicit downstream repins are required; historical v39 blobs must
 not be rewritten. GitHub Actions currently fails before any recorded job
 steps, so a full test pass, physical CUDA execution and estate closure
 remain OPEN.
+
+
+## 2026-09-28 verified v40 release and main-branch repin
+
+The active `tools/universal_training_controller_entry.py` is now the exact
+versioned v40 source Git blob
+`68a6f30f6ef77c2f512a0fecd6731bc35b444fa4`, with v39 preserved
+byte-for-byte as `tools/universal_training_controller_entry_v39.py`
+(blob `b97604e12b0c95294be44652ece0d8ab59942109`).
+The new v40 bootstrap pins the separate inner commit
+`7ed16bade494d2191962756a1bf1ca87d8693245` and inner blob
+`046d990addec395cfeb1c4ca820be7d332853d29`, preserves 59
+historical controller/scientific blobs, and changes only the verified OPF
+reference overlay. It pins OPF_ADP commit
+`d3687061296a4cfc063bce149096dcc1d973716b`, six runtime source
+blobs plus three CPU-safe test blobs.
+
+**Real GitHub Actions evidence:** the active v40 static workflow at
+https://github.com/Anurag9000/RigorousRAG/actions/runs/36350065371
+completed successfully: seven versioned source/bundle tests passed,
+archived v39 cold bootstrap passed, active v40 cold bootstrap passed
+(`controller_files=60`, `opf_files=9`, correct OPF commit), and 57
+public controller safety tests passed. Earlier stale-version test fixtures
+and the obsolete source-hash expectation were repaired without changing
+frozen v39 scientific/OPF artifacts.
+
+All 38 shared-launcher repositories had their **main-branch**
+`run_all_training.py` repinned directly to RigorousRAG release commit
+`29b4167737ee5f0958927ce0ad50040d17b708d1` and exact active
+entrypoint blob `68a6f30f6ef77c2f512a0fecd6731bc35b444fa4`.
+After the commits, every one of the 38 was independently reread from
+`main`: all 38 contain precisely one new commit and blob and neither
+of the old v39 identities. No native scientific job/profile bodies
+were rewritten by this controller-only replacement.
+
+| Main-branch repo | Root repin commit |
+|---|---|
+| Text-and-Emotion-Analysis-Tool-with-Visualization | `b07f1cf0930191ad334e8cd4af4ac6e667793df8` |
+| CO-project | `3b4ba38380b62a84762631216edaf9e2688163b7` |
+| Resume | `fc8e8b0bd8e2197ed547fc7660b10d7c486d2514` |
+| Making-LLMs-fill-reimbursement-form | `482689cfe7adb3f9d962cb7b5fac0a3fd31f8141` |
+| Companies-institutes-and-Internships | `096eee64e8ef7d532d535abab5b9af161baed731` |
+| dragonball-chess | `fe3fd432dbc87788abdf189eaa1aaa2e3c7cb2d6` |
+| ERP_College | `a706d0aa72aa9b801362c45759beb6f4b45b21f8` |
+| Breaking-the-Neural-Barrier | `dcd4fe46cd9cef77a940827b95ee394952d07006` |
+| Gram-Connect | `e4a78a977639cee487c4afd5e2601791c6b9800b` |
+| Traffic | `599720d7a41e317caebb2029e3cf0842c8603b31` |
+| ERP_Web | `9c2d8b22090e45b33929da8a463b09fce215d5ab` |
+| Signal-Prophet | `d67d50bc6923c473da325aeb02efa5167e9b8f00` |
+| modular-grokking-adp | `38326716513fff4bbbfb2155f2d4d3f934702dcc` |
+| hallucination-resistant-llm-framework | `f0c9b2c1d9579bb7c4023a117d9ca22f8875dcd5` |
+| NutriFlavorOS | `e04df979dd719adb8daab1058c97f05f2296a396` |
+| PlaceMate-AI | `cd8d853786458c4b358e90a10f4f319a9a34fc39` |
+| HydroGraph-Delhi (`main` only; default `master` remains older) | `8d030e3bf7b5f1c79c5c2e2a9e7c4b8578de92b5` |
+| Silicon-Pilot | `3cbc6e9d78c5c7c4df7fba8daa88bd6f00f5a625` |
+| existential-coordination-games | `2d50396c60052c32a03ea4c0bac8fb0423daff05` |
+| ESD_Project | `d9b23a580c34eddb17b1fc2a8683fe04f20d6f2a` |
+| End-to-End-Digital-Communication-System | `1851711c49cf07e80459735412bcaf714d219950` |
+| Smart-Glasses | `ce768ee599d30faab2c30cf39aeb51fd60f568ee` |
+| Continual-Learning | `7c42b6aa735bbceb7ae9262510c58ecea16d6f3f` |
+| VaaniNoise-SED | `c5944f08dfe5fb8116c6c598496bfb4c74609205` |
+| VaaniEventClean | `6e801123f533387c4315072280ceb57b8979713a` |
+| TutorMistakeLens | `e6bf1d33c5dd036566e2d1a5ee970ecf8fd8c8ea` |
+| TutorGuidance-Eval | `205e5803b7281fd033fc6d4fd0910538aab46bcf` |
+| CatalogPathForge | `9b871679e7cfcc3a74d681055c79bca11fc3c839` |
+| ReceiptTupleForge | `a29b3a97835964639be2ad047486361397300dd5` |
+| MASSIVE-IntentForge | `ac54641c673b1c7beb6ab4917fb894d0265cf9f6` |
+| IndoIntent-150 | `ada1a90d3fc78b02cd1826830b428196b9dd63b2` |
+| DocVision | `556469f7c281942e20c469729c460a252dd2a336` |
+| IndoDocFusion | `3fbba4b29a7456cef4940b31c9548d7281ba7136` |
+| HinglishKnowledge-NLI | `9aedc81eb2dc13140679df378cd023157fd5f7af` |
+| IndicRelationForge | `51a822a753789f7573e4af02c1b81b01e7c17e85` |
+| continual-learning-with-rl | `41eb34a55c00fd55ef6149defb4700265cb69065` |
+| Railguard-AI | `9fab7e92d69d042a8f47744d381a5c5d0018aca3` |
+| False-News-Interpretability | `582276d95cf2ad33464c182ec276107d05a8bfe0` |
+
+The CLRL v89 source verifier was additionally updated at
+`f0d7b69cf8e55b17ce89b80d4e7abadea6d08fde` to pin its new
+wrapper blob `4a0cb3f31d61ca43d4bb87b258bfc6714bae2bd1`
+without changing the frozen v89 scientific-authority and catalog blobs.
+Its controller regression was updated at
+`14c88963850264529d517cfcd52f15aa931ea46c`.
+
+**Important limitations:** the OPF_ADP private-repository Actions workflow
+has thus far failed with zero recorded job steps, and v40 cold bootstrap
+does not download the private OPF source unless
+`TRAINING_CONTROL_SELF_TEST_OPF=1` is set. The nine OPF paths/hashes were
+verified against the pinned Git tree through the authorized GitHub connector;
+this is not the same as runtime import on a clean GPU server. Per-repository
+full scientific/job coverage, physical CUDA execution, library substitution,
+OOM-recovery and CPU/GPU numerical parity remain independently OPEN.
+Six repositories have separate native/no-trainable or source-specific
+orchestration cases; the 38 shared-root repin count does not imply all
+44 are execution-certified. HydroGraph's default-branch migration is OPEN.
