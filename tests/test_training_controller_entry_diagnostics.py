@@ -108,6 +108,7 @@ def test_materialize_bundle_accepts_only_exact_blob(monkeypatch, tmp_path: Path)
     module = SimpleNamespace(
         CONTROLLER_FILES={"tools/example_controller.py": expected},
         HOST_REPO=entry.HOST_REPO,
+        BUNDLE_VERSION=entry.BUNDLE_VERSION,
     )
     monkeypatch.setattr(entry, "_fetch", lambda _url: _zip_with_bundle("example_controller.py", payload))
 
@@ -124,6 +125,7 @@ def test_materialize_bundle_rejects_archive_blob_drift(monkeypatch, tmp_path: Pa
     module = SimpleNamespace(
         CONTROLLER_FILES={"tools/example_controller.py": _blob(expected_payload)},
         HOST_REPO=entry.HOST_REPO,
+        BUNDLE_VERSION=entry.BUNDLE_VERSION,
     )
     monkeypatch.setattr(entry, "_fetch", lambda _url: _zip_with_bundle("example_controller.py", wrong_payload))
 
