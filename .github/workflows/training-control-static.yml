@@ -81,17 +81,17 @@ jobs:
             tests/test_universal_cuda_backend_bundle_v39.py \
             tests/test_universal_cuda_backend_bundle_v40.py
 
-      - name: Exercise active v39 cold bootstrap in an empty repository root
+      - name: Exercise archived v39 cold bootstrap in an empty repository root
         run: |
           tmp="$(mktemp -d)"
           TRAINING_CONTROL_REPO_ROOT="$tmp" \
-            python tools/universal_training_controller_entry.py --training-control-bootstrap-self-test
+            python tools/universal_training_controller_entry_v39.py --training-control-bootstrap-self-test
 
-      - name: Exercise staged v40 cold bootstrap with pinned OPF reference
+      - name: Exercise active and versioned v40 cold bootstrap with pinned OPF reference
         run: |
           tmp="$(mktemp -d)"
           TRAINING_CONTROL_REPO_ROOT="$tmp" \
-            python tools/universal_training_controller_entry_v40.py --training-control-bootstrap-self-test \
+            python tools/universal_training_controller_entry.py --training-control-bootstrap-self-test \
             > "$tmp/v40-bootstrap-result.json"
           cat "$tmp/v40-bootstrap-result.json"
           python - "$tmp/v40-bootstrap-result.json" <<'PY'
