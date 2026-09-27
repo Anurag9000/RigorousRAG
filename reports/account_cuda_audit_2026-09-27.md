@@ -79,3 +79,22 @@ Snapshot date: 2026-09-27. Scope: 44 connected repositories under Anurag9000, in
 - **Historic bundles:** Frozen versions remain in history for reproducibility; do not rewrite historical hashes or claim earlier experiments used the updated implementation.
 
 **Closure status: source-pin propagation verified; account-wide complete CUDA-first implementation and execution certification remain OPEN.**
+
+## Follow-up implementation — worker/runtime contracts
+
+Source commits, all direct to `main` (not a CUDA-hardware test certificate):
+
+| Repository | Commit | Verified source-level change | Remaining qualification |
+|---|---|---|---|
+| STM32n6AI | `696fa2525aa21060efc5f8d133b8ef2827ccb64b` | Native request hash/device assignment and CPU/GPU policy checks | Actual trainer output needed |
+| STM32n6AI | `4f1093dbb97fddca526d04655be400f6f63fc226` | Gaze, liveness, audio minibatches/models dispatched to selected Torch device | Other native routes not yet qualified |
+| STM32n6AI | `a36dc4f4644e40b10cdce825cd0bf4c8794c2a4c` | GPU-admitted jobs without trainer execution-device evidence fail closed | Device report is not a performance benchmark |
+| STM32n6AI | `c5963fc6a3687e73c263b5d578787cd7ba23af4b` | Direct launcher requires explicit admitted placement; failed spawn restores retryable state | Multi-GPU/restart integration still open |
+| Smart-Glasses | `67a08bfec50f8f57fa575fd05fa6b786b075496e` | CuPy/cuDF/ONNX/OpenCV optional probes respect forced CPU and CUDA mask | Dataset/model family traces still open |
+| End-to-End-Digital-Communication-System | `c8be2f4c7a2b2957b71458a5fdd0ffb52f26d478` | NumPy/CuPy selector honors central CPU policy; invalid modes rejected | Full CUDA BER/sweep parity still open |
+| Last-War | `67a324aeabe802d250787af705591f4bd863063c` | Optional batch observation bridge honors CPU admission and probes usable Torch CUDA | C++ simulation itself remains CPU/host-parallel; no native GPU simulation claim |
+| NutriFlavorOS | `7c9261a270796b4dc409b465576567a8683cf07a` | Synthetic model script propagates partial failure and no longer labels fake training as production | No-trainable root declaration vs retained synthetic optimizer loops remains unresolved |
+
+The shared v38 source pin remains unchanged; downstream fixes do not silently mutate the historical scheduler or experiment caches. CI run status is not a runtime proof: several project workflows report failure without executing job steps. On supported machines, complete both CPU-only and real CUDA execution tests with exact checkpoint and metric provenance.
+
+**Status remains OPEN:** GPU detection and pin identity do not imply every relevant model or library was accelerated, and no per-repository comprehensive CPU/GPU numerical-parity certificate has been issued.
