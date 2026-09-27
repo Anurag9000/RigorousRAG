@@ -113,16 +113,25 @@ def _nvidia_smi() -> bool:
 
 def detect_backend(mode: str | BackendMode = BackendMode.AUTO) -> BackendProbe:
     selected = mode if isinstance(mode, BackendMode) else BackendMode(str(mode))
-    if _truthy(os.environ.get("CPU_ONLY")) or _truthy(os.environ.get("TRAINING_CONTROL_CPU_ONLY")):
-        selected = BackendMode.CPU
+    forced_cpu = any(_truthy(os.environ.get(name)) for name in (
+        "CPU_ONLY", "TRAINING_CONTROL_CPU_ONLY", "OPF_ADP_DISABLE_GPU_ACCELERATORS",
+    ))
     visible = os.environ.get("CUDA_VISIBLE_DEVICES")
     hidden = visible in {"", "-1"}
+    if selected is BackendMode.GPU and (forced_cpu or hidden):
+        raise BackendUnavailable("GPU requested but central CPU policy masks CUDA")
+    if forced_cpu:
+        selected = BackendMode.CPU
     torch_cuda = cupy_cuda = jax_gpu = tensorflow_gpu = False
-    torch = _safe_import("torch")
+    torch = _safe_import("torch") if not forced_cpu and not hidden else None
     if torch is not None:
         with contextlib.suppress(Exception):
-            torch_cuda = bool(torch.cuda.is_available() and torch.cuda.device_count() > 0)
-    cupy = _safe_import("cupy")
+            if torch.cuda.is_available() and torch.cuda.device_count() > 0:
+                # nvidia-smi and is_available() do not certify a usable wheel.
+                probe = torch.empty((1,), device="cuda:0")
+                del probe
+                torch_cuda = True
+    cupy = _safe_import("cupy") if not forced_cpu and not hidden else None
     if cupy is not None:
         with contextlib.suppress(Exception):
             if int(cupy.cuda.runtime.getDeviceCount()) > 0:
@@ -130,15 +139,15 @@ def detect_backend(mode: str | BackendMode = BackendMode.AUTO) -> BackendProbe:
                 probe = cupy.empty((1,), dtype=cupy.uint8)
                 del probe
                 cupy_cuda = True
-    jax = _safe_import("jax")
+    jax = _safe_import("jax") if not forced_cpu and not hidden else None
     if jax is not None:
         with contextlib.suppress(Exception):
             jax_gpu = any(str(device.platform).lower() in {"gpu", "cuda", "rocm"} for device in jax.devices())
-    tf = _safe_import("tensorflow")
+    tf = _safe_import("tensorflow") if not forced_cpu and not hidden else None
     if tf is not None:
         with contextlib.suppress(Exception):
             tensorflow_gpu = bool(tf.config.list_physical_devices("GPU"))
-    smi = _nvidia_smi()
+    smi = _nvidia_smi() if not forced_cpu else False
     # nvidia-smi reports hardware, not a working Python CUDA runtime.
     available = not hidden and (torch_cuda or cupy_cuda or jax_gpu or tensorflow_gpu)
     if selected is BackendMode.GPU and not available:
@@ -178,19 +187,25 @@ def subprocess_environment(
     """
     selected = mode if isinstance(mode, BackendMode) else BackendMode(str(mode))
     env = dict(os.environ if base is None else base)
-    if selected is BackendMode.CPU:
+    forced_cpu = any(_truthy(env.get(name)) for name in (
+        "CPU_ONLY", "TRAINING_CONTROL_CPU_ONLY", "OPF_ADP_DISABLE_GPU_ACCELERATORS",
+    ))
+    inherited = env.get("CUDA_VISIBLE_DEVICES")
+    if selected is BackendMode.GPU and (forced_cpu or inherited in {"", "-1"}):
+        raise BackendUnavailable("GPU child cannot override central CPU admission")
+    if selected is BackendMode.CPU or forced_cpu:
         env.update(
             CUDA_VISIBLE_DEVICES="",
             HIP_VISIBLE_DEVICES="",
             ROCR_VISIBLE_DEVICES="",
             JAX_PLATFORMS="cpu",
             JAX_PLATFORM_NAME="cpu",
+            OPF_ADP_DISABLE_GPU_ACCELERATORS="1",
             TRAINING_CONTROL_BACKEND="cpu",
             TRAINING_CONTROL_CPU_ONLY="1",
         )
         return env
     # Do not accidentally unmask a CPU child or override scheduler GPU isolation.
-    inherited = env.get("CUDA_VISIBLE_DEVICES")
     if selected is BackendMode.AUTO and inherited in {"", "-1"}:
         env["TRAINING_CONTROL_BACKEND"] = "auto"
         return env
@@ -203,6 +218,7 @@ def subprocess_environment(
     env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
     env["CUDA_VISIBLE_DEVICES"] = index
     env.pop("TRAINING_CONTROL_CPU_ONLY", None)
+    env["OPF_ADP_DISABLE_GPU_ACCELERATORS"] = "0"
     env["TRAINING_CONTROL_BACKEND"] = "gpu" if selected is BackendMode.GPU else "auto"
     return env
 
