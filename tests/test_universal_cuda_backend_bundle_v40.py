@@ -143,3 +143,12 @@ def test_corrupted_v40_overlay_is_rejected_before_cache_certificate(tmp_path):
         with pytest.raises(RuntimeError, match="overlay blob mismatch"):
             outer._materialize_bundle(tmp_path, inner)
     assert not any(tmp_path.rglob("BUNDLE.json"))
+
+
+def test_active_v40_is_exactly_versioned_release_with_archived_v39():
+    assert _blob((ROOT / "tools/universal_training_controller_entry.py").read_bytes()) == _blob(
+        OUTER.read_bytes()
+    ) == "68a6f30f6ef77c2f512a0fecd6731bc35b444fa4"
+    assert _blob((ROOT / "tools/universal_training_controller_entry_v39.py").read_bytes()) == (
+        "b97604e12b0c95294be44652ece0d8ab59942109"
+    )
