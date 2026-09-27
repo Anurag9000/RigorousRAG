@@ -302,3 +302,25 @@ real Torch numerical tests still require actual runtime execution.
 The repository audit is updated at
 `bf950ca95767781155fe01333d7dc978635b8a2b`.
 The estate CUDA audit remains OPEN.
+
+
+### 2026-09-28 explicit-model and scheduler-backend admission correction
+
+A subsequent NutriFlavorOS source audit found that six retained model
+constructors accepted explicit devices without checking central CPU
+admission. All six now route explicit/default device placement through
+the same verified Torch resolver. It checks a requested CUDA device's
+allocation and kernel completion; cached device/memory helpers mask an
+imposed CPU policy. Both the legacy ML stack and the separate governed
+research trainer recognize `TRAINING_CONTROL_BACKEND=gpu/cpu` from
+the shared OPF scheduler: GPU-admitted workers fail closed when CUDA
+cannot execute instead of claiming a CPU fallback as GPU training,
+and CPU workers do not access accelerators. A failed GPU singleton
+initialization is not retained.
+
+Source/test receipts and remaining limitations are recorded in
+`NutriFlavorOS/docs/cuda_trainable_surface_audit_2026-09-28.md`,
+commit `775d6ade0a871d1b3dbb6361bedb6ed1ceed8878`.
+This is source-level integration, not an actual six-model CUDA run or
+full estate certification. Other repositories' independent GPU-library,
+model-placement and scheduler routes remain OPEN.
