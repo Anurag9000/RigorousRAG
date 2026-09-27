@@ -82,7 +82,7 @@ def test_v40_scientific_sources_are_identical_to_v39_except_new_opf_overlay():
 
 
 def test_v40_outer_pins_new_inner_and_unchanged_scientific_archive():
-    old = _constants(ROOT / "tools/universal_training_controller_entry.py", {
+    old = _constants(ROOT / "tools/universal_training_controller_entry_v39.py", {
         "BUNDLE_VERSION", "HOST_ARCHIVE_COMMIT", "HOST_BUNDLE_DIR", "V36_BLOB",
     })
     new = _constants(OUTER, {
