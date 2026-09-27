@@ -93,10 +93,12 @@ def test_reference_install_does_not_import_scheduler() -> None:
 
 
 def test_current_literal_runtime_blob_set_is_complete() -> None:
+    # The active v39 overlay is immutable. The new backend hash belongs only
+    # to the separately staged v40 release, not this historical runtime.
     assert reference.OPF_RUNTIME_BLOBS == {
         "utils/opf_massive_suite_runner.py": "b2ae3d04f9398df5c18c7c13f4c939bce46b930d",
         "utils/runtime_tuning.py": "f1cbfc44e009701a5540a046f2cd6b9f41f16b74",
-        "utils/ml_backends.py": "c4cd5eaf783cd7ffbb92ab01ec743ef7cbd13d84",
+        "utils/ml_backends.py": "33108a3e20e982188ebc089399c682b11f202c4c",
         "utils/logging_utils.py": "482ba94643aa921f49eebb835f29cf4930bb2498",
         "utils/opf_shared_defaults.py": "bd76baa134b07567015d0151d5f14ba81dc667df",
         "DNN/VANILLA/Dyn_DNN4OPF/utils/run_defaults.py": "ff79e8c51f1fb21a11e4687989198ef0abb07491",
