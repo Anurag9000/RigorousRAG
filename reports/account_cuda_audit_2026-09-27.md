@@ -567,3 +567,31 @@ scanner remains fail-closed and detects the synthetic, online and
 governed trainer surfaces. It does **not** fabricate production jobs
 or certify completion of the retained training DAG; the source
 inventory, execution and parity remain OPEN.
+
+
+#### Smart-Glasses native GPU helper correction
+
+Independent review found that
+`Smart-Glasses/src/smart_glasses_eye_tracking/gpu_compat.py`
+could activate optional GPU modules despite generic `CPU_ONLY`,
+`TRAINING_CONTROL_CPU_ONLY` or the scheduler's declared CPU backend;
+it also cached CuPy imports across subsequent admission changes and
+previously checked CUDA visibility/allocation without a completed
+operation. Native source commits
+`da8449062a6500aef0d7f7fecb49df255a71d2ee` and
+`ef64a5abf2401a2aaff783e1406a729b695b8bd1` now enforce independent
+CPU admission before public helper probes/conversions, reject
+preexisting accelerator-array conversion in a CPU child, and run
+allocation + operation + synchronization for Torch/CuPy capability.
+A scoped test extension at
+`d0c71b2bb1e487831588e7fe55cab1e05e56abcc` and new
+`gpu-compat-cpu-contract` workflow at
+`44a3d07dea9983e20a9cce2e75183ce16e42e112`
+cover the admission aliases and mockable probe contract.
+Source-specific limitations and receipts are in
+`Smart-Glasses/docs/gpu_acceleration.md` at
+`6ff25d0cc4ccaa670ad3174e303c90084d08e9d8`.
+The private workflow again reported no runner/steps, so this is not
+a source-test or real-GPU pass. ONNX/OpenCV/cuDF advertised providers
+still require actual task-execution proof; the full Smart-Glasses
+functional/ML surface and other repositories remain independently OPEN.
