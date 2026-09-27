@@ -657,3 +657,37 @@ full native executor/worker tests are checked in, but GitHub Actions
 run `36357625830` ended with zero steps/no runner. Physical CUDA,
 per-model training, datasets, pressure recovery, checkpoint exact
 resume and firmware/export verification remain OPEN.
+
+
+#### Breaking-the-Neural-Barrier native Torch/CuPy/RAPIDS and nested-child admission
+
+The active shared v41 controller pin alone did not close BTN's independent
+`utils/gpu_acceleration.py`, `utils/device_utils.py`,
+`utils/seed_utils.py` and `utils/pressure_control.py` paths.
+BTN's native GPU detection accepted a manual enable flag or Torch driver
+visibility without a completed operation, omitted independent CPU-only
+aliases, and its cached default device could remain CUDA after parent CPU
+admission. Native fixes now require actual allocated Torch/CuPy operations
+and synchronization; gate optional RAPIDS imports, CUDA seed/RNG/cleanup,
+and default device selection on the parent CPU/GPU policy; and fail
+GPU-admitted Torch work instead of silently relabeling CPU fallback.
+
+A separate nested-child audit found that BTN's
+`build_cuda_visible_devices_env` could override parent CPU masks and
+remap to GPUs outside an inherited allocation. It now rejects such
+requests and narrows already-assigned device masks by local index.
+Focused fake-CUDA, CPU-only Torch, pressure, seed and visibility-ownership
+regressions are checked in and routed through
+`.github/workflows/btn-cuda-admission-contract.yml`.
+Full source investigation, test map and remaining proof obligations:
+`Breaking-the-Neural-Barrier/docs/btn_native_cuda_admission_audit_2026-09-28.md`
+(commit `0df8279f4f5163b6583d5c583800e7b5fe552a80`).
+The checked native helper/source blobs were independently reread from
+`main`; scientific authority `training_catalog_v4.py` was not changed.
+
+The recent focused BTN workflow likewise failed **before runner
+assignment**, with zero recorded steps. This is not a test pass, a
+demonstrated source failure, or actual CUDA verification. The retained
+7,679-file BTN tree and hundreds of model/workflow families remain
+independently OPEN for full device-path, numeric parity, dataset and
+resume/pressure testing.
