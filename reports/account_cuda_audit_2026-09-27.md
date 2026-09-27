@@ -98,3 +98,44 @@ Source commits, all direct to `main` (not a CUDA-hardware test certificate):
 The shared v38 source pin remains unchanged; downstream fixes do not silently mutate the historical scheduler or experiment caches. CI run status is not a runtime proof: several project workflows report failure without executing job steps. On supported machines, complete both CPU-only and real CUDA execution tests with exact checkpoint and metric provenance.
 
 **Status remains OPEN:** GPU detection and pin identity do not imply every relevant model or library was accelerated, and no per-repository comprehensive CPU/GPU numerical-parity certificate has been issued.
+
+
+## 2026-09-28 continuation — v39 main-branch census and corrective commits
+
+This is an incremental source-level follow-up; the original 2026-09-27 v38
+snapshot above is retained as historical evidence, not overwritten.
+
+- Of the original 44 repositories, 38 use the byte-pinned shared root launcher.
+  A fresh read of the 38 **main-branch** launchers found the current v39
+  controller commit `274d9d71663a675359b9ea89d7259995a2821e60` and
+  entry blob `b97604e12b0c95294be44652ece0d8ab59942109`.
+  This confirms source-pinning, not successful bootstrap or hardware execution.
+- `continual-learning-with-rl` was the remaining v38 root pin and was moved
+  to v39 at `db0891a13d93188d7e50e35427edae4a2b480a35`, preserving its
+  frozen v89 catalog and scientific-authority blobs. Its root loader had
+  supplied the **root launcher** as the frozen authority's `__file__`, even
+  though that authority computes ROOT with `Path(__file__).parents[1]`.
+  The module-location contract was repaired at
+  `92b8688a5c9112a26c3f9186036af97ce0179e44` and a CPU-safe
+  provenance/profile regression was added at
+  `28263208f86731c019007de3d6955a3ee0374fca`.
+  Real controller bootstrap, training, and CUDA execution remain unverified.
+- `Traffic` recognized its explicit OPF CPU accelerator flag but not the
+  independent `CPU_ONLY` and `TRAINING_CONTROL_CPU_ONLY` aliases.
+  `0aa859c6b4fa518d8e77dd9e7b5c892be70ab929` now enforces all four
+  CPU-admission flags and explicit empty/-1 CUDA visibility masks before
+  importing CuPy. `dddc9b2d8d9cec9e183981091060cecec1916287` adds
+  fake-usable-CuPy regression cases to the already selected CPU CI test
+  module. An isolated CPU policy fixture passed eight cases locally; a
+  full-repository CI pass and physical CUDA run have not been established.
+- **Branch divergence:** `HydroGraph-Delhi/main` already has the correct
+  v39 root launcher (Git blob
+  `53f9e93318c9df52cc564f2d0941da8bb93f1d51`), but GitHub still
+  reports `master` as the default branch; its master launcher is the older
+  blob `25f49babbc7348f65bd0d74c74cf43128ee1b7a1` with controller
+  commit `fd34a95d18892df7fb14d1efbb99076a7810fb91`.
+  Default-branch migration and preservation/reconciliation of master-only
+  history are OPEN; do not count this as an all-default-branch v39 rollout.
+
+The 44-repository actual CUDA execution, per-function backend integration,
+CPU/GPU numerical parity, and failure/recovery certification remain OPEN.
