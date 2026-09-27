@@ -145,8 +145,8 @@ def test_corrupted_v40_overlay_is_rejected_before_cache_certificate(tmp_path):
     assert not any(tmp_path.rglob("BUNDLE.json"))
 
 
-def test_active_v40_is_exactly_versioned_release_with_archived_v39():
-    assert _blob((ROOT / "tools/universal_training_controller_entry.py").read_bytes()) == _blob(
+def test_archived_v40_is_exactly_versioned_release_with_archived_v39():
+    assert _blob((ROOT / "tools/universal_training_controller_entry_v40.py").read_bytes()) == _blob(
         OUTER.read_bytes()
     ) == "68a6f30f6ef77c2f512a0fecd6731bc35b444fa4"
     assert _blob((ROOT / "tools/universal_training_controller_entry_v39.py").read_bytes()) == (

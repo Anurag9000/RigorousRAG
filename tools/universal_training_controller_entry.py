@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Rate-limit-safe immutable bootstrap for exhaustive training control v40 candidate.
+"""Rate-limit-safe immutable bootstrap for exhaustive training control v41 candidate.
 
-v40 preserves the 59 historical scientific/controller source blobs and retains the
+v41 preserves the 59 historical scientific/controller source blobs and retains the
 archive bootstrap, while its one reference overlay selects the audited OPF CUDA backend.
 The v21 delta tightens child CPU/GPU isolation and optional accelerator ordering;
 pressure/admission algorithms and the historical v38 archive remain preserved.
@@ -21,15 +21,15 @@ import zipfile
 from pathlib import Path
 from types import ModuleType
 
-BUNDLE_VERSION = "v40"
+BUNDLE_VERSION = "v41"
 HOST_REPO = "Anurag9000/RigorousRAG"
 HOST_ARCHIVE_COMMIT = "ef4f9f336f78c27a6238ff6e91b8926eb9157dbe"
 HOST_BUNDLE_DIR = "controller_bundle_v39"
-V36_COMMIT = "7ed16bade494d2191962756a1bf1ca87d8693245"
-V36_BLOB = "046d990addec395cfeb1c4ca820be7d332853d29"
+V36_COMMIT = "db7f9f54d49c1e8264ab452e8291de9d429d592e"
+V36_BLOB = "1bc50e6c28683cab5ae3f63f57f84a072664ad97"
 V36_URL = (
     f"https://raw.githubusercontent.com/{HOST_REPO}/{V36_COMMIT}/"
-    "tools/universal_training_controller_entry_v40_bundle.py"
+    "tools/universal_training_controller_entry_v41_bundle.py"
 )
 ARCHIVE_URL = f"https://codeload.github.com/{HOST_REPO}/zip/{HOST_ARCHIVE_COMMIT}"
 USER_AGENT = "opf-exhaustive-training-controller/41"
@@ -155,20 +155,20 @@ def _materialize_bundle(root: Path, module: ModuleType) -> Path:
     cache.mkdir(parents=True, exist_ok=True)
     ready = _copy_verified_local(root, cache, files)
     missing = [relative for relative in files if relative not in ready]
-    # v40 changes only the OPF reference overlay. Preserve every archived v39
+    # v41 changes only the OPF reference overlay. Preserve every archived v39
     # scientific blob and obtain this single new overlay from its own pinned
     # commit, independently verifying its literal Git-blob content identity.
     overlay = "tools/universal_training_controller_opf_reference_v2.py"
     if overlay in missing:
         url = (
             f"https://raw.githubusercontent.com/{HOST_REPO}/{V36_COMMIT}/"
-            "controller_bundle_v40/universal_training_controller_opf_reference_v2.py"
+            "controller_bundle_v41/universal_training_controller_opf_reference_v2.py"
         )
         payload = _fetch(url)
         actual = git_blob_sha(payload)
         if actual != files[overlay]:
             raise RuntimeError(
-                f"v40 OPF overlay blob mismatch: {actual} != {files[overlay]}"
+                f"v41 OPF overlay blob mismatch: {actual} != {files[overlay]}"
             )
         _atomic_write(cache / Path(overlay).name, payload)
         missing.remove(overlay)

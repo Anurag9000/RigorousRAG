@@ -162,7 +162,7 @@ def test_v41_additionally_corrects_pinned_operational_test_without_science_drift
         "0fc13aa7d5f5bc0cdef447c8d792968115f00b47"
     )
     assert _blob((ROOT / "tools/universal_training_controller_entry.py").read_bytes()) == (
-        "68a6f30f6ef77c2f512a0fecd6731bc35b444fa4"
+        "2f34cf0a1319c00d04bcfa99972f6e209534a096"
     )
     assert _blob((ROOT / "tools/universal_training_controller_entry_v40.py").read_bytes()) == (
         "68a6f30f6ef77c2f512a0fecd6731bc35b444fa4"

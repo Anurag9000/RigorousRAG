@@ -95,11 +95,11 @@ jobs:
             controller_bundle_v41/universal_training_controller_opf_reference_v2.py \
             tests/test_universal_cuda_backend_bundle_v41.py
 
-      - name: Exercise staged v41 cold bootstrap without external OPF access
+      - name: Exercise active v41 cold bootstrap without external OPF access
         run: |
           tmp="$(mktemp -d)"
           TRAINING_CONTROL_REPO_ROOT="$tmp" \
-            python tools/universal_training_controller_entry_v41.py --training-control-bootstrap-self-test \
+            python tools/universal_training_controller_entry.py --training-control-bootstrap-self-test \
             > "$tmp/v41-bootstrap-result.json"
           python - "$tmp/v41-bootstrap-result.json" <<'PY'
           import json
@@ -120,11 +120,11 @@ jobs:
           TRAINING_CONTROL_REPO_ROOT="$tmp" \
             python tools/universal_training_controller_entry_v39.py --training-control-bootstrap-self-test
 
-      - name: Exercise active and versioned v40 cold bootstrap with pinned OPF reference
+      - name: Exercise archived v40 cold bootstrap with pinned OPF reference
         run: |
           tmp="$(mktemp -d)"
           TRAINING_CONTROL_REPO_ROOT="$tmp" \
-            python tools/universal_training_controller_entry.py --training-control-bootstrap-self-test \
+            python tools/universal_training_controller_entry_v40.py --training-control-bootstrap-self-test \
             > "$tmp/v40-bootstrap-result.json"
           cat "$tmp/v40-bootstrap-result.json"
           python - "$tmp/v40-bootstrap-result.json" <<'PY'
