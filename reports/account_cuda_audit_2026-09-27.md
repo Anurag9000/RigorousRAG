@@ -541,3 +541,29 @@ classification; v41's 38-root pin census does not certify them.
 `HydroGraph-Delhi/main` is included among the 38, but its GitHub
 default branch remains older `master`; the main-only/default-branch
 migration is still OPEN, not disguised by the main-branch census.
+
+
+#### HydroGraph default-content reconciliation and NutriFlavor fail-closed metadata
+
+Following the v41 38-launcher census, `HydroGraph-Delhi` still had
+default `master` eight commits behind `main`, with zero master-only
+commits. A non-force, fast-forward branch-ref update moved the existing
+`master` ref to `498ddff2f0f60a004f4b04f0b46f73c5bb4c5a55`, exactly
+equal to `main`. The GitHub default view now exposes the v41 launcher
+Git blob `0c5bee6cea6f9a6ce5837e9dbbacf721b86b3260`, and all
+master history is preserved. **The default branch is still named
+`master`; the desired main-only topology requires changing the GitHub
+default and retiring master via repository administration.** No such
+change or branch deletion is claimed.
+
+`NutriFlavorOS/run_all_training.py` retained a false audit-job exemption
+reason claiming it had no optimizer even after its source scanner
+correctly detected synthetic and online training. The exception reason
+was corrected at `fbf665f1afd72412af4cda6f4ed771fcf6f054ce` to
+identify that node as a source-classification audit with unresolved
+optimizer paths. A CPU-safe regression was added at
+`15418a6f998e1d2a52395be973dcb02730267ee6` asserting the
+scanner remains fail-closed and detects the synthetic, online and
+governed trainer surfaces. It does **not** fabricate production jobs
+or certify completion of the retained training DAG; the source
+inventory, execution and parity remain OPEN.
