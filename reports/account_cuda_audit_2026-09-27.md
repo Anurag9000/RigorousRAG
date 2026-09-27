@@ -162,3 +162,32 @@ CPU/GPU numerical parity, and failure/recovery certification remain OPEN.
   no master-only commits. Thus `main` contains the recorded master history;
   the default-branch change remains unperformed and must be verified before
   retiring `master`.
+
+
+### NutriFlavorOS retained training classification and CPU isolation
+
+Source-level investigation of the current main branch found four explicit synthetic trainer loops in
+`scripts/train_all_models.py` and retained optimization in
+`backend/ml/online_learning_manager.py`, `backend/ml/meal_planner_rl.py`,
+and `backend/ml/taste_predictor.py`. Its root no-trainable classification is therefore
+not true as a whole-software statement; the existing scanner remains fail-closed
+rather than misrepresenting synthetic runs as production. The full findings and
+open device/data contracts are recorded in
+`NutriFlavorOS/docs/cuda_trainable_surface_audit_2026-09-28.md` at
+`077310579616d993de52df1fb2d8616babcb6345`.
+
+The device selector now honors `CPU_ONLY`, `TRAINING_CONTROL_CPU_ONLY`, the
+OPF disable flag and the repository-specific override, including stripped explicit
+CUDA masks: `43752935641ca0da83ddce8ac8fc9d4d264eac12`.
+Torch-dependent regression cases were extended in
+`0878bc8d43e0d52c10956b5b5d84a0ef67845a31`.
+Since the default backend test requirements do not include Torch, an isolated
+fake-Torch regression executable without that optional dependency was added at
+`7c3161e667dffe4122ef2273d8164b9625d1893f`.
+The existing validation workflow includes the test directory; its most recent
+jobs again reported failure with zero recorded steps, so neither a full test pass
+nor a physical CUDA run can be inferred.
+
+Outstanding: make retained real training and user-interaction updates first-class
+separately classified scientific/operational paths; fix model/input placement and
+feature-shape contracts; run actual CPU and CUDA integration tests.
