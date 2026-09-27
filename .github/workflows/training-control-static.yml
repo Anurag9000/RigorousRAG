@@ -87,6 +87,26 @@ jobs:
           TRAINING_CONTROL_REPO_ROOT="$tmp" \
             python tools/universal_training_controller_entry.py --training-control-bootstrap-self-test
 
+      - name: Exercise staged v40 cold bootstrap with pinned OPF reference
+        run: |
+          tmp="$(mktemp -d)"
+          TRAINING_CONTROL_REPO_ROOT="$tmp" \
+            python tools/universal_training_controller_entry_v40.py --training-control-bootstrap-self-test \
+            > "$tmp/v40-bootstrap-result.json"
+          cat "$tmp/v40-bootstrap-result.json"
+          python - "$tmp/v40-bootstrap-result.json" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+          result = json.loads(Path(sys.argv[1]).read_text(encoding='utf-8'))
+          assert result["status"] == "ok", result
+          assert result["bundle"] == "v40", result
+          assert result["controller_files"] == 60, result
+          assert result["opf_files"] == 9, result
+          assert result["opf_commit"] == "d3687061296a4cfc063bce149096dcc1d973716b", result
+          print("staged v40 cold-bootstrap manifest verified")
+          PY
+
       - name: Run public controller safety tests
         run: |
           python -m pip install --disable-pip-version-check -q pytest psutil
