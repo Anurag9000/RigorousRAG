@@ -32,9 +32,13 @@ def _constants(path: Path, names: set[str]) -> dict:
     found = {}
     for statement in ast.parse(path.read_text(encoding="utf-8")).body:
         if isinstance(statement, ast.Assign) and len(statement.targets) == 1:
-            target = statement.targets[0]
-            if isinstance(target, ast.Name) and target.id in names:
-                found[target.id] = ast.literal_eval(statement.value)
+            target, value = statement.targets[0], statement.value
+        elif isinstance(statement, ast.AnnAssign):
+            target, value = statement.target, statement.value
+        else:
+            continue
+        if isinstance(target, ast.Name) and target.id in names:
+            found[target.id] = ast.literal_eval(value)
     assert set(found) == names, (path, names - set(found))
     return found
 
