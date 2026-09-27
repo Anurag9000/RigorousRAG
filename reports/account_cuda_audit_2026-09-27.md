@@ -275,3 +275,16 @@ updated accordingly. Evidence:
 `7b5241dafa9e891a7b4459d281a53a7bce42591d`.
 This is a synthetic on-policy contract correction, not real CUDA execution
 or generalized exact-resume certification.
+
+
+### PPO behavior-version and checkpoint boundary
+
+`NutriFlavorOS/backend/ml/meal_planner_rl.py` now guards against mixing
+behavior-policy versions within a rollout. Its model save is explicitly a
+weights-only artifact, stores policy version and rejects restoring weights
+into a pending or compromised rollout. This is source-level correctness,
+not optimizer/buffer/RNG exact-resume certification. Evidence:
+`7d36be670f10c1b1aa7241dd4d207288519fec8d`,
+`56aa569e2f614855572cef4901c5a296f72339e5`.
+The repository audit at `29500c10b16be130aa5ff7db30811c1e6d45039a`
+records the remaining exact-resume and real CUDA gaps.
