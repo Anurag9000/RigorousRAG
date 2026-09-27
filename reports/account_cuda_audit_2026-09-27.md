@@ -487,3 +487,57 @@ https://github.com/Anurag9000/OPF_ADP/actions/runs/36349422266
 also reported failed with no assigned runner and zero executed steps.
 The controller's v40 validation in RigorousRAG is independent of an actual
 private-OPF runner test or physical CUDA hardware test.
+
+
+### 2026-09-28 v41 release and all-38 main-branch source-pin census
+
+The first shared backend isolation fixes were implemented on OPF_ADP main,
+but active RigorousRAG v39 still pinned the old immutable backend. v40
+introduced the corrected Torch/CuPy allocation-and-synchronization checks,
+independent CPU flags, cache/admission isolation and literal scheduler parent
+mask. A separate review discovered that the retained OPF scheduler regression
+still asserted the **old** v21 source blob; this assertion was corrected on
+OPF_ADP main at `a361b49ac24ffc7de87440538c88994faed017c4`.
+The corrected regression is Git blob
+`0fc13aa7d5f5bc0cdef447c8d792968115f00b47`.
+
+To avoid rewriting v40 historical manifests or invalidating earlier cache
+identities, RigorousRAG v41 was issued as a distinct versioned release.
+Its active outer entry at commit
+`e2acf14bb06c4d72a343024d6e3146a82756c1df` is Git blob
+`2f34cf0a1319c00d04bcfa99972f6e209534a096`. It pins OPF_ADP
+`a361b49ac24ffc7de87440538c88994faed017c4`, the corrected
+scheduler test blob and eight other exact OPF sources/tests. The
+historical v39 and v40 outer entries remain available by their original
+Git blobs, and all 59 unchanged scientific/controller files retain their
+historical hashes. Only the OPF reference overlay differs in the v41
+controller manifest.
+
+A source-level reread of all **38** regular `main/run_all_training.py`
+launchers found the exact v41 outer commit/blob pair once each, without
+the previous v40 pair. These changes were made directly to each
+repository's `main` and preserved its native scientific profile and
+catalog. In `continual-learning-with-rl`, the live-wrapper pin and
+v89 source-verifier hash were reconciled; its frozen scientific-authority
+blob `083c4aa3f19e585caafbec6f6007866447a3a6e7` and v89
+catalog blob `df504ca1417d7005d6df50c921f740ee176286b1` remain
+unchanged. Its controller regression was renamed and wired as
+`tests/test_cuda_controller_pin_v41.py` at
+`2c3af6109fe0d913664455bf70a1130cf42b7ebd`.
+
+**Executed public CI:** RigorousRAG training-control-static run
+`36351742143` passed 12 release/source tests, archived v39/v40
+cold bootstraps, the active v41 cold bootstrap and 57 controller
+safety tests. The OPF dependency's private GitHub Actions workflow
+`v41-shared-cuda-reference` explicitly checks the nine exact source
+files against a local OPF checkout and runs the CPU-safe backend and
+scheduler tests, but run `36351824190` ended with no runner assigned
+and zero recorded steps. The CLRL source workflow also ended before
+runner assignment. Therefore private OPF test execution, real CUDA,
+full 38-repository bootstrap and per-model numeric parity are **OPEN**.
+
+The other six account repositories retain their separate authority
+classification; v41's 38-root pin census does not certify them.
+`HydroGraph-Delhi/main` is included among the 38, but its GitHub
+default branch remains older `master`; the main-only/default-branch
+migration is still OPEN, not disguised by the main-branch census.
