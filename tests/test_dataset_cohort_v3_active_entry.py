@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def _sha(path):
     payload = path.read_bytes()
-    return hashlib.sha1(f"blob {len(payload)}\\0".encode("ascii") + payload).hexdigest()
+    return hashlib.sha1(f"blob {len(payload)}\0".encode("ascii") + payload).hexdigest()
 
 
 def test_v3_pins_match_corrected_sources():

@@ -23,7 +23,7 @@ RUNTIME_BLOB = "e6455266b63bed08691cfa76e620060f99eca35a"
 
 
 def _blob(payload: bytes) -> str:
-    return hashlib.sha1(f"blob {len(payload)}\\0".encode("ascii") + payload).hexdigest()
+    return hashlib.sha1(f"blob {len(payload)}\0".encode("ascii") + payload).hexdigest()
 
 
 def _root() -> Path:
