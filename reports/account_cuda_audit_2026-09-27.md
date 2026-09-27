@@ -224,3 +224,18 @@ checkpoint RNG handling from accessing CUDA. Focused simulated-device tests
 are committed. Real training, checkpoint/resume and CPU/GPU numerical parity
 remain OPEN. The prior account-level “no-trainable” description must not be
 used as a whole-software closure statement.
+
+
+### Additional governed CPU seed isolation
+
+The NutriFlavor governed runtime used `torch.manual_seed`, which itself
+also seeds accelerator generators even if the explicit
+`torch.cuda.manual_seed_all` call is skipped. Commit
+`6d72903f0308717e3570d9900f52011f35628e7a` now uses the Torch CPU
+default generator under central CPU admission and leaves admitted-GPU seeding
+unchanged; `af63b9796442db4bc81dde698dbbc47e5bc4b166` adds focused
+source-function contracts. Documentation and open evidence are in
+`NutriFlavorOS/docs/cuda_trainable_surface_audit_2026-09-28.md`
+at commit `8ec477fa073199e56bd62d6909d4aee53cf6b5b7`.
+The latest CI jobs still contain zero recorded steps, so no project-level
+test or real CUDA certification is claimed.
