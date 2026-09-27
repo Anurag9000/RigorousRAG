@@ -457,3 +457,33 @@ OOM-recovery and CPU/GPU numerical parity remain independently OPEN.
 Six repositories have separate native/no-trainable or source-specific
 orchestration cases; the 38 shared-root repin count does not imply all
 44 are execution-certified. HydroGraph's default-branch migration is OPEN.
+
+
+### Post-rollout source-contract and six-special-case check
+
+The CLRL current v40 controller regression now resides at
+`tests/test_cuda_controller_pin_v40.py` (creation
+`8a6d8fe5fd374e52dcd25b2583c68da5e0b6bdd0`);
+the v89 source workflow was rewired at
+`472e9921c18d2baca52ba9f1dd6d4f81aefd45c4`, and the misleading
+v39-named duplicate was removed from `main` at
+`606a5da750b8b72c9165cdc8e63b909c7df7f401`.
+Its scientific source hashes and row-integrity requirements remain intact.
+The CLRL GitHub Action still had no assigned runner or recorded steps;
+no remote test pass is claimed.
+
+The six non-shared-root cases require independent applicability judgments:
+`OPF_ADP` is the actual scheduler/backend source (no shared launcher);
+`RigorousRAG` now uses its local active v40 controller;
+`STM32n6AI` has its own `stm32n6ai.training.central_runner`;
+`Forest_Run` intentionally runs a fail-closed no-retained-ML-surface audit;
+`Last-War` has no `run_all_training.py` at the inspected `main`;
+and `Project-Foundry` was empty at the inspected `main`.
+These are **not** counted as repinned shared launchers. No special-case
+repository has inherited an unverified training PASS.
+
+A retry of OPF_ADP Actions run
+https://github.com/Anurag9000/OPF_ADP/actions/runs/36349422266
+also reported failed with no assigned runner and zero executed steps.
+The controller's v40 validation in RigorousRAG is independent of an actual
+private-OPF runner test or physical CUDA hardware test.
