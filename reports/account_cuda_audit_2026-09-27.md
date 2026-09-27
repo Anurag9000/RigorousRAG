@@ -139,3 +139,26 @@ snapshot above is retained as historical evidence, not overwritten.
 
 The 44-repository actual CUDA execution, per-function backend integration,
 CPU/GPU numerical parity, and failure/recovery certification remain OPEN.
+
+
+### Continuation verification details
+
+- CLRL's original v89 verifier pinned the historical root file at Git blob
+  `4af396331e6628cb28d6e44695ac2c0045a1c404`, so the live wrapper
+  change also required a source-verifier update. Commit
+  `a6697122fc36a4f95bd7b37ec72b9eb1d5f11807` now pins the current
+  wrapper blob `20947194224b1de77aeaf0d302856b5411253e8b` and asserts its
+  v39 controller identity and corrected module location; all frozen v89
+  scientific files retain their historical hashes. Commit
+  `d32d8442dbcdf2f4a489535a561d44fe6db557a0` wires the new regression
+  into the v89 source CI path and test command.
+- For that CI commit, the registry-meta source-contract, general CI and
+  main-only workflow runs reported failure **with zero recorded job steps**;
+  workflow-job logs were unavailable. This is explicitly not a test failure
+  attributable to a particular source line, and not a test pass.
+- HydroGraph branch comparison reports `master...main` ahead by six
+  commits, behind by zero, with changes in its launcher, estate workflow,
+  and dataset-cohort applicability authority. The reverse comparison reports
+  no master-only commits. Thus `main` contains the recorded master history;
+  the default-branch change remains unperformed and must be verified before
+  retiring `master`.
