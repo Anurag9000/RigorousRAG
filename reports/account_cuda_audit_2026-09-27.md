@@ -625,3 +625,35 @@ job steps; its source tests and physical CUDA remain unverified.
 The source-level findings do not close the 7,679-file whole-software
 functional/model/dataset investigation. Native source changes preserve
 the scientific catalog and model/experiment authority.
+
+
+#### STM32n6AI native nested-worker CUDA admission correction
+
+The STM32n6AI retained central campaign is a distinct, stateful native
+worker scheduler, not one of the 38 simple universal-controller wrappers.
+Its prior `training/device_policy.py` did not reconcile parent OPF
+backend admission, independent CPU-only aliases, or actual Torch
+allocation/kernel execution. Its worker launcher inherited
+`TRAINING_CONTROL_BACKEND=gpu` even when intentionally creating a
+separate CPU fallback worker.
+
+The native device resolver now checks native and parent admission, the
+generic CPU flags and normalized CUDA mask, requires allocation,
+operation and synchronization at the selected local CUDA index, and
+does not turn an admitted GPU failure into CPU success. The executor
+rejects GPU escalation from a CPU parent and GPU assignments outside
+an inherited CUDA mask before route resolution. It explicitly records
+the fresh child backend, local GPU index, and CPU-only alternate
+library masks for legitimate CPU downgrade. The worker validates the
+same policy before route resolution; existing source checksum and
+actual trainer-device evidence remain active.
+
+Source receipts and regression evidence are recorded at
+`STM32n6AI/docs/native_cuda_admission_audit_2026-09-28.md`
+(commit `82493cf810fde01f266873622c70602702030232`).
+The exact Git blob of the standalone native device policy was verified
+locally and its focused CPU/fake-CUDA suite passed 15 cases. The
+full native executor/worker tests are checked in, but GitHub Actions
+run `36357625830` ended with zero steps/no runner. Physical CUDA,
+per-model training, datasets, pressure recovery, checkpoint exact
+resume and firmware/export verification remain OPEN.
