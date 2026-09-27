@@ -115,7 +115,8 @@ def detect_backend(mode: str | BackendMode = BackendMode.AUTO) -> BackendProbe:
     selected = mode if isinstance(mode, BackendMode) else BackendMode(str(mode))
     if _truthy(os.environ.get("CPU_ONLY")) or _truthy(os.environ.get("TRAINING_CONTROL_CPU_ONLY")):
         selected = BackendMode.CPU
-    hidden = os.environ.get("CUDA_VISIBLE_DEVICES") == ""
+    visible = os.environ.get("CUDA_VISIBLE_DEVICES")
+    hidden = visible in {"", "-1"}
     torch_cuda = cupy_cuda = jax_gpu = tensorflow_gpu = False
     torch = _safe_import("torch")
     if torch is not None:
@@ -124,7 +125,11 @@ def detect_backend(mode: str | BackendMode = BackendMode.AUTO) -> BackendProbe:
     cupy = _safe_import("cupy")
     if cupy is not None:
         with contextlib.suppress(Exception):
-            cupy_cuda = int(cupy.cuda.runtime.getDeviceCount()) > 0
+            if int(cupy.cuda.runtime.getDeviceCount()) > 0:
+                # An importable CuPy wheel or visible device need not be usable.
+                probe = cupy.empty((1,), dtype=cupy.uint8)
+                del probe
+                cupy_cuda = True
     jax = _safe_import("jax")
     if jax is not None:
         with contextlib.suppress(Exception):
@@ -134,11 +139,17 @@ def detect_backend(mode: str | BackendMode = BackendMode.AUTO) -> BackendProbe:
         with contextlib.suppress(Exception):
             tensorflow_gpu = bool(tf.config.list_physical_devices("GPU"))
     smi = _nvidia_smi()
-    available = not hidden and (torch_cuda or cupy_cuda or jax_gpu or tensorflow_gpu or smi)
+    # nvidia-smi reports hardware, not a working Python CUDA runtime.
+    available = not hidden and (torch_cuda or cupy_cuda or jax_gpu or tensorflow_gpu)
     if selected is BackendMode.GPU and not available:
         raise BackendUnavailable("GPU backend required but no usable GPU was detected")
     use_gpu = available and selected is not BackendMode.CPU
-    index = os.environ.get("TRAINING_CONTROL_GPU_INDEX", os.environ.get("GPU_DEVICE_INDEX", "0")).strip() or "0"
+    # CUDA_VISIBLE_DEVICES remaps a selected physical GPU to local cuda:0.
+    index = (
+        os.environ.get("TRAINING_CONTROL_LOCAL_GPU_INDEX", "0")
+        if visible not in (None, "", "-1")
+        else os.environ.get("TRAINING_CONTROL_GPU_INDEX", os.environ.get("GPU_DEVICE_INDEX", "0"))
+    ).strip() or "0"
     reasons = tuple(
         name
         for name, enabled in (
@@ -178,7 +189,17 @@ def subprocess_environment(
             TRAINING_CONTROL_CPU_ONLY="1",
         )
         return env
-    index = str(gpu_index if gpu_index is not None else env.get("TRAINING_CONTROL_GPU_INDEX", env.get("GPU_DEVICE_INDEX", "0"))).strip() or "0"
+    # Do not accidentally unmask a CPU child or override scheduler GPU isolation.
+    inherited = env.get("CUDA_VISIBLE_DEVICES")
+    if selected is BackendMode.AUTO and inherited in {"", "-1"}:
+        env["TRAINING_CONTROL_BACKEND"] = "auto"
+        return env
+    if inherited not in (None, "", "-1"):
+        if gpu_index is not None and str(gpu_index).strip() != inherited:
+            raise BackendUnavailable("cannot override scheduler-owned CUDA_VISIBLE_DEVICES")
+        index = inherited
+    else:
+        index = str(gpu_index if gpu_index is not None else env.get("TRAINING_CONTROL_GPU_INDEX", env.get("GPU_DEVICE_INDEX", "0"))).strip() or "0"
     env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
     env["CUDA_VISIBLE_DEVICES"] = index
     env.pop("TRAINING_CONTROL_CPU_ONLY", None)
@@ -188,7 +209,7 @@ def subprocess_environment(
 
 def array_namespace(mode: str | BackendMode = BackendMode.AUTO) -> Any:
     probe = detect_backend(mode)
-    if probe.selected_device.startswith("cuda"):
+    if probe.selected_device.startswith("cuda") and probe.cupy_cuda:
         cupy = _safe_import("cupy")
         if cupy is not None:
             return cupy
