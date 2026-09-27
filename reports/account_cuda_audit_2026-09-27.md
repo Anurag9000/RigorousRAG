@@ -288,3 +288,17 @@ not optimizer/buffer/RNG exact-resume certification. Evidence:
 `56aa569e2f614855572cef4901c5a296f72339e5`.
 The repository audit at `29500c10b16be130aa5ff7db30811c1e6d45039a`
 records the remaining exact-resume and real CUDA gaps.
+
+
+### Latest NutriFlavor PPO source gate
+
+A new lightweight regression source contract at
+`NutriFlavorOS/backend/tests/test_rl_ppo_source_contract_without_torch.py`
+(`8256b839ecc884be33a5bbc42302934a169ccd16`)
+parses the real module sources without requiring optional PyTorch, ensuring
+the default backend CI will fail on lost action-mask, retained fake-value
+or removed feedback guard structures once runners execute. The optional
+real Torch numerical tests still require actual runtime execution.
+The repository audit is updated at
+`bf950ca95767781155fe01333d7dc978635b8a2b`.
+The estate CUDA audit remains OPEN.
