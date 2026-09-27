@@ -595,3 +595,33 @@ The private workflow again reported no runner/steps, so this is not
 a source-test or real-GPU pass. ONNX/OpenCV/cuDF advertised providers
 still require actual task-execution proof; the full Smart-Glasses
 functional/ML surface and other repositories remain independently OPEN.
+
+
+#### Breaking-the-Neural-Barrier native backend correction
+
+The BTN v4 scientific root already pins the audited v41 universal controller,
+but a separate investigation of its retained native device/RAPIDS helpers
+found a bypass of independent `CPU_ONLY`, `TRAINING_CONTROL_CPU_ONLY`
+and explicit scheduler backend admission. `gpu_detected()` previously
+cached hardware/enable-flag visibility; Torch device placement relied on
+`is_available` without allocation/kernel completion; first-use
+`default_device` caches could outlive a subsequent CPU mask; and direct
+RAPIDS, RNG, cleanup and Torch seeding helpers could touch accelerators
+within CPU-admitted workers.
+
+Targeted `main` corrections in `utils/gpu_acceleration.py`,
+`utils/device_utils.py` and `utils/seed_utils.py` enforce independent
+CPU/GPU admission, check actual Torch/CuPy operations and synchronization,
+probe explicit local CUDA indices, prevent GPU-admitted Torch CPU fallback,
+key device caches to current policy, block direct RAPIDS/CUDA helpers
+under CPU admission and seed only the Torch CPU generator there. Existing
+tests were reconciled and `test_btn_gpu_admission.py` added.
+The repository audit is
+`Breaking-the-Neural-Barrier/docs/native_cuda_admission_audit_2026-09-28.md`
+at `a929b257fe91b613dd6b4aa6dc828f1622ab4209`.
+
+Dedicated CI attempt `36356977221` failed without a runner or executed
+job steps; its source tests and physical CUDA remain unverified.
+The source-level findings do not close the 7,679-file whole-software
+functional/model/dataset investigation. Native source changes preserve
+the scientific catalog and model/experiment authority.
