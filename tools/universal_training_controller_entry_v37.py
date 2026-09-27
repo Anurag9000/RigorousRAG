@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Rate-limit-safe immutable bootstrap for exhaustive training control v38.
+"""Rate-limit-safe immutable bootstrap for exhaustive training control v37.
 
-v38 preserves the complete byte-pinned v36/v20-v34 scientific/controller stack
-and the literal OPF_ADP runtime, but replaces the historical per-blob public GitHub API
-materialization path with one pinned repository archive fetch. The archive retains 59 historical
-controller blobs, changes only the verified OPF backend reference module, and
-pins the corrected CUDA-first numerical backend plus its regression contract.
-Every extracted file is reverified by Git blob SHA; scheduling code is unchanged.
+v37 preserves the complete byte-pinned v36/v20-v34 scientific/controller stack
+and the literal OPF_ADP runtime, but replaces v36's per-blob public GitHub API
+materialization path with one pinned repository archive fetch. The archive
+contains a bundle-only directory whose entries point directly at the exact 60
+historical Git blobs. Every extracted file is reverified by Git blob SHA before
+admission to the cache. The scheduler itself is not reimplemented here.
 """
 from __future__ import annotations
 
@@ -21,15 +21,15 @@ import zipfile
 from pathlib import Path
 from types import ModuleType
 
-BUNDLE_VERSION = "v38"
+BUNDLE_VERSION = "v37"
 HOST_REPO = "Anurag9000/RigorousRAG"
-HOST_ARCHIVE_COMMIT = "470c5826d63f456195e61bc4aff73a97ebb88e52"
-HOST_BUNDLE_DIR = "controller_bundle_v38"
-V36_COMMIT = "470c5826d63f456195e61bc4aff73a97ebb88e52"
-V36_BLOB = "1589405dae02202973afc75c4a55710c2e16d9b2"
+HOST_ARCHIVE_COMMIT = "4e623756ea853eff079104ef5f3483bafc01f0fb"
+HOST_BUNDLE_DIR = "controller_bundle_v36"
+V36_COMMIT = "e498aa3496b1e79c29c4060db4b11433d69bad97"
+V36_BLOB = "1840035fdecb5d5fbab06846435cb86787842738"
 V36_URL = (
     f"https://raw.githubusercontent.com/{HOST_REPO}/{V36_COMMIT}/"
-    "tools/universal_training_controller_entry_v38_bundle.py"
+    "tools/universal_training_controller_entry.py"
 )
 ARCHIVE_URL = f"https://codeload.github.com/{HOST_REPO}/zip/{HOST_ARCHIVE_COMMIT}"
 USER_AGENT = "opf-exhaustive-training-controller/41"
