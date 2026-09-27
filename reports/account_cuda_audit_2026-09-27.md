@@ -324,3 +324,42 @@ commit `775d6ade0a871d1b3dbb6361bedb6ed1ceed8878`.
 This is source-level integration, not an actual six-model CUDA run or
 full estate certification. Other repositories' independent GPU-library,
 model-placement and scheduler routes remain OPEN.
+
+
+### Shared OPF_ADP backend audit — independent CPU flags and immutable-pin boundary
+
+Retained OPF_ADP `utils/ml_backends.py` was independently investigated.
+It previously recognized only the literal OPF disable flag on some paths,
+allowed independent CuPy/metric imports under `CPU_ONLY` and the scheduler's
+CPU backend, used framework visibility without a completed kernel probe, and
+seeded accelerator generators from CPU-admitted Torch workers. Its cache
+could report stale GPU activation after environment changes.
+
+The shared source now checks `CPU_ONLY`,
+`TRAINING_CONTROL_CPU_ONLY`, `OPF_ADP_DISABLE_GPU_ACCELERATORS`,
+`TRAINING_CONTROL_BACKEND` and stripped CUDA visibility in all backend
+helper routes. CUDA proof requires actual Torch/CuPy allocation, operation
+and synchronization. Cached status and successful direct CUDA probes bind
+to an immutable process admission/device-mask context; later changes require
+a fresh worker. CPU-only seeding uses the Torch CPU default generator, and
+CPU-admitted array/metric helpers reject already-existing accelerator arrays.
+
+The literal scheduler was also corrected to prevent nested GPU admission
+from overriding a parent `TRAINING_CONTROL_BACKEND=cpu` or padded CUDA
+mask. CPU-safe fake-CUDA and scheduler regressions were added and wired
+to the scheduler workflow. Documentation, commit receipts and open tests
+are recorded in
+`OPF_ADP/docs/shared_cuda_backend_audit_2026-09-28.md` at
+`d3687061296a4cfc063bce149096dcc1d973716b`.
+
+**Distribution boundary:** The 38 main-branch root launchers still pin
+RigorousRAG v39, whose inner bootstrap pins the older immutable OPF_ADP
+commit `0e9e4eef90903dd1769b54b18941a8bb6e1716f8`, including the old
+`utils/ml_backends.py` blob
+`33108a3e20e982188ebc089399c682b11f202c4c`.
+The main-branch OPF_ADP correction has **not** been retroactively propagated
+to those pinned launchers. A new audited controller/reference generation
+and explicit downstream repins are required; historical v39 blobs must
+not be rewritten. GitHub Actions currently fails before any recorded job
+steps, so a full test pass, physical CUDA execution and estate closure
+remain OPEN.
