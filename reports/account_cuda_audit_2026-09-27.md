@@ -239,3 +239,25 @@ source-function contracts. Documentation and open evidence are in
 at commit `8ec477fa073199e56bd62d6909d4aee53cf6b5b7`.
 The latest CI jobs still contain zero recorded steps, so no project-level
 test or real CUDA certification is claimed.
+
+
+### NutriFlavorOS PPO and online-feedback closure work
+
+The source-level follow-up in
+`NutriFlavorOS/docs/cuda_trainable_surface_audit_2026-09-28.md`
+(commit `a72ac02c5c0c5d47d96b56867b7d03aeda3ffe24`) now records
+two distinct paths rather than treating all learning code as one GPU job.
+The legacy observational feedback helper cannot fabricate PPO log-probabilities
+or a critic baseline, discard unsupported feedback as successful training, or
+claim an optimizer-less grocery update. The authenticated HTTP feedback
+route remains offline-only.
+
+The actual synthetic on-policy PPO route now preserves behavior action masks,
+captures sampled critic baselines, compares masked sampling/training
+distributions, computes returns on the selected tensor device, and quarantines
+agents after a possibly partial optimizer failure. CPU-safe method guards and
+optional real Torch PPO regression tests were committed; an isolated CPU Torch
+mask/return algebra check passed. Neither real CUDA execution nor complete
+PPO/real-world training validation has been established. Exact rollout and
+optimizer/RNG checkpoint-resume, dataset/source governance, and account-wide
+library/device-path coverage remain OPEN.
