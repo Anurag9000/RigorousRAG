@@ -191,3 +191,9 @@ nor a physical CUDA run can be inferred.
 Outstanding: make retained real training and user-interaction updates first-class
 separately classified scientific/operational paths; fix model/input placement and
 feature-shape contracts; run actual CPU and CUDA integration tests.
+
+The NutriFlavor root and audit scanner documentation were additionally corrected
+in `9207bc4eaf55da57d410ccd75608154945589809` and
+`6bd6b4dd942e8cb6a0fb2d9c62d10e6f8685646c`. Their original
+no-trainable gate is intentionally still fail-closed: documentation corrections
+do not imply that the retained optimizer workloads have been catalogued.
