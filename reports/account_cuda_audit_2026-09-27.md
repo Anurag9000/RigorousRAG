@@ -781,3 +781,26 @@ Git blobs `083c4aa3f19e585caafbec6f6007866447a3a6e7` and
 root wrapper remains pinned to verified v41. The private focused
 workflow run `36364338763` had no assigned runner and no steps,
 so **new test and real-GPU execution evidence remain OPEN**.
+
+
+##### CLRL checkpoint preflight before learner-state mutation
+
+The previous CLRL device/RNG restoration guards correctly rejected
+mismatched CPU/CUDA generator states, but seven checkpoint readers
+loaded model/optimizer/cursor or replay state **before** reaching the
+RNG mismatch check. The common policy now provides a pure
+`validate_checkpoint_cuda_rng` preflight, placed after schema,
+identity and geometry verification but ahead of any learning-state
+mutation in named, prompt, R20, R14, R15, R16 and v59 checkpoint
+loaders. It rejects absent/invalid RNG fields, missing CUDA state
+on a CUDA worker, and CUDA state in a CPU worker. Existing
+restore-time checks remain; other malformed learner checkpoint
+content is not yet transactionally certified.
+
+Sources, seven per-loader receipts, source-order and fake-RNG
+regressions are recorded in
+`continual-learning-with-rl/docs/cl_native_cuda_admission_audit_2026-09-28.md`
+at commit `95651caf6e39b0e8cc76dadfe0887a2ac8b6836f`.
+No new scientific objective/catalog or root controller pin was
+changed. Real CUDA/CPU-resume parity and private CI execution remain
+OPEN.
