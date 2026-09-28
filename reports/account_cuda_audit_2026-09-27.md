@@ -922,3 +922,35 @@ Private Last-War workflow runs still fail before runner assignment:
 neither native build nor observation tests are recorded as passing.
 Its neural RL optimizer, GPU simulation, full game and exact learner
 resume remain OPEN and must not be counted as present.
+
+
+#### Forest_Run training-control applicability closure evidence
+
+Forest_Run is a native Android/Kotlin game rather than an ML repository, so
+GPU-first training, CUDA optimizer state, CuPy substitution, training parity,
+model registries and training DAGs are correctly **not applicable**. The
+fail-closed authority was strengthened at
+`66cdfa55f703c2ce183d7e559ea5366fd3ee7bba` so an empty or
+partial repository can no longer be certified merely because the scanner
+finds no training markers. It now requires the real Gradle/app manifest,
+MainActivity/GameView production source and a nonempty Android dependency
+surface before issuing the no-training certificate. Regression coverage for
+empty/partial/dependency-free trees was added at
+`e86195a69278210fbb820ce2a267a0d692f92ddb` and wired into
+the applicability workflow at
+`2963386d5f40b5c7735fdd9d1de1e25ee969575d`.
+
+Current `main` is `f2bc315622a16c4a444ca9cc21a665cb8b6737b0`.
+At that exact head:
+- training-control applicability run `36378248446` succeeded, including
+  compilation, the new absent-tree/injected-marker regressions, and the final
+  no-retained-trainable-surface certificate;
+- estate local certificate run `36378248363` succeeded;
+- Android validation run `36378248320` succeeded for the host/release/lint/
+  packaging job and API-35 connected smoke/deterministic-evidence job.
+
+This closes only the ML/training **applicability** classification and its
+source/CI evidence. Forest_Run's own documentation still correctly keeps
+external physical-device acceptance, human/artistic approval, production
+signing, Play delivery/policy declarations and accountable release approval
+outside source-only closure.
