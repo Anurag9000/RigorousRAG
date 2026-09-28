@@ -691,3 +691,42 @@ demonstrated source failure, or actual CUDA verification. The retained
 7,679-file BTN tree and hundreds of model/workflow families remain
 independently OPEN for full device-path, numeric parity, dataset and
 resume/pressure testing.
+
+
+#### Forest_Run applicability proof and CL Executive native CUDA-admission correction
+
+`Forest_Run` is a Kotlin Android game, not a training repository.
+Its original no-trainable scanner returned a pass for an absent/empty
+root (zero files and zero findings). The certificate authority now
+requires the retained Android build files, manifest, MainActivity,
+GameView, production Kotlin, and actual Android dependency declarations
+before issuing the N/A classification. The regression test exercises
+an empty root, each missing required file, an empty dependency
+manifest, existing non-ML vocabulary, and injected ML markers.
+An actual GitHub Actions run `36362901297` passed **7 tests** and
+issued a source certificate with 614 scanned source/config files and
+zero ML-training findings. CUDA/CuPy training is therefore correctly
+N/A for this repo; Android production/device acceptance remains a
+separate open gate.
+
+`continual-learning-with-rl` required a separate fix despite its
+successful v41 controller pin. Its OPF CLI bridge previously inferred
+CUDA from visibility plus `torch.cuda.is_available()` and could
+silently inject CPU for a GPU-admitted child. Its original
+`src/cl_exec/runner.py` similarly defaulted to CPU after a failed
+CUDA request and seeded accelerator generators without respecting
+independent CPU-only aliases. New
+`src/cl_exec/device_policy.py` requires Torch allocation+operation+
+synchronization, validates the parent backend, masks CPU workers,
+and fails GPU-admitted jobs when CUDA cannot execute. The bridge
+and core/resilient runner now share the policy; failed GPU-admitted
+seeding rejects before advancing Python/NumPy/Torch RNG. Focused
+fake-Torch/AST source tests and a dedicated CI workflow were added.
+Details: `continual-learning-with-rl/docs/cl_native_cuda_admission_audit_2026-09-28.md`,
+commit `423bbbb080ab91ee5a5105aab370e8c86cd2145b`.
+
+The CL private Actions run `36363304137` failed before runner
+assignment with zero recorded steps, so its new regression result,
+per-route model and array placement, actual CUDA, OOM/exact-resume
+and numerical parity remain OPEN. The frozen v89 scientific
+authority/catalog were not modified by the native helper changes.
