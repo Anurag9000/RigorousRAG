@@ -1,0 +1,57 @@
+name: repository-local-estate-v6
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'tools/repository_local_estate_certificate_v5.py'
+      - 'tools/repository_local_estate_certificate_v6.py'
+      - 'tests/test_repository_local_estate_certificate_v5.py'
+      - 'tests/test_repository_local_estate_certificate_v6.py'
+      - '.github/workflows/repository-local-estate-v6.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  immutable-estate-certificates:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile historical and current certificate sources
+        run: |
+          python -m py_compile \
+            tools/repository_local_estate_certificate_v5.py \
+            tools/repository_local_estate_certificate_v6.py \
+            tests/test_repository_local_estate_certificate_v5.py \
+            tests/test_repository_local_estate_certificate_v6.py
+      - name: Run v5 preserved and v6 v41-pin regression tests
+        run: |
+          python -m pip install --disable-pip-version-check -q pytest
+          python -m pytest -q -o addopts='' \
+            tests/test_repository_local_estate_certificate_v5.py \
+            tests/test_repository_local_estate_certificate_v6.py
+      - name: Verify actual public v41 bootstrap Git blob
+        run: |
+          python - <<'PY'
+          import hashlib
+          import urllib.request
+          url = (
+              "https://raw.githubusercontent.com/Anurag9000/RigorousRAG/"
+              "e2acf14bb06c4d72a343024d6e3146a82756c1df/"
+              "tools/universal_training_controller_entry.py"
+          )
+          with urllib.request.urlopen(url, timeout=60) as response:
+              data = response.read()
+          actual = hashlib.sha1(f"blob {len(data)}\\0".encode() + data).hexdigest()
+          expected = "2f34cf0a1319c00d04bcfa99972f6e209534a096"
+          assert actual == expected, (actual, expected)
+          print("public v41 entry Git blob verified")
+          PY
