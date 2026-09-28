@@ -877,3 +877,45 @@ zero executed steps: **no source-test, native build, physical CUDA,
 training or numerical-parity PASS is claimed**. A legitimate learner
 requires its own data/optimizer/masking/checkpoint/evaluation design;
 deterministic self-play traces must not be classified as PPO training.
+
+
+#### Forest_Run and Last-War independent non-ML / optional-observation classification
+
+Forest_Run is a native Kotlin/Android game, not a retained ML trainer.
+Its applicability authority previously could classify a wholly missing
+Android tree as no-training. It now requires its actual build/manifest,
+MainActivity/GameView and production Kotlin/dependency surface before
+issuing a certificate. The root's training-control audit and estate-local
+certificate both passed on `main` commit
+`5cf8da8efe5d13d8284dbff50f6dac5a9d0721d0`
+(Actions runs `36367701754` and `36367701811`). Android host compilation,
+unit/lint, packaging and release hardening passed separately at
+`36367701937`; its API 35 connected job was in progress when inspected.
+No physical-device/store/human-release or GPU-learning evidence is
+implied by these source and host passes.
+
+Last-War is an independently classified native C++ CPU world with
+batched C ABI and optional Torch CUDA **observation transfer**, not a
+GPU-native simulator or gradient-based RL learner. The initial
+observation policy already required an actual CUDA allocation, operation,
+and synchronization and enforced CPU/GPU admission. Further inspection
+found an admission-change window after native reads and during
+Torch conversion/nonblocking transfer: both observer types could
+publish a returned tensor and a nonzero byte count after the parent
+mask changed. Main commits
+`36ec68902177a63dea8b1ad5df46c8689c2e9859`,
+`e3b5741f534f7a62bae48b0b1e0b05a392ef5750`
+now recheck admission after the native/Torch operations and before
+successful byte accounting. Native graph legal-action flags are checked
+as **binary** at
+`2ae9ceeda18408da5ad0427481f50c1117f38247`
+so malformed truthy integers cannot create purported legal actions.
+Regressions include native-read, CPU conversion and mock CUDA enqueue
+races, plus non-binary action masks. Receipts and explicit unverified
+training/hardware status are in
+`Last-War/docs/48-native-observation-vs-training-audit.md`
+(commit `854000e69b2d02c6ade3b010f81bc65ad8e762ad`).
+Private Last-War workflow runs still fail before runner assignment:
+neither native build nor observation tests are recorded as passing.
+Its neural RL optimizer, GPU simulation, full game and exact learner
+resume remain OPEN and must not be counted as present.
