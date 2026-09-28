@@ -63,5 +63,5 @@ def test_historical_v5_certificate_remains_byte_unchanged():
     import hashlib
     path = ROOT / "tools" / "repository_local_estate_certificate_v5.py"
     data = path.read_bytes()
-    observed = hashlib.sha1(f"blob {len(data)}\\0".encode() + data).hexdigest()
+    observed = hashlib.sha1(f"blob {len(data)}\0".encode() + data).hexdigest()
     assert observed == "a998473b2683dfec0f3b7cb6d097d53a539b7a0a"
