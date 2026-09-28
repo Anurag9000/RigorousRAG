@@ -730,3 +730,24 @@ assignment with zero recorded steps, so its new regression result,
 per-route model and array placement, actual CUDA, OOM/exact-resume
 and numerical parity remain OPEN. The frozen v89 scientific
 authority/catalog were not modified by the native helper changes.
+
+
+##### CL Executive additional native CRL and Stage-13 device routes
+
+A subsequent source audit identified four independent CRL/Stage-13
+execution paths that bypassed the just-added CL Executive/OPF bridge
+and directly used `torch.cuda.is_available()` plus global Torch/CUDA
+seeding. `crl_runtime.py`, `stage13_runtime.py`,
+`stage13_ppo_runtime.py` and
+`resilient_stage13_runtime.py` now call the common
+`prepare_torch_execution` authority with strict explicit-CUDA
+semantics. CPU-only children seed only Torch's CPU generator; failure
+of a GPU-admitted CUDA execution probe raises before touching RNG
+state. The scientific objectives, catalog, and checkpoint layouts
+were not edited. Focused fake-Torch source tests and workflow compile
+coverage were expanded. Detailed source evidence:
+`continual-learning-with-rl/docs/cl_native_cuda_admission_audit_2026-09-28.md`,
+commit `f5c3cf83c203657a6c80369dd513cba7de51c420`.
+No full family graph/numerical parity/physical CUDA or private CI pass
+is claimed. The frozen v89 scientific authority and catalog retain
+their original blob identities.
