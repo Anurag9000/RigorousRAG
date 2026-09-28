@@ -835,3 +835,45 @@ The Android host/API35 connected run `36363796716` succeeded on an
 **earlier** commit, and cannot be applied as if it tested a later source
 candidate. Signed/store delivery, real-device/human approval, gameplay
 quality, security and final release readiness retain their own gates.
+
+
+#### Last-War native simulator versus CUDA observation and learner classification
+
+The 1,448-file Last-War repository has a real authoritative C++ world,
+CPU-parallel batch API, deterministic native AI baseline policies,
+task/Gymnasium/PettingZoo adapters, public multiagent trajectories and
+replay. It has **no retained optimizer-driven RL learner or root
+`run_all_training.py`** in the inspected source. Optional
+`research/lastwar_tensors.py` and `lastwar_graph.py` transfer
+country-filtered CPU-generated observations to Torch CUDA; they do not
+execute the C++ simulation on GPU, implement CuPy-native world mechanics
+or prove trained-agent self-play. The OPF v41 38-launcher pin inventory
+does not include this independent engine/research authority.
+
+A focused audit found that both observer adapters wrote
+`last_transfer_bytes` before tensor conversion/transfer returned,
+so a failed C ABI observation or Torch copy could leave a stale/nonzero
+reported transfer. They now reset this counter on a new observation
+and record only successfully returned tensor bytes
+(commits `fa9dad21a06cf62bcbca3672c34c1ef39ea76243`,
+`09eaef2fe6c8b394aa75d31664fbd847a14448d1`).
+The existing GPU allocation/fill/synchronization policy was also
+hardened to reject backend/mask changes **during** device probing,
+including the automatic CPU fallback, and to bind both observer
+constructors to the admission signature captured *before* selection
+(commits `4df29953045bb5331acb1aaf881ab7f3ddaf86d2`,
+`5a1cd07bcaaa05a4160edec86eb94ebe7d9f5825`,
+`6778cf05e35823d05ed97450c9f6ad7569c63682`).
+Tests now cover failed native/copy paths and policy changes during
+probes/constructors; obsolete docs describing mere `cuda.is_available()`
+selection were reconciled.
+
+Full sourced boundary, test map and open learner/native-device work:
+`Last-War/docs/48-native-observation-vs-training-audit.md`,
+commit `d6044958a21ec2abcd444fe33a2be894745aea6f`.
+Private GitHub Actions runs `36367102015` (observation) and
+`36367102009` (native engine) finished with no assigned runner and
+zero executed steps: **no source-test, native build, physical CUDA,
+training or numerical-parity PASS is claimed**. A legitimate learner
+requires its own data/optimizer/masking/checkpoint/evaluation design;
+deterministic self-play traces must not be classified as PPO training.
