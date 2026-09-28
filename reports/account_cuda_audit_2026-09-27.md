@@ -954,3 +954,28 @@ source/CI evidence. Forest_Run's own documentation still correctly keeps
 external physical-device acceptance, human/artistic approval, production
 signing, Play delivery/policy declarations and accountable release approval
 outside source-only closure.
+
+
+#### Forest_Run no-ML training applicability now executed and scoped
+
+Forest Run is an Android/Kotlin game rather than an ML-training repository.
+Its fail-closed authority was hardened so an empty/partial checkout can no
+longer pass merely because no optimizer marker exists. It now requires the
+actual Gradle/manifest/MainActivity/GameView application surface, production
+Kotlin source and Android dependencies before issuing
+`no_retained_trainable_surface`.
+
+At commit `d461353aa0b7e4f7bf455eb001ebf8a7640fd4f6`,
+GitHub Actions training-control run `36386648800` obtained a runner,
+executed **12** applicability tests successfully and emitted a certificate
+with zero findings across **635** scanned files. The estate-local certificate
+run `36386648793` and broader Android validation run `36386648828`
+also succeeded at that exact commit. A documentation-only follow-up is in
+`Forest_Run/docs/audits/2026-09-28_training_control_no_ml_surface.md`
+(commit `0b64e9512e0f67becd5347ecf5c996d03ab81f2b`).
+
+Therefore CUDA-first **training**, model/optimizer/dataset training controls,
+CPU/GPU *training* parity and ML checkpoint/resume are correctly NOT
+APPLICABLE for the verified Forest Run source. This scoped closure does not
+certify rendering GPU behavior, physical-device acceptance, Play delivery,
+production signing, legal/creative approval or human release acceptance.
