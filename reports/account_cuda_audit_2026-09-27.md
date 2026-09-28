@@ -804,3 +804,34 @@ at commit `95651caf6e39b0e8cc76dadfe0887a2ac8b6836f`.
 No new scientific objective/catalog or root controller pin was
 changed. Real CUDA/CPU-resume parity and private CI execution remain
 OPEN.
+
+
+#### Forest_Run no-training certificate continuity and source-enumeration hardening
+
+Following the seven-test no-ML applicability proof, a direct audit of the
+root certificate path found an independent stale-evidence bug: an exception
+during a later source audit left the previous `status=pass` report on disk.
+The root entrypoint now invalidates its chosen output *before* inspecting
+source and, on an audit error, publishes a nonzero-exit
+`status=fail/classification=unresolved` report with no ML-applicability
+verdict or execution claim. A publication failure likewise cannot retain
+the old PASS at that path. Its scanner now exempts only the root
+`run_all_training.py`, not nested scripts of the same basename, and
+includes shell/XML launch/configuration sources while excluding generated
+audit artifacts that could poison future scans with historical failure text.
+
+The actual public GitHub Actions run
+`36366366530` on commit
+`341abc26c21eaa26441f214020b42f050aa0d40d`
+executed **12 applicability regressions successfully** and certified
+**633 scanned source/configuration files with zero ML-training findings**;
+the independent repository-local certificate run `36366366579` also
+passed. Full receipts and source-specific limitations:
+`Forest_Run/docs/audits/2026-09-28_training_applicability_fail_closed.md`,
+commit `062452a74d24ebdf338b5e1d8dacbd80c0720b58`.
+This extends the earlier seven-test source gate; it is not a new ML or
+GPU-training workload and not a whole-game/release acceptance certificate.
+The Android host/API35 connected run `36363796716` succeeded on an
+**earlier** commit, and cannot be applied as if it tested a later source
+candidate. Signed/store delivery, real-device/human approval, gameplay
+quality, security and final release readiness retain their own gates.
