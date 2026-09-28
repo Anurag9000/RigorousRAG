@@ -751,3 +751,33 @@ commit `f5c3cf83c203657a6c80369dd513cba7de51c420`.
 No full family graph/numerical parity/physical CUDA or private CI pass
 is claimed. The frozen v89 scientific authority and catalog retain
 their original blob identities.
+
+
+##### CLRL expanded native CUDA call-site tranche and exact RNG boundaries
+
+An additional source-level literal scan of 96 distinct CLRL
+runtime/runner/agent modules found direct Torch CUDA capability,
+global seed and CUDA RNG checkpoint accesses outside the previously
+corrected original runner and Stage-11/13 entrypoints.
+Additional Stage-12, resilient Stage-11/12/13-PPO, named CL,
+prompt CL and R20 replay routes now share device admission.
+CPU-only workers do not touch CUDA generators. GPU-admitted
+workers fail before making new RNG state on unusable CUDA.
+R14/R15/R16 task-free and v59 structural-routing checkpoint
+CUDA RNG is now bound to the actual selected device; a CUDA state
+cannot silently be omitted on an apparent interruption-exact
+CPU resumption. CRL agent initialization, vector learner private
+CPU initialization and transformer PEFT metadata probing also
+avoid unsanctioned global Torch CUDA seeding. The 96-module
+pattern scan is not a full semantic audit of the repository's
+1,512 files or all task/algorithm combinations.
+
+All receipts and the remaining source/CI/real CUDA distinction
+are in `continual-learning-with-rl/docs/cl_native_cuda_admission_audit_2026-09-28.md`,
+commit `e0d344f32356045bf20aedff7b212acdbc18683f`.
+The frozen v89 scientific authority/catalog are still the original
+Git blobs `083c4aa3f19e585caafbec6f6007866447a3a6e7` and
+`df504ca1417d7005d6df50c921f740ee176286b1`;
+root wrapper remains pinned to verified v41. The private focused
+workflow run `36364338763` had no assigned runner and no steps,
+so **new test and real-GPU execution evidence remain OPEN**.
