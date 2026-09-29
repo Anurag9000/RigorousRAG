@@ -1061,3 +1061,33 @@ The private CL device-contract workflow continues to fail before runner
 assignment, so these are source-level fixes, **not** executed CUDA/resume
 evidence. Full v89 family reachability, physical GPU exact-resume, OOM
 recovery and CPU/GPU numerical parity remain OPEN.
+
+
+#### Forest_Run executed non-ML authority and Android regression closure
+
+Forest_Run's no-training authority was strengthened so an empty or partial
+Android tree cannot be misclassified as a clean non-ML repository. The
+certificate now requires canonical build/manifest/entrypoint source,
+production Kotlin source, and Android dependencies in addition to the
+training-marker scan. Regression tests cover empty/partial trees,
+dependency-free fixtures, real ML markers and ordinary application vocabulary.
+
+Executed evidence from the corrected source line:
+- training-control applicability run `36531498981`: SUCCESS;
+- local estate certificate run `36531498984`: SUCCESS;
+- Android validation run `36531499165`: SUCCESS for the host/release/lint
+  job and API-35 connected smoke/deterministic-evidence job.
+
+The Android workflow initially exposed one stale unit assertion: after
+`resetRun()`, the test expected the historical `Find The Stride` cue,
+while the canonical authored opening now guarantees Duck first and teaches
+`Duck The Low Flyer`. The test was corrected at
+`76401c71cb7566e7c55e05010999fd9ad7e94d04`; gameplay behavior was
+unchanged. Detailed evidence is recorded at
+`Forest_Run/docs/audits/2026-09-29_training_control_and_opening_reset_validation.md`
+(commit `573ffaa1428ca684c7a4d6762ffcbdfa217b469e`).
+
+This closes the current repository's **ML-training applicability** question
+and the discovered Android unit regression. It does not close physical-device
+matrix, Play delivery, signing, human/accessibility, creative/legal/privacy or
+production-release acceptance.
