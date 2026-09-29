@@ -1036,3 +1036,28 @@ host RNG/checkpoint state would change scientific semantics rather than provide
 a safe drop-in acceleration. Detailed evidence and open obligations:
 `Continual-Learning/docs/cuda_exact_resume_audit_2026-09-29.md` at commit
 `83be1b864aa160f603080cd1a7014426a1079a3c`.
+
+
+#### continual-learning-with-rl core exact-resume RNG/device correction
+
+A follow-up to the previously recorded CLRL native CUDA work found one common
+exact-resume bypass in `src/cl_exec/resume_support.py`: global RNG
+capture/restore still queried `torch.cuda.is_available()` and CUDA RNG state
+directly, independent of central CPU admission and selected model device.
+The core Stage-1--10 resilient runner also seeded before resolving the
+requested device and remapped CPU-cloned checkpoints to CUDA before resume
+compatibility preflight.
+
+CLRL main now binds common checkpoint CUDA RNG to the selected execution
+device, resolves ordinary and resilient placement before mutating Python,
+NumPy or Torch RNG, rejects CPU/CUDA RNG mismatches before learner-state
+restore, and loads the CPU-cloned checkpoint on CPU until schema, identity and
+backend-RNG compatibility are proven. Source/test receipts and limitations are
+recorded in
+`docs/cl_native_cuda_admission_audit_2026-09-28.md`, latest documentation
+commit `5bb68443531b717328ffb7f7ba370524d6dafa63`.
+
+The private CL device-contract workflow continues to fail before runner
+assignment, so these are source-level fixes, **not** executed CUDA/resume
+evidence. Full v89 family reachability, physical GPU exact-resume, OOM
+recovery and CPU/GPU numerical parity remain OPEN.
