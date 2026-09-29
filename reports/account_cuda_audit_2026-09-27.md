@@ -1005,3 +1005,34 @@ surface to implement. Its remaining open work is product-release evidence
 visual/gameplay/accessibility approval and store/privacy governance), not a
 fabricated ML training DAG. Detailed receipt:
 `Forest_Run/docs/audits/2026-09-29_training_control_no_ml_closure.md`.
+
+#### Continual-Learning deterministic CUDA/exact-resume correction — 2026-09-29
+
+`Continual-Learning` already had a strong repository-local CUDA admission layer:
+central CPU aliases, scheduler backend identity, worker-local `cuda:0` mapping,
+inherited GPU-mask checking and an allocation + operation + synchronization
+probe before Torch CUDA is accepted. The new audit found a different correctness
+gap: seeded CUDA execution explicitly used nondeterministic cuDNN mode while
+the repository/controller claimed deterministic exact resume.
+
+Native changes now enforce deterministic Torch algorithms, cuDNN deterministic
+mode with benchmarking disabled, deterministic cuBLAS workspace configuration
+before CUDA use, 32-bit seed validation, and process-boundary Python hash seeding.
+`scripts/pressure_aware_catalog_runner.py` passes the job seed to the scientific
+child as `PYTHONHASHSEED`; multi-member cohort parents use structural hash seed
+`0` while retaining per-member RNG virtualization. Standalone `train.py` and
+direct cohort execution re-exec before scientific imports when necessary.
+
+The audit also repaired a literal `\n` embedded in the
+`continual-memory-science` workflow path list. The workflow now materializes a
+real `cpu-science` job, and deterministic-boundary tests are wired into both
+memory-science and training-control verification. Private Actions still report
+no assigned runner and zero executed steps, so these tests are not recorded as
+passing and no physical CUDA parity/exact-resume run is claimed.
+
+NumPy was retained for host RNG/checkpoint/metrics semantics rather than blindly
+replaced with CuPy; model tensors already use admitted Torch CUDA, and changing
+host RNG/checkpoint state would change scientific semantics rather than provide
+a safe drop-in acceleration. Detailed evidence and open obligations:
+`Continual-Learning/docs/cuda_exact_resume_audit_2026-09-29.md` at commit
+`83be1b864aa160f603080cd1a7014426a1079a3c`.
