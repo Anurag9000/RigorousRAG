@@ -979,3 +979,29 @@ CPU/GPU *training* parity and ML checkpoint/resume are correctly NOT
 APPLICABLE for the verified Forest Run source. This scoped closure does not
 certify rendering GPU behavior, physical-device acceptance, Play delivery,
 production signing, legal/creative approval or human release acceptance.
+
+#### Forest_Run no-ML applicability closure — 2026-09-29
+
+`Forest_Run` was audited as an independent native Android game rather than
+being forced through an ML/GPU template. Its repository-level training-control
+authority now refuses to certify an empty, partial or dependency-free Android
+tree: it requires the concrete Gradle/application entry surface, production
+Kotlin source and retained Android dependencies before issuing
+`no_retained_trainable_surface`.
+
+Candidate `4708779c14388e458921675c5869953db6b6bdec` passed the
+strengthened Training-control applicability audit (`36523170411`), Estate
+local certificate (`36523170375`) and Android validation (`36523170374`).
+The Android workflow completed host/release/lint/packaging, unit tests, release
+hardening, page-size/R8/source checks and the API 35 connected smoke job.
+
+The same candidate closes the Hyacinth swept-brush regression exposed by the
+previous Android run: the test now derives frame travel from live brush geometry
+and current base world speed rather than assuming maximum scroll speed.
+
+Forest Run therefore has no applicable CUDA model-training/CuPy/optimizer
+surface to implement. Its remaining open work is product-release evidence
+(production signing, store delivery, representative physical devices, human
+visual/gameplay/accessibility approval and store/privacy governance), not a
+fabricated ML training DAG. Detailed receipt:
+`Forest_Run/docs/audits/2026-09-29_training_control_no_ml_closure.md`.
