@@ -1091,3 +1091,32 @@ This closes the current repository's **ML-training applicability** question
 and the discovered Android unit regression. It does not close physical-device
 matrix, Play delivery, signing, human/accessibility, creative/legal/privacy or
 production-release acceptance.
+
+
+#### Forest_Run no-training applicability authority — executed closure for training-control scope
+
+Forest_Run is not an ML/training repository: its retained product is a native
+Kotlin Android `SurfaceView`/Canvas game. CUDA-first training, CuPy,
+optimizer checkpoints, model/dataset registries and CPU/GPU training parity
+remain **not applicable** and must not be fabricated. The repository-specific
+authority was hardened so an empty or partial checkout cannot be certified as
+"no retained trainable surface": required Android build/manifest/entrypoint
+files, production Kotlin source and real Android dependencies must all be
+present before the certificate can pass. Synthetic regressions now prove that
+an empty tree, missing application/build files and an injected real ML marker
+fail closed.
+
+Current `Forest_Run/main` at
+`3b6e584e9bc7669aaeebf44e2e62f1f0eb198e09` produced **executed**
+GitHub Actions evidence:
+- Training-control applicability audit run `36533481327`: success, including
+  compile, absent-tree/injected-marker regressions and certificate emission.
+- Estate local training-control run `36533481354`: success.
+- Android validation run `36533481357`: success for host release/lint/
+  packaging and API-35 connected deterministic-smoke jobs.
+
+This closes Forest_Run's **training-control applicability classification**:
+there is no retained ML training surface on the validated source candidate.
+It does **not** certify external Play Console submission, production signing,
+human artistic/accessibility acceptance, physical-device matrix completion,
+or other release gates already documented by the repository.
