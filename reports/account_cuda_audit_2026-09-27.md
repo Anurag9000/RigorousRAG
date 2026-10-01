@@ -1146,3 +1146,32 @@ strict retained-source and semantic training checks remain. OPF strict audit
 run `36880314345` and estate certificate run `36880314216` both
 succeeded. This closes only the training/CUDA applicability question, not
 ordinary assembler/simulator functional correctness.
+
+
+#### Forest_Run non-ML training-control applicability — executed closure evidence
+
+Forest_Run is a repository-specific **not-applicable** case for ML training:
+it is a native Kotlin/Android SurfaceView game with no retained optimizer,
+model-training, dataset or ML-framework surface. The previous authority was
+strengthened so an empty/partial checkout can no longer be mistaken for
+evidence of no training. Required Android build/application files, production
+Kotlin source and retained Android dependencies must exist before a certificate
+can pass; ML/training markers still fail closed.
+
+Current-head GitHub Actions on
+`3e1231b2bf3d7d1295fbb7beeba625812499f2b6` now provide actual executed
+evidence rather than source-only intent:
+- training-control applicability audit `36881190063`: **success**;
+- estate local training-control certificate `36881190024`: **success**;
+- Android validation `36881190034`: **success**.
+The applicability job ran 16 tests successfully and emitted
+`no_retained_trainable_surface` with zero findings over 639 scanned
+source/config files. The certificate explicitly reports
+`ml_training_applicable=false` and `execution_claim_emitted=false`.
+
+Forest_Run's ML/CUDA-training applicability is therefore **CLOSED as not
+applicable for the retained software**, not falsely counted as a CUDA training
+implementation. This does not close physical-device, Play/store, human,
+licensing or production-release acceptance. Detailed evidence:
+`Forest_Run/docs/audits/2026-10-01_training_control_non_ml_closure.md`
+(commit `eb8976383079c86084b56e9f1193321011950d2a`).
