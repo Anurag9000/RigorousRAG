@@ -1120,3 +1120,29 @@ there is no retained ML training surface on the validated source candidate.
 It does **not** certify external Play Console submission, production signing,
 human artistic/accessibility acceptance, physical-device matrix completion,
 or other release gates already documented by the repository.
+
+
+#### 2026-10-01 Text/Emotion inference-only GPU paths and CO-project non-ML closure
+
+**Text-and-Emotion-Analysis-Tool-with-Visualization** now has executed current-head
+evidence for its inference-only classification. The retained Transformer models
+remain pretrained inference only; the source authority scans Python, TXT and
+Markdown fenced code while ignoring Markdown prose signatures. Both retained
+sentiment application copies are byte-identical. In addition to the existing
+Torch CUDA allocation/operation/synchronization selector, preprocessing now
+optionally installs `cudf.pandas` before pandas import after a usable CuPy
+probe and calls `spacy.prefer_gpu()` before loading `en_core_web_sm`, while
+all CPU-admission aliases preempt those optional accelerator probes.
+Strict v41 run `36879845905` and estate certificate run
+`36879845917` both succeeded. Physical CUDA/cuDF/spaCy execution, model
+output parity and dependency locking remain OPEN.
+
+**CO-project** was independently classified as a pure Python assembler/simulator,
+not an ML repository. Its no-training authority now requires both
+`Assembler.py` and `Simulator.py` and fails on empty/partial source or
+injected training primitives. Training-only native/exact-resume and generic
+workload-registry requirements were removed from the non-training audit profile;
+strict retained-source and semantic training checks remain. OPF strict audit
+run `36880314345` and estate certificate run `36880314216` both
+succeeded. This closes only the training/CUDA applicability question, not
+ordinary assembler/simulator functional correctness.
