@@ -1175,3 +1175,31 @@ implementation. This does not close physical-device, Play/store, human,
 licensing or production-release acceptance. Detailed evidence:
 `Forest_Run/docs/audits/2026-10-01_training_control_non_ml_closure.md`
 (commit `eb8976383079c86084b56e9f1193321011950d2a`).
+
+
+#### Forest_Run no-training authority hardened and executed — 2026-10-02
+
+Forest_Run is correctly classified separately from the 38 ML/training launchers:
+it is a native Kotlin Android game and must not receive fabricated CUDA/model
+training jobs. Its repository-specific fail-closed authority was strengthened
+to require the actual Android source/build surface; scan notebooks, shell and
+dependency manifests; detect dynamic framework imports and retained model
+artifacts; reject uninspected executable archives/native libraries except the
+explicit Gradle wrapper JAR; and bind source bytes, relevant path inventory,
+and the exact local certificate-authority code with independent SHA-256
+digests. Product assets can no longer hide a future model artifact merely
+because the historical artwork directory is excluded from text scanning.
+
+GitHub Actions run `37015111339` on Forest_Run commit
+`e65224fbf111b4319da7fbace28a0c7f6f86042b` executed the focused
+applicability suite successfully: **30 tests, OK**. Estate-local certificate
+run `37015110857` also succeeded on that commit. The detailed source and
+evidence boundary is recorded in
+`Forest_Run/docs/audits/2026-10-02_training_control_no_ml_authority.md`
+(commit `b94b18dc957b72254e0e2898985c1db733d41b49`).
+
+This closes the question "should account-wide CUDA training be added to
+Forest_Run?" as **not applicable under the current retained source**, not as
+a waiver for future ML additions. Android/release/device/store/human
+acceptance remains independent, and the Android validation for the focused
+certificate commit was still pending when the Forest_Run note was written.
