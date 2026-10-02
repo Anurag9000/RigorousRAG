@@ -1203,3 +1203,39 @@ Forest_Run?" as **not applicable under the current retained source**, not as
 a waiver for future ML additions. Android/release/device/store/human
 acceptance remains independent, and the Android validation for the focused
 certificate commit was still pending when the Forest_Run note was written.
+
+
+#### Continual-Learning native OOM retry and transactional RNG restore
+
+A deeper repository-local trace found two correctness gaps beyond the already
+implemented CUDA allocation/admission policy.
+
+First, `scripts/pressure_aware_catalog_runner.py` persisted
+`force_cpu=1` after CUDA OOM whenever CPU fallback was configured. Under a
+centrally GPU-admitted parent this created an unlaunchable queued job: CPU
+execution was forbidden by admission while the persisted state suppressed
+the intended GPU retry. Commit
+`17999cae591fe73c77fb0bcfb551ea0a0b11ff13` now keeps GPU-admitted
+OOM retries GPU-eligible under the reduced batch scale and clears stale
+persisted CPU fallback after a scheduler restart under GPU admission.
+`tests/test_pressure_runner_cuda_oom_admission.py` was added at
+`35da470d0565554ddd4e9c710cc463f056b30fff` and wired into the focused
+training-control workflow at
+`c14d614ce778bf9350912c8cf3875d5be754e38b`.
+
+Second, both the native BaseRunner and physical-cohort RNG restore paths
+mutated Python/NumPy/Torch CPU RNG state before discovering a missing or
+invalid CUDA RNG payload. Commits
+`2dea5f9f1f206e784524812dd11d5491821a7841` and
+`d09e0a348a1b7169e49ec1b4163eb90e2253d5b4` now validate CUDA state
+before host mutation and roll back host/CUDA streams when a setter fails.
+Regression coverage was expanded at
+`383229bd506142f0b3b328ce8bf80b31c351b5a0`.
+Repository-specific evidence and nonclaims are recorded in
+`Continual-Learning/docs/cuda_exact_resume_audit_2026-09-29.md` at
+`4d1446a01c39af6eee5414eab2482dbd553fd3b5`.
+
+The most recent verification/audit jobs were queued or failed before an
+assigned runner/recorded steps, so these new tests are **not** marked passed.
+Physical CUDA OOM recovery, real interruption/resume under AMP and full
+122,714-job execution remain OPEN.
