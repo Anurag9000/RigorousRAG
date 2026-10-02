@@ -1239,3 +1239,40 @@ The most recent verification/audit jobs were queued or failed before an
 assigned runner/recorded steps, so these new tests are **not** marked passed.
 Physical CUDA OOM recovery, real interruption/resume under AMP and full
 122,714-job execution remain OPEN.
+
+
+#### continual-learning-with-rl transactional RNG restore closure extension
+
+A deeper exact-resume trace found that the common CLRL RNG preflight validated
+backend compatibility but still allowed a validly-shaped CUDA RNG payload to
+fail during `torch.cuda.set_rng_state_all()` after Python/NumPy/Torch CPU
+generators had already been changed. The shared core helper was made
+transactional at `ffba5b113566c615c2f10a34aa0ba9d0ef235e45`, with focused
+rollback regression at `e90212d262895fe3c892210cc05c536e67daa93a`.
+
+The same non-transactional setter sequence existed independently in seven
+specialized checkpoint loaders. New helper
+`src/cl_exec/rng_transaction.py`
+(`cf638835b5539c460f5b5d390cb41588f640a1f1`) centralizes snapshot/apply/
+rollback semantics. Named CL, prompt CL, R20 replay augmentation, R14/R15/R16
+task-free runtimes and v59 structural routing now retain their existing
+device/cross-backend preflight but route actual RNG mutation through that
+transaction. Integration commits:
+`079d81ec5880615d3783ef519c5351c1befdddc0`,
+`f1c0a729ae883f1746230858b503f285719fb2ac`,
+`c2710127fe344adcf27998fd348171a87e0e8c04`,
+`fb110207c882cb2b666fa8c7b95bc2eddfc3ddd7`,
+`ae1c6fcab12f7238dc5301a30d087c04305952df`,
+`eb601932b4083ca4bcee3fbfdc02e2839955ddcf`,
+`3fc178e2836b92326f6a0291e6dc6665ece01e3f`.
+Focused source/rollback coverage:
+`0da6965a5044b9c849019293041aa98716b842c3`;
+workflow wiring:
+`10856af009f2c05ef920ee2bcfcb641eb383f753`.
+Repository audit updated at
+`2fa5c45dcca4fc96f8324e1efec0d08904e358a1`.
+
+These are checkpoint transaction corrections, not evidence of physical CUDA
+resume or whole-repository closure. The private focused workflows still have a
+history of zero-step/no-runner failures and must be executed successfully
+before claiming runtime verification.
