@@ -1276,3 +1276,28 @@ These are checkpoint transaction corrections, not evidence of physical CUDA
 resume or whole-repository closure. The private focused workflows still have a
 history of zero-step/no-runner failures and must be executed successfully
 before claiming runtime verification.
+
+
+#### VaaniNoise-SED transactional CUDA RNG checkpoint restore
+
+A repository-local checkpoint trace found that VaaniNoise already had a sound
+central Torch device policy and CPU/CUDA resume compatibility preflight, but
+`training/checkpoint.py` still applied Python, NumPy and Torch CPU RNG state
+before its final CUDA RNG setter. A structurally valid but unusable CUDA
+generator payload could therefore reject resume after host RNG streams had
+changed.
+
+Commit `d0453a439d91fc4f4e9005426102ece4d1681840` now snapshots Python,
+NumPy, Torch CPU and selected CUDA RNG state and rolls the complete snapshot
+back when any setter fails. Focused regression
+`8d471b25b2d3e2492634ba80bdfc2af06efc6195` covers zero-mutation missing
+CUDA state, simulated CUDA setter failure/rollback and CPU restore with no CUDA
+RNG access. It is wired into both runtime-hardening Python lanes at
+`f6bf52ebbe0fbd4a9676badbf44694895bdf71e7`.
+Repository evidence/nonclaims:
+`VaaniNoise-SED/docs/cuda_checkpoint_rng_audit_2026-10-03.md`
+(commit `26f5d28118b785abb3faa4c33d05f33a11484fa7`).
+
+The latest runtime-hardening, strict training-control and estate jobs at the
+checked head had no assigned runners and zero executed steps, so no test pass,
+physical CUDA resume, numerical parity or catalog-wide execution is claimed.
