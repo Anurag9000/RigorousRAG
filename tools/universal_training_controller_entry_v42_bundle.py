@@ -70,7 +70,7 @@ CONTROLLER_FILES = {'tools/training_surface_census.py': '4db28f36151bdace4cdde9d
  'tools/universal_training_controller_config_matrix.py': 'cfdc58f5dea0e5351871bb0adca7b1f39444d756',
  'tools/universal_training_controller_early_stopping_wiring.py': 'fdd00d7b406a77933c827237fb45db9d083001dc',
  'tools/universal_training_controller_lifecycle_affinity.py': '31e896f6ab10cc902d594e0c21c324d0f4092e8c',
- 'tools/universal_training_controller_workload_closure.py': '778eee9455af83cb9faf4c173712eae84d304f89',
+ 'tools/universal_training_controller_workload_closure.py': '66248151b4fcc312fb2eab81d532bfc22f722ddf',
  'tools/universal_training_controller_dag_slicing.py': 'b5ecd8fbb152c1da40107cd023af19d1e86ab3e4',
  'tools/universal_training_controller_metrics_v2.py': '26bac973df28fa37f21c6464031fec2e3ece9908',
  'tools/universal_training_controller_registry_member_closure.py': '7bd369e1d27de859ed1278c34f5e5d01613ef9b1',
