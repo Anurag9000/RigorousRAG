@@ -98,14 +98,13 @@ def _literal_members(value: ast.AST | None) -> list[str]:
 
 
 def _scientific_registry_findings(path: Path, rel: str) -> list[Dict[str, Any]]:
-    """Enumerate strong static registries and keep dynamic assignments visible.
+    """Enumerate repository-level scientific registries, not runtime temporaries.
 
-    Unlike the v22 scanner, a strong symbol assigned from a call/comprehension is
-    retained with ``members=[]``.  This prevents a dynamic registry from
-    disappearing from the audit merely because its members cannot be enumerated
-    safely without executing repository code.
+    Module-level dynamic registries remain visible with no literal members, but
+    a function-local variable named dataset, policy or encoder is execution
+    state, not a repository-wide experiment selector.
     """
-    if path.suffix.lower() != ".py":
+    if path.suffix.lower() != ".py" or workload._workload_exclusion_reason(rel) is not None:
         return []
     text = workload._read(path)
     try:
@@ -114,7 +113,7 @@ def _scientific_registry_findings(path: Path, rel: str) -> list[Dict[str, Any]]:
         return []
     rows: list[Dict[str, Any]] = []
     seen: set[tuple[str, int]] = set()
-    for node in ast.walk(tree):
+    for node in tree.body:
         if not isinstance(node, (ast.Assign, ast.AnnAssign)):
             continue
         targets = node.targets if isinstance(node, ast.Assign) else [node.target]
@@ -135,8 +134,6 @@ def _scientific_registry_findings(path: Path, rel: str) -> list[Dict[str, Any]]:
                 "assignment_kind": type(value).__name__ if value is not None else "None",
             })
     return rows
-
-
 def _normalize_dynamic_covers(profile: Mapping[str, Any]) -> set[str]:
     raw = profile.get("dynamic_registry_covers") or []
     if isinstance(raw, str):
