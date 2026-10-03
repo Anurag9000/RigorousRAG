@@ -14,7 +14,9 @@ on:
       - 'tests/test_universal_cuda_backend_bundle_v40.py'
       - 'controller_bundle_v40/*.py'
       - 'controller_bundle_v41/*.py'
+      - 'controller_bundle_v42/*.py'
       - 'tests/test_universal_cuda_backend_bundle_v41.py'
+      - 'tests/test_universal_training_controller_bundle_v42.py'
       - 'tests/test_training_surface_semantic_scan.py'
       - 'run_all_training.py'
       - '.github/workflows/training-control-static.yml'
@@ -30,7 +32,9 @@ on:
       - 'tests/test_universal_cuda_backend_bundle_v40.py'
       - 'controller_bundle_v40/*.py'
       - 'controller_bundle_v41/*.py'
+      - 'controller_bundle_v42/*.py'
       - 'tests/test_universal_cuda_backend_bundle_v41.py'
+      - 'tests/test_universal_training_controller_bundle_v42.py'
       - 'tests/test_training_surface_semantic_scan.py'
       - 'run_all_training.py'
       - '.github/workflows/training-control-static.yml'
@@ -114,6 +118,44 @@ jobs:
           print("staged v41 cold-bootstrap manifest verified")
           PY
 
+      - name: Compile and verify staged v42 controller overlays
+        run: |
+          python -m py_compile \
+            tools/universal_training_controller_entry_v42.py \
+            tools/universal_training_controller_entry_v42_bundle.py \
+            controller_bundle_v42/universal_training_controller_job_catalog_v2.py \
+            controller_bundle_v42/universal_training_controller_workload_closure.py \
+            controller_bundle_v42/universal_training_controller_scientific_surface_v25.py \
+            controller_bundle_v42/universal_training_controller_selector_closure_v26.py \
+            controller_bundle_v42/universal_training_controller_declaration_closure_v30.py \
+            controller_bundle_v42/universal_training_controller_opf_reference_v2.py \
+            tests/test_universal_training_controller_bundle_v42.py \
+            tests/test_training_controller_scanner_scope_v42.py \
+            tests/test_training_controller_job_catalog_import_scope_v42.py
+          python -m pytest -q -o addopts='' \
+            tests/test_universal_training_controller_bundle_v42.py \
+            tests/test_training_controller_scanner_scope_v42.py \
+            tests/test_training_controller_job_catalog_import_scope_v42.py
+
+      - name: Exercise staged v42 cold bootstrap
+        run: |
+          tmp="$(mktemp -d)"
+          TRAINING_CONTROL_REPO_ROOT="$tmp" \
+            python tools/universal_training_controller_entry_v42.py --training-control-bootstrap-self-test \
+            > "$tmp/v42-bootstrap-result.json"
+          python - "$tmp/v42-bootstrap-result.json" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+          result = json.loads(Path(sys.argv[1]).read_text(encoding='utf-8'))
+          assert result["status"] == "ok", result
+          assert result["bundle"] == "v42", result
+          assert result["controller_files"] == 60, result
+          assert result["opf_files"] == 9, result
+          assert result["opf_commit"] == "a361b49ac24ffc7de87440538c88994faed017c4", result
+          print("staged v42 cold-bootstrap manifest verified")
+          PY
+
       - name: Exercise archived v39 cold bootstrap in an empty repository root
         run: |
           tmp="$(mktemp -d)"
@@ -153,4 +195,6 @@ jobs:
             tests/test_training_controller_semantic_inventory.py \
             tests/test_training_controller_opf_mechanism_audit_offline.py \
             tests/test_training_controller_opf_reference_v20.py \
-            tests/test_training_surface_semantic_scan.py
+            tests/test_training_surface_semantic_scan.py \
+            tests/test_training_controller_scanner_scope_v42.py \
+            tests/test_training_controller_job_catalog_import_scope_v42.py
