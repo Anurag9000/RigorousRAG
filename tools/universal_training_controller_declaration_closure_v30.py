@@ -210,7 +210,25 @@ def _add_row(store: Dict[str, Dict[str, Any]], *, rel: str, symbol: str, line: i
     row["surface_kinds"].add(kind)
 
 
+def _module_scope_statements(statements: Sequence[ast.stmt]) -> Iterable[ast.stmt]:
+    """Walk module control-flow blocks without entering function/class bodies."""
+    for node in statements:
+        yield node
+        nested: list[Sequence[ast.stmt]] = []
+        if isinstance(node, (ast.If, ast.For, ast.AsyncFor, ast.While, ast.With, ast.AsyncWith)):
+            nested.extend([node.body, node.orelse] if hasattr(node, "orelse") else [node.body])
+        elif isinstance(node, (ast.Try, getattr(ast, "TryStar", ast.Try))):
+            nested.extend([node.body, node.orelse, node.finalbody])
+            nested.extend(handler.body for handler in node.handlers)
+        elif isinstance(node, ast.Match):
+            nested.extend(case.body for case in node.cases)
+        for block in nested:
+            yield from _module_scope_statements(block)
+
+
 def _python_findings(path: Path, rel: str) -> list[Dict[str, Any]]:
+    if workload._workload_exclusion_reason(rel) is not None:
+        return []
     text = workload._read(path)
     try:
         tree = ast.parse(text, filename=rel)
@@ -220,7 +238,10 @@ def _python_findings(path: Path, rel: str) -> list[Dict[str, Any]]:
     aliases = _local_aliases(tree)
     enums = _enum_members(tree, aliases)
 
-    for node in ast.walk(tree):
+    # Plain scientific-name assignments are contractual only at module scope.
+    # Runtime locals such as dataset=load_data() are execution state, not a
+    # repository-wide registry. Module-level if/try/with branches remain visible.
+    for node in _module_scope_statements(tree.body):
         if isinstance(node, (ast.Assign, ast.AnnAssign)):
             targets = node.targets if isinstance(node, ast.Assign) else [node.target]
             for target in targets:
@@ -229,15 +250,17 @@ def _python_findings(path: Path, rel: str) -> list[Dict[str, Any]]:
         elif isinstance(node, ast.AugAssign) and isinstance(node.target, ast.Name) and selectors._semantic_name(node.target.id):
             _add_row(store, rel=rel, symbol=node.target.id, line=int(getattr(node, "lineno", 0)), members=_resolve_members(node.value, aliases), kind="augmented_registry_merge")
 
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
-            receiver = _root_name(node.func.value)
-            tail = node.func.attr
-            if receiver and selectors._semantic_name(receiver) and node.args:
-                if tail in {"update", "extend"}:
-                    _add_row(store, rel=rel, symbol=receiver, line=int(getattr(node, "lineno", 0)), members=_resolve_members(node.args[0], aliases), kind=f"registry_{tail}")
-                elif tail in {"append", "add", "setdefault"}:
-                    _add_row(store, rel=rel, symbol=receiver, line=int(getattr(node, "lineno", 0)), members=_resolve_members(node.args[0], aliases), kind=f"registry_{tail}")
+        call = node.value if isinstance(node, ast.Expr) and isinstance(node.value, ast.Call) else None
+        if isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute):
+            receiver = _root_name(call.func.value)
+            tail = call.func.attr
+            if receiver and selectors._semantic_name(receiver) and call.args:
+                if tail in {"update", "extend", "append", "add", "setdefault"}:
+                    _add_row(store, rel=rel, symbol=receiver, line=int(getattr(call, "lineno", 0)), members=_resolve_members(call.args[0], aliases), kind=f"registry_{tail}")
 
+    # Typed public selector parameters remain contractual wherever the callable
+    # lives; only their declared annotation choices are recorded, not body locals.
+    for node in ast.walk(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             args = [*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs]
             if node.args.vararg is not None:
@@ -247,8 +270,6 @@ def _python_findings(path: Path, rel: str) -> list[Dict[str, Any]]:
             for arg in args:
                 if selectors._semantic_name(arg.arg):
                     _add_row(store, rel=rel, symbol=f"annotation:{node.name}:{arg.arg}", line=int(getattr(arg, "lineno", node.lineno)), members=_annotation_members(arg.annotation, aliases, enums), kind="parameter_annotation_choices")
-        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name) and selectors._semantic_name(node.target.id):
-            _add_row(store, rel=rel, symbol=f"annotation:field:{node.target.id}", line=int(getattr(node, "lineno", 0)), members=_annotation_members(node.annotation, aliases, enums), kind="field_annotation_choices")
 
     return [{
         "path": rel, "symbol": symbol, "line": int(row.get("line") or 0),
@@ -256,8 +277,6 @@ def _python_findings(path: Path, rel: str) -> list[Dict[str, Any]]:
         "assignment_kind": str(row.get("assignment_kind") or "declaration"),
         "surface_kinds": sorted(row.get("surface_kinds") or []),
     } for symbol, row in sorted(store.items())]
-
-
 def _declaration_findings(path: Path, rel: str) -> list[Dict[str, Any]]:
     return _python_findings(path, rel) if path.suffix.lower() == ".py" else []
 
@@ -346,7 +365,7 @@ def _structured_choices(root: Path) -> list[Dict[str, Any]]:
             rel = path.relative_to(root).as_posix()
         except Exception:
             continue
-        if not _config_candidate(rel):
+        if workload._workload_exclusion_reason(rel) is not None or not _config_candidate(rel):
             continue
         payload = _structured_payload(path)
         found = _structured_choice_rows(payload, rel) if payload is not None else []
@@ -368,6 +387,8 @@ def _enhanced_component_configs(root: Path) -> list[str]:
         try:
             rel = path.relative_to(root).as_posix()
         except Exception:
+            continue
+        if workload._workload_exclusion_reason(rel) is not None:
             continue
         parts = [part.lower() for part in Path(rel).parts]
         if "conf" in parts and selectors._COMPONENT_DIR_RE.search(rel.lower()):
@@ -396,6 +417,8 @@ def _concrete_component_classes(root: Path) -> list[Dict[str, Any]]:
         try:
             rel = path.relative_to(root).as_posix()
         except Exception:
+            continue
+        if workload._workload_exclusion_reason(rel) is not None:
             continue
         text = workload._read(path)
         try:
