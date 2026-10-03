@@ -180,7 +180,7 @@ def _merge_row(store: Dict[str, Dict[str, Any]], *, symbol: str, line: int, memb
 
 
 def _selector_registry_findings(path: Path, rel: str) -> list[Dict[str, Any]]:
-    if path.suffix.lower() != ".py":
+    if path.suffix.lower() != ".py" or workload._workload_exclusion_reason(rel) is not None:
         return []
     text = workload._read(path)
     try:
@@ -303,6 +303,8 @@ def _iter_component_configs(root: Path) -> list[str]:
         try:
             rel = path.relative_to(root).as_posix()
         except Exception:
+            continue
+        if workload._workload_exclusion_reason(rel) is not None:
             continue
         low = rel.lower()
         if not ("config" in low or "recipe" in low or "experiment" in low):
