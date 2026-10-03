@@ -52,6 +52,10 @@ def _load_base():
     name = f"_opf_dataset_cohort_runtime_{BASE_COMMIT[:12]}"
     existing = sys.modules.get(name)
     if existing is not None:
+        existing_path = Path(str(getattr(existing, "__file__", "") or ""))
+        if (not existing_path.is_file()
+                or _git_blob(existing_path.read_bytes()) != BASE_BLOB):
+            raise RuntimeError("preloaded dataset-cohort v4 base module failed blob verification")
         return existing
     cache = Path(os.environ.get("TRAINING_CONTROL_REPO_ROOT") or Path.cwd()).resolve()
     cache = cache / ".training_control" / "dataset_cohort" / BASE_COMMIT / "dataset_cohort_runtime.py"
