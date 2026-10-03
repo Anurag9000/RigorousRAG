@@ -204,13 +204,27 @@ def subprocess_environment(
     """
     selected = mode if isinstance(mode, BackendMode) else BackendMode(str(mode))
     env = dict(os.environ if base is None else base)
-    forced_cpu = any(_truthy(env.get(name)) for name in (
+    declared = env.get("TRAINING_CONTROL_BACKEND", "").strip().lower()
+    if declared not in {"", "auto", "cpu", "gpu"}:
+        raise BackendUnavailable(f"unsupported central backend admission: {declared!r}")
+    flag_cpu = any(_truthy(env.get(name)) for name in (
         "CPU_ONLY", "TRAINING_CONTROL_CPU_ONLY", "OPF_ADP_DISABLE_GPU_ACCELERATORS",
     ))
     inherited = env.get("CUDA_VISIBLE_DEVICES")
-    if selected is BackendMode.GPU and (forced_cpu or inherited in {"", "-1"}):
+    hidden = inherited is not None and inherited.strip() in {"", "-1"}
+    declared_cpu = declared == "cpu"
+    declared_gpu = declared == "gpu"
+    if declared_gpu and (flag_cpu or hidden):
+        raise BackendUnavailable("conflicting central CPU and GPU scheduler admission")
+    if selected is BackendMode.GPU and (declared_cpu or flag_cpu or hidden):
         raise BackendUnavailable("GPU child cannot override central CPU admission")
-    if selected is BackendMode.CPU or forced_cpu:
+    if selected is BackendMode.CPU and declared_gpu:
+        raise BackendUnavailable("GPU-admitted parent cannot silently launch a CPU child")
+    if declared_cpu or flag_cpu:
+        selected = BackendMode.CPU
+    elif declared_gpu and selected is BackendMode.AUTO:
+        selected = BackendMode.GPU
+    if selected is BackendMode.CPU:
         env.update(
             CUDA_VISIBLE_DEVICES="",
             HIP_VISIBLE_DEVICES="",
@@ -223,10 +237,11 @@ def subprocess_environment(
         )
         return env
     # Do not accidentally unmask a CPU child or override scheduler GPU isolation.
-    if selected is BackendMode.AUTO and inherited in {"", "-1"}:
+    if selected is BackendMode.AUTO and hidden:
         env["TRAINING_CONTROL_BACKEND"] = "auto"
         return env
-    if inherited not in (None, "", "-1"):
+    if inherited is not None and inherited.strip() not in {"", "-1"}:
+        inherited = inherited.strip()
         if gpu_index is not None and str(gpu_index).strip() != inherited:
             raise BackendUnavailable("cannot override scheduler-owned CUDA_VISIBLE_DEVICES")
         index = inherited
