@@ -48,7 +48,11 @@ def _constants(path: Path, names: set[str]) -> dict:
         else:
             continue
         if isinstance(target, ast.Name) and target.id in names:
-            found[target.id] = ast.literal_eval(value)
+            if (isinstance(value, ast.Call) and isinstance(value.func, ast.Name)
+                    and value.func.id == "frozenset" and len(value.args) == 1):
+                found[target.id] = frozenset(ast.literal_eval(value.args[0]))
+            else:
+                found[target.id] = ast.literal_eval(value)
     assert set(found) == names, (path, names - set(found))
     return found
 
