@@ -29,6 +29,8 @@ jobs:
         run: |
           python -m py_compile run_all_training.py
           python -m py_compile tools/universal_training_controller_entry.py
+      - name: Verify controller-style physical catalog import
+        run: python tests/test_authoritative_training_suite_catalog_v2_import.py
       - name: Audit exhaustive training closure and recovery contracts
         run: python run_all_training.py --training-control-audit
       - name: Upload training-control certificate
