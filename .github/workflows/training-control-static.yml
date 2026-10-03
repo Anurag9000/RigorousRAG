@@ -156,6 +156,59 @@ jobs:
           print("staged v42 cold-bootstrap manifest verified")
           PY
 
+      - name: Audit live RigorousRAG profile through staged v42
+        run: |
+          profile="$(python - <<'PY'
+          import json
+          import run_all_training
+          print(json.dumps(run_all_training.PROFILE, separators=(',', ':'), sort_keys=True))
+          PY
+          )"
+          set +e
+          TRAINING_CONTROL_PROFILE="$profile" \
+          TRAINING_CONTROL_REPO_ROOT="$PWD" \
+            python tools/universal_training_controller_entry_v42.py --training-control-audit \
+            > /tmp/v42-training-control-audit.stdout
+          status=$?
+          set -e
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          path = Path('.training_control/coverage_report.json')
+          report = json.loads(path.read_text(encoding='utf-8'))
+          keys = (
+              'coverage_ok',
+              'strict_workload_surface_pass',
+              'strict_dynamic_scientific_registry_pass',
+              'strict_registry_member_pass',
+              'strict_declarative_scientific_source_pass',
+              'strict_semantic_training_surface_pass',
+              'strict_retained_training_closure_pass',
+          )
+          summary = {key: report.get(key) for key in keys}
+          for key in (
+              'unaccounted_workload_registry_paths',
+              'unaccounted_training_config_paths',
+              'unaccounted_dynamic_scientific_registries',
+              'unaccounted_semantic_learner_surfaces',
+              'unreachable_retained_trainable_sources',
+          ):
+              value = report.get(key) or []
+              summary[key + '_count'] = len(value)
+              summary[key + '_sample'] = value[:20]
+          print(json.dumps(summary, indent=2, sort_keys=True))
+          PY
+          exit "$status"
+
+      - name: Upload staged v42 training-control certificate
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: staged-v42-training-control-${{ github.sha }}
+          path: .training_control/coverage_report.json
+          if-no-files-found: warn
+          retention-days: 30
+
       - name: Exercise archived v39 cold bootstrap in an empty repository root
         run: |
           tmp="$(mktemp -d)"
