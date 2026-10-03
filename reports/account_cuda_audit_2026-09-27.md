@@ -1368,3 +1368,40 @@ This is now **executed evidence**, not source-only:
 This closes Forest_Run's **training/CUDA applicability** question. It does not
 claim physical Android-device/store acceptance or replace the game's separate
 release-evidence gates.
+
+
+#### 2026-10-03 BTN central fleet receipt/mask hardening and Nutri PPO/checkpoint continuation
+
+Breaking-the-Neural-Barrier's newer 18K/18L central CUDA layer was reviewed
+against the exact pinned OPF scheduler. Two additional source contracts were
+tightened. First, central GPU admission now validates a complete successful
+fleet receipt: positive device_count, checked logical indices exactly
+0..N-1, and no failure records. The bounded CUDA training-cell independently
+rejects a forged success receipt with failures or missing reason metadata.
+Second, the inherited CUDA visibility mask is checked against the pinned
+scheduler's actual selection semantics. Single-device UUID masks remain valid,
+while duplicate or multi-device non-decimal masks cannot be called GPU-usable:
+automatic mode falls back to CPU before probing and explicit GPU admission
+fails closed. Multi-device numeric masks continue only after full Torch fleet
+proof. Principal commits: 125f3b6b036c77656c326a89c176ea4da1e4d169,
+f9ab528dd4db46e12b6085526f1b1dcd16cd446c,
+f8a0ff756de68f575aa3b945eb5dda01849405f6,
+3230a9f85238aaf00a576da9fd2bb3e3375d5cc0,
+392d76e75bdc9df3a60ed8b038b286f240823b48,
+3ab95316b3242f0640b54f6020b8c2c772190f45.
+The matching 18K/18L workflow jobs still end before runner assignment, so
+these new regressions are source-only evidence and not a physical CUDA pass.
+
+NutriFlavorOS's retained PPO path now bootstraps non-terminal truncated tails
+from an explicit next state before optimizer mutation, caps on-policy batches
+at exactly 32 samples, uses process-stable BLAKE2b state features, validates
+the documented encoder dimension, and rolls actor/critic weights back after a
+failed checkpoint application. Torch model restoration was centralized behind
+a weights-only loader that refuses unsafe compatibility fallback. Governed
+research checkpoints moved to schema v2 with primitive Python/NumPy RNG state
+and save-time safe-tree validation, allowing optimizer/scheduler/scaler state
+to use restricted Torch deserialization as well. Detailed receipts are in
+NutriFlavorOS/docs/cuda_trainable_surface_audit_2026-09-28.md at
+ef41641f0fe9193dd324505f6d8608aa6695f793. Current Nutri validation again
+created zero-step jobs with no assigned runner, so remote tests, live exact
+resume, physical CUDA and numerical parity remain OPEN.
