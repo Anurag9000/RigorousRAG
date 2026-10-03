@@ -98,9 +98,9 @@ def test_v42_outer_pins_exact_inner_and_declares_all_overlays():
         "HOST_ARCHIVE_COMMIT", "HOST_BUNDLE_DIR",
     })
     assert values["BUNDLE_VERSION"] == "v42"
-    assert values["V36_COMMIT"] == "bc0e54c207671d139c5902468c23d6fb4dd73fb4"
+    assert values["V36_COMMIT"] == "820ec1251c1caadfa385591e7f25396963b05274"
     assert values["V36_BLOB"] == _blob(INNER.read_bytes()) == (
-        "547622d0b8705fb4856ef349c5c85cdfefabb153"
+        "cd18a0ee6aa2f23ad945d817ee82e2974741172a"
     )
     assert set(values["CONTROLLER_OVERLAYS"]) == OVERLAY_FILES
     assert values["HOST_BUNDLE_DIR"] == "controller_bundle_v39"
