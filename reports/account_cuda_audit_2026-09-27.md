@@ -1301,3 +1301,40 @@ Repository evidence/nonclaims:
 The latest runtime-hardening, strict training-control and estate jobs at the
 checked head had no assigned runners and zero executed steps, so no test pass,
 physical CUDA resume, numerical parity or catalog-wide execution is claimed.
+
+#### VaaniNoise-SED whole learner + mixed-source resume transaction extension
+
+The earlier VaaniNoise CUDA RNG repair still left a larger exact-resume
+transaction gap: model/optimizer/scheduler/scaler/EMA could commit before a
+later component or RNG/post-load state rejected the checkpoint. Commit
+`00d1da1e44e1e64ecd5cbb93331a8cde1b96536c` added a
+spooled pre-resume learner snapshot; `ae58c8d9905fd2169cefcfb41aaf6665165012fd`
+and `8677b402b529e763d2e768b7243d3c045dda3892` retain and
+restore the original RNG state through the post-load transaction. The normal
+fit runner now commits TrainingState/Group-DRO inside that boundary at
+`3e7aac68a6884efb52f6de6ca37a6a3fb7d40f9a`. Focused learner,
+RNG and robust-state rollback coverage reached
+`1adb5410ee6490f78cca2710c414e510bd8f2ed9` and
+`38849453255ab2e251224e8933f1b5a91d898cde`.
+
+A separate M61 mixed-source loader also validated metadata, adapter
+cursor/exposure state and optimizer counters after core checkpoint mutation.
+The adapter is now locally transactional
+(`51dce6555808ce287c933293729f6479c2f29f9f`) and the full
+mixed-source restore is committed via the outer checkpoint post-load
+transaction at `203b151fb073fe87096e5b6b1f0a6a2e8a974ec6`.
+Regression `59bbd57941bfad967c2d84563dc70953ef926b17` asserts a
+late counter mismatch restores model, optimizer, trainer state, adapter and
+Python/NumPy/Torch RNG. Both transaction suites are wired into the 3.11/3.12
+runtime-hardening matrix at
+`c3b3a45f38f7e4a734576f1e72505e8e395f54ea`.
+Repository evidence is updated at
+`VaaniNoise-SED/docs/cuda_checkpoint_rng_audit_2026-10-03.md`
+(commit `91f2278f8bc80ba3652242508e3d52326823b875`).
+
+The latest VaaniNoise runtime-hardening run
+`37129144718` and companion strict/estate runs still had no assigned
+runners and zero executed steps. Thus source-level transaction closure is
+stronger, but physical CUDA interruption/resume, AMP/OOM recovery and
+catalog-wide numerical execution remain OPEN.
+
