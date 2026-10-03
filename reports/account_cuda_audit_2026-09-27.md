@@ -1337,3 +1337,34 @@ The latest VaaniNoise runtime-hardening run
 runners and zero executed steps. Thus source-level transaction closure is
 stronger, but physical CUDA interruption/resume, AMP/OOM recovery and
 catalog-wide numerical execution remain OPEN.
+
+
+#### Forest_Run no-training classification — executed and verified
+
+Forest_Run was deliberately **not** given synthetic CUDA or optimizer jobs. It
+is a native Kotlin/Android game and its repository-specific authority classifies
+ML training, training datasets, optimizer/checkpoint state and GPU-first training
+as not applicable unless real trainable source is later introduced.
+
+The fail-closed authority was strengthened so an empty, partial or dependency-
+free Android tree cannot be mis-certified merely because there are no ML tokens
+to find. The live certificate now requires the retained Gradle/application
+entrypoints, production Kotlin source, and actual Android dependencies before it
+can emit `no_retained_trainable_surface`. Synthetic fixtures still use the
+lower-level composable scanner and injected framework/training markers fail the
+authority closed.
+
+This is now **executed evidence**, not source-only:
+- current Forest_Run `main`: `eeccc677107f69039dbf71053c18a9038d4b5ff6`;
+- Training-control applicability audit run `37053783933`: success;
+- the fail-closed regression step ran **30 tests** and reported `OK`;
+- the emitted certificate reports `finding_count=0`,
+  `scanned_file_count=646`, `complete=true`,
+  `ml_training_applicable=false`, and
+  `classification=no_retained_trainable_surface`;
+- Estate local training-control run `37053784236`: success;
+- Android validation run `37053784090`: success.
+
+This closes Forest_Run's **training/CUDA applicability** question. It does not
+claim physical Android-device/store acceptance or replace the game's separate
+release-evidence gates.
