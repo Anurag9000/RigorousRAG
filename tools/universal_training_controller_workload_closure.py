@@ -56,7 +56,9 @@ _INFRASTRUCTURE_PREFIXES = (
 
 def _workload_exclusion_reason(rel: str) -> str | None:
     """Exclude structurally proven controller/CI infrastructure, never science by name alone."""
-    normalized = str(rel).replace("\\", "/").lstrip("./")
+    normalized = str(rel).replace("\\", "/")
+    while normalized.startswith("./"):
+        normalized = normalized[2:]
     first = normalized.split("/", 1)[0]
     if normalized in _INFRASTRUCTURE_EXACT:
         return "account_training_control_infrastructure"
