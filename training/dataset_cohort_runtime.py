@@ -113,30 +113,45 @@ def _nvidia_smi() -> bool:
 
 def detect_backend(mode: str | BackendMode = BackendMode.AUTO) -> BackendProbe:
     selected = mode if isinstance(mode, BackendMode) else BackendMode(str(mode))
-    forced_cpu = any(_truthy(os.environ.get(name)) for name in (
+    declared = os.environ.get("TRAINING_CONTROL_BACKEND", "").strip().lower()
+    if declared not in {"", "auto", "cpu", "gpu"}:
+        raise BackendUnavailable(f"unsupported central backend admission: {declared!r}")
+    flag_cpu = any(_truthy(os.environ.get(name)) for name in (
         "CPU_ONLY", "TRAINING_CONTROL_CPU_ONLY", "OPF_ADP_DISABLE_GPU_ACCELERATORS",
     ))
     visible = os.environ.get("CUDA_VISIBLE_DEVICES")
-    hidden = visible in {"", "-1"}
-    if selected is BackendMode.GPU and (forced_cpu or hidden):
+    hidden = visible is not None and visible.strip() in {"", "-1"}
+    declared_cpu = declared == "cpu"
+    declared_gpu = declared == "gpu"
+    if declared_gpu and (flag_cpu or hidden):
+        raise BackendUnavailable("conflicting central CPU and GPU scheduler admission")
+    if selected is BackendMode.GPU and (declared_cpu or flag_cpu or hidden):
         raise BackendUnavailable("GPU requested but central CPU policy masks CUDA")
-    if forced_cpu:
+    if selected is BackendMode.CPU and declared_gpu:
+        raise BackendUnavailable("GPU-admitted worker cannot silently select CPU")
+    if declared_cpu or flag_cpu:
         selected = BackendMode.CPU
+    elif declared_gpu and selected is BackendMode.AUTO:
+        selected = BackendMode.GPU
+
+    forced_cpu = declared_cpu or flag_cpu
     torch_cuda = cupy_cuda = jax_gpu = tensorflow_gpu = False
     torch = _safe_import("torch") if not forced_cpu and not hidden else None
     if torch is not None:
         with contextlib.suppress(Exception):
             if torch.cuda.is_available() and torch.cuda.device_count() > 0:
-                # nvidia-smi and is_available() do not certify a usable wheel.
                 probe = torch.empty((1,), device="cuda:0")
+                probe.fill_(1)
+                torch.cuda.synchronize("cuda:0")
                 del probe
                 torch_cuda = True
     cupy = _safe_import("cupy") if not forced_cpu and not hidden else None
     if cupy is not None:
         with contextlib.suppress(Exception):
             if int(cupy.cuda.runtime.getDeviceCount()) > 0:
-                # An importable CuPy wheel or visible device need not be usable.
                 probe = cupy.empty((1,), dtype=cupy.uint8)
+                probe.fill(1)
+                cupy.cuda.runtime.deviceSynchronize()
                 del probe
                 cupy_cuda = True
     jax = _safe_import("jax") if not forced_cpu and not hidden else None
@@ -147,8 +162,8 @@ def detect_backend(mode: str | BackendMode = BackendMode.AUTO) -> BackendProbe:
     if tf is not None:
         with contextlib.suppress(Exception):
             tensorflow_gpu = bool(tf.config.list_physical_devices("GPU"))
-    smi = _nvidia_smi() if not forced_cpu else False
-    # nvidia-smi reports hardware, not a working Python CUDA runtime.
+    smi = _nvidia_smi() if not forced_cpu and not hidden else False
+    # nvidia-smi reports hardware, not a working Python accelerator runtime.
     available = not hidden and (torch_cuda or cupy_cuda or jax_gpu or tensorflow_gpu)
     if selected is BackendMode.GPU and not available:
         raise BackendUnavailable("GPU backend required but no usable GPU was detected")
@@ -168,6 +183,8 @@ def detect_backend(mode: str | BackendMode = BackendMode.AUTO) -> BackendProbe:
             ("tensorflow.gpu", tensorflow_gpu),
             ("nvidia-smi", smi),
             ("CUDA_VISIBLE_DEVICES hides GPUs", hidden),
+            ("TRAINING_CONTROL_BACKEND=cpu", declared_cpu),
+            ("TRAINING_CONTROL_BACKEND=gpu", declared_gpu),
         )
         if enabled
     )
