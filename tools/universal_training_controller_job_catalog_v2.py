@@ -38,18 +38,36 @@ def _load_catalog(root: Path, descriptor: Dict[str, Any]) -> List[Dict[str, Any]
     if spec is None or spec.loader is None:
         raise SystemExit(f"cannot import job catalog {path}")
     module = importlib.util.module_from_spec(spec)
-    sys.modules[module_name] = module
-    spec.loader.exec_module(module)
 
-    function_name = str(descriptor.get("function") or "iter_jobs")
-    function = getattr(module, function_name, None)
-    if not callable(function):
-        raise SystemExit(f"job catalog {path} has no callable {function_name}()")
-    args = descriptor.get("args", []) or []
-    kwargs = descriptor.get("kwargs", {}) or {}
-    if not isinstance(args, list) or not isinstance(kwargs, dict):
-        raise SystemExit("job_catalog.args must be a list and kwargs must be an object")
-    generated = list(function(*args, **kwargs))
+    # spec_from_file_location executes a single file without making the
+    # repository root importable. Repository-owned catalogs are allowed to use
+    # normal sibling package imports, so expose the root only for catalog
+    # execution/materialization and then restore the caller's import path.
+    root_text = str(root.resolve())
+    inserted_root = root_text not in sys.path
+    if inserted_root:
+        sys.path.insert(0, root_text)
+    sys.modules[module_name] = module
+    try:
+        spec.loader.exec_module(module)
+        function_name = str(descriptor.get("function") or "iter_jobs")
+        function = getattr(module, function_name, None)
+        if not callable(function):
+            raise SystemExit(f"job catalog {path} has no callable {function_name}()")
+        args = descriptor.get("args", []) or []
+        kwargs = descriptor.get("kwargs", {}) or {}
+        if not isinstance(args, list) or not isinstance(kwargs, dict):
+            raise SystemExit("job_catalog.args must be a list and kwargs must be an object")
+        generated = list(function(*args, **kwargs))
+    except BaseException:
+        sys.modules.pop(module_name, None)
+        raise
+    finally:
+        if inserted_root:
+            try:
+                sys.path.remove(root_text)
+            except ValueError:
+                pass
     for index, item in enumerate(generated):
         if not isinstance(item, dict):
             raise SystemExit(f"job catalog item {index} is not an object")
