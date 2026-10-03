@@ -1337,4 +1337,3 @@ The latest VaaniNoise runtime-hardening run
 runners and zero executed steps. Thus source-level transaction closure is
 stronger, but physical CUDA interruption/resume, AMP/OOM recovery and
 catalog-wide numerical execution remain OPEN.
-
