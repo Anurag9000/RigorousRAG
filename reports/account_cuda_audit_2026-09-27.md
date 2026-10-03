@@ -1405,3 +1405,39 @@ NutriFlavorOS/docs/cuda_trainable_surface_audit_2026-09-28.md at
 ef41641f0fe9193dd324505f6d8608aa6695f793. Current Nutri validation again
 created zero-step jobs with no assigned runner, so remote tests, live exact
 resume, physical CUDA and numerical parity remain OPEN.
+
+
+#### NutriFlavorOS governed device-first RNG and exact step-resume hardening
+
+A deeper governed-runtime review found that NutriFlavorOS still seeded Python,
+NumPy and Torch before the requested training device had been admitted/probed.
+An explicit CPU run could therefore touch CUDA RNG merely because CUDA was
+visible. Commits
+`16374c8c2e28d1881b02120bbfb56f5168815620` and
+`6971237b04b5d5d3f4a1ddaca31d7c2af71a2675` now resolve the device
+first and make the seed helper independently reject central admission
+mismatches before any RNG mutation.
+
+Checkpoint RNG state is now bound to the resolved device. CPU checkpoints do
+not query CUDA RNG, device-type mismatches and missing CUDA RNG state fail
+before learner mutation, and RNG restore is transactional across Python,
+NumPy, Torch CPU and CUDA setters. Exact-resume preflight occurs before
+model/optimizer/scheduler/scaler load. Principal commits:
+`15f61cdd3598f0fa835ae2d396eba1fa5d7c9ab2`,
+`35da4ba80c4b561559c63b3f08dbb0e6215a4a2b`,
+`4d7d57973a60ee79a07a918fbc49e104d0c33613`.
+
+Step checkpoints also now persist and restore partial-epoch loss, sample and
+metric accumulators before the remaining loader batches. This prevents
+restart-induced drift in epoch schedulers, best-checkpoint selection and early
+stopping. Absolute completed-epoch reporting across resumes was corrected at
+`261ac3fdecda6d2a92377644fb79d70d9174b20c`; source contract
+`4f056406e09d0835e312ffdbc9d16bc441c5a93c` guards the resume
+ordering and accumulator fields. Detailed evidence:
+`NutriFlavorOS/docs/cuda_trainable_surface_audit_2026-09-28.md`
+(commit `959d8cf2ce7aa5cc890d0bd8b722b85e000cc9ab`).
+
+The private Nutri validation remains a zero-step/no-runner failure, so
+physical CUDA resume, AMP/GradScaler restart, CUDA topology equivalence, real
+stateful-loader interruption and uninterrupted-versus-resumed numerical parity
+remain OPEN.
