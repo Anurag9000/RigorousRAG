@@ -42,6 +42,33 @@ IDENTITY_KEYS = {
     "objective", "benchmark", "method", "algorithm", "environment", "domain",
 }
 
+_INFRASTRUCTURE_EXACT = {
+    "tools/account_wide_training_control_audit.py",
+    "tools/account_wide_training_control_audit_v2.py",
+}
+_INFRASTRUCTURE_PREFIXES = (
+    ".github/workflows/",
+    "tools/universal_training_controller",
+    "tools/training_surface_census",
+    "tools/training_surface_semantic_scan",
+)
+
+
+def _workload_exclusion_reason(rel: str) -> str | None:
+    """Exclude structurally proven controller/CI infrastructure, never science by name alone."""
+    normalized = str(rel).replace("\\", "/").lstrip("./")
+    first = normalized.split("/", 1)[0]
+    if normalized in _INFRASTRUCTURE_EXACT:
+        return "account_training_control_infrastructure"
+    if first.startswith("controller_bundle_v"):
+        return "archived_controller_bundle"
+    if normalized.startswith(".github/workflows/"):
+        return "ci_workflow"
+    if any(normalized.startswith(prefix) for prefix in _INFRASTRUCTURE_PREFIXES[1:]):
+        return "training_controller_infrastructure"
+    return None
+
+
 
 def _iter_files(root: Path) -> Iterable[Path]:
     for dirpath, dirnames, filenames in os.walk(root):
@@ -192,10 +219,15 @@ def _source_referenced_configs(root: Path, reachable_sources: Iterable[str], con
 def _inventory(root: Path, jobs: Sequence[Mapping[str, Any]]) -> Dict[str, Any]:
     registries: list[Dict[str, Any]] = []
     configs: list[Dict[str, Any]] = []
+    excluded: list[Dict[str, str]] = []
     for path in _iter_files(root):
         try:
             rel = path.relative_to(root).as_posix()
         except Exception:
+            continue
+        reason = _workload_exclusion_reason(rel)
+        if reason is not None:
+            excluded.append({"path": rel, "reason": reason})
             continue
         registries.extend(_registry_findings(path, rel))
         row = _strong_training_config(path, rel)
@@ -221,6 +253,9 @@ def _inventory(root: Path, jobs: Sequence[Mapping[str, Any]]) -> Dict[str, Any]:
         "unaccounted_training_config_paths": sorted(config_paths - reachable_configs),
         "direct_job_file_paths": sorted(direct_paths),
         "source_referenced_training_configs": sorted(referenced_configs),
+        "excluded_workload_infrastructure": sorted(
+            excluded, key=lambda row: (row["reason"], row["path"])
+        ),
         "reachability": reach,
     }
 
@@ -255,4 +290,6 @@ def install() -> None:
     current._enhanced_coverage_report = coverage_report
 
 
-__all__ = ["WORKLOAD_CLOSURE_SCHEMA", "_inventory", "install"]
+__all__ = [
+    "WORKLOAD_CLOSURE_SCHEMA", "_inventory", "_workload_exclusion_reason", "install"
+]
