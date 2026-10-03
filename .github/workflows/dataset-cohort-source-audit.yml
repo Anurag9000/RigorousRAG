@@ -7,6 +7,9 @@ on:
       - 'training/rigorousrag_*_cohort.py'
       - 'training/run_rigorousrag_*_cohort.py'
       - 'tools/dataset_cohort_runtime_entry*.py'
+      - 'tests/test_dataset_cohort_cuda_backend_policy.py'
+      - 'tests/test_dataset_cohort_v3_cuda_pin.py'
+      - 'tests/test_dataset_cohort_v4_cuda_pin.py'
       - 'tools/account_wide_training_control_audit_v39.py'
       - '.github/workflows/dataset-cohort-source-audit.yml'
   workflow_dispatch:
@@ -27,6 +30,8 @@ jobs:
           python -m py_compile \
             training/dataset_cohort_runtime.py \
             training/dataset_cohort_runtime_v2.py \
+            training/dataset_cohort_runtime_v3.py \
+            training/dataset_cohort_runtime_v4.py \
             training/dataset_cohort_contract.py \
             training/dataset_cohort_compatibility.py \
             training/rigorousrag_retrieval_cohort.py \
@@ -34,6 +39,13 @@ jobs:
             tools/dataset_cohort_runtime_entry.py \
             tools/dataset_cohort_runtime_entry_v2.py \
             tools/account_wide_training_control_audit_v39.py
+      - name: Focused backend policy and immutable release tests
+        run: |
+          python -m pip install --disable-pip-version-check -q pytest numpy
+          python -m pytest -q -o addopts='' \
+            tests/test_dataset_cohort_cuda_backend_policy.py \
+            tests/test_dataset_cohort_v3_cuda_pin.py \
+            tests/test_dataset_cohort_v4_cuda_pin.py
       - name: Static cohort invariants
         run: |
           python - <<'PY'
