@@ -13,9 +13,18 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sys
 from collections import deque
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+# The immutable controller loads this catalog with spec_from_file_location().
+# That execution mode does not guarantee the repository root is importable,
+# even though sibling package imports are valid first-party dependencies.
+_repo_root_text = str(_REPO_ROOT)
+if _repo_root_text not in sys.path:
+    sys.path.insert(0, _repo_root_text)
 
 from training import authoritative_training_suite_catalog as logical
 
@@ -23,7 +32,6 @@ SCHEMA = "rigorousrag-authoritative-training-suite/v2-dataset-cohorts"
 RETRIEVAL_COHORT_ID = "train:retrieval:dataset-cohort"
 RETRIEVAL_COHORT_SOURCE = "training/run_rigorousrag_retrieval_cohort.py"
 RETRIEVAL_POSTPROCESS_SOURCE = "training/authoritative_training_suite_postprocess_v2.py"
-_REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _canonical(value: Any) -> bytes:
