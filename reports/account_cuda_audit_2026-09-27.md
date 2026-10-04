@@ -1739,3 +1739,21 @@ GPU-first training/optimizer/checkpoint parity remains correctly not-applicable.
 This does not convert physical-device, store, human/artwork, signing, or release
 acceptance into a pass; those remain governed by Forest_Run's separate Android
 evidence contracts.
+
+
+#### NutriFlavorOS governed device semantics narrowed to CUDA/CPU only
+
+The governed research trainer previously selected Apple MPS automatically
+when CUDA was unavailable and allowed explicit MPS FP32 training, while its
+exact checkpoint format persisted only CPU/CUDA RNG semantics. The estate
+training contract is CUDA-first and otherwise CPU, so this third backend was
+both inconsistent and not exactly resumable.
+
+NutriFlavorOS now rejects non-CPU/non-CUDA governed devices, falls back from
+unusable CUDA directly to CPU, and refuses unsupported accelerator RNG state
+in exact checkpoints. Focused fake-Torch regressions cover auto fallback,
+explicit MPS rejection and checkpoint RNG rejection. Detailed receipts are
+in `NutriFlavorOS/docs/cuda_trainable_surface_audit_2026-09-28.md` at
+`57fe16f6e3d0c03719d16917e0379c2c228a3053`.
+Private Actions still stop before runner assignment; source correctness is
+improved but runtime CUDA/parity evidence remains OPEN.
