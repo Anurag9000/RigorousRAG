@@ -1711,3 +1711,31 @@ part of this artifact, so end-to-end experiment exact resume remains OPEN.
 NutriFlavorOS private Actions still fail with unassigned runners/zero steps;
 no remote numerical pass, physical CUDA resume or resumed-vs-uninterrupted
 identity is claimed.
+
+
+### Forest_Run no-training classification closure — 2026-10-04
+
+Forest_Run is the existing estate exception where ML/CUDA training controls are
+not applicable: it is a native Kotlin Android game and must not receive fabricated
+optimizer, dataset or GPU-training jobs. The local authority has since been
+hardened beyond the earlier text-marker scanner. Current
+`training_control/forest_no_trainable_authority.py` binds source, scope and
+authority manifests; scans executable/source/dependency surfaces including shell,
+notebooks and Gradle/XML; detects dynamic Python imports, retained model artifacts,
+opaque executable artifacts and symlink provenance; and requires the real Android
+entrypoint/build/dependency surface before it can issue a no-training certificate.
+
+This classification now has executed CI evidence on current
+`Forest_Run/main` `0ef76e7bb418e408dbbd82bd773fd3897cb3fe94`:
+- Training-control applicability audit run `37190475490`: SUCCESS, including
+  compilation, missing-tree/injected-training regressions and certificate issuance.
+- Estate local training-control certificate run `37190475487`: SUCCESS.
+- Android validation run `37190475482`: SUCCESS for both host/release/lint/
+  packaging and API-35 connected smoke/deterministic-evidence jobs.
+
+Accordingly, Forest_Run's **training-control applicability classification is
+closed** at this candidate: no retained trainable ML surface was detected, and
+GPU-first training/optimizer/checkpoint parity remains correctly not-applicable.
+This does not convert physical-device, store, human/artwork, signing, or release
+acceptance into a pass; those remain governed by Forest_Run's separate Android
+evidence contracts.
