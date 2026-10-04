@@ -1510,3 +1510,27 @@ Accordingly, Forest_Run's **training-control applicability classification is
 CLOSED/PASS** on this source revision. This does not claim physical-device,
 Play Store, human/artistic, signing, privacy-policy hosting or final release
 acceptance; those are separate product/release gates documented by the repo.
+
+
+#### 2026-10-04 Smart-Glasses checkpoint and exact-RNG CUDA follow-up
+
+The native Smart-Glasses follow-up found that the generic
+`checkpointing.py` utility and the exact-edge RNG engine still had
+independent CUDA-admission logic after the earlier array/RAPIDS fixes.
+Generic checkpoints now bind RNG to the model's exact resolved device,
+prevalidate stochastic topology before model mutation, reject GPU-admitted
+CPU models, and restore Python/NumPy/Torch RNG transactionally. The exact
+engine now reuses `gpu_compat.gpu_admission_requested` and the executable
+requested-device Torch probe rather than raw
+`torch.cuda.is_available()`. The shared Torch probe itself accepts
+`cuda:N`; ONNX/OpenCV capability caches are keyed to the scheduler/device
+mask so they cannot reuse a stale provider result after a mask change.
+
+Focused runtime/source regressions were added and wired to the existing
+CPU-only-Torch GPU-admission workflow. Detailed bounded evidence is in
+`Smart-Glasses/docs/gpu_acceleration.md`, commit
+`7f2130287b6234a6b955a60e4b8423aeaeba0a8c`.
+Latest Smart-Glasses workflow records still show no assigned runner and zero
+steps for these jobs, so this is source-level closure only: no physical CUDA,
+multi-GPU exact-resume, ONNX/OpenCV execution or numerical parity PASS is
+claimed.
