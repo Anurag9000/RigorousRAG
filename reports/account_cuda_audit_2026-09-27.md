@@ -1481,3 +1481,32 @@ Affected Git blobs are `2ee64faa6d8cf8fa591bc57665653ed081f424a0`
 and zero recorded steps, so these new BTN tests are not claimed as executed.
 Physical CUDA, real multi-GPU pressure recovery, exact killed-process resume,
 canonical neural training and paper parity remain OPEN.
+
+
+### 2026-10-04 Forest_Run training-control applicability closure
+
+Forest_Run remains a native Kotlin/Android game rather than an ML-training
+repository, so GPU-first training, optimizer-state, training datasets and
+CPU/GPU model parity are correctly **not applicable** rather than missing
+features. The repository-specific authority has since been hardened beyond
+the earlier empty-tree fix: it binds source/scope/authority SHA-256 manifests,
+requires the real Android application/build entrypoints, scans executable
+source/dependency formats and notebook code, catches literal and common
+dynamic ML imports, detects retained serialized model formats and opaque
+runtime artifacts, and fails on source symlinks or incomplete source trees.
+
+Latest Forest_Run `main`:
+`32ff32a36564ef3b184a7e7cc8410e159851c54b`.
+On that exact SHA:
+- Training-control applicability audit run `37183522969`: **success**,
+  including compilation, absent-tree/injected-training regressions, live
+  no-training certification and artifact upload.
+- Estate local training-control certificate run `37183522981`: **success**.
+- Android validation run `37183523012`: **success** for the host
+  release/lint/packaging job **and** the API-35 connected emulator smoke and
+  deterministic-evidence job.
+
+Accordingly, Forest_Run's **training-control applicability classification is
+CLOSED/PASS** on this source revision. This does not claim physical-device,
+Play Store, human/artistic, signing, privacy-policy hosting or final release
+acceptance; those are separate product/release gates documented by the repo.
