@@ -34,10 +34,14 @@ SCIENTIFIC_OVERLAYS = {
     "tools/universal_training_controller_declaration_closure_v30.py",
 }
 OPF_OVERLAY = "tools/universal_training_controller_opf_reference_v2.py"
-EXPECTED_OPF_COMMIT = "85ac9d0165a72f23daa0841d695059b5055a837f"
+EXPECTED_OPF_COMMIT = "d6cb36ae9c526b5d2c7d7869e7d0cb380584b0c2"
 EXPECTED_OPF_CHANGES = {
     "utils/ml_backends.py",
+    "utils/opf_shared_defaults.py",
     "tests/test_ml_backend_admission_isolation.py",
+}
+EXPECTED_OPF_ADDITIONS = {
+    "tests/test_opf_shared_defaults_cuda_admission.py",
 }
 
 
@@ -96,14 +100,24 @@ def test_v43_changes_only_opf_overlay_relative_to_v42():
         key for key in old["OPF_FILES"]
         if old["OPF_FILES"][key] != new["OPF_FILES"][key]
     }
+    added_opf = set(new["OPF_FILES"]) - set(old["OPF_FILES"])
+    removed_opf = set(old["OPF_FILES"]) - set(new["OPF_FILES"])
     assert changed_opf == EXPECTED_OPF_CHANGES
+    assert added_opf == EXPECTED_OPF_ADDITIONS
+    assert removed_opf == set()
     assert old["OPF_COMMIT"] == "a361b49ac24ffc7de87440538c88994faed017c4"
     assert new["OPF_COMMIT"] == EXPECTED_OPF_COMMIT
     assert new["OPF_FILES"]["utils/ml_backends.py"] == (
         "d8645afd18294b88b419bcb5335169e83afefcb4"
     )
+    assert new["OPF_FILES"]["utils/opf_shared_defaults.py"] == (
+        "08cb452d16c1a8c1955267d37294e7eca6674750"
+    )
     assert new["OPF_FILES"]["tests/test_ml_backend_admission_isolation.py"] == (
         "a2c90f121413b34ac23b8b6baae5b6be04d914ef"
+    )
+    assert new["OPF_FILES"]["tests/test_opf_shared_defaults_cuda_admission.py"] == (
+        "892c3da87837cc8157eed00efc5af1c24281b2ba"
     )
 
 
@@ -120,7 +134,7 @@ def test_v43_scientific_overlays_are_byte_identical_to_v42():
     opf = OVERLAY_DIR / Path(OPF_OVERLAY).name
     assert opf.is_file()
     assert _blob(opf.read_bytes()) == manifest[OPF_OVERLAY] == (
-        "9bf91db8741c6e6829b0928230ea3f2091474fb3"
+        "f90151356bc031a3d1d9e54f4e040340f7469349"
     )
     overlay = _constants(opf, {
         "OPF_REFERENCE_COMMIT", "OPF_RUNTIME_BLOBS",
@@ -139,9 +153,9 @@ def test_v43_outer_pins_exact_inner_and_preserves_active_v41():
         "HOST_ARCHIVE_COMMIT", "HOST_BUNDLE_DIR",
     })
     assert values["BUNDLE_VERSION"] == "v43"
-    assert values["V36_COMMIT"] == "bb5613690df3fb573fd726685da743e18b3ccb60"
+    assert values["V36_COMMIT"] == "ff1f408b2c4538f6520dcb6154a299f736a01ab3"
     assert values["V36_BLOB"] == _blob(INNER.read_bytes()) == (
-        "71e3cd4a0095ba6525321c993448f2f6379ce104"
+        "72634296a3598eee81c75fa0acc75a843865cdf6"
     )
     assert set(values["CONTROLLER_OVERLAYS"]) == SCIENTIFIC_OVERLAYS | {OPF_OVERLAY}
     assert values["HOST_BUNDLE_DIR"] == "controller_bundle_v39"
