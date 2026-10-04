@@ -1790,3 +1790,29 @@ acceptance, human creative approval, signing/Play delivery, or production
 release readiness. Those explicit Forest_Run gates remain external/open by
 design. CUDA-first training, CPU/GPU model parity and optimizer-resume remain
 not applicable unless an actual retained ML surface is introduced.
+
+
+#### Forest_Run no-training classification executed successfully
+
+The Forest_Run repository remains intentionally outside CUDA/model-training
+scope because it is a native Kotlin Android game with no retained ML training
+surface. Its fail-closed authority was strengthened so an empty, partial, or
+dependency-free Android tree can no longer be misreported as a valid
+"no-training" repository. Required Android build/entrypoint sources and at
+least one production Kotlin source plus Android dependency declarations must
+be present before the not-applicable certificate is issued.
+
+Current Forest_Run `main` is
+`0ef76e7bb418e408dbbd82bd773fd3897cb3fe94`.
+At that exact SHA, GitHub Actions run `37190475490`
+(**Training-control applicability audit**) completed successfully, including:
+compile of the local authority, regression of absent/injected training
+surfaces, certificate issuance and artifact upload. Run `37190475487`
+(**Estate local training-control certificate**) also succeeded, and run
+`37190475482` (**Android validation**) succeeded on the same SHA.
+
+This closes only the repository's **training-control applicability**
+classification: CUDA-first ML training, optimizer parity and model checkpoint
+controls are correctly not applicable. It does not waive Forest_Run's separate
+physical-device, store, signing, human-acceptance or Android-release evidence
+requirements.
