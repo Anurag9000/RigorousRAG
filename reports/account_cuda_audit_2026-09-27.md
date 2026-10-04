@@ -1610,3 +1610,35 @@ with zero steps. Therefore 20Q remains verification-pending: no physical
 CUDA run, real training, CPU/GPU parity, multi-GPU throughput, or
 checkpoint/resume execution is claimed.
 
+
+### 2026-10-04 Forest_Run no-training authority self-scan closure
+
+Forest_Run remains a native Kotlin/Android game with **no retained ML training
+surface**. Its correct estate behavior is a fail-closed applicability authority,
+not synthetic CUDA/optimizer jobs.
+
+A later audit found that the earlier authority semantically skipped the root
+`run_all_training.py` and the entire `training_control/` directory. Known
+authority files were hash-bound, but a newly introduced source in that
+directory could evade semantic ML scanning while receiving a fresh digest.
+Forest_Run commit `32f502d5852d632b981f6b9aef82b6e18efc42bc`
+removed those exemptions while retaining Python string/comment masking so
+policy prose may name frameworks without producing false positives. Commit
+`511958d79d26f4b215ad0c53f4a00755061f0074` added regressions for
+root-entrypoint PyTorch, hidden training-control TensorFlow, model artifacts
+under the authority directory and non-executable policy strings.
+
+**Executed evidence:** GitHub Actions run `37190394158` passed on the exact
+commit. Its applicability step ran 39 tests and reported OK; certificate
+generation and artifact upload succeeded. The emitted certificate reported
+649 scanned source/configuration files, zero findings, eight Android dependency
+declarations and `classification=no_retained_trainable_surface`.
+Estate-local certificate run `37190394188` also passed on the same commit.
+The exact source/scope/authority digests and nonclaims are recorded in
+`Forest_Run/docs/audits/2026-10-04_training_control_self_scan_closure.md`
+(commit `0ef76e7bb418e408dbbd82bd773fd3897cb3fe94`).
+
+Accordingly, **Forest_Run repository-level ML training applicability is CLOSED
+as not applicable for that source snapshot**. This does not close gameplay,
+physical-device, store, signing, human-acceptance or Android release gates,
+and does not grandfather future source changes.
