@@ -16,9 +16,11 @@ on:
       - 'controller_bundle_v41/*.py'
       - 'controller_bundle_v42/*.py'
       - 'controller_bundle_v43/*.py'
+      - 'controller_bundle_v44/*.py'
       - 'tests/test_universal_cuda_backend_bundle_v41.py'
       - 'tests/test_universal_training_controller_bundle_v42.py'
       - 'tests/test_universal_training_controller_bundle_v43.py'
+      - 'controller_bundle_v44/*.py'
       - 'tests/test_training_surface_semantic_scan.py'
       - 'run_all_training.py'
       - '.github/workflows/training-control-static.yml'
@@ -36,9 +38,11 @@ on:
       - 'controller_bundle_v41/*.py'
       - 'controller_bundle_v42/*.py'
       - 'controller_bundle_v43/*.py'
+      - 'controller_bundle_v44/*.py'
       - 'tests/test_universal_cuda_backend_bundle_v41.py'
       - 'tests/test_universal_training_controller_bundle_v42.py'
       - 'tests/test_universal_training_controller_bundle_v43.py'
+      - 'controller_bundle_v44/*.py'
       - 'tests/test_training_surface_semantic_scan.py'
       - 'run_all_training.py'
       - '.github/workflows/training-control-static.yml'
@@ -187,6 +191,35 @@ jobs:
           assert result["opf_files"] == 10, result
           assert result["opf_commit"] == "d6cb36ae9c526b5d2c7d7869e7d0cb380584b0c2", result
           print("staged v43 cold-bootstrap manifest verified")
+          PY
+
+      - name: Compile and verify staged v44 OPF loader-admission release
+        run: |
+          python -m py_compile \
+            tools/universal_training_controller_entry_v44.py \
+            tools/universal_training_controller_entry_v44_bundle.py \
+            controller_bundle_v44/universal_training_controller_opf_reference_v2.py \
+            tests/test_universal_training_controller_bundle_v44.py
+          python -m pytest -q -o addopts='' \
+            tests/test_universal_training_controller_bundle_v44.py
+
+      - name: Exercise staged v44 cold bootstrap
+        run: |
+          tmp="$(mktemp -d)"
+          TRAINING_CONTROL_REPO_ROOT="$tmp" \
+            python tools/universal_training_controller_entry_v44.py --training-control-bootstrap-self-test \
+            > "$tmp/v44-bootstrap-result.json"
+          python - "$tmp/v44-bootstrap-result.json" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+          result = json.loads(Path(sys.argv[1]).read_text(encoding='utf-8'))
+          assert result["status"] == "ok", result
+          assert result["bundle"] == "v44", result
+          assert result["controller_files"] == 60, result
+          assert result["opf_files"] == 10, result
+          assert result["opf_commit"] == "3d27019c17b2e8a48ef03068535d5ed5fdadca03", result
+          print("staged v44 cold-bootstrap manifest verified")
           PY
 
       - name: Audit live RigorousRAG profile through staged v42
