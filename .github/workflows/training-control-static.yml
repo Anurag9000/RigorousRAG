@@ -184,8 +184,8 @@ jobs:
           assert result["status"] == "ok", result
           assert result["bundle"] == "v43", result
           assert result["controller_files"] == 60, result
-          assert result["opf_files"] == 9, result
-          assert result["opf_commit"] == "85ac9d0165a72f23daa0841d695059b5055a837f", result
+          assert result["opf_files"] == 10, result
+          assert result["opf_commit"] == "d6cb36ae9c526b5d2c7d7869e7d0cb380584b0c2", result
           print("staged v43 cold-bootstrap manifest verified")
           PY
 
