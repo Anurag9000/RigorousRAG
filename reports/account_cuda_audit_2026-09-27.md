@@ -1534,3 +1534,35 @@ Latest Smart-Glasses workflow records still show no assigned runner and zero
 steps for these jobs, so this is source-level closure only: no physical CUDA,
 multi-GPU exact-resume, ONNX/OpenCV execution or numerical parity PASS is
 claimed.
+
+
+#### Forest_Run no-training classification — current-main closure
+
+Forest_Run is an Android/Kotlin game rather than a retained ML-training
+repository. Its current fail-closed applicability authority was re-audited
+against the live `main` tree and strengthened beyond the earlier
+required-file check. Current source
+`training_control/forest_no_trainable_authority.py` (Git blob
+`c7d92c79fd0d1e0cc7f566cc0c8609411de4baf9`) now binds source,
+scope and authority manifests; inspects dependency manifests, shell/XML,
+notebook code, dynamic Python import aliases and serialized-model formats;
+and fails closed on unapproved opaque executable artifacts. The root
+certificate clears stale PASS output before each audit and cross-checks
+dataset/applicability certificates against the same bound manifests.
+
+At Forest_Run commit
+`32ff32a36564ef3b184a7e7cc8410e159851c54b`, GitHub Actions
+successfully executed:
+- training-control applicability audit run `37183522969`, including
+  the source regressions and certificate publication;
+- estate local training-control certificate run `37183522981`;
+- full Android validation run `37183523012`.
+
+Accordingly, **Forest_Run's training-control applicability question is
+closed on that main commit**: no retained ML training surface is present,
+so GPU-first model training, optimizer/resume, ML dataset cohorts and
+CPU/GPU numerical training parity are not applicable and must not be
+invented. This closure is limited to the training-control classification.
+Physical Android-device acceptance, store delivery, signing, human
+acceptance and other product-release gates remain governed separately by
+the repository's existing evidence contracts.
