@@ -18,19 +18,20 @@ import universal_training_controller as base
 import universal_training_controller_current as current
 
 OPF_REFERENCE_REPOSITORY = "Anurag9000/OPF_ADP"
-OPF_REFERENCE_COMMIT = "85ac9d0165a72f23daa0841d695059b5055a837f"
+OPF_REFERENCE_COMMIT = "d6cb36ae9c526b5d2c7d7869e7d0cb380584b0c2"
 OPF_RUNTIME_BLOBS: Dict[str, str] = {
     "utils/opf_massive_suite_runner.py": "30067d5aeb6c1cc3debad8be086055c110c0899c",
     "utils/runtime_tuning.py": "f1cbfc44e009701a5540a046f2cd6b9f41f16b74",
     "utils/ml_backends.py": "d8645afd18294b88b419bcb5335169e83afefcb4",
     "utils/logging_utils.py": "482ba94643aa921f49eebb835f29cf4930bb2498",
-    "utils/opf_shared_defaults.py": "bd76baa134b07567015d0151d5f14ba81dc667df",
+    "utils/opf_shared_defaults.py": "08cb452d16c1a8c1955267d37294e7eca6674750",
     "DNN/VANILLA/Dyn_DNN4OPF/utils/run_defaults.py": "ff79e8c51f1fb21a11e4687989198ef0abb07491",
 }
 OPF_OPERATIONAL_CONTRACT_BLOBS: Dict[str, str] = {
     "tests/test_massive_scheduler_operational_contract.py": "0fc13aa7d5f5bc0cdef447c8d792968115f00b47",
     "tests/test_ml_backends_gpu_first.py": "6ed2f7c4c51027e7f66ad59d9b5d8ded86074ecc",
     "tests/test_ml_backend_admission_isolation.py": "a2c90f121413b34ac23b8b6baae5b6be04d914ef",
+    "tests/test_opf_shared_defaults_cuda_admission.py": "892c3da87837cc8157eed00efc5af1c24281b2ba",
 }
 
 
