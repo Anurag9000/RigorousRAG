@@ -1642,3 +1642,39 @@ Accordingly, **Forest_Run repository-level ML training applicability is CLOSED
 as not applicable for that source snapshot**. This does not close gameplay,
 physical-device, store, signing, human-acceptance or Android release gates,
 and does not grandfather future source changes.
+
+
+#### Forest_Run no-training applicability closure — executed 2026-10-04
+
+Forest_Run is now closed for the **training-control applicability** question.
+It is a native Kotlin/Android game and the correct result is an executed,
+fail-closed `no_retained_trainable_surface` certificate rather than fabricated
+ML/GPU training jobs.
+
+The authority now scans the root launcher and repository-owned
+`training_control/` code, binds source/scope/authority manifests, rejects
+missing Android app/build authority, opaque executable/model artifacts and
+out-of-tree source symlinks, and emits a failure certificate instead of leaving
+an earlier PASS behind after a later failed audit.
+
+Exact-current-main evidence:
+- Forest_Run commit `0ef76e7bb418e408dbbd82bd773fd3897cb3fe94`;
+- Training-control applicability run `37190475490`: SUCCESS;
+- 39 fail-closed applicability regressions: SUCCESS / `OK`;
+- 649 scanned source/configuration files, zero findings;
+- eight Android dependency declarations;
+- source manifest SHA-256
+  `54307acf7765c6a8f7c70316d0598ebd64e8af7993b01cac7a8415cbd73ca2cf`;
+- scope manifest SHA-256
+  `cfc7419d605cebd60d59b97293ea76fb2cffc8791094ff1fba670f177d8aac71`;
+- authority manifest SHA-256
+  `d304ecb7e5b80124063b1524451b10169d5ec9d89dc9d614152fb3ba05b77099`;
+- Estate local training-control run `37190475487`: SUCCESS;
+- Android validation run `37190475482`: SUCCESS.
+
+Thus GPU-first ML training, optimizer/loss/early-stopping state, training
+checkpoint/resume, CPU/GPU training parity, distillation and architecture
+matrices are **not applicable** to the current Forest_Run source and should
+not be added. This does not certify release readiness, physical-device/store
+evidence or human acceptance; those remain governed by Forest_Run's separate
+Android/release evidence system.
