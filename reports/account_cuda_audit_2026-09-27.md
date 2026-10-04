@@ -1678,3 +1678,36 @@ matrices are **not applicable** to the current Forest_Run source and should
 not be added. This does not certify release readiness, physical-device/store
 evidence or human acceptance; those remain governed by Forest_Run's separate
 Android/release evidence system.
+
+
+#### NutriFlavorOS legacy PPO clean-boundary exact resume implementation — 2026-10-04
+
+The retained `RLMealPlanner` now has a separate exact-training checkpoint
+contract instead of overloading its historical weights-only model artifact.
+At a clean rollout boundary it persists actor/critic weights, both Adam
+optimizers, policy version, all mutable PPO update hyperparameters, Torch CPU
+RNG and the active CUDA RNG. It atomically publishes the artifact and restores
+model/optimizer/hyperparameter/mode/RNG state transactionally. The artifact is
+bound to the same logical device and exact Torch runtime; active/compromised
+rollouts are rejected. The old weights-only path additionally rejects
+non-finite tensors before mutation.
+
+Source commits:
+`636ce17e5ed5c39f892712edbece4d42b5c59ce0`,
+`81066f58a15a96e03408853b7c918e118c72feeb`,
+`de1cff183059c94f6a507d4759f8cd8d62889da7`.
+Focused numerical/source regressions:
+`92e833930c779184066d45752842536985ff7ea1`,
+`ee397db370bb651839f0efb44f7470e19329469e`,
+`8edb67cfa40885fd1d220c6613a50a592ada6923`,
+`8e5a504abae763d00df5747ce7b990bdde2ef9c9`.
+Repository detail:
+`NutriFlavorOS/docs/cuda_trainable_surface_audit_2026-09-28.md`
+at `86b0a27be450a5d86a7f1b609103bd9d38634c25`.
+
+This closes only the **agent-state source implementation** at a clean PPO
+boundary. External simulator/environment state and input/event cursors are not
+part of this artifact, so end-to-end experiment exact resume remains OPEN.
+NutriFlavorOS private Actions still fail with unassigned runners/zero steps;
+no remote numerical pass, physical CUDA resume or resumed-vs-uninterrupted
+identity is claimed.
