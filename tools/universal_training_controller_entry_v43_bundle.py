@@ -64,7 +64,7 @@ CONTROLLER_FILES = {'tools/training_surface_census.py': '4db28f36151bdace4cdde9d
  'tools/universal_training_controller_deferred_v2.py': 'f0203b273ad58461178871a728c4ba18f73ab116',
  'tools/universal_training_controller_deferred_v3.py': '865378f887c269602676b1c7ca0859d25fd756b2',
  'tools/universal_training_controller_deferred_v4.py': '6dc85929f749cc1d5202d3481509e6db9b6aeb67',
- 'tools/universal_training_controller_opf_reference_v2.py': '9bf91db8741c6e6829b0928230ea3f2091474fb3',
+ 'tools/universal_training_controller_opf_reference_v2.py': 'f90151356bc031a3d1d9e54f4e040340f7469349',
  'tools/universal_training_controller_v20.py': 'b31aa9c11f3aaf19ef3078acfab198fd7df74f3b',
  'tools/universal_training_controller_lifecycle_exhaustive.py': '8e05a0ab48264cc3a3ffd8834bdf6ba40a9cf460',
  'tools/universal_training_controller_config_matrix.py': 'cfdc58f5dea0e5351871bb0adca7b1f39444d756',
@@ -99,16 +99,17 @@ CONTROLLER_FILES = {'tools/training_surface_census.py': '4db28f36151bdace4cdde9d
  'tools/universal_training_controller_v34.py': '90ce5e0425d23c86e8a2b13c21c45b75c0e9ba40'}
 
 OPF_REPO = "Anurag9000/OPF_ADP"
-OPF_COMMIT = "85ac9d0165a72f23daa0841d695059b5055a837f"
+OPF_COMMIT = "d6cb36ae9c526b5d2c7d7869e7d0cb380584b0c2"
 OPF_FILES = {'utils/opf_massive_suite_runner.py': '30067d5aeb6c1cc3debad8be086055c110c0899c',
  'utils/runtime_tuning.py': 'f1cbfc44e009701a5540a046f2cd6b9f41f16b74',
  'utils/ml_backends.py': 'd8645afd18294b88b419bcb5335169e83afefcb4',
  'utils/logging_utils.py': '482ba94643aa921f49eebb835f29cf4930bb2498',
- 'utils/opf_shared_defaults.py': 'bd76baa134b07567015d0151d5f14ba81dc667df',
+ 'utils/opf_shared_defaults.py': '08cb452d16c1a8c1955267d37294e7eca6674750',
  'DNN/VANILLA/Dyn_DNN4OPF/utils/run_defaults.py': 'ff79e8c51f1fb21a11e4687989198ef0abb07491',
  'tests/test_massive_scheduler_operational_contract.py': '0fc13aa7d5f5bc0cdef447c8d792968115f00b47',
  'tests/test_ml_backends_gpu_first.py': '6ed2f7c4c51027e7f66ad59d9b5d8ded86074ecc',
- 'tests/test_ml_backend_admission_isolation.py': 'a2c90f121413b34ac23b8b6baae5b6be04d914ef'}
+ 'tests/test_ml_backend_admission_isolation.py': 'a2c90f121413b34ac23b8b6baae5b6be04d914ef',
+ 'tests/test_opf_shared_defaults_cuda_admission.py': '892c3da87837cc8157eed00efc5af1c24281b2ba'}
 LEGACY_OPF_COMMIT = "a34c31259bd5d5f58081e3766918f9df63017455"
 LEGACY_OPF_FILES = {'utils/opf_massive_suite_runner.py': 'b97d47499c83bc6ed3a5753f7f3009b624c94868',
  'utils/runtime_tuning.py': 'f1cbfc44e009701a5540a046f2cd6b9f41f16b74',
