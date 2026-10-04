@@ -1441,3 +1441,43 @@ The private Nutri validation remains a zero-step/no-runner failure, so
 physical CUDA resume, AMP/GradScaler restart, CUDA topology equivalence, real
 stateful-loader interruption and uninterrupted-versus-resumed numerical parity
 remain OPEN.
+
+
+### 2026-10-04 executed Forest_Run applicability proof and BTN 19A CUDA receipt integrity
+
+**Forest_Run.** The strengthened no-training authority is now backed by
+executed current-main evidence rather than source-only reasoning. Current
+`main` `eeccc677107f69039dbf71053c18a9038d4b5ff6` completed:
+- Training-control applicability audit run `37053783933`: success, including
+  compilation, the absent/partial Android-tree and injected-training-marker
+  regressions, and the final no-retained-trainable-surface certificate.
+- Estate local training-control certificate run `37053784236`: success.
+- Android validation run `37053784090`: success for host/release/lint/package
+  checks and API-35 connected smoke/deterministic evidence.
+
+This closes the **ML-training applicability classification** for the current
+Forest_Run source: inventing CUDA/optimizer jobs remains incorrect. It does not
+replace the repository's documented physical-device, Play delivery, signing,
+human/accessibility, or production-release evidence gates.
+
+**Breaking-the-Neural-Barrier 19A runtime correction.** A later audit of the
+18K/18L central CUDA proof found two evidence-integrity gaps. The policy receipt
+was not cryptographically bound to the exact post-admission
+`CUDA_VISIBLE_DEVICES` value, and a bounded multi-GPU smoke run could complete
+an optimizer step on an earlier device then fail later while the CLI incorrectly
+reported `training_executed=false`. Main now fingerprints the exact mask
+without publishing device identifiers, rejects visibility drift before the
+second fleet proof, and carries truthful per-device partial execution through
+failure receipts. Machine contract:
+`Breaking-the-Neural-Barrier/configs/central_cuda_receipt_integrity_19a.json`;
+narrative:
+`docs/BTNB_RUNTIME_CUDA_RECEIPT_INTEGRITY_19A_2026-10-04.md`.
+
+Affected Git blobs are `2ee64faa6d8cf8fa591bc57665653ed081f424a0`
+(policy), `2ebf9d0bbf3237cf572f7c98e54a29d8187c6ec2`
+(training cell), `5d3dba523102929723e8374ab5c2d01be2fa43fc`
+(policy tests), and `d49033c237a99771d5c8c9c6efd97dcb973659b6`
+(fleet/cell tests). Actions run `37178663177` still had no assigned runner
+and zero recorded steps, so these new BTN tests are not claimed as executed.
+Physical CUDA, real multi-GPU pressure recovery, exact killed-process resume,
+canonical neural training and paper parity remain OPEN.
