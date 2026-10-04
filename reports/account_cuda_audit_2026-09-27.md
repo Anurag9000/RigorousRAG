@@ -1566,3 +1566,47 @@ invented. This closure is limited to the training-control classification.
 Physical Android-device acceptance, store delivery, signing, human
 acceptance and other product-release gates remain governed separately by
 the repository's existing evidence contracts.
+
+#### BTN 20Q scheduler-mask alignment and bounded GPU-receipt authentication
+
+A current-main BTN review found a composition defect between the local 18K
+executable-CUDA admission and the literal vendored OPF v41 scheduler. 18K
+could accept/prove a multi-device `CUDA_VISIBLE_DEVICES` mask, while the
+pinned scheduler has one `--gpu-device-index` (default 0) and only accepts
+a multi-token inherited mask when that decimal physical token is present.
+The central layer could therefore emit a successful GPU receipt for a mask
+the scheduler would later reject.
+
+BTN now resolves the actual forwarded scheduler index in
+`run_all_training.py`, narrows inherited or unrestricted visibility to
+exactly one scheduler-usable token *before* the disposable Torch probe, and
+binds both initial and selected visibility in the receipt. Multi-token masks
+use local-index selection first with a legacy numeric physical-token
+fallback. Multi-UUID/MIG masks are safe after one-token narrowing because
+the pinned scheduler already accepts a single inherited token verbatim.
+A successful selected-device proof must observe exactly one logical CUDA
+device; forged multi-device receipts are rejected.
+
+The 18L bounded CUDA preflight was also tightened. GPU mode now requires an
+authentic `btnb.central_cuda_runtime.18k` receipt with executable Torch
+CUDA, one bound visible token, one logical device, no failures, a valid
+scheduler index, an explicit narrowing disposition, and an unchanged
+visibility fingerprint before any second probe or optimizer step.
+
+This source work is recorded as BTN four-regime tranche **20Q**, extending
+the separate chain 310→311. The chain index now contains 221 unique deltas
+with terminal 20Q; a direct current-source check confirmed the 20P
+309→310 and 20Q 310→311 edge and
+`tranche_source_governance_closed=false`. The chain auditor was corrected
+to permit source-only regime closure while continuing to reject runtime-test,
+strong-reference-parity, or repository-complete claims.
+
+Exact source binding is in
+`Breaking-the-Neural-Barrier/configs/central_cuda_scheduler_alignment_20q.json`;
+design/limitations are in
+`docs/BTNB_FOUR_REGIME_20Q_CENTRAL_CUDA_SCHEDULER_ALIGNMENT_2026-10-04.md`.
+Focused workflow run `37187948525` again ended before runner assignment
+with zero steps. Therefore 20Q remains verification-pending: no physical
+CUDA run, real training, CPU/GPU parity, multi-GPU throughput, or
+checkpoint/resume execution is claimed.
+
