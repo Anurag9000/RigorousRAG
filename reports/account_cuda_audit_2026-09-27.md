@@ -1757,3 +1757,36 @@ in `NutriFlavorOS/docs/cuda_trainable_surface_audit_2026-09-28.md` at
 `57fe16f6e3d0c03719d16917e0379c2c228a3053`.
 Private Actions still stop before runner assignment; source correctness is
 improved but runtime CUDA/parity evidence remains OPEN.
+
+
+#### Forest_Run executed no-training authority and Android validation — 2026-10-04
+
+Forest_Run remains correctly classified as a native Android application with
+**no retained machine-learning training surface**; no CUDA/training jobs were
+invented. Its repository authority was strengthened so an empty, partial or
+dependency-free Android source tree can no longer produce a false
+`no_retained_trainable_surface` certificate. The authority requires the
+actual Gradle/application entry surface and production Kotlin source before
+certifying non-applicability, while the scanner remains composable for
+negative/injected-training fixtures.
+
+This is now executed evidence rather than source-only intent. At main commit
+`0ef76e7bb418e408dbbd82bd773fd3897cb3fe94`:
+
+- Training-control applicability run `37190475490` succeeded. Its explicit
+  absent/partial-tree and injected-training regression step ran 39 tests
+  successfully (`Ran 39 tests ... OK`). The emitted certificate scanned
+  649 files, found zero retained training findings and reported
+  `classification=no_retained_trainable_surface`.
+- Estate local training-control run `37190475487` succeeded independently.
+- Android validation run `37190475482` succeeded. Its host tooling reported
+  844 Python/source/evidence tests passing, Gradle build/lint/release
+  hardening completed successfully, and the API-35 connected smoke /
+  deterministic-evidence job also succeeded.
+
+These results certify the repository's **current non-ML training-control
+classification and Android validation contracts**, not physical-device/store
+acceptance, human creative approval, signing/Play delivery, or production
+release readiness. Those explicit Forest_Run gates remain external/open by
+design. CUDA-first training, CPU/GPU model parity and optimizer-resume remain
+not applicable unless an actual retained ML surface is introduced.
