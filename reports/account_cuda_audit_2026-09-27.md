@@ -1848,3 +1848,32 @@ physical-device acceptance.
 Repository-specific evidence and nonclaims are recorded in
 `Forest_Run/docs/audits/2026-10-05_training_control_no_ml_closure.md`
 (commit `30410494f5cac54c2f83c8a6ae4ab6c82e269af0`).
+
+
+#### Smart-Glasses follow-up: CPU runtime backend state, OpenCV CUDA execution, malformed-source accounting
+
+A later Smart-Glasses pass found three additional repository-native gaps
+outside the shared controller. The exact central runtime wrote CUDA/cuDNN
+determinism flags before CPU admission was evaluated; OpenCV CUDA status used
+device-count visibility without executing GPU work; and the closed-world
+training-source accountant could treat unreadable/non-UTF8 source, malformed
+notebooks or Python syntax errors as empty/no-surface input.
+
+Main now gates CUDA/cuDNN runtime mutation behind executable Torch CUDA
+(`ddc30893cad20aa7d1ce2e300753d271de4504a9`), requires an OpenCV
+`cuda_GpuMat` upload/download round-trip and context binding
+(`2868515a1ebbeb37bf2b097b858e0b64f044e873`), and raises
+`SourceAccountingError` for malformed/opaque retained source rather than
+dropping it from inventory/reachability
+(`c2f405a14d50db3192a6d56f04a356d08c665ae7`).
+Focused regressions and workflow wiring were added through
+`2c716ce4405a059a62257e0b49c8e2a876f93873`.
+
+The corresponding focused run `37314789793` again had no assigned runner
+and zero recorded steps; these new tests therefore remain **unexecuted in
+GitHub Actions**. The existing exact checkpoint path remains restricted
+weights-only by default and validates RNG/device topology before learner
+mutation. Real ONNX CUDA execution, task/model CPU-GPU parity, full dataset
+runs and whole-programme runtime closure remain OPEN. Detailed source receipts
+are in `Smart-Glasses/docs/gpu_acceleration.md` at
+`195423a6834fe3dfc0ad2c58f95875cc0b4635c4`.
