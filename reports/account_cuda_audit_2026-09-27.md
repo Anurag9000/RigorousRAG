@@ -1877,3 +1877,42 @@ mutation. Real ONNX CUDA execution, task/model CPU-GPU parity, full dataset
 runs and whole-programme runtime closure remain OPEN. Detailed source receipts
 are in `Smart-Glasses/docs/gpu_acceleration.md` at
 `195423a6834fe3dfc0ad2c58f95875cc0b4635c4`.
+
+
+#### 2026-10-05 Forest_Run current-main execution confirmation
+
+Forest_Run has now executed its current no-training authority and Android
+validation on current `main` `30410494f5cac54c2f83c8a6ae4ab6c82e269af0`.
+Training-control applicability run `37312996795` succeeded, including exact
+checkout, authority compilation, absent/injected-source regressions,
+certificate generation and artifact upload. Estate-local certificate run
+`37312996788` succeeded independently. Android validation run
+`37312996552` succeeded for both the host/release/lint/packaging job and the
+API-35 connected smoke/deterministic-evidence job.
+
+This supersedes the earlier in-progress/cancelled observations without
+changing the classification: Forest_Run has no retained ML training surface,
+so CUDA-first model training, optimizer/checkpoint parity and ML dataset
+cohorts remain correctly **not applicable**. Physical-device/store/human
+acceptance and production release remain separate product gates.
+
+#### 2026-10-05 Smart-Glasses executable ONNX Runtime CUDA capability semantics
+
+Smart-Glasses' native GPU compatibility layer still classified ONNX Runtime
+GPU support from advertised provider names. Main commit
+`c13db73500f7dd35f762d4945f54eb136995c09f` now requires an actual minimal
+ONNX `Add` graph to instantiate and execute through
+`CUDAExecutionProvider` with `session.disable_cpu_ep_fallback=1`, verifies
+the provider order and exact FP32 output, and records the immutable GPU
+admission/device-mask context only after successful execution. Provider
+advertisement alone, session/provider failure, wrong output, missing
+fail-closed session control, or CPU admission all report false.
+
+Focused fake-ORT regressions landed at
+`bfa40bb3b4eeee9442980e52b62028302e528a32`; repository detail and explicit
+nonclaims are in `Smart-Glasses/docs/gpu_acceleration.md` at
+`abe1a738e0be5da0f0a85b20425c13ad038f67f5`.
+Focused runs `37317728306` and `37317801097` again ended with no assigned
+runner and zero steps. Thus the **capability-source contract** is improved,
+but physical ONNX CUDA/TensorRT execution, exported-model CPU/GPU numerical
+equivalence, latency/throughput and target-device validation remain OPEN.
