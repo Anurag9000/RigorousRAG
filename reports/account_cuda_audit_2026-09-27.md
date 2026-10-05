@@ -1938,3 +1938,47 @@ Actions run `37325296602` again ended with no assigned runner and zero steps.
 Thus the source correction is present and reread from `main`, while the new
 tests, physical CUDA, full model-family exact resume/OOM recovery, dataset
 availability and export/firmware parity remain OPEN.
+
+
+##### Smart-Glasses six-model ONNX CUDA equivalence campaign
+
+The native ONNX Runtime capability probe now proves that a minimal graph can
+execute through `CUDAExecutionProvider`, but that capability check does not by
+itself establish correctness for the repository's six exported Phase-4 gaze
+models. A separate fail-closed campaign was therefore added without changing
+the existing CPU equivalence contract.
+
+`src/smart_glasses_eye_tracking/phase4_onnx_cuda_equivalence.py`
+(commit `b5ec5020d8fe28fdda8e8b0e02ee7cfd19cdcb6b`) exports each of the
+six current Phase-4 variants once, creates a strict CUDAExecutionProvider
+session with `session.disable_cpu_ep_fallback=1`, requires CUDA to remain the
+primary provider, and executes deterministic batch-size 1/2/3 cases. Every
+output is compared both PyTorch-CPU↔ORT-CUDA and ORT-CPU↔ORT-CUDA with explicit
+predeclared tolerances; shape/finiteness and unit-gaze contracts remain active.
+The local ONNX device index is constrained by the inherited
+`CUDA_VISIBLE_DEVICES` allocation, and scheduler GPU admission is required by
+default. CPU admission always blocks execution.
+
+The checked-in campaign contract is
+`configs/experiments/phase4_onnx_cuda_equivalence.json`
+(commit `556c73d4b98ac36daf3b488483432bd6e6749c44`);
+CPU-safe fake-provider regressions are in
+`tests/test_phase4_onnx_cuda_equivalence.py`
+(commit `8e938928df5e39f9e9e614eebec7f856554c2eeb`).
+A dedicated main-branch contract workflow was added at
+`9e0a94a61e3dba34f255d1d01f2e27c16714a382`.
+Run `37326473558` completed with no assigned runner and zero steps, so the
+new tests are **not recorded as executed or passing**.
+
+The existing CPU Phase-4 ONNX equivalence contract remains separate and
+unchanged in scope. Documentation now explicitly links the two campaigns:
+`docs/phase4_onnx_cuda_equivalence.md` at
+`55fba42fc12205d102f8c8a7e2696d59733594f3`,
+the CPU contract link at
+`a2560f714db04e924728868245809818cb232b1c`, and the accelerator evidence
+boundary at
+`718ef6711954f7b0c7d9b55e47e225293946ac51`.
+
+No physical six-model CUDA receipt is checked in. TensorRT/FP16/INT8,
+target-smart-glasses execution, latency, memory, power, thermal and battery
+claims remain OPEN.
