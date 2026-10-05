@@ -1916,3 +1916,25 @@ Focused runs `37317728306` and `37317801097` again ended with no assigned
 runner and zero steps. Thus the **capability-source contract** is improved,
 but physical ONNX CUDA/TensorRT execution, exported-model CPU/GPU numerical
 equivalence, latency/throughput and target-device validation remain OPEN.
+
+
+##### STM32n6AI exact-resume preflight before learner mutation
+
+A follow-up checkpoint audit found that STM32n6AI's native loader had a real
+rollback path but still discovered malformed RNG or partial-gradient state only
+after model/optimizer restoration had begun. The loader now preflights the saved
+admission/backend, learner device, CUDA RNG topology, Python/NumPy/Torch RNG
+payloads and partial-gradient parameter names/shapes before mutating model,
+auxiliary modules, optimizer/scheduler, global RNG or parameter gradients.
+Caller-supplied partial gradients are also rejected at write time if their
+parameter names or shapes do not match the model; accepted gradients are detached
+and serialized as CPU clones.
+
+Detailed source/test receipts are recorded in
+`STM32n6AI/docs/native_cuda_admission_audit_2026-09-28.md` at commit
+`8107517cd7e8e02abbdfed3bb7bcdab6fd15d2a0`.
+The focused native workflow now selects the full checkpoint regression file, but
+Actions run `37325296602` again ended with no assigned runner and zero steps.
+Thus the source correction is present and reread from `main`, while the new
+tests, physical CUDA, full model-family exact resume/OOM recovery, dataset
+availability and export/firmware parity remain OPEN.
