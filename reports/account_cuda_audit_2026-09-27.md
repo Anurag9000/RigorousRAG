@@ -1816,3 +1816,35 @@ classification: CUDA-first ML training, optimizer parity and model checkpoint
 controls are correctly not applicable. It does not waive Forest_Run's separate
 physical-device, store, signing, human-acceptance or Android-release evidence
 requirements.
+
+
+#### Forest_Run: no-retained-training-surface source closure
+
+Forest_Run remains correctly classified as a native Android/Kotlin game with
+no retained ML optimizer/training surface; GPU-first training, optimizer
+checkpointing, CPU/GPU numerical parity, dataset cohorts and scientific
+training DAGs are therefore not applicable unless future source adds an
+actual trainable workload. The repository-specific authority was strengthened
+rather than manufacturing CUDA jobs.
+
+Current authority now requires the actual Android/build entry surface,
+production Kotlin and Android dependencies; binds source/scope/authority
+manifests; scans dynamic imports/notebooks/dependency sources; rejects source
+symlinks, retained model artifacts and opaque executable binaries; and fails
+closed on hidden product archives and Python/scikit serialized model formats.
+The root removes stale PASS evidence before each audit and cross-checks the
+dataset N/A certificate against the same source/scope/authority snapshot.
+
+Archive/serialized-model hardening landed at
+`95caa315994d640f5a51041af598807a0f5670be`, with regression coverage at
+`a5830d0774394ef57d8046aeed510077ef4564c7`. Executed GitHub Actions run
+`37312819760` obtained an assigned runner and successfully completed exact
+checkout, authority compilation, injected/absent-source regressions, the live
+no-training certificate and certificate upload; only post-action cleanup was
+still running when inspected. This is source-level PASS evidence for the
+**no-retained-training-surface classification only**, not Android release or
+physical-device acceptance.
+
+Repository-specific evidence and nonclaims are recorded in
+`Forest_Run/docs/audits/2026-10-05_training_control_no_ml_closure.md`
+(commit `30410494f5cac54c2f83c8a6ae4ab6c82e269af0`).
