@@ -97,6 +97,30 @@ def _literal_members(value: ast.AST | None) -> list[str]:
     return []
 
 
+_DYNAMIC_COLLECTION_CONSTRUCTORS = {
+    "dict", "list", "tuple", "set", "frozenset", "sorted",
+}
+
+
+def _name(node: ast.AST | None) -> str:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        left = _name(node.value)
+        return f"{left}.{node.attr}" if left else node.attr
+    return ""
+
+
+def _registry_value(value: ast.AST | None) -> bool:
+    """Accept collection-valued experiment selectors, not scalar aliases/constants."""
+    if isinstance(value, (ast.Dict, ast.List, ast.Tuple, ast.Set,
+                          ast.DictComp, ast.ListComp, ast.SetComp, ast.GeneratorExp)):
+        return True
+    if isinstance(value, ast.Call):
+        return _name(value.func).rsplit(".", 1)[-1] in _DYNAMIC_COLLECTION_CONSTRUCTORS
+    return False
+
+
 def _scientific_registry_findings(path: Path, rel: str) -> list[Dict[str, Any]]:
     """Enumerate repository-level scientific registries, not runtime temporaries.
 
@@ -119,7 +143,15 @@ def _scientific_registry_findings(path: Path, rel: str) -> list[Dict[str, Any]]:
         targets = node.targets if isinstance(node, ast.Assign) else [node.target]
         value = node.value
         for target in targets:
-            if not isinstance(target, ast.Name) or not SCIENTIFIC_REGISTRY_RE.search(target.id):
+            if (
+                not isinstance(target, ast.Name)
+                # The layer's contract is explicitly for repository-level
+                # constant registries. Lower/mixed-case runtime variables such
+                # as hydrology_recipes or _base_new_agent are not registries.
+                or target.id != target.id.upper()
+                or not SCIENTIFIC_REGISTRY_RE.search(target.id)
+                or not _registry_value(value)
+            ):
                 continue
             key = (target.id, int(getattr(node, "lineno", 0)))
             if key in seen:
@@ -158,6 +190,9 @@ def install_primitives() -> None:
     workload.TRAINING_KEYS = set(workload.TRAINING_KEYS) | SCIENTIFIC_TRAINING_KEYS
     workload.CONFIG_HINT_RE = SCIENTIFIC_CONFIG_HINT_RE
     workload._registry_findings = _scientific_registry_findings
+    # Workload closure snapshots this separately so broader later declaration
+    # scanners cannot retroactively redefine its scientific workload surface.
+    workload._WORKLOAD_REGISTRY_FINDINGS = _scientific_registry_findings
     registry_members.ALL_FLAGS = set(registry_members.ALL_FLAGS) | SCIENTIFIC_ALL_FLAGS
 
 
