@@ -131,6 +131,13 @@ def _registry_findings(path: Path, rel: str) -> list[Dict[str, Any]]:
     return rows
 
 
+# Later controller generations may install broader declaration scanners.  Workload
+# closure must retain the scientific-registry finder selected for this layer rather
+# than following a mutable module global and accidentally reclassifying every
+# declaration as a training workload.
+_WORKLOAD_REGISTRY_FINDINGS = _registry_findings
+
+
 def _config_keys(path: Path) -> set[str]:
     text = _read(path)
     if not text:
@@ -231,7 +238,7 @@ def _inventory(root: Path, jobs: Sequence[Mapping[str, Any]]) -> Dict[str, Any]:
         if reason is not None:
             excluded.append({"path": rel, "reason": reason})
             continue
-        registries.extend(_registry_findings(path, rel))
+        registries.extend(_WORKLOAD_REGISTRY_FINDINGS(path, rel))
         row = _strong_training_config(path, rel)
         if row is not None:
             configs.append(row)
