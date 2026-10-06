@@ -66,14 +66,14 @@ def load_v1_runtime(root: Path | None = None) -> ModuleType:
 
 
 def load_runtime(root: Path | None = None) -> ModuleType:
-    """Load the active CUDA-policy-corrected v3 transactional runtime.
+    """Load the active scheduler-admission-corrected v4 transactional runtime.
 
-    Historical v1 and v2 revisions remain independently addressable by their
+    Historical v1-v3 revisions remain independently addressable by their
     explicit loaders; this does not mutate old experiment/cache identities.
     """
-    from tools.dataset_cohort_runtime_entry_v3 import load_runtime as load_v3_runtime
+    from tools.dataset_cohort_runtime_entry_v4 import load_runtime as load_v4_runtime
 
-    return load_v3_runtime(root or _root())
+    return load_v4_runtime(root or _root())
 
 
 __all__ = [
