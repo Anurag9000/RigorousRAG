@@ -33,14 +33,18 @@ V36_URL = (
 )
 ARCHIVE_URL = f"https://codeload.github.com/{HOST_REPO}/zip/{HOST_ARCHIVE_COMMIT}"
 USER_AGENT = "opf-exhaustive-training-controller/43"
-CONTROLLER_OVERLAYS = frozenset({
-    "tools/universal_training_controller_opf_reference_v2.py",
-    "tools/universal_training_controller_job_catalog_v2.py",
-    "tools/universal_training_controller_workload_closure.py",
-    "tools/universal_training_controller_scientific_surface_v25.py",
-    "tools/universal_training_controller_selector_closure_v26.py",
-    "tools/universal_training_controller_declaration_closure_v30.py",
-})
+CONTROLLER_OVERLAY_LOCATIONS = {
+    # v44 changes only the OPF reference. The remaining controller overlays
+    # are the exact audited v42 blobs retained by v43/v44; fetch them from
+    # the directory that actually owns those immutable files.
+    "tools/universal_training_controller_opf_reference_v2.py": "controller_bundle_v44",
+    "tools/universal_training_controller_job_catalog_v2.py": "controller_bundle_v42",
+    "tools/universal_training_controller_workload_closure.py": "controller_bundle_v42",
+    "tools/universal_training_controller_scientific_surface_v25.py": "controller_bundle_v42",
+    "tools/universal_training_controller_selector_closure_v26.py": "controller_bundle_v42",
+    "tools/universal_training_controller_declaration_closure_v30.py": "controller_bundle_v42",
+}
+CONTROLLER_OVERLAYS = frozenset(CONTROLLER_OVERLAY_LOCATIONS)
 
 
 def git_blob_sha(data: bytes) -> str:
@@ -167,9 +171,10 @@ def _materialize_bundle(root: Path, module: ModuleType) -> Path:
     # deltas plus the already-v41 OPF reference. Each overlay is independently
     # content-addressed; historical archive files are never rewritten.
     for overlay in sorted(CONTROLLER_OVERLAYS & set(missing)):
+        bundle_dir = CONTROLLER_OVERLAY_LOCATIONS[overlay]
         url = (
             f"https://raw.githubusercontent.com/{HOST_REPO}/{V36_COMMIT}/"
-            f"controller_bundle_v44/{Path(overlay).name}"
+            f"{bundle_dir}/{Path(overlay).name}"
         )
         payload = _fetch(url)
         actual = git_blob_sha(payload)
