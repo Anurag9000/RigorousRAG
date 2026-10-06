@@ -1982,3 +1982,37 @@ boundary at
 No physical six-model CUDA receipt is checked in. TensorRT/FP16/INT8,
 target-smart-glasses execution, latency, memory, power, thermal and battery
 claims remain OPEN.
+
+
+### 2026-10-05/06 Forest_Run executed closure evidence
+
+Forest_Run remains correctly classified as a native Android game with **no
+retained ML training surface**. Its repository-specific fail-closed authority
+has since been materially strengthened: it requires the real Android build,
+manifest and production entrypoint surface before issuing a non-ML
+certificate, rejects empty/partial repositories and injected training/model
+artifacts, records source/scope/authority manifests, and publishes failure
+rather than leaving a stale pass artifact.
+
+Current executed evidence on head
+`30410494f5cac54c2f83c8a6ae4ab6c82e269af0`:
+
+- Training-control applicability run `37312996795`: **SUCCESS**. Its
+  authority regression step ran 42 tests and reported `OK`; the emitted
+  certificate classified the repository
+  `no_retained_trainable_surface`, with zero findings and 649 scanned
+  source/configuration files.
+- Estate local training-control certificate run `37312996788`:
+  **SUCCESS**.
+- Android validation run `37312996552`: **SUCCESS**. The host/release job
+  ran 847 Python/tooling tests successfully, completed source-contract,
+  dependency/SBOM, Gradle, lint, unit-test, assembly, R8 and package checks,
+  and reported `BUILD SUCCESSFUL`. The separate API-35 connected emulator
+  job also completed successfully.
+
+Accordingly, GPU-first model training, CUDA optimizer placement, CPU/GPU ML
+parity, training checkpoint state and ML experiment matrices are
+**NOT_APPLICABLE** to Forest_Run unless a real retained trainable surface is
+introduced later. This does not waive physical-device/store/human release
+acceptance; those remain governed by the game's separate Android release
+evidence contracts. No synthetic ML jobs were added.
