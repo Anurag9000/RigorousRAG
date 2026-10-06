@@ -2016,3 +2016,30 @@ parity, training checkpoint state and ML experiment matrices are
 introduced later. This does not waive physical-device/store/human release
 acceptance; those remain governed by the game's separate Android release
 evidence contracts. No synthetic ML jobs were added.
+
+
+#### Forest_Run training-control closure — executed evidence, not synthetic ML
+
+Forest_Run is a native Android game and its repository-specific training
+authority is correctly **not applicable** rather than GPU-first training.
+The fail-closed authority now binds the certificate to the live Android
+application/build entrypoints, Android dependencies, scanned-source manifest,
+scope inventory and authority-code manifest; empty/partial source trees,
+symlinked required files, injected ML imports/model artifacts, stale prior
+PASS output and publication failures are rejected.
+
+Current main candidate `30410494f5cac54c2f83c8a6ae4ab6c82e269af0`
+has executed evidence:
+- training-control applicability audit run `37312996795`: SUCCESS,
+  including the absent-tree/injected-training regression and current
+  no-retained-training certificate;
+- estate-local certificate run `37312996788`: SUCCESS;
+- Android validation run `37312996552`: SUCCESS for the host/release/
+  lint/packaging job **and** API 35 connected smoke/deterministic-evidence job.
+
+This closes the account CUDA/training-control requirement for Forest_Run as
+**N/A by demonstrated repository purpose and fail-closed source authority**.
+It does not claim Play production acceptance, physical-device release
+acceptance, signing/legal/store approvals, or human creative/accessibility
+acceptance; those remain the game's independent release-engineering gates.
+No fabricated model, dataset, optimizer, GPU job or ML experiment was added.
