@@ -16,7 +16,7 @@ OUTER = ROOT / "tools/universal_training_controller_entry_v44.py"
 OVERLAY = ROOT / "controller_bundle_v44/universal_training_controller_opf_reference_v2.py"
 
 EXPECTED_OPF_COMMIT = "3d27019c17b2e8a48ef03068535d5ed5fdadca03"
-EXPECTED_OUTER_BLOB = "a1d7ec744d6ad06846f0e5acd5cbcb36945afa61"
+EXPECTED_OUTER_BLOB = "b9f79168e6d2af3406c2bc7625e0c7c46a452038"
 EXPECTED_INNER_BLOB = "5400e1042f737f1fc0bb129e1087f76df2442e20"
 EXPECTED_OVERLAY_BLOB = "79c39805d18ff6299daf81355e4dec3d4bb0b6fa"
 
@@ -100,6 +100,23 @@ def test_v44_overlay_and_inner_manifest_are_identical():
         **overlay["OPF_OPERATIONAL_CONTRACT_BLOBS"],
     } == inner["OPF_FILES"]
     assert len(inner["OPF_FILES"]) == 10
+
+
+
+def test_v44_outer_fetches_each_overlay_from_its_real_immutable_bundle_directory():
+    values = _constants(OUTER, {"CONTROLLER_OVERLAY_LOCATIONS"})
+    locations = values["CONTROLLER_OVERLAY_LOCATIONS"]
+    assert locations["tools/universal_training_controller_opf_reference_v2.py"] == (
+        "controller_bundle_v44"
+    )
+    inherited = {
+        "tools/universal_training_controller_job_catalog_v2.py",
+        "tools/universal_training_controller_workload_closure.py",
+        "tools/universal_training_controller_scientific_surface_v25.py",
+        "tools/universal_training_controller_selector_closure_v26.py",
+        "tools/universal_training_controller_declaration_closure_v30.py",
+    }
+    assert {locations[key] for key in inherited} == {"controller_bundle_v42"}
 
 
 def test_v44_outer_pins_exact_inner_and_release_files():
