@@ -262,7 +262,10 @@ def evaluate_data_residency(
         "eligible": not reasons,
         "reason_codes": tuple(sorted(set(reasons))),
     }
-    return ResidencyDecision(**payload, decision_sha256=_digest(payload))
+    return ResidencyDecision(
+        **{key: value for key, value in payload.items() if key != "schema"},
+        decision_sha256=_digest(payload),
+    )
 
 
 @dataclass(frozen=True)

@@ -228,7 +228,10 @@ def qualify_learned_fusion_weights(
         "eligible": not reasons,
         "reason_codes": tuple(sorted(set(reasons))),
     }
-    return FusionWeightPromotionReceipt(**payload, receipt_sha256=_digest(payload))
+    return FusionWeightPromotionReceipt(
+        **{key: value for key, value in payload.items() if key != "schema"},
+        receipt_sha256=_digest(payload),
+    )
 
 
 __all__ = ["FusionWeightPromotionPolicy", "FusionWeightPromotionReceipt", "qualify_learned_fusion_weights"]

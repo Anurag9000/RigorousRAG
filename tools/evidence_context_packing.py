@@ -370,7 +370,10 @@ def pack_evidence_context(
         "counterevidence_count": sum(values_by_sha.contradiction >= policy.counterevidence_threshold for values_by_sha in (next(candidate for candidate in values if candidate.evidence_sha256 == row.evidence_sha256) for row in packed)),
         "dropped_counts": tuple(sorted(dropped.items())),
     }
-    return ContextPackingReceipt(**payload, receipt_sha256=_digest(payload))
+    return ContextPackingReceipt(
+        **{key: value for key, value in payload.items() if key != "schema"},
+        receipt_sha256=_digest(payload),
+    )
 
 
 __all__ = [

@@ -379,7 +379,10 @@ def decide_runtime_promotion(
         "decided_at": instant,
         "valid_until": instant + policy.decision_ttl_seconds,
     }
-    return RuntimePromotionDecision(**payload, decision_sha256=_digest(payload))
+    return RuntimePromotionDecision(
+        **{key: value for key, value in payload.items() if key != "schema"},
+        decision_sha256=_digest(payload),
+    )
 
 
 @dataclass(frozen=True)

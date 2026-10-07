@@ -137,7 +137,10 @@ def _decision(*, evidence_sha256: str, kind: str, policy: StructuredDataAuthorit
         "confidence_floor": confidence_floor,
         "relative_interval_width": relative_width,
     }
-    return StructuredDataAuthorityDecision(**payload, decision_sha256=_digest(payload))
+    return StructuredDataAuthorityDecision(
+        **{key: value for key, value in payload.items() if key != "schema"},
+        decision_sha256=_digest(payload),
+    )
 
 
 def evaluate_table_quantity_authority(

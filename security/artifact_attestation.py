@@ -376,7 +376,10 @@ def decide_artifact_admission(
         "admitted": not reasons,
         "reason_codes": tuple(sorted(set(reasons))),
     }
-    return ArtifactAdmissionDecision(**payload, decision_sha256=_digest(payload))
+    return ArtifactAdmissionDecision(
+        **{key: value for key, value in payload.items() if key != "schema"},
+        decision_sha256=_digest(payload),
+    )
 
 
 __all__ = [

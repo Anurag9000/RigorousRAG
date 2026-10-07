@@ -188,7 +188,10 @@ def qualify_listwise_fusion_weights(
         "eligible": not reasons,
         "reason_codes": tuple(sorted(set(reasons))),
     }
-    return ListwiseFusionPromotionReceipt(**payload, receipt_sha256=_digest(payload))
+    return ListwiseFusionPromotionReceipt(
+        **{key: value for key, value in payload.items() if key != "schema"},
+        receipt_sha256=_digest(payload),
+    )
 
 
 __all__ = ["ListwiseFusionPromotionPolicy", "ListwiseFusionPromotionReceipt", "qualify_listwise_fusion_weights"]

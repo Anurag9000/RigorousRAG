@@ -213,7 +213,10 @@ def publish_authoritative_region_route(
         "provider_revision": after.provider_revision,
         "publication_performed": performed,
     }
-    return RegionRoutePublicationReceipt(**payload, receipt_sha256=_digest(payload))
+    return RegionRoutePublicationReceipt(
+        **{key: value for key, value in payload.items() if key != "schema"},
+        receipt_sha256=_digest(payload),
+    )
 
 
 __all__ = [

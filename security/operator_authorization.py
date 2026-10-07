@@ -426,7 +426,10 @@ def authorize_operator_action(
         "decided_at": instant,
         "valid_until": valid_until,
     }
-    return OperatorAuthorizationDecision(**payload, decision_sha256=_digest(payload))
+    return OperatorAuthorizationDecision(
+        **{key: value for key, value in payload.items() if key != "schema"},
+        decision_sha256=_digest(payload),
+    )
 
 
 def assert_operator_authorization(

@@ -202,7 +202,10 @@ def assign_interleaving_traffic(
         "arm": arm,
         "reason_codes": tuple(sorted(set(reasons))),
     }
-    return TrafficAssignment(**payload, assignment_sha256=_digest(payload))
+    return TrafficAssignment(
+        **{key: value for key, value in payload.items() if key != "schema"},
+        assignment_sha256=_digest(payload),
+    )
 
 
 __all__ = [

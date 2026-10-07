@@ -243,7 +243,10 @@ def qualify_interleaving_experiment(
         "eligible": not reasons,
         "reason_codes": tuple(sorted(set(reasons))),
     }
-    return InterleavingPromotionReceipt(**payload, receipt_sha256=_digest(payload))
+    return InterleavingPromotionReceipt(
+        **{key: value for key, value in payload.items() if key != "schema"},
+        receipt_sha256=_digest(payload),
+    )
 
 
 __all__ = [

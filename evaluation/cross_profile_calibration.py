@@ -212,7 +212,7 @@ def qualify_calibrator(
         "reason_codes": tuple(sorted(set(reasons))),
     }
     return CalibrationQualificationReceipt(
-        **payload,
+        **{key: value for key, value in payload.items() if key != "schema"},
         receipt_sha256=_canonical_digest(payload),
     )
 

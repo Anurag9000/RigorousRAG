@@ -221,7 +221,10 @@ def authorize_tool_request(
         "planner_decision_sha256": planner_decision.decision_sha256,
         "evidence_suggestion_sha256s": tuple(sorted(value.suggestion_sha256 for value in suggestions)),
     }
-    return AuthorizedToolRequest(**payload, authorization_sha256=_digest(payload))
+    return AuthorizedToolRequest(
+        **{key: value for key, value in payload.items() if key != "schema"},
+        authorization_sha256=_digest(payload),
+    )
 
 
 def assert_authorized_tool_request(

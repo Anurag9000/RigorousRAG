@@ -396,7 +396,10 @@ def release_text(
         "output_sha256": output_sha,
         "reason_codes": tuple(sorted(set(reasons))),
     }
-    decision = DataReleaseDecision(**payload, decision_sha256=_digest(payload))
+    decision = DataReleaseDecision(
+        **{key: value for key, value in payload.items() if key != "schema"},
+        decision_sha256=_digest(payload),
+    )
     return decision, None if output is None else ReleasedText(output, decision)
 
 
