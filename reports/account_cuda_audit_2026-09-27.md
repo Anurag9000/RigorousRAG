@@ -2080,3 +2080,31 @@ Latest NutriFlavorOS validate run `37609924897` still failed before runner
 assignment for all four jobs (empty runner names, zero steps), so these newer
 tests are not remotely certified and no physical CUDA/numeric resume parity
 is claimed.
+
+### 2026-10-07 Forest_Run applicability closure
+
+Forest_Run has now produced executed evidence for its repository-specific
+training-control classification. Current main
+`d95296bcbe446bd0be4bf06e671e9cd10c226646` passed:
+
+- training-control applicability audit `37608174800`, including the
+  absent/partial Android-tree and injected-training-marker regressions;
+- estate local certificate `37608174801`;
+- Android validation `37608174903`, including both host/release/lint/package
+  validation and API 35 connected smoke/deterministic evidence.
+
+Its local authority now refuses to treat an empty or structurally incomplete
+Android repository as proof of "no training". It requires the real application
+build/manifest/entrypoint surface, production Kotlin source and Android
+dependencies before emitting a no-retained-trainable-surface certificate.
+Training-specific CUDA/optimizer/dataset controls are therefore **closed as
+not applicable by executed evidence**, not merely by source assertion.
+
+Detailed evidence:
+`Forest_Run/docs/audits/2026-10-07_training_control_applicability_closure.md`
+(commit `21efd764a5c9f7773a70ac50f2569153e01f914b`).
+
+This does not close Forest_Run's separate physical-device, store-delivery,
+human/accessibility, signing, licensing/privacy or accountable release
+acceptance gates.
+
