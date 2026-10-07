@@ -117,7 +117,11 @@ def _registry_value(value: ast.AST | None) -> bool:
                           ast.DictComp, ast.ListComp, ast.SetComp, ast.GeneratorExp)):
         return True
     if isinstance(value, ast.Call):
-        return _name(value.func).rsplit(".", 1)[-1] in _DYNAMIC_COLLECTION_CONSTRUCTORS
+        # A strongly named, module-level uppercase registry may be populated by
+        # an arbitrary repository factory (for example MODELS = build_models()).
+        # It remains contractual but non-enumerable; function-local runtime
+        # values never reach this predicate.
+        return True
     return False
 
 
