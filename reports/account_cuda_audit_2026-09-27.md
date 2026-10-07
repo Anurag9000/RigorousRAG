@@ -2108,3 +2108,36 @@ This does not close Forest_Run's separate physical-device, store-delivery,
 human/accessibility, signing, licensing/privacy or accountable release
 acceptance gates.
 
+### 2026-10-07 BTN central CUDA telemetry corrections (21Q/21R)
+
+A later audit of Breaking-the-Neural-Barrier's 20Q central CUDA contract found
+two separate identity/accounting issues in the source-governance layer.
+
+**21Q — UUID/MIG telemetry claim corrected.** The live central policy already
+rejected non-decimal `CUDA_VISIBLE_DEVICES` tokens, but the retained 20Q
+tests/governance incorrectly claimed UUID/MIG masks became safe after narrowing
+to one child token. The pinned OPF scheduler accepts that child token, yet its
+pressure/process-memory paths query `nvidia-smi --id=<integer
+gpu_device_index>`. One-token child visibility therefore does not prove the
+integer telemetry observes the same physical UUID/MIG accelerator. Current tests
+now require automatic UUID/MIG masks to fall back to CPU before a Torch probe and
+explicit inherited GPU admission to raise. Numeric local-index/physical-token
+semantics remain supported. Source-governance record:
+`configs/central_cuda_scheduler_alignment_21q.json`; source-chain commit
+`c20c01ddfdf6ec3c2741364c1e1aff8c08e4cf96`.
+
+**21R — effective physical scheduler index forwarding.** BTN already rewrites
+the user-facing scheduler argument after central selection. A new regression now
+binds that handoff explicitly: under `CUDA_VISIBLE_DEVICES=2,5`, local request
+`--gpu-device-index 1` must narrow the child to token `5` and forward physical
+scheduler telemetry index `5`. Both CLI forms and the absent-flag append path
+are covered. Commit
+`0b8479fef44e1a41d63c2a1302bcc74475f8eb03`.
+
+The source chain was advanced without rewriting historical 20Q state and its
+terminal research counts were reconciled with the live universal-research
+coverage authority. No physical UUID/MIG or multi-GPU run is claimed. GitHub
+Actions run `37624756609` for the focused source contract again completed
+with no assigned runner and zero recorded steps; it is not a PASS or a
+source-test failure.
+
