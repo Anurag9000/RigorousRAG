@@ -231,6 +231,26 @@ class SemanticMetrics:
     multiclass_brier: float | None
     expected_calibration_error: float | None
 
+    @property
+    def accuracy(self) -> float | None:
+        """Backward-compatible alias for accuracy over non-abstained examples."""
+        return self.accuracy_on_covered
+
+    @property
+    def brier(self) -> float | None:
+        """Backward-compatible alias for the shared multiclass Brier score."""
+        return self.multiclass_brier
+
+    @property
+    def ece(self) -> float | None:
+        """Backward-compatible alias for expected calibration error."""
+        return self.expected_calibration_error
+
+    @property
+    def abstention_rate(self) -> float:
+        """Fraction of labeled examples excluded from covered semantic metrics."""
+        return 1.0 - self.coverage
+
 
 @dataclass(frozen=True)
 class CitationSupportMetrics:

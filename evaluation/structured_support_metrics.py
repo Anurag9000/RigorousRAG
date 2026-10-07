@@ -50,7 +50,7 @@ def evaluate_structured_support(
     for example in examples:
         if not isinstance(example, LabeledStructuredSupport):
             raise ValueError("examples must contain LabeledStructuredSupport values")
-        rows.append(LabeledSemanticExample(example.gold, example.score.probabilities, example.effective_abstained))
+        rows.append(LabeledSemanticExample(example.score.probabilities, example.gold, example.effective_abstained))
     return evaluate_semantic_examples(tuple(rows), calibration_bins=calibration_bins)
 
 

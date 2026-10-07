@@ -82,13 +82,13 @@ def semantic_ensemble_candidate(
     identities = {_claim_evidence_identity(row) for row in rows}
     if len(identities) != 1:
         raise ValueError("semantic ensemble rows must refer to the same claim/evidence identity")
-    if len({row.model.model_sha256 for row in rows}) != len(rows):
+    if len({row.model.identity_digest for row in rows}) != len(rows):
         raise ValueError("semantic ensemble must not duplicate the same model identity")
     item_sha256, evidence_sha256 = next(iter(identities))
     probabilities = tuple(row.probabilities for row in rows)
     mean_values = _mean_probabilities(probabilities)
     mean = SemanticProbabilities(*mean_values)
-    model_set_sha256 = _digest({"schema": "rigorousrag-semantic-ensemble-model-set/v1", "models": sorted(row.model.model_sha256 for row in rows)})
+    model_set_sha256 = _digest({"schema": "rigorousrag-semantic-ensemble-model-set/v1", "models": sorted(row.model.identity_digest for row in rows)})
     return ActiveLearningCandidate(
         owner_id=owner_id,
         task_id=task_id,
@@ -151,7 +151,7 @@ def structured_support_candidate(
         ),
         estimated_label_cost=estimated_label_cost,
         source_policy_sha256=source_policy_sha256,
-        source_model_sha256=score.model.model_sha256,
+        source_model_sha256=score.model.identity_digest,
     )
 
 
