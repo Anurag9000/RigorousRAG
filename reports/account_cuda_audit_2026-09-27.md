@@ -2043,3 +2043,40 @@ It does not claim Play production acceptance, physical-device release
 acceptance, signing/legal/store approvals, or human creative/accessibility
 acceptance; those remain the game's independent release-engineering gates.
 No fabricated model, dataset, optimizer, GPU job or ML experiment was added.
+
+
+#### 2026-10-07 Forest_Run non-ML closure and NutriFlavorOS exact-resume repairs
+
+`Forest_Run` is now independently closed for the *training-control
+applicability* question. At current main
+`ceae979ebaead2ffc9449dc95317917b1d63d6c7`, applicability run
+`37602964199` executed on a real runner, ran **44 tests**, passed the
+empty/partial Android-tree and injected-training-marker regressions, scanned
+**649** files and emitted a zero-finding
+`no_retained_trainable_surface` certificate. Estate-local certificate run
+`37602964291` and Android validation run `37602964334` also passed.
+This closes only the non-ML/training classification; physical-device,
+store, signing, human/creative and release-governance gates remain separate.
+The scoped closure is recorded in
+`Forest_Run/docs/audits/2026-10-07_training_control_non_ml_closure.md`
+(commit `d95296bcbe446bd0be4bf06e671e9cd10c226646`).
+
+`NutriFlavorOS` governed exact resume received two further source-level
+repairs. First, stateful-loader state is now
+`stateful-tensor-loader-v2` with an explicit final-iteration marker.
+A step checkpoint taken on the final batch no longer advances the next epoch
+permutation under the old epoch identifier after restart, and a checkpoint
+taken exactly at `maximum_steps` now completes the same validation,
+scheduler, early-stopping and epoch-checkpoint post-processing as an
+uninterrupted run before stopping. Second,
+`restore_training_state()` is transactional across model, optimizer,
+scheduler, scaler and RNG: all live component states are snapshotted before
+the first mutation and rolled back on a late restore failure.
+
+Current source receipts and tests are documented in
+`NutriFlavorOS/docs/cuda_trainable_surface_audit_2026-09-28.md`
+at commit `092b2f54a0b215e577e72fefff64a21923a8645a`.
+Latest NutriFlavorOS validate run `37609924897` still failed before runner
+assignment for all four jobs (empty runner names, zero steps), so these newer
+tests are not remotely certified and no physical CUDA/numeric resume parity
+is claimed.
