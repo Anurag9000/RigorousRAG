@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
+from urllib.error import HTTPError
 from types import SimpleNamespace
 
 import pytest
@@ -14,9 +16,45 @@ import universal_training_controller as base
 import universal_training_controller_opf_reference_v2 as reference
 
 
+def _verified_private_cache() -> Path | None:
+    """Accept externally staged private code only after every pinned blob matches.
+
+    Do not mirror OPF_ADP into this public repository or silently switch to
+    an unpinned scheduler. CI can set OPF_LITERAL_VERIFIED_CACHE in a job
+    authorized to check out the private OPF_ADP source.
+    """
+    configured = os.environ.get("OPF_LITERAL_VERIFIED_CACHE", "").strip()
+    if not configured:
+        return None
+    cache = Path(configured).expanduser().resolve(strict=True)
+    if not cache.is_dir():
+        raise RuntimeError("OPF_LITERAL_VERIFIED_CACHE must be a directory")
+    for relative, expected in reference.OPF_RUNTIME_BLOBS.items():
+        path = cache / relative
+        if path.is_symlink() or not path.is_file():
+            raise RuntimeError(f"private OPF cache lacks a regular pinned file: {relative}")
+        if not path.resolve().is_relative_to(cache):
+            raise RuntimeError(f"private OPF cache escapes the trusted root: {relative}")
+        actual = base._git_blob_sha(path.read_bytes())
+        if actual != expected:
+            raise RuntimeError(f"private OPF cache blob mismatch: {relative}: {actual} != {expected}")
+    return cache
+
+
 def _literal_scheduler(tmp_path: Path):
     reference.install()
-    cache = base._prepare_opf_runtime(tmp_path)
+    cache = _verified_private_cache()
+    if cache is None:
+        try:
+            cache = base._prepare_opf_runtime(tmp_path)
+        except HTTPError as exc:
+            if exc.code != 404 or os.environ.get("OPF_LITERAL_REQUIRE_PRIVATE", "") == "1":
+                raise
+            pytest.skip(
+                "The literal OPF_ADP reference is private and not available to this "
+                "uncredentialed job (HTTP 404); no scheduler behavior was verified. "
+                "Run with OPF_LITERAL_VERIFIED_CACHE and independently check the pinned blobs."
+            )
     scheduler = base._import_opf_scheduler(cache)
     assert base._git_blob_sha((cache / "utils" / "opf_massive_suite_runner.py").read_bytes()) == (
         reference.OPF_RUNTIME_BLOBS["utils/opf_massive_suite_runner.py"]
