@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import hashlib
+from dataclasses import asdict, replace
 
 import pytest
 
-from tools.evidence_context_packing import ContextEvidenceCandidate, ContextPackingPolicy, EvidenceSimilarity, pack_evidence_context
+from tools.evidence_context_packing import ContextEvidenceCandidate, ContextPackingPolicy, EvidenceSimilarity, PackedEvidence, pack_evidence_context
 from tools.evidence_context_materialization import ContextContentBinding, materialize_context
 
 
@@ -43,6 +44,20 @@ def test_mandatory_evidence_is_selected_first_and_budget_overflow_fails() -> Non
 
     with pytest.raises(ValueError, match="mandatory evidence exceeds"):
         pack_evidence_context((candidate("too-big", tokens=101, mandatory=True),), policy=policy(max_context_tokens=100))
+
+
+def test_receipt_keeps_typed_evidence_and_rejects_serialized_dictionary_records() -> None:
+    required = candidate("typed", mandatory=True)
+    packed = pack_evidence_context((required,), policy=policy())
+    assert isinstance(packed.selected, tuple)
+    assert isinstance(packed.selected[0], PackedEvidence)
+    assert asdict(packed.selected[0])["evidence_sha256"] == required.evidence_sha256
+    assert len(packed.receipt_sha256) == 64
+
+    # JSON serialization is for hashing/export, never a substitute for the
+    # typed evidence identity required by downstream trust/materialization.
+    with pytest.raises(ValueError, match="PackedEvidence"):
+        replace(packed, selected=(asdict(packed.selected[0]),))
 
 
 def test_mmr_similarity_penalty_prefers_diverse_evidence() -> None:
