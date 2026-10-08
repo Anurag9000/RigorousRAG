@@ -19,7 +19,7 @@ BASE_COMMIT = "3f0fbefb7f6525c71a2ecd6f0fdf512b8b2fc75a"
 BASE_PATH = "training/dataset_cohort_runtime.py"
 BASE_BLOB = "8d92fbc258b1b5f024923bc051f021f08453dd0c"
 RUNTIME_COMMIT = "120f6fd3e934f5febf3e78c4f3c8d1ca43bf05d3"
-RUNTIME_PATH = "training/dataset_cohort_runtime_v4.py"
+RUNTIME_PATH = "training/dataset_cohort_runtime_v5.py"
 RUNTIME_BLOB = "3a6c4d9573e570a15232bbaea141e449c67ce5ba"
 
 
@@ -87,7 +87,7 @@ def load_runtime(root: Path | None = None) -> ModuleType:
     )
     runtime_path = _materialize(directory, RUNTIME_COMMIT, RUNTIME_PATH, RUNTIME_BLOB)
     runtime = _import_verified(
-        f"_opf_dataset_cohort_runtime_v4_{RUNTIME_COMMIT[:12]}",
+        f"_opf_dataset_cohort_runtime_v5_{RUNTIME_COMMIT[:12]}",
         runtime_path,
         RUNTIME_BLOB,
     )
