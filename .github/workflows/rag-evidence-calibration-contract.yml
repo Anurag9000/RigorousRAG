@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - 'tools/evidence_context_packing.py'
+      - 'security/retrieved_content_trust.py'
       - 'tools/evidence_context_materialization.py'
       - 'evaluation/cross_profile_calibration_drift.py'
       - 'training/cross_profile_listwise_fusion.py'
@@ -36,6 +37,7 @@ jobs:
         run: |
           python -m py_compile \
             tools/evidence_context_packing.py \
+            security/retrieved_content_trust.py \
             tools/evidence_context_materialization.py \
             evaluation/cross_profile_calibration_drift.py \
             training/cross_profile_listwise_fusion.py
