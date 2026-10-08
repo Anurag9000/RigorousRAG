@@ -2172,3 +2172,38 @@ unreachable retained trainer surfaces, missing cross-repo credentials,
 and potential independent source/test issues. No GPU training, source
 coverage, scientific/result parity or whole-estate PASS is inferred
 from the 12+36 focused tests.
+
+
+### 2026-10-08 public/private OPF source CI boundary
+
+**Forest_Run (independent non-ML classification).** At exact `main`
+`21efd764a5c9f7773a70ac50f2569153e01f914b`, the local training-control
+applicability audit (Actions `37622724299`), estate certificate
+(`37622724294`), and Android validation (`37622724286`) all completed
+successfully. The classifier now guards missing Android entrypoints,
+symlinks, dependency scopes, hidden artifacts/opaque files and source
+manifests. This certifies only the absence of a retained ML training
+surface and recorded source/build tests; **it does not** certify human
+physical-device, signing or Play Store delivery acceptance.
+
+**RigorousRAG (actual failure investigation).** An exact-head
+Python 3.11 job (`37756254926`) ran 2,596 passing tests; six separate
+literal scheduler tests failed with HTTP 404 when attempting to download
+byte-pinned source from the **private** `Anurag9000/OPF_ADP` repository
+using unauthenticated raw URLs. That is an **access/verification blocker**,
+not a counterexample proving that a pinned scheduler algorithm failed.
+The same run recorded branch coverage **49.04%**, below its retained
+50% gate—an independent genuine incomplete test-coverage condition.
+
+The public literal OPF test suite now supports an **explicit, fully Git-blob
+verified** private checkout via `OPF_LITERAL_VERIFIED_CACHE`. It rejects
+missing, symlinked, escaped and tampered source files. When a private
+unauthenticated 404 occurs, literal behavior cases are marked **skipped /
+unverified**, not passed; unexpected HTTP errors and strict mode
+(`OPF_LITERAL_REQUIRE_PRIVATE=1`) still fail. Independent tests cover
+the error and cache integrity contracts, and the existing static
+controller workflow was extended to run them. No private OPF code was
+copied into the public project. Documentation:
+`reports/opf_private_source_ci_boundary_2026-10-08.md`.
+The coverage threshold was **not lowered**, no production execution was
+claimed, and the account-wide strict training-surface audit remains OPEN.
