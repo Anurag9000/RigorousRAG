@@ -182,6 +182,8 @@ class ContextPackingReceipt:
         for name in ("candidate_pool_sha256", "similarity_set_sha256", "policy_sha256"):
             object.__setattr__(self, name, _sha(getattr(self, name), name))
         selected = tuple(self.selected)
+        if any(not isinstance(row, PackedEvidence) for row in selected):
+            raise ValueError("selected evidence must contain PackedEvidence records")
         if [row.order for row in selected] != list(range(1, len(selected) + 1)):
             raise ValueError("packed evidence order must be contiguous")
         if len({row.evidence_sha256 for row in selected}) != len(selected):
@@ -370,10 +372,13 @@ def pack_evidence_context(
         "counterevidence_count": sum(values_by_sha.contradiction >= policy.counterevidence_threshold for values_by_sha in (next(candidate for candidate in values if candidate.evidence_sha256 == row.evidence_sha256) for row in packed)),
         "dropped_counts": tuple(sorted(dropped.items())),
     }
-    return ContextPackingReceipt(
-        **{key: value for key, value in payload.items() if key != "schema"},
-        receipt_sha256=_digest(payload),
-    )
+    # The canonical hash payload stores JSON dictionaries, but the runtime
+    # receipt must retain validated PackedEvidence values. Passing the
+    # serialized dictionaries through the dataclass constructor loses that
+    # type boundary and breaks downstream materialization/trust enforcement.
+    fields = {key: value for key, value in payload.items() if key != "schema"}
+    fields["selected"] = tuple(packed)
+    return ContextPackingReceipt(**fields, receipt_sha256=_digest(payload))
 
 
 __all__ = [
