@@ -5,12 +5,17 @@ unavailable; a skip means unverified, not successful behavior certification.
 """
 from __future__ import annotations
 
+import importlib.util
 from pathlib import Path
 from urllib.error import HTTPError
 
 import pytest
 
-from tests import test_training_controller_literal_opf_scheduler_behavior as literal
+_LITERAL_PATH = Path(__file__).with_name("test_training_controller_literal_opf_scheduler_behavior.py")
+_SPEC = importlib.util.spec_from_file_location("_literal_opf_fixture_under_test", _LITERAL_PATH)
+assert _SPEC is not None and _SPEC.loader is not None
+literal = importlib.util.module_from_spec(_SPEC)
+_SPEC.loader.exec_module(literal)
 
 
 def test_uncredentialed_private_404_reports_unverified_skip(tmp_path, monkeypatch):
