@@ -101,6 +101,11 @@ jobs:
             tests/test_universal_cuda_backend_bundle_v40.py \
             tests/test_universal_cuda_backend_bundle_v41.py
 
+      - name: Verify pinned private OPF cache and error contracts offline
+        run: |
+          python -m pytest -q -o addopts='' \
+            tests/test_training_controller_literal_opf_private_cache_contract.py
+
       - name: Compile staged v41 source and reference
         run: |
           python -m py_compile \
