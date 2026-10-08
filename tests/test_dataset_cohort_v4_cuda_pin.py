@@ -49,18 +49,21 @@ def test_v4_pins_corrected_base_and_preserves_v2_state_schema():
     assert 'cupy.cuda.runtime.deviceSynchronize()' in source
 
 
-def test_v4_reuses_only_blob_verified_preloaded_base(monkeypatch):
+def test_historical_v4_preload_hash_defect_is_preserved_not_silently_rewritten():
     from training import dataset_cohort_runtime as base
 
+    # Historical v4 source is immutable. It inadvertently hashes a literal
+    # backslash followed by "0" rather than the NUL byte in Git's blob header.
+    # Do not repin or silently rewrite that historical code: v5 fixes it.
+    source = V4.read_text(encoding="utf-8")
+    assert r'{len(data)}\\0' in source
     key = f"_opf_dataset_cohort_runtime_{BASE_COMMIT[:12]}"
     spec = importlib.util.spec_from_file_location("_v4_cuda_pin_test", V4)
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
     with mock.patch.dict(sys.modules, {key: base}):
-        spec.loader.exec_module(module)
-    assert module.base is base
-    assert module.detect_backend is base.detect_backend
-    assert module.subprocess_environment is base.subprocess_environment
+        with pytest.raises(RuntimeError, match="failed blob verification"):
+            spec.loader.exec_module(module)
 
 
 def test_v4_rejects_preloaded_base_with_wrong_source_blob(tmp_path):
