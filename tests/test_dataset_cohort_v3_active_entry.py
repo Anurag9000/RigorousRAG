@@ -8,6 +8,7 @@ from unittest import mock
 from tools import dataset_cohort_runtime_entry as canonical
 from tools import dataset_cohort_runtime_entry_v3 as v3
 from tools import dataset_cohort_runtime_entry_v4 as v4
+from tools import dataset_cohort_runtime_entry_v5 as v5
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -18,11 +19,15 @@ def _sha(path):
     return hashlib.sha1(f"blob {len(payload)}\0".encode("ascii") + payload).hexdigest()
 
 
-def test_v3_pins_match_corrected_sources():
-    assert _sha(ROOT / v3.BASE_PATH) == v3.BASE_BLOB
-    assert _sha(ROOT / v3.RUNTIME_PATH) == v3.RUNTIME_BLOB
+def test_v3_preserves_original_immutable_source_pins():
+    # Historical v3 source belongs to prior immutable Git commits, not to the
+    # current root checkout, which intentionally contains the upgraded base.
+    assert v3.BASE_BLOB == "8afef6ade42b9885878102d42e26ec3ab2a18bf3"
+    assert v3.RUNTIME_BLOB == "e6455266b63bed08691cfa76e620060f99eca35a"
     assert v3.BASE_COMMIT == "955a092e4a3e2cc04adfd8007206acd6d1341dce"
     assert v3.RUNTIME_COMMIT == "0160deb303f6a4d2a48b8453244dc01ceaae1295"
+    assert _sha(ROOT / v3.BASE_PATH) != v3.BASE_BLOB
+    assert _sha(ROOT / v3.RUNTIME_PATH) == v3.RUNTIME_BLOB
 
 
 def test_v4_pins_match_scheduler_admission_sources():
@@ -32,9 +37,9 @@ def test_v4_pins_match_scheduler_admission_sources():
     assert v4.RUNTIME_COMMIT == "67583b01768cc3ba55d75952c51deb6428473e62"
 
 
-def test_active_canonical_loader_delegates_to_v4():
+def test_active_canonical_loader_delegates_to_v5():
     sentinel = object()
-    with mock.patch.object(v4, "load_runtime", return_value=sentinel) as load:
+    with mock.patch.object(v5, "load_runtime", return_value=sentinel) as load:
         assert canonical.load_runtime(ROOT) is sentinel
     load.assert_called_once_with(ROOT)
 
