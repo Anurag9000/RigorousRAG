@@ -2141,3 +2141,34 @@ Actions run `37624756609` for the focused source contract again completed
 with no assigned runner and zero recorded steps; it is not a PASS or a
 source-test failure.
 
+
+### 2026-10-08 existing-repository correctness continuation (RigorousRAG)
+
+A fresh review of the **executed** public exact-head CI failures uncovered
+runtime dataclass/schema mismatches in evidence packing, retrieved-content
+trust decisions, calibration drift and multi-region publication, plus a
+ListNet test that asserted raw mixture-weight ordering rather than its
+objective. The fixes were committed directly to RigorousRAG `main`
+without altering content-hash schema domain separation or the listwise
+optimizer. Focused test run [37756072506](https://github.com/Anurag9000/RigorousRAG/actions/runs/37756072506)
+completed **36 passed**.
+
+A separate source-identity failure was genuine: immutable dataset-cohort v4
+constructed Git blob headers with printable backslash-zero rather than NUL,
+rejecting otherwise valid preloaded base modules. Historical v4 was
+preserved. New versioned v5 source and independently pinned loader use the
+correct Git header and retain the v2 state/checkpoint schema; the canonical
+entry now selects v5. Offline pin/materialization/tamper regressions
+completed **12 passed** in [37755768067](https://github.com/Anurag9000/RigorousRAG/actions/runs/37755768067).
+
+Reproducer, exact relevant filenames, run evidence, immutable-release
+boundary and explicit nonclaims are in
+`reports/evidence_cohort_contract_repairs_2026-10-08.md` at
+`5764dcd0ac611aab1c32bd018c9ea741119917f2`.
+
+**Not closed:** the public broad exact-head/static audit still has other
+failure domains including private OPF source 404, unaccounted registries,
+unreachable retained trainer surfaces, missing cross-repo credentials,
+and potential independent source/test issues. No GPU training, source
+coverage, scientific/result parity or whole-estate PASS is inferred
+from the 12+36 focused tests.
