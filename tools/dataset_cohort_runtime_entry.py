@@ -2,7 +2,7 @@
 
 The immutable v1 loader remains available as ``load_v1_runtime`` because the
 transactional v2/v3 runtimes extend pinned bases. ``load_runtime`` selects the
-verified, CUDA-policy-corrected v3 loader; explicit old loaders remain intact. Existing
+verified, CUDA-policy-corrected v5 loader; explicit old loaders remain intact. Existing
 repositories pinned to the historical v1 commit are unaffected until explicitly
 repinned.
 """
@@ -66,14 +66,15 @@ def load_v1_runtime(root: Path | None = None) -> ModuleType:
 
 
 def load_runtime(root: Path | None = None) -> ModuleType:
-    """Load the active scheduler-admission-corrected v4 transactional runtime.
+    """Load the verified v5 transactional runtime with correct Git blob checks.
 
-    Historical v1-v3 revisions remain independently addressable by their
-    explicit loaders; this does not mutate old experiment/cache identities.
+    Historical v1-v4 releases remain independently addressable. The v5 loader
+    retains the existing v2 transactional/checkpoint state schema without
+    rewriting historical source or cache identities.
     """
-    from tools.dataset_cohort_runtime_entry_v4 import load_runtime as load_v4_runtime
+    from tools.dataset_cohort_runtime_entry_v5 import load_runtime as load_v5_runtime
 
-    return load_v4_runtime(root or _root())
+    return load_v5_runtime(root or _root())
 
 
 __all__ = [
