@@ -13,6 +13,7 @@ from training.cross_profile_listwise_fusion import (
     advance_listwise_training,
     fit_listwise_fusion_weights,
     initialize_listwise_training,
+    _query_loss_and_gradient,
 )
 
 
@@ -63,11 +64,24 @@ def validation_queries():
     return (query("validation-a"), query("validation-b", False))
 
 
-def test_listwise_training_learns_to_favor_rank_informative_profile() -> None:
-    artifact = fit_listwise_fusion_weights(spec(), train_queries(), validation_queries())
+def test_listwise_training_minimizes_held_out_listnet_loss() -> None:
+    training_spec = spec()
+    artifact = fit_listwise_fusion_weights(training_spec, train_queries(), validation_queries())
     weights = dict(artifact.profile_weights)
-    assert weights["dense"] > weights["sparse"]
     assert sum(weights.values()) == pytest.approx(1.0)
+    assert all(0.0 <= weight <= 1.0 for weight in weights.values())
+    # The softmax relevance target is less concentrated than the near-perfect
+    # dense model. ListNet may correctly *downweight* an overconfident dense
+    # source even when that source ranks all three items correctly. A raw
+    # dense_weight > sparse_weight requirement contradicts the actual loss.
+    initial_theta = (0.0,) * len(training_spec.profile_ids)
+    baseline = sum(
+        row.weight * _query_loss_and_gradient(
+            initial_theta, row, training_spec.profile_ids, training_spec.config
+        )[0]
+        for row in validation_queries()
+    ) / sum(row.weight for row in validation_queries())
+    assert artifact.validation_listnet_loss < baseline
     assert artifact.score({"dense": 0.95, "sparse": 0.5}) > artifact.score({"dense": 0.05, "sparse": 0.5})
 
 
