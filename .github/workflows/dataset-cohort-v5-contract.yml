@@ -44,7 +44,7 @@ jobs:
             tests/test_dataset_cohort_v5_git_blob_integrity.py
       - name: Verify historic pins and v5 NUL-correct Git hash offline
         run: |
-          python -m pip install --disable-pip-version-check -q pytest
+          python -m pip install --disable-pip-version-check -q pytest requests
           python -m pytest -q -o addopts='' \
             tests/test_dataset_cohort_v3_active_entry.py \
             tests/test_dataset_cohort_v4_cuda_pin.py \
