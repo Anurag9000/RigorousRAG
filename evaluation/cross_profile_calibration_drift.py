@@ -166,7 +166,10 @@ def build_calibration_drift_reference(
         "bin_count": bin_count,
         "reference_proportions": proportions,
     }
-    return CalibrationDriftReference(**payload, reference_sha256=_digest(payload))
+    return CalibrationDriftReference(
+        **{key: value for key, value in payload.items() if key != "schema"},
+        reference_sha256=_digest(payload),
+    )
 
 
 def _psi(reference: Sequence[float], current: Sequence[float]) -> float:
@@ -304,7 +307,10 @@ def evaluate_calibration_drift(
         "action": action,
         "reason_codes": tuple(sorted(set(reasons))),
     }
-    return CalibrationDriftDecision(**payload, decision_sha256=_digest(payload))
+    return CalibrationDriftDecision(
+        **{key: value for key, value in payload.items() if key != "schema"},
+        decision_sha256=_digest(payload),
+    )
 
 
 __all__ = [
