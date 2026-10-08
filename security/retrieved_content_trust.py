@@ -292,7 +292,12 @@ def decide_retrieved_content_trust(
         "signal_sha256s": tuple(value.signal_sha256 for value in selected),
         "reason_codes": tuple(sorted(set(reasons))),
     }
-    return RetrievedContentTrustDecision(**payload, decision_sha256=_digest(payload))
+    # The schema label domain-separates the immutable digest; the validated
+    # runtime dataclass receives only its declared identity/decision fields.
+    return RetrievedContentTrustDecision(
+        **{key: value for key, value in payload.items() if key != "schema"},
+        decision_sha256=_digest(payload),
+    )
 
 
 def safe_decision_summary(decision: RetrievedContentTrustDecision) -> Mapping[str, Any]:
