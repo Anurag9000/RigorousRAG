@@ -49,7 +49,12 @@ def test_route_publication_observations_report_provider_revision_and_mutation() 
     }
     import json
     receipt_sha = hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")).hexdigest()
-    receipt = RegionRoutePublicationReceipt(**payload, receipt_sha256=receipt_sha)
+    # The schema marker is part of the immutable receipt hash, but is not a
+    # field of the strongly typed runtime receipt.
+    receipt = RegionRoutePublicationReceipt(
+        **{key: value for key, value in payload.items() if key != "schema"},
+        receipt_sha256=receipt_sha,
+    )
     rows = observations_from_region_route_publication(receipt)
     values = {row.name: row.value for row in rows}
     assert values["multi_region.route_publication_performed"] == 1.0
