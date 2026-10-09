@@ -1,0 +1,31 @@
+name: Citation refinement evidence contract
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'tools/citation_refinement.py'
+      - 'tests/unit/test_citation_refinement_source_contract.py'
+      - '.github/workflows/citation-refinement-source-contract.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  server-owned-citations:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile source and tests
+        run: python -m py_compile tools/citation_refinement.py tests/unit/test_citation_refinement_source_contract.py
+      - name: Verify allowlist, contradiction, abstention and receipt integrity
+        run: |
+          python -m pip install -q 'pytest>=8,<10' 'pytest-cov>=5,<8' 'requests>=2.31,<3'
+          python -m pytest -q -o addopts='' \
+            --cov=tools.citation_refinement --cov-branch --cov-report=term \
+            tests/unit/test_citation_refinement_source_contract.py
