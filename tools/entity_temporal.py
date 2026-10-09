@@ -304,9 +304,14 @@ class TemporalInterval:
         return True
 
     def relation(self, other: "TemporalInterval") -> str:
-        if self.end.value < other.start.value:
+        # A touching pair is disjoint when either touching boundary is open.
+        if (self.end.value < other.start.value
+                or (self.end.value == other.start.value
+                    and not (self.inclusive_end and other.inclusive_start))):
             return "before"
-        if self.start.value > other.end.value:
+        if (self.start.value > other.end.value
+                or (self.start.value == other.end.value
+                    and not (self.inclusive_start and other.inclusive_end))):
             return "after"
         if self.start.value == other.start.value and self.end.value == other.end.value:
             return "equal"
