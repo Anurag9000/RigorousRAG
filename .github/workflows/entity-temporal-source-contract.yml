@@ -25,7 +25,7 @@ jobs:
         run: python -m py_compile tools/entity_temporal.py tests/unit/test_entity_temporal_source_contract.py
       - name: Execute cross-owner, provider provenance and temporal-boundary tests
         run: |
-          python -m pip install -q 'pytest>=8,<10' 'pytest-cov>=5,<8'
+          python -m pip install -q 'pytest>=8,<10' 'pytest-cov>=5,<8' 'requests>=2.31,<3'
           python -m pytest -q -o addopts='' \
             --cov=tools.entity_temporal --cov-branch --cov-report=term \
             tests/unit/test_entity_temporal_source_contract.py
