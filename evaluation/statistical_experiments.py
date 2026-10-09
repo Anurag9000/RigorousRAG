@@ -396,6 +396,18 @@ def decide_promotion(
 ) -> PromotionDecision:
     """Require all mandatory metric gates after multiplicity correction."""
 
+    # A governed promotion with no mandatory objectives must never obtain a
+    # vacuous PASS. Validate the rule set before doing Monte-Carlo accounting
+    # or reporting any candidate as statistically eligible for release.
+    if not rules:
+        raise ValueError("promotion requires at least one mandatory metric rule")
+    if not all(isinstance(rule, MetricPromotionRule) for rule in rules):
+        raise ValueError("rules must contain MetricPromotionRule values")
+    if not any(rule.required for rule in rules):
+        raise ValueError("promotion requires at least one mandatory metric rule")
+    rule_names = [rule.metric for rule in rules]
+    if len(rule_names) != len(set(rule_names)):
+        raise ValueError("promotion metric rules must be unique")
     adjusted = apply_multiplicity(comparisons, method=correction)
     by_metric = {comparison.metric: comparison for comparison in adjusted}
     reasons: list[str] = []
