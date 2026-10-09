@@ -160,7 +160,7 @@ def test_refined_receipt_digest_rejects_metric_and_identity_tampering():
     with pytest.raises(ValueError, match="digest mismatch"):
         replace(receipt, allowed_evidence_set_sha256=_sha("different-universe"))
     with pytest.raises(ValueError, match="added citation identity mismatch"):
-        replace(receipt.claim_results[0], added_citation_ids=("e1",))
+        replace(receipt.claim_results[0], added_citation_ids=("unrelated",))
 
 
 def test_multi_claim_receipt_keeps_claims_separate():
