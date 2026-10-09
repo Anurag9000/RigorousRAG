@@ -181,7 +181,7 @@ def test_manifest_cannot_bind_a_different_context_or_unregistered_claim():
 
 def test_materialized_context_digest_and_text_tampering_detected():
     ctx = _context()
-    with pytest.raises(ValueError, match="digest"):
+    with pytest.raises(ValueError, match="context_sha256"):
         replace(ctx, packing_receipt_sha256=_sha("changed-packing-receipt"))
     with pytest.raises(ValueError, match="text_sha256"):
         replace(ctx.evidence[0], text="different content")
