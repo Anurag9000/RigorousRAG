@@ -186,7 +186,10 @@ class EntityRegistry:
         margin = _probability(ambiguity_margin, "ambiguity_margin")
         key = (mention.owner_id, normalize_entity_text(mention.observed_text))
         exact_ids = sorted(self._alias_index.get(key, ()))
-        candidate_entities = [self._entities[item] for item in exact_ids]
+        candidate_entities = [
+            self._entities[item] for item in exact_ids
+            if mention.kind_hint == "other" or self._entities[item].kind == mention.kind_hint
+        ]
         if not candidate_entities:
             normalized = key[1]
             tokens = set(normalized.split())
@@ -210,15 +213,19 @@ class EntityRegistry:
             base_scores = [1.0 for _ in candidate_entities]
         if not candidate_entities:
             return EntityResolution(mention.mention_id, None, 0.0, False, ())
+        provider_used = False
         if provider is not None:
             try:
                 provider_scores = list(provider.rank(mention, candidate_entities))
             except Exception:
                 provider_scores = []
             if len(provider_scores) == len(candidate_entities):
+                # Never advertise a learned/provider score if the provider
+                # failed or returned a mismatched candidate cardinality.
                 base_scores = [_probability(value, "provider score") for value in provider_scores]
+                provider_used = True
         ranked = sorted(zip(base_scores, candidate_entities), key=lambda item: (-item[0], item[1].entity_id))
-        candidates = tuple(EntityCandidate(entity.entity_id, score, "provider" if provider is not None else "deterministic") for score, entity in ranked)
+        candidates = tuple(EntityCandidate(entity.entity_id, score, "provider" if provider_used else "deterministic") for score, entity in ranked)
         top_score, top_entity = ranked[0]
         second_score = ranked[1][0] if len(ranked) > 1 else 0.0
         ambiguous = len(ranked) > 1 and (top_score - second_score) < margin
@@ -287,7 +294,14 @@ class TemporalInterval:
         return left and right
 
     def overlaps(self, other: "TemporalInterval") -> bool:
-        return max(self.start.value, other.start.value) <= min(self.end.value, other.end.value)
+        """Intervals sharing only an excluded endpoint do not overlap."""
+        if self.end.value < other.start.value or other.end.value < self.start.value:
+            return False
+        if self.end.value == other.start.value:
+            return self.inclusive_end and other.inclusive_start
+        if other.end.value == self.start.value:
+            return other.inclusive_end and self.inclusive_start
+        return True
 
     def relation(self, other: "TemporalInterval") -> str:
         if self.end.value < other.start.value:
