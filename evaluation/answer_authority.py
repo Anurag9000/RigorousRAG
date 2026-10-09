@@ -291,7 +291,10 @@ def evaluate_answer_authority(
             "max_contradiction_probability": max_contradiction,
             "non_authoritative_evidence_count": non_authoritative,
         }
-        results.append(ClaimAuthorityResult(**payload, result_sha256=_digest(payload)))
+        # The schema tag is part of the signed canonical payload, not a
+        # constructor field of ClaimAuthorityResult.
+        values = {key: value for key, value in payload.items() if key != "schema"}
+        results.append(ClaimAuthorityResult(**values, result_sha256=_digest(payload)))
 
     factual = [row for row, claim in zip(results, draft.claims) if claim.requires_evidence]
     supported = sum(row.status == "supported" for row in factual)
@@ -334,7 +337,10 @@ def evaluate_answer_authority(
         "unverified_authority_fraction": authority_fraction,
         "reason_codes": tuple(sorted(set(reasons))),
     }
-    return AnswerAuthorityDecision(**payload, decision_sha256=_digest(payload))
+    # Likewise, preserve schema separation in the digest without attempting
+    # to pass it to the decision dataclass constructor.
+    values = {key: value for key, value in payload.items() if key != "schema"}
+    return AnswerAuthorityDecision(**values, decision_sha256=_digest(payload))
 
 
 __all__ = [
