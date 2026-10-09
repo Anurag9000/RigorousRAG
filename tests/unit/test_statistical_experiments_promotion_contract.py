@@ -48,6 +48,7 @@ def _rule(
         direction=direction,
         minimum_improvement=minimum_improvement,
         require_ci_above_threshold=require_ci_above_threshold,
+        required=required,
     )
 
 
