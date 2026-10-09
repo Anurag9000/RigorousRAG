@@ -1,0 +1,32 @@
+name: Answer authority evidence contract
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'evaluation/answer_authority.py'
+      - 'tools/evidence_context_materialization.py'
+      - 'tests/unit/test_answer_authority_source_contract.py'
+      - '.github/workflows/answer-authority-source-contract.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  contradiction-first-publication:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile evidence, authority and source-contract tests
+        run: python -m py_compile evaluation/answer_authority.py tests/unit/test_answer_authority_source_contract.py
+      - name: Verify source identity, context containment and contradiction-first action
+        run: |
+          python -m pip install -q 'pytest>=8,<10' 'pytest-cov>=5,<8' 'requests>=2.31,<3'
+          python -m pytest -q -o addopts='' \
+            --cov=evaluation.answer_authority --cov-branch --cov-report=term \
+            tests/unit/test_answer_authority_source_contract.py
