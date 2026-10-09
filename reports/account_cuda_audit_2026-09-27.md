@@ -2207,3 +2207,26 @@ copied into the public project. Documentation:
 `reports/opf_private_source_ci_boundary_2026-10-08.md`.
 The coverage threshold was **not lowered**, no production execution was
 claimed, and the account-wide strict training-surface audit remains OPEN.
+
+
+### 2026-10-09 BTN GPU-admitted RNG-seeding continuation
+
+On the existing `Breaking-the-Neural-Barrier/main` source, a usable
+Torch CUDA allocation did not guarantee `seed_cuda_if_available`
+succeeded. `utils/seed_utils.py` previously ignored a failed CUDA RNG
+seed return, changed Python/NumPy/Torch streams and performed an
+additional implicit CUDA reseed via `torch.manual_seed`.
+Commits `3f5e8fc3ee3b86cb143d8973cf2b20bf402e9a38` and
+`4b1b949a103dd04af5e09a137e21a776bdbe7e80` now fail GPU-admitted
+seeding before other streams advance and seed only the CPU default
+Torch generator after the checked CUDA seed. The regression
+`test_seed_utils.py` was hardened at
+`7abd8ac6145fb9ed56f5670a15c08e48ba052712`.
+
+The *exact* GitHub seed source was reproduced locally and matched its
+Git blob `e28932cdfad8fd29546b9af86ef76ef4e241c083`.
+Three isolated CPU-Torch tests passed with controlled CUDA stubs,
+including failed CUDA seed atomicity, one CUDA seed per successful
+request with repeatable CPU draws, and zero accelerator seeding in CPU
+admission. They are not a private BTN full CI pass or physical GPU
+certificate. BTN's hardware/parity/source inventory remain OPEN.
