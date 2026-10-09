@@ -1,0 +1,31 @@
+name: RAG robustness evidence contract
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'evaluation/rag_robustness.py'
+      - 'tests/unit/test_rag_robustness_source_contract.py'
+      - '.github/workflows/rag-robustness-source-contract.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  robustness-evidence:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile source and source-contract tests
+        run: python -m py_compile evaluation/rag_robustness.py tests/unit/test_rag_robustness_source_contract.py
+      - name: Exercise digest provenance, poisoning signals, abstention and promotion
+        run: |
+          python -m pip install -q 'pytest>=8,<10' 'pytest-cov>=5,<8'
+          python -m pytest -q -o addopts='' \
+            --cov=evaluation.rag_robustness --cov-branch --cov-report=term \
+            tests/unit/test_rag_robustness_source_contract.py
