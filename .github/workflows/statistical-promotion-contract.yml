@@ -1,0 +1,32 @@
+name: Statistical promotion source contract
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'evaluation/statistical_experiments.py'
+      - 'tests/unit/test_statistical_experiments_promotion_contract.py'
+      - '.github/workflows/statistical-promotion-contract.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  paired-evidence:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile governed statistics and regression tests
+        run: python -m py_compile evaluation/statistical_experiments.py tests/unit/test_statistical_experiments_promotion_contract.py
+      - name: Execute real CPU paired bootstrap, permutation and promotion tests
+        run: |
+          python -m pip install -q 'pytest>=8,<10' 'pytest-cov>=5,<8'
+          python -m pytest -q -o addopts='' \
+            --cov=evaluation.statistical_experiments --cov-branch \
+            --cov-report=term \
+            tests/unit/test_statistical_experiments_promotion_contract.py
