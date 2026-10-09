@@ -340,6 +340,9 @@ def evaluate_answer_authority(
     # Likewise, preserve schema separation in the digest without attempting
     # to pass it to the decision dataclass constructor.
     values = {key: value for key, value in payload.items() if key != "schema"}
+    # Canonical hashed payloads contain dictionaries, but the runtime
+    # authority decision must hold validated ClaimAuthorityResult instances.
+    values["claim_results"] = tuple(results)
     return AnswerAuthorityDecision(**values, decision_sha256=_digest(payload))
 
 
